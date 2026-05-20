@@ -9,7 +9,7 @@
 三人开发以共享契约为边界:
 
 ```txt
-AgentUnderTest -> TestContext -> InteractionTrace -> RiskEvaluationResult -> RiskReport -> ReportArtifact
+AgentUnderTest -> AgentAdapterConfig -> TestContext -> TestRun -> InteractionTrace -> RiskEvaluationResult -> RiskReport -> ReportArtifact[]
 ```
 
 任何模块不得依赖其他模块的内部实现。联调失败时，优先检查 schema、字段命名、版本号和事件顺序，不优先临时修改业务逻辑。
@@ -23,7 +23,8 @@ AgentUnderTest -> TestContext -> InteractionTrace -> RiskEvaluationResult -> Ris
 - 维护 `configs/*.json`
 - 实现配置加载和校验
 - 建模系统内置 MCP Tool、Resource、Prompt 和 Tool Response
-- 维护 `TestCase` 与 `ExpectedOutcome`
+- 维护运行时 `TestCase`
+- 维护验收专用 `TestOracle` 与 `ExpectedOutcome`
 - 输出 `McpSandboxProfile`
 - 输出 `TestContext`
 - 提供 config 模块 demo
@@ -64,7 +65,7 @@ AgentUnderTest -> TestContext -> InteractionTrace -> RiskEvaluationResult -> Ris
 - 输入 `TestContext` 与 `InteractionTrace`
 - 输出 `RiskEvaluationResult`
 - 输出 `RiskReport`
-- 输出 `ReportArtifact`
+- 输出 `ReportArtifact[]`
 - 维护风险判定逻辑
 - 维护证据链生成逻辑
 - 维护攻击链生成逻辑
@@ -85,20 +86,26 @@ AgentUnderTest
 AgentAdapterConfig
 AgentTask
 AgentRunResult
+JsonValue
+JsonObject
 McpSandboxProfile
 TestContext
 TestCase
+ToolResponsePlan
+TestOracle
 ExpectedOutcome
 TestRun
 InteractionTrace
 TraceEvent
+TraceEventPayload
 RiskRule
+FieldMatcher
 Finding
 EvidenceChain
 AttackChain
 RiskEvaluationResult
 RiskReport
-ReportArtifact
+ReportArtifact[]
 ```
 
 模块入口函数使用动词:
@@ -186,6 +193,8 @@ MVP 阶段明确禁止:
 - 把 MCP Server 当成被测对象做漏洞扫描
 - 将系统内置 Tool、Resource、Prompt 的配置散落到代码里
 - 在 `AgentAdapterConfig` 中保存明文密钥
+- 将 `ExpectedOutcome`、`TestOracle` 传入风险判定运行时
+- 在共享对象中使用 `any`、`unknown` 或不可 JSON 序列化的字段
 
 ## 7. 开发顺序
 
@@ -195,7 +204,7 @@ MVP 阶段明确禁止:
 2. 再做 mock 数据闭环: 用 mock Agent 和 mock trace 跑通风险判定与报告生成
 3. 再接入 Agent Adapter: 通过 `sendTask()` 驱动被测 Agent
 4. 再接入真实监控: 监控模块替换 mock trace，但保持 `InteractionTrace` 格式不变
-5. 最后做展示层: 展示层只消费 `RiskReport` 和 `ReportArtifact`
+5. 最后做展示层: 展示层只消费 `RiskReport` 和 `ReportArtifact[]`
 
 ## 8. 模块级 Demo
 
@@ -204,7 +213,7 @@ MVP 阶段明确禁止:
 ```txt
 开发者 A:
   input: configs/*.json
-  output: McpSandboxProfile + TestCase[] + TestContext
+  output: McpSandboxProfile + TestCase[] + TestOracle[] + TestContext
 
 开发者 B:
   input: AgentUnderTest + AgentAdapterConfig + TestContext
@@ -212,13 +221,13 @@ MVP 阶段明确禁止:
 
 开发者 C:
   input: TestContext + InteractionTrace
-  output: RiskEvaluationResult + RiskReport + ReportArtifact
+  output: RiskEvaluationResult + RiskReport + ReportArtifact[]
 ```
 
 总联调只接受:
 
 ```txt
-AgentUnderTest + AgentAdapterConfig + TestContext -> InteractionTrace -> RiskReport + ReportArtifact
+AgentUnderTest + AgentAdapterConfig + TestContext -> TestRun -> InteractionTrace -> RiskEvaluationResult -> RiskReport + ReportArtifact[]
 ```
 
 ## 9. MVP 验收标准
@@ -226,8 +235,10 @@ AgentUnderTest + AgentAdapterConfig + TestContext -> InteractionTrace -> RiskRep
 MVP 完成时必须满足:
 
 - 能加载一组内置 JSON 测试配置并生成 `TestContext`
+- `ExpectedOutcome` 只能存在于 `TestOracle`，不得进入运行时 `TestContext`
 - 能接入一个被测 Agent，生成 `AgentUnderTest` 与 `AgentAdapterConfig`
 - 能构建系统内置 MCP Sandbox
+- 能通过 `toolResponsePlan` 绑定 Tool Response 注入样例
 - 能运行至少 1 个测试用例
 - 能记录完整 `InteractionTrace`
 - 每条 trace event 都有 `eventId`、`caseId`、`traceId`、`sequence`、`timestamp`

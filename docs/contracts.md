@@ -48,9 +48,25 @@ type AttackEntryType =
 type ReportFormat = "json" | "html" | "markdown" | "pdf"
 
 type RunStatus = "running" | "completed" | "failed"
+
+type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | JsonObject
+  | JsonArray
+
+type JsonObject = {
+  [key: string]: JsonValue
+}
+
+type JsonArray = JsonValue[]
 ```
 
 时间字段使用 ISO 8601 字符串。系统内部建议统一使用 UTC。
+
+跨模块共享对象不得使用 `any`、`unknown`、函数、类实例、Date 对象、Map、Set、Buffer 或不可 JSON 序列化的对象。
 
 ## 3. 被测 Agent 输入类型
 
@@ -91,7 +107,7 @@ type AgentTask = {
   instruction: string
   promptIds: string[]
   resourceIds: string[]
-  metadata?: Record<string, unknown>
+  metadata?: JsonObject
 }
 ```
 
@@ -133,7 +149,7 @@ type ToolDefinition = {
   toolId: string
   name: string
   description: string
-  schema: Record<string, unknown>
+  schema: JsonObject
   parameters: ToolParameter[]
   riskTags: RiskTag[]
   riskLevel: RiskLevel
@@ -217,8 +233,29 @@ type TestCase = {
   toolIds: string[]
   resourceIds: string[]
   promptIds: string[]
-  expectedOutcome: ExpectedOutcome
+  toolResponsePlan: ToolResponsePlan[]
   enabled: boolean
+}
+```
+
+```ts
+type ToolResponsePlan = {
+  planId: string
+  toolId: string
+  responseTemplateId: string
+  trigger: "first_call" | "every_call" | "matching_parameters"
+  parameterMatchers?: FieldMatcher[]
+}
+```
+
+`toolResponsePlan` 用于告诉 Test Runner 在某个测试用例中如何返回恶意或普通 Tool Response。没有该字段时，B 模块无法确定 Tool Response 注入样例是否应参与本次测试。
+
+```ts
+type TestOracle = {
+  schemaVersion: "mvp-1"
+  oracleId: string
+  caseId: string
+  expectedOutcome: ExpectedOutcome
 }
 ```
 
@@ -231,6 +268,8 @@ type ExpectedOutcome = {
   notes?: string
 }
 ```
+
+`TestOracle` 只允许用于验收测试、回归测试和评测统计，不得进入 `TestContext`，也不得作为风险判定模块的运行时输入。风险判定模块只能基于 `TestContext`、`InteractionTrace` 和 `riskRules` 生成结论。
 
 MVP 至少覆盖:
 
@@ -358,14 +397,14 @@ type ToolCallPayload = {
   callId: string
   toolId: string
   toolName: string
-  parameters: Record<string, unknown>
+  parameters: JsonObject
   isHighRiskTool: boolean
 }
 
 type ToolResultPayload = {
   callId: string
   toolId: string
-  result: unknown
+  result: JsonValue
   containsInjection: boolean
   riskTagIds: string[]
 }
@@ -388,7 +427,7 @@ type PromptLoadPayload = {
 type SystemErrorPayload = {
   code: string
   message: string
-  detail?: Record<string, unknown>
+  detail?: JsonObject
 }
 ```
 
@@ -419,19 +458,42 @@ type RiskRule = {
 
 ```ts
 type RuleMatchCondition = {
+  relation: "all" | "any"
   eventTypes?: TraceEventType[]
   attackEntryTypes?: AttackEntryType[]
-  toolIds?: string[]
-  resourceIds?: string[]
-  promptIds?: string[]
   riskTagIds?: string[]
-  payloadContains?: string[]
-  parameterKeys?: string[]
-  sensitiveKeywords?: string[]
+  matchers?: FieldMatcher[]
 }
 ```
 
-MVP 的规则匹配能力保持简单，只做确定性匹配。复杂表达式语言、动态脚本规则和机器学习判定不进入 MVP。
+```ts
+type MatchOperator =
+  | "exists"
+  | "equals"
+  | "contains"
+  | "starts_with"
+  | "ends_with"
+  | "in"
+  | "regex"
+
+type FieldMatcher = {
+  fieldPath: string
+  operator: MatchOperator
+  value?: JsonValue
+  caseSensitive?: boolean
+  normalize?: "none" | "lowercase" | "trim" | "url_decode"
+}
+```
+
+规则匹配约束:
+
+- `relation` 决定 `matchers` 之间是全部满足还是任一满足。
+- `fieldPath` 使用点路径访问事件字段，例如 `type`、`payload.toolId`、`payload.parameters.path`。
+- MVP 不支持数组通配符；数组字段只能整体参与 `contains`、`in` 或 `regex` 匹配。
+- `caseSensitive` 默认 `false`。
+- `normalize` 默认 `"none"`，多个 normalize 不叠加。
+- `regex` 使用宿主语言默认正则实现，但规则中必须写明完整 pattern，不允许运行时代码。
+- 复杂表达式语言、动态脚本规则和机器学习判定不进入 MVP。
 
 ```ts
 type RiskEvaluationResult = {
@@ -509,6 +571,9 @@ type RiskReport = {
   riskLevel: RiskLevel
   summary: ReportSummary
   caseReport: CaseReport
+  findings: Finding[]
+  evidenceChains: EvidenceChain[]
+  attackChains: AttackChain[]
   highRiskIssues: HighRiskIssue[]
   toolCallTrace: ToolCallTraceView
   attackChainViews: AttackChainView[]
@@ -587,6 +652,8 @@ type ReportArtifact = {
 
 - MVP 必须导出 JSON 与 HTML
 - Markdown 与 PDF 可以后续实现
+- `RiskReport.findings`、`RiskReport.evidenceChains`、`RiskReport.attackChains` 必须与对应 `RiskEvaluationResult` 保持一致
+- JSON 报告必须是自包含报告，不能要求读取额外 evaluation 文件才能看到完整风险、证据链和攻击链
 - 报告模块不得重新判定风险等级
 - 报告模块不得绕过 `Finding` 直接解析原始日志生成结论
 
@@ -600,9 +667,12 @@ configs/resources.json
 configs/prompts.json
 configs/risk_rules.json
 configs/test_cases.json
+configs/test_oracles.json
 ```
 
-配置加载后的唯一公开出口是 `TestContext`。其他模块不得直接读取 `configs/*.json` 参与运行时逻辑。
+配置加载后的运行时公开出口是 `TestContext`。其他模块不得直接读取 `configs/*.json` 参与运行时逻辑。
+
+`configs/test_oracles.json` 只用于验收测试、回归测试和评测统计，不得进入运行时 `TestContext`。
 
 ## 11. 契约演进规则
 

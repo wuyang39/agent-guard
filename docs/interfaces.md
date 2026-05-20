@@ -24,7 +24,7 @@ B -> C:
 
 C -> 展示层:
   RiskReport
-  ReportArtifact
+  ReportArtifact[]
 ```
 
 任何模块不得要求其他开发者提供私有类、临时日志、缓存对象或未写入契约文档的字段。
@@ -41,6 +41,7 @@ configs/resources.json
 configs/prompts.json
 configs/risk_rules.json
 configs/test_cases.json
+configs/test_oracles.json
 AgentUnderTest
 ```
 
@@ -70,6 +71,13 @@ testCase
 riskRules
 ```
 
+`TestContext` 禁止包含:
+
+```txt
+expectedOutcome
+TestOracle
+```
+
 其中 `sandbox` 必须包含:
 
 ```txt
@@ -80,10 +88,12 @@ PromptDefinition[]
 ToolResponseTemplate[]
 ```
 
+其中 `testCase` 必须包含 `toolResponsePlan`，用于声明本用例中 Tool Response 模板如何绑定到工具调用。
+
 验收方式:
 
 ```txt
-configs/*.json -> loadTestContext() -> TestContext
+configs/*.json -> loadTestContext() -> TestContext + TestOracle[]
 ```
 
 开发者 A 不需要知道 Agent 如何运行，也不需要读取运行时 trace。
@@ -210,6 +220,9 @@ riskLevel
 summary
 caseReport
 highRiskIssues
+findings
+evidenceChains
+attackChains
 toolCallTrace
 attackChainViews
 generatedAt
@@ -249,6 +262,9 @@ TestContext + InteractionTrace
 - `tool_call` 与 `tool_result` 能通过 `callId` 关联
 - `Finding.evidenceEventIds` 都能在 `InteractionTrace.events` 中找到
 - `RiskReport.traceId` 指向本次 `InteractionTrace.traceId`
-- `ReportArtifact.reportId` 指向本次 `RiskReport.reportId`
+- `RiskReport.findings` 与 `RiskEvaluationResult.findings` 一致
+- `RiskReport.evidenceChains` 与 `RiskEvaluationResult.evidenceChains` 一致
+- `ReportArtifact[]` 至少包含 `json` 和 `html`
+- 每个 `ReportArtifact.reportId` 都指向本次 `RiskReport.reportId`
 
 联调失败时，先修接口契约和 mock 数据，再讨论业务逻辑。

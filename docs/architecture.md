@@ -49,7 +49,7 @@ MVP 暂不包含:
 系统第一版只允许一条主数据流:
 
 ```txt
-AgentUnderTest -> AgentAdapterConfig -> TestContext -> TestRun -> InteractionTrace -> RiskEvaluationResult -> RiskReport -> ReportArtifact
+AgentUnderTest -> AgentAdapterConfig -> TestContext -> TestRun -> InteractionTrace -> RiskEvaluationResult -> RiskReport -> ReportArtifact[]
 ```
 
 后一个模块只能消费前一个模块公开输出的数据对象。禁止跨层直接读取其他模块的内部文件、私有类、缓存对象或临时日志。
@@ -81,7 +81,8 @@ AgentUnderTest -> AgentAdapterConfig -> TestContext -> TestRun -> InteractionTra
 核心交付物:
 
 ```txt
-configs/*.json -> McpSandboxProfile + TestCase[] -> TestContext
+configs/*.json -> McpSandboxProfile + TestCase[] + TestOracle[]
+McpSandboxProfile + TestCase + AgentUnderTest -> TestContext
 ```
 
 ### 开发者 B: Agent 接入、测试执行与动态监控
@@ -133,7 +134,7 @@ AgentUnderTest + AgentAdapterConfig + TestContext -> TestRun + InteractionTrace
 核心交付物:
 
 ```txt
-TestContext + InteractionTrace -> RiskEvaluationResult -> RiskReport + ReportArtifact
+TestContext + InteractionTrace -> RiskEvaluationResult -> RiskReport + ReportArtifact[]
 ```
 
 ## 5. 开发者接口交接
@@ -147,8 +148,9 @@ TestContext + InteractionTrace -> RiskEvaluationResult -> RiskReport + ReportArt
 
 A -> B:
   TestContext
-  McpSandboxProfile
-  TestCase
+
+A -> 验收测试:
+  TestOracle
 
 B -> C:
   TestRun
@@ -156,7 +158,7 @@ B -> C:
 
 C -> 展示层:
   RiskReport
-  ReportArtifact
+  ReportArtifact[]
 ```
 
 详细字段以 `docs/contracts.md` 和 `docs/interfaces.md` 为准。任何共享字段变更必须先更新文档，再进入联调。
@@ -173,6 +175,7 @@ agent-mcp-security-eval/
     prompts.json
     risk_rules.json
     test_cases.json
+    test_oracles.json
 
   src/
     agent/
@@ -241,11 +244,11 @@ agent-mcp-security-eval/
 MVP 采用离线判定:
 
 1. 接入被测 Agent，生成 `AgentUnderTest` 与 `AgentAdapterConfig`
-2. 加载测试配置，生成 `McpSandboxProfile`、`TestCase` 与 `TestContext`
+2. 加载测试配置，生成 `McpSandboxProfile`、`TestCase`、`TestOracle` 与运行时 `TestContext`
 3. 通过 Test Runner 执行一次 Agent-MCP 测试，生成 `TestRun`
 4. MCP Monitor 记录完整事件，生成 `InteractionTrace`
 5. 测试结束后批量运行风险规则，生成 `RiskEvaluationResult`
-6. 报告模块组装 `RiskReport`，导出 JSON 与 HTML `ReportArtifact`
+6. 报告模块组装自包含的 `RiskReport`，导出 JSON 与 HTML `ReportArtifact[]`
 7. 展示层读取 `RiskReport`
 8. 需要追溯详情时，根据 `traceId` 读取对应 `InteractionTrace`
 
@@ -266,6 +269,7 @@ outputs/reports/{caseId}-{reportId}.html
 ## 9. 架构原则
 
 - 只有 Agent 是被测对象，MCP 环境是系统内部测试夹具
+- `TestOracle` 和 `ExpectedOutcome` 只用于验收测试，不得进入运行时 `TestContext`
 - 共享对象优先，内部实现其次
 - 风险判定只相信 `TestContext`、`InteractionTrace` 和 `riskRules`
 - 报告只呈现风险模块产出的结果，不重新解释原始日志

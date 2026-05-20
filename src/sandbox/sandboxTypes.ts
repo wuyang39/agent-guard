@@ -1,10 +1,15 @@
 export type {
   AccessPolicy,
+  JsonObject,
   McpSandboxProfile,
   PromptDefinition,
+  PromptLoadPayload,
+  ResourceAccessPayload,
   ResourceDefinition,
   RiskTag,
   ToolDefinition,
   ToolParameter,
+  ToolResponsePlan,
   ToolResponseTemplate,
+  ToolResultPayload,
 } from "../shared/contracts";

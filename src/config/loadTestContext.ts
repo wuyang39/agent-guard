@@ -1,19 +1,12 @@
 import type {
   AgentUnderTest,
-  McpSandboxProfile,
-  RiskRule,
-  TestCase,
   TestContext,
   TestOracle,
 } from "../shared/contracts";
 import { NotImplementedError } from "../shared/errors";
+import type { ConfigRepository } from "./configRepository";
 
-export type LoadedConfigRepository = {
-  sandbox: McpSandboxProfile;
-  testCases: TestCase[];
-  testOracles: TestOracle[];
-  riskRules: RiskRule[];
-};
+export type LoadedConfigRepository = ConfigRepository;
 
 export type LoadTestContextResult = {
   contexts: TestContext[];

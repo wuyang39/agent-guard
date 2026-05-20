@@ -184,6 +184,8 @@ agent-mcp-security-eval/
       agentTypes.ts
 
     config/
+      configRepository.ts
+      configValidator.ts
       loadTestContext.ts
       schemas.ts
 
@@ -201,8 +203,10 @@ agent-mcp-security-eval/
       traceTypes.ts
 
     risk/
+      operatorRegistry.ts
       ruleEngine.ts
       riskEvaluator.ts
+      attackChainBuilder.ts
       evidenceBuilder.ts
       riskTypes.ts
 
@@ -212,10 +216,12 @@ agent-mcp-security-eval/
       exporters/
 
     shared/
+      contracts.ts
       ids.ts
       time.ts
       errors.ts
       schemaVersion.ts
+      types/
 
   outputs/
     traces/
@@ -225,7 +231,9 @@ agent-mcp-security-eval/
     architecture.md
     contracts.md
     development-rules.md
+    framework-risk-audit.md
     interfaces.md
+    ownership.md
 ```
 
 目录职责:
@@ -238,7 +246,8 @@ agent-mcp-security-eval/
 - `src/monitor/`: 采集 Agent-MCP 交互，只输出 `InteractionTrace`。
 - `src/risk/`: 风险判定和证据链生成，只输入 `TestContext` 与 `InteractionTrace`。
 - `src/report/`: 组装、展示和导出 `RiskReport`，不重新判定风险。
-- `src/shared/`: 只放跨模块通用的小工具，禁止承载业务逻辑。
+- `src/shared/`: 放跨模块契约类型和通用小工具，禁止承载业务逻辑。
+- `src/shared/types/`: 按领域拆分共享类型，降低多人并行修改冲突。
 
 ## 7. 执行模式
 

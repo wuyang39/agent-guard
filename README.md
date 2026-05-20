@@ -15,10 +15,14 @@ src/runner/     Test execution boundary
 src/monitor/    Interaction trace recording boundary
 src/risk/       Rule evaluation, evidence chain, and attack chain boundary
 src/report/     RiskReport and ReportArtifact boundary
-src/shared/     Shared contracts and small utilities
+src/shared/     Shared contracts, split domain types, and small utilities
 outputs/        Generated traces and reports
 docs/           Architecture and interface specifications
 ```
+
+See `docs/framework-risk-audit.md` for the current framework risk register and the iteration risks already addressed.
+
+See `docs/ownership.md` for strict A/B/C workspace ownership, shared controlled files, and cross-workspace change rules.
 
 ## MVP Pipeline
 

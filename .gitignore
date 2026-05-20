@@ -1,0 +1,12 @@
+node_modules/
+dist/
+coverage/
+.env
+.env.*
+outputs/traces/*.json
+outputs/reports/*.json
+outputs/reports/*.html
+outputs/reports/*.md
+outputs/reports/*.pdf
+!outputs/traces/.gitkeep
+!outputs/reports/.gitkeep

@@ -39,6 +39,7 @@ C -> 展示层:
 configs/tools.json
 configs/resources.json
 configs/prompts.json
+configs/tool_responses.json
 configs/risk_rules.json
 configs/test_cases.json
 configs/test_oracles.json

@@ -173,6 +173,7 @@ agent-mcp-security-eval/
     tools.json
     resources.json
     prompts.json
+    tool_responses.json
     risk_rules.json
     test_cases.json
     test_oracles.json

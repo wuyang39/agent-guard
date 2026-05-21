@@ -1,8 +1,10 @@
 # 文件框架迭代风险审计
 
-版本: mvp-1
-日期: 2026-05-20
-状态: 框架风险修订记录
+文档版本: initial-1
+基线日期: 2026-05-21
+状态: 初始规范基线
+
+说明: 本文档把当前文件框架风险审计结果固化为初始风险基线，后续新增风险在本文档追加。
 
 ## 1. 审计范围
 
@@ -10,19 +12,22 @@
 
 ## 2. 已发现并修复的风险
 
-### 风险 1: 单一共享契约文件过大
+### 风险 1: 单一共享契约文件和单层 src 目录过大
 
 原风险:
 
-- 所有共享类型集中在 `src/shared/contracts.ts`
+- 所有共享类型曾集中在 `src/shared/contracts.ts`
+- 后端、前端和共享契约曾都隐含在单层 `src/` 下
 - 后续 Agent、Sandbox、Trace、Risk、Report 同时演进时容易产生合并冲突
-- 类型责任不清，开发者难以判断字段归属
+- 类型责任和前后端边界不清，开发者难以判断字段归属
 
 修复:
 
-- 拆分为 `src/shared/types/*.ts`
-- 保留 `src/shared/contracts.ts` 作为稳定导出口
-- 现有模块仍从 `src/shared/contracts` 导入，避免大面积路径变更
+- 后端运行时迁移到 `backend/src/modules/**`
+- 前端控制台预留到 `frontend/**`
+- 前后端共享契约迁移到 `packages/contracts/src/types/*.ts`
+- `packages/contracts/src/index.ts` 作为稳定导出口
+- 后端模块通过 `@agent-guard/contracts` 导入共享类型
 
 ### 风险 2: Agent Adapter 只支持一次性 sendTask
 
@@ -111,4 +116,4 @@
 4. 用 mock trace 跑通 `matchesRule()` 到 `Finding`
 5. 实现 JSON / HTML 文件导出
 
-不要先做 UI。当前最大的工程风险仍在运行时闭环，而不是展示层。
+前端目录已经预留，但不要先实现 UI 业务逻辑。当前最大的工程风险仍在运行时闭环，Frontend Web Console 应在 `RiskReport` 与 `ReportArtifact[]` 稳定后推进。

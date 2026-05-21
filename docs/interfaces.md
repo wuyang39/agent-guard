@@ -1,8 +1,10 @@
 # Agent-MCP 交互安全测评系统开发者接口清单
 
-版本: mvp-1
-日期: 2026-05-20
-状态: MVP 联调接口基线
+文档版本: initial-1
+基线日期: 2026-05-21
+状态: 初始规范基线
+
+说明: 本文档是开发者交接接口的初始基线。字段类型以 `docs/contracts.md` 和 `packages/contracts/src/types/**` 为准。
 
 ## 1. 接口边界总览
 
@@ -22,7 +24,7 @@ B -> C:
   TestRun
   InteractionTrace
 
-C -> 展示层:
+C -> Backend Report API / Frontend Web Console:
   RiskReport
   ReportArtifact[]
 ```
@@ -185,7 +187,7 @@ TestRun
 InteractionTrace
 ```
 
-输出给展示层:
+输出给 Backend Report API / Frontend Web Console:
 
 ```txt
 RiskEvaluationResult

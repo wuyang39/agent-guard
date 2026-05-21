@@ -1,8 +1,10 @@
 # Agent-MCP 交互安全测评系统总体架构约束
 
-版本: mvp-1
-日期: 2026-05-20
-状态: MVP 约束基线
+文档版本: initial-1
+基线日期: 2026-05-21
+状态: 初始规范基线
+
+说明: 本文档是系统总体定位与架构边界的初始基线。运行时共享对象仍使用 `schemaVersion: "mvp-1"`，详见 `docs/contracts.md`。
 
 ## 1. 系统目标
 
@@ -156,7 +158,7 @@ B -> C:
   TestRun
   InteractionTrace
 
-C -> 展示层:
+C -> Backend Report API / Frontend Web Console:
   RiskReport
   ReportArtifact[]
 ```
@@ -165,89 +167,68 @@ C -> 展示层:
 
 ## 6. 模块边界
 
-建议目录结构:
+当前目录结构采用 FAROS-style 前后端分离基线。完整目录规范以 `docs/directory-structure.md` 为准。
 
 ```txt
-agent-mcp-security-eval/
+agent-guard/
+  backend/
+    src/
+      api/v1/
+      core/
+      modules/
+        agent/
+        config/
+        sandbox/
+        mcp-server/
+        runner/
+        monitor/
+        risk/
+        report/
+      services/
+      shared/
+      storage/
+    tests/
+
+  frontend/
+    public/
+    src/
+      pages/
+      components/
+      lib/
+      styles/
+    tests/
+
+  packages/
+    contracts/
+      src/
+        index.ts
+        types/
+
   configs/
-    tools.json
-    resources.json
-    prompts.json
-    tool_responses.json
-    risk_rules.json
-    test_cases.json
-    test_oracles.json
-
-  src/
-    agent/
-      agentAdapter.ts
-      agentTypes.ts
-
-    config/
-      configRepository.ts
-      configValidator.ts
-      loadTestContext.ts
-      schemas.ts
-
-    sandbox/
-      mcpSandbox.ts
-      sandboxTypes.ts
-
-    runner/
-      testRunner.ts
-      runTypes.ts
-
-    monitor/
-      mcpMonitor.ts
-      traceRecorder.ts
-      traceTypes.ts
-
-    risk/
-      operatorRegistry.ts
-      ruleEngine.ts
-      riskEvaluator.ts
-      attackChainBuilder.ts
-      evidenceBuilder.ts
-      riskTypes.ts
-
-    report/
-      reportBuilder.ts
-      reportTypes.ts
-      exporters/
-
-    shared/
-      contracts.ts
-      ids.ts
-      time.ts
-      errors.ts
-      schemaVersion.ts
-      types/
-
   outputs/
-    traces/
-    reports/
-
   docs/
-    architecture.md
-    contracts.md
-    development-rules.md
-    framework-risk-audit.md
-    interfaces.md
-    ownership.md
+  scripts/
+  tests/
 ```
 
 目录职责:
 
+- `backend/src/api/v1/`: 面向前端的 API 边界，只做请求和响应组装。
+- `backend/src/modules/agent/`: 接入被测 Agent，提供统一调用接口。
+- `backend/src/modules/config/`: 加载、校验并转换配置，输出 `TestContext`。
+- `backend/src/modules/sandbox/`: 提供系统内置 MCP Sandbox 画像。
+- `backend/src/modules/mcp-server/`: 预留系统内置 MCP Server / Tool Runtime 的运行时适配。
+- `backend/src/modules/runner/`: 根据测试用例驱动 Agent 运行。
+- `backend/src/modules/monitor/`: 采集 Agent-MCP 交互，只输出 `InteractionTrace`。
+- `backend/src/modules/risk/`: 风险判定和证据链生成，只输入 `TestContext` 与 `InteractionTrace`。
+- `backend/src/modules/report/`: 组装、展示和导出 `RiskReport`，不重新判定风险。
+- `backend/src/shared/`: 后端内部共享小工具，禁止放前后端共享契约。
+- `frontend/src/pages/`: Web 控制台页面，包括 Dashboard、Trace、Report、Config 等视图。
+- `frontend/src/components/`: Web 控制台组件，按业务展示域拆分。
+- `frontend/src/lib/`: 前端 API Client、hook、视图模型和格式化函数。
+- `packages/contracts/`: 前后端共享契约唯一来源，禁止承载运行时业务逻辑。
 - `configs/`: 系统内置测试数据和规则数据。MVP 不接数据库，不接远程配置中心。
-- `src/agent/`: 接入被测 Agent，提供统一调用接口。
-- `src/config/`: 加载、校验并转换配置，输出 `TestContext`。
-- `src/sandbox/`: 提供系统内置 MCP 测试环境。
-- `src/runner/`: 根据测试用例驱动 Agent 运行。
-- `src/monitor/`: 采集 Agent-MCP 交互，只输出 `InteractionTrace`。
-- `src/risk/`: 风险判定和证据链生成，只输入 `TestContext` 与 `InteractionTrace`。
-- `src/report/`: 组装、展示和导出 `RiskReport`，不重新判定风险。
-- `src/shared/`: 放跨模块契约类型和通用小工具，禁止承载业务逻辑。
-- `src/shared/types/`: 按领域拆分共享类型，降低多人并行修改冲突。
+- `outputs/`: 测试运行产物，包含 runs、traces、reports 和 exports。
 
 ## 7. 执行模式
 
@@ -259,7 +240,7 @@ MVP 采用离线判定:
 4. MCP Monitor 记录完整事件，生成 `InteractionTrace`
 5. 测试结束后批量运行风险规则，生成 `RiskEvaluationResult`
 6. 报告模块组装自包含的 `RiskReport`，导出 JSON 与 HTML `ReportArtifact[]`
-7. 展示层读取 `RiskReport`
+7. Backend Report API / Frontend Web Console 读取 `RiskReport`
 8. 需要追溯详情时，根据 `traceId` 读取对应 `InteractionTrace`
 
 MVP 不做实时阻断、不做流式风险判定、不要求数据库事务。
@@ -274,7 +255,7 @@ outputs/reports/{caseId}-{reportId}.json
 outputs/reports/{caseId}-{reportId}.html
 ```
 
-报告展示默认只读取 `outputs/reports/`。当用户查看证据链或 Tool Call Trace 时，再通过 `traceId` 读取对应 trace 文件。
+报告展示默认通过 Report API 或本地报告读取 `outputs/reports/`。当用户查看证据链或 Tool Call Trace 时，再通过 `traceId` 读取对应 trace 文件。
 
 ## 9. 架构原则
 

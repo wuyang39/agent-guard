@@ -1,8 +1,10 @@
 # Agent Guard 开发工作区 Ownership
 
-版本: mvp-1
-日期: 2026-05-20
-状态: 三人并行开发基线
+文档版本: initial-1
+基线日期: 2026-05-21
+状态: 初始规范基线
+
+说明: 本文档是三人工作区 ownership 的初始基线。目录结构以 `docs/directory-structure.md` 为准。
 
 ## 1. 总则
 
@@ -18,6 +20,25 @@ C: RiskEvaluationResult + RiskReport + ReportArtifact[]
 
 运行时禁止把 `TestOracle` 或 `ExpectedOutcome` 传给风险判定模块。
 
+前端、后端和共享契约的依赖方向必须保持:
+
+```txt
+frontend -> packages/contracts
+backend -> packages/contracts
+backend/api -> backend/services -> backend/modules
+backend/modules -> backend/shared
+```
+
+禁止:
+
+```txt
+frontend -> backend/src
+packages/contracts -> backend
+packages/contracts -> frontend
+backend/modules/monitor -> backend/modules/risk
+backend/modules/report -> configs/*.json
+```
+
 ## 2. 开发者 A: 测试数据仓库与 MCP Sandbox 建模
 
 主责目录与文件:
@@ -29,10 +50,16 @@ configs/prompts.json
 configs/tool_responses.json
 configs/test_cases.json
 configs/test_oracles.json
-src/config/**
-src/sandbox/sandboxTypes.ts
-src/shared/types/sandbox.ts
-src/shared/types/test.ts
+backend/src/modules/config/**
+backend/src/modules/sandbox/**
+backend/src/modules/mcp-server/tools/**
+backend/src/modules/mcp-server/resources/**
+backend/src/modules/mcp-server/prompts/**
+backend/src/modules/mcp-server/tool-responses/**
+packages/contracts/src/types/sandbox.ts
+packages/contracts/src/types/test.ts
+frontend/src/pages/Configs/**
+frontend/src/components/config/**
 ```
 
 主要交付物:
@@ -47,24 +74,32 @@ TestContext
 可协作区域:
 
 ```txt
-configs/risk_rules.json        与 C 协作，C 对规则语义负责
-src/sandbox/mcpSandbox.ts      与 B 协作，B 对运行时行为负责
-docs/contracts.md              涉及共享字段时协作修改
-docs/interfaces.md             涉及交接对象时协作修改
+configs/risk_rules.json                    与 C 协作，C 对规则语义负责
+backend/src/modules/mcp-server/**          与 B 协作，B 对运行时调用链负责
+backend/src/modules/sandbox/**             与 B 协作，保持 Sandbox 运行画像一致
+packages/contracts/src/types/common.ts     涉及通用枚举时协作修改
+docs/contracts.md                          涉及共享字段时协作修改
+docs/interfaces.md                         涉及交接对象时协作修改
+docs/directory-structure.md                涉及目录归属时协作修改
 ```
 
 禁止直接修改:
 
 ```txt
-src/agent/**
-src/runner/**
-src/monitor/**
-src/risk/**
-src/report/**
-src/shared/types/agent.ts
-src/shared/types/trace.ts
-src/shared/types/risk.ts
-src/shared/types/report.ts
+backend/src/modules/agent/**
+backend/src/modules/runner/**
+backend/src/modules/monitor/**
+backend/src/modules/risk/**
+backend/src/modules/report/**
+packages/contracts/src/types/agent.ts
+packages/contracts/src/types/trace.ts
+packages/contracts/src/types/risk.ts
+packages/contracts/src/types/report.ts
+frontend/src/pages/AgentConnect/**
+frontend/src/pages/TestRuns/**
+frontend/src/pages/TraceDetail/**
+frontend/src/pages/RiskReports/**
+frontend/src/pages/Dashboard/**
 ```
 
 ## 3. 开发者 B: Agent 接入、测试执行与交互监控
@@ -72,12 +107,19 @@ src/shared/types/report.ts
 主责目录与文件:
 
 ```txt
-src/agent/**
-src/runner/**
-src/monitor/**
-src/sandbox/mcpSandbox.ts
-src/shared/types/agent.ts
-src/shared/types/trace.ts
+backend/src/modules/agent/**
+backend/src/modules/runner/**
+backend/src/modules/monitor/**
+backend/src/api/v1/agents/**
+backend/src/api/v1/test-runs/**
+backend/src/api/v1/traces/**
+packages/contracts/src/types/agent.ts
+packages/contracts/src/types/trace.ts
+frontend/src/pages/AgentConnect/**
+frontend/src/pages/TestRuns/**
+frontend/src/pages/TraceDetail/**
+frontend/src/components/agent/**
+frontend/src/components/trace/**
 ```
 
 主要交付物:
@@ -93,10 +135,12 @@ InteractionTrace
 可协作区域:
 
 ```txt
-src/sandbox/sandboxTypes.ts    与 A 协作，保持 Sandbox 画像一致
-configs/test_cases.json        与 A 协作，确认测试执行所需字段
-configs/tool_responses.json    与 A 协作，确认 Tool Response 注入计划
-docs/interfaces.md             涉及 B -> C 输出时协作修改
+backend/src/modules/sandbox/**             与 A 协作，保持 Sandbox 画像一致
+backend/src/modules/mcp-server/**          与 A 协作，确认 Tool Runtime 暴露方式
+configs/test_cases.json                    与 A 协作，确认测试执行所需字段
+configs/tool_responses.json                与 A 协作，确认 Tool Response 注入计划
+backend/src/services/**                    与 C 协作，串联 run 与 report 工作流
+docs/interfaces.md                         涉及 B -> C 输出时协作修改
 ```
 
 禁止直接修改:
@@ -104,10 +148,15 @@ docs/interfaces.md             涉及 B -> C 输出时协作修改
 ```txt
 configs/risk_rules.json
 configs/test_oracles.json
-src/risk/**
-src/report/**
-src/shared/types/risk.ts
-src/shared/types/report.ts
+backend/src/modules/risk/**
+backend/src/modules/report/**
+packages/contracts/src/types/risk.ts
+packages/contracts/src/types/report.ts
+frontend/src/pages/RiskReports/**
+frontend/src/pages/Dashboard/**
+frontend/src/components/risk/**
+frontend/src/components/report/**
+frontend/src/components/attack-chain/**
 ```
 
 B 不得计算风险等级，不得生成 `Finding`，不得读取 `TestOracle` 参与运行时逻辑。
@@ -118,10 +167,17 @@ B 不得计算风险等级，不得生成 `Finding`，不得读取 `TestOracle` 
 
 ```txt
 configs/risk_rules.json
-src/risk/**
-src/report/**
-src/shared/types/risk.ts
-src/shared/types/report.ts
+backend/src/modules/risk/**
+backend/src/modules/report/**
+backend/src/api/v1/risks/**
+backend/src/api/v1/reports/**
+packages/contracts/src/types/risk.ts
+packages/contracts/src/types/report.ts
+frontend/src/pages/Dashboard/**
+frontend/src/pages/RiskReports/**
+frontend/src/components/risk/**
+frontend/src/components/attack-chain/**
+frontend/src/components/report/**
 ```
 
 主要交付物:
@@ -138,20 +194,25 @@ ReportArtifact[]
 可协作区域:
 
 ```txt
-configs/test_oracles.json      与 A 协作，仅用于验收和回归测试
-docs/contracts.md              涉及风险或报告字段时协作修改
-docs/interfaces.md             涉及 C 输出对象时协作修改
+configs/test_oracles.json                  与 A 协作，仅用于验收和回归测试
+backend/src/services/**                    与 B 协作，串联 run 与 report 工作流
+frontend/src/components/trace/**           与 B 协作，报告中复用 Trace 展示组件
+packages/contracts/src/types/common.ts     涉及风险等级或报告格式枚举时协作修改
+docs/contracts.md                          涉及风险或报告字段时协作修改
+docs/interfaces.md                         涉及 C 输出对象时协作修改
 ```
 
 禁止直接修改:
 
 ```txt
-src/agent/**
-src/runner/**
-src/monitor/**
-src/sandbox/mcpSandbox.ts
-src/shared/types/agent.ts
-src/shared/types/trace.ts
+backend/src/modules/agent/**
+backend/src/modules/runner/**
+backend/src/modules/monitor/**
+packages/contracts/src/types/agent.ts
+packages/contracts/src/types/trace.ts
+frontend/src/pages/AgentConnect/**
+frontend/src/pages/TestRuns/**
+frontend/src/pages/TraceDetail/**
 ```
 
 C 不得直接读取 `configs/*.json` 参与运行时判定，不得绕过 `InteractionTrace` 读取临时日志。
@@ -161,10 +222,18 @@ C 不得直接读取 `configs/*.json` 参与运行时判定，不得绕过 `Inte
 以下文件属于共享受控区域，任何人修改前都必须说明影响范围:
 
 ```txt
-src/shared/contracts.ts
-src/shared/types/common.ts
+packages/contracts/src/index.ts
+packages/contracts/src/types/common.ts
+backend/src/index.ts
+backend/src/api/v1/system/**
+backend/src/core/**
+backend/src/services/**
+backend/src/shared/**
 docs/architecture.md
 docs/contracts.md
+docs/development-rules.md
+docs/directory-structure.md
+docs/framework-risk-audit.md
 docs/interfaces.md
 docs/ownership.md
 package.json
@@ -178,8 +247,9 @@ README.md
 ```txt
 npm run typecheck
 configs/*.json 能被解析
-docs/contracts.md 与 src/shared/types/** 是否一致
+docs/contracts.md 与 packages/contracts/src/types/** 是否一致
 docs/interfaces.md 与 docs/ownership.md 是否一致
+docs/directory-structure.md 与实际目录是否一致
 ```
 
 ## 6. 跨工作区修改规则
@@ -190,6 +260,7 @@ docs/interfaces.md 与 docs/ownership.md 是否一致
 - 更新共享接口字段
 - 修改联调断裂的 ID 引用
 - 小范围调整类型导出路径
+- 因目录迁移同步 ownership 和 README
 
 跨工作区修改必须满足:
 
@@ -197,7 +268,7 @@ docs/interfaces.md 与 docs/ownership.md 是否一致
 - 在提交信息中说明影响模块
 - 如果改变共享对象字段，必须同步 `docs/contracts.md`
 - 如果改变 A/B/C 交接对象，必须同步 `docs/interfaces.md`
-- 如果改变目录归属，必须同步本文档
+- 如果改变目录归属，必须同步 `docs/ownership.md` 和 `docs/directory-structure.md`
 
 ## 7. 联调交付物
 
@@ -214,7 +285,7 @@ TestRun
 InteractionTrace
 ```
 
-C 交给展示层:
+C 交给 Backend Report API / Frontend Web Console:
 
 ```txt
 RiskReport

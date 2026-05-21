@@ -1,8 +1,10 @@
 # Agent-MCP 交互安全测评系统开发协作规则
 
-版本: mvp-1
-日期: 2026-05-20
-状态: MVP 开发基线
+文档版本: initial-1
+基线日期: 2026-05-21
+状态: 初始规范基线
+
+说明: 本文档是开发协作纪律的初始基线。目录 ownership 以 `docs/ownership.md` 为准，数据契约以 `docs/contracts.md` 为准。
 
 ## 1. 协作原则
 
@@ -152,7 +154,11 @@ reportBuilder.ts -> reads configs/risk_rules.json directly
 monitor.ts -> calculates RiskLevel
 ```
 
-`shared/` 只能存放真正跨模块通用的小工具，例如 ID、时间、错误类型和 schema version。禁止将业务流程塞入 `shared/`。
+共享代码边界:
+
+- `packages/contracts/` 只能存放前后端共享数据契约和稳定 API 类型，禁止放运行时业务逻辑。
+- `backend/src/shared/` 只能存放后端内部通用小工具，例如 ID、时间、错误类型和 schema version。
+- 禁止将 Agent 调用、Sandbox 运行、风险判定、报告导出或前端组件状态塞入共享目录。
 
 ## 5. MVP 风险规则
 
@@ -186,7 +192,7 @@ MVP 阶段明确禁止:
 - 配置模块依赖运行时 trace 数据
 - 模块间互相 import 对方内部实现文件
 - 没有 `schemaVersion` 的共享数据对象进入模块边界
-- 前端或展示层直接解析 `risk_rules.json`
+- Frontend Web Console 或报告展示入口直接解析 `risk_rules.json`
 - 为了演示效果手写假报告绕过 `RiskReport`
 - 私下修改共享字段名或枚举值
 - 使用口头约定替代文档契约
@@ -204,7 +210,7 @@ MVP 阶段明确禁止:
 2. 再做 mock 数据闭环: 用 mock Agent 和 mock trace 跑通风险判定与报告生成
 3. 再接入 Agent Adapter: 通过 `sendTask()` 驱动被测 Agent
 4. 再接入真实监控: 监控模块替换 mock trace，但保持 `InteractionTrace` 格式不变
-5. 最后做展示层: 展示层只消费 `RiskReport` 和 `ReportArtifact[]`
+5. 最后实现前端展示: Frontend Web Console 只通过 Report API 或报告产物消费 `RiskReport` 和 `ReportArtifact[]`
 
 ## 8. 模块级 Demo
 
@@ -255,7 +261,7 @@ MVP 完成时必须满足:
 
 1. 提出变更原因
 2. 修改 `docs/contracts.md`
-3. 更新相关类型或 JSON Schema
+3. 更新 `packages/contracts/src/types/**` 中的相关类型或 JSON Schema
 4. 更新至少一个 mock 样例
 5. 通知其他开发者按文档更新
 

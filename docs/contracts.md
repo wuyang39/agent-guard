@@ -1,8 +1,10 @@
 # Agent-MCP 交互安全测评系统接口契约
 
-版本: mvp-1
-日期: 2026-05-20
-状态: MVP 契约基线
+文档版本: initial-1
+基线日期: 2026-05-21
+状态: 初始规范基线
+
+说明: 本文档是运行时共享数据契约的初始基线。文档版本不等于运行时对象版本；当前运行时对象继续使用 `schemaVersion: "mvp-1"`。
 
 ## 1. 契约总则
 
@@ -696,5 +698,5 @@ configs/test_oracles.json
 
 - 无版本变更地修改字段含义
 - 让模块依赖其他模块私有文件
-- 让展示层直接解析 `risk_rules.json`
+- 让 Frontend Web Console 或报告展示入口直接解析 `risk_rules.json`
 - 使用无法序列化为 JSON 的共享对象

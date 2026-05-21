@@ -96,6 +96,7 @@ agent-guard/
       integration/
 
   frontend/
+    demo/
     public/
     src/
       pages/
@@ -247,6 +248,13 @@ agent-guard/
 
 ## 5. 前端目录职责
 
+`frontend/demo/`:
+
+- 展示型 Demo / 原型页面
+- 只用于演示理想工作流和答辩展示
+- 不作为正式前端架构基线
+- 其中的接口字段和页面结构不作为最终实现契约
+
 `frontend/src/pages/`:
 
 - `Dashboard/`: 总体风险概览
@@ -278,6 +286,8 @@ agent-guard/
 - `formatters/`: 风险等级、时间、Trace、报告字段格式化函数
 
 前端只能依赖 `packages/contracts` 中的共享契约，不允许直接引用 `backend/src/**`。
+
+`frontend/demo/` 是例外的展示原型目录。它可以使用独立 demo API，但不得被正式前端代码引用，也不得作为 `packages/contracts` 的替代来源。
 
 ## 6. 共享契约目录职责
 

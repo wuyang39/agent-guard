@@ -40,3 +40,4 @@
 - Frontend Web Console 不得直接解析 `risk_rules.json`，只能消费 API 或报告产物。
 - 前端不得直接引用 `backend/src/**`。
 - `packages/contracts/` 不得包含运行时业务逻辑。
+- `frontend/demo/` 只是展示型原型，不作为正式前端架构或接口契约来源。

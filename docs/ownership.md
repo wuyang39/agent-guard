@@ -229,6 +229,7 @@ backend/src/api/v1/system/**
 backend/src/core/**
 backend/src/services/**
 backend/src/shared/**
+frontend/demo/**
 docs/architecture.md
 docs/contracts.md
 docs/development-rules.md
@@ -241,6 +242,8 @@ package-lock.json
 tsconfig.json
 README.md
 ```
+
+`frontend/demo/**` 是展示型原型目录，不归 A/B/C 任一正式模块单独所有。修改它只影响演示体验，不得反向改变正式接口契约。
 
 修改共享受控区域时必须同时检查:
 

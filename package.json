@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "demo": "node scripts/start-demo.mjs",
+    "demo:web": "node scripts/demo-web-server.mjs",
+    "demo:sample-agent": "node scripts/sample-agent-server.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {

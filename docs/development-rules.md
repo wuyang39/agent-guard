@@ -212,6 +212,8 @@ MVP 阶段明确禁止:
 4. 再接入真实监控: 监控模块替换 mock trace，但保持 `InteractionTrace` 格式不变
 5. 最后实现前端展示: Frontend Web Console 只通过 Report API 或报告产物消费 `RiskReport` 和 `ReportArtifact[]`
 
+`frontend/demo/` 只用于展示理想功能流程，不参与正式前端开发顺序。正式前端实现仍以 `frontend/src/**` 为准。
+
 ## 8. 模块级 Demo
 
 每个开发者都要提供自己的模块级 demo:

@@ -45,5 +45,8 @@ AgentUnderTest
 ## Scripts
 
 ```bash
+npm run demo
 npm run typecheck
 ```
+
+`npm run demo` starts the isolated display demo from `frontend/demo`. It is for product-flow demonstration only and is not the formal frontend implementation baseline.

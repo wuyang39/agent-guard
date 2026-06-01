@@ -4,7 +4,7 @@
 基线日期: 2026-05-21
 状态: 初始规范基线
 
-说明: 本文档是开发协作纪律的初始基线。目录 ownership 以 `docs/ownership.md` 为准，数据契约以 `docs/contracts.md` 为准。
+说明: 本文档是开发协作纪律的初始基线。系统最终目标是形成可用于信息安全作品赛的完整 Agent-MCP 交互安全测评系统；当前规则优先保障 P0 垂直闭环和三人并行开发。目录 ownership 以 `docs/ownership.md` 为准，数据契约以 `docs/contracts.md` 为准。
 
 ## 1. 协作原则
 
@@ -160,9 +160,9 @@ monitor.ts -> calculates RiskLevel
 - `backend/src/shared/` 只能存放后端内部通用小工具，例如 ID、时间、错误类型和 schema version。
 - 禁止将 Agent 调用、Sandbox 运行、风险判定、报告导出或前端组件状态塞入共享目录。
 
-## 5. MVP 风险规则
+## 5. 风险规则阶段基线
 
-第一版只覆盖 4 类核心风险:
+P0 先覆盖 4 类核心风险:
 
 1. 工具误用风险: Agent 调用了测试用例不允许的 MCP Tool，或使用明显异常参数
 2. 越权访问风险: Agent 访问未授权 Resource，或访问行为不符合资源标签约束
@@ -176,15 +176,24 @@ instruction_injection_following:
   Agent 是否跟随恶意 Prompt、恶意 Resource 或 Tool Response 中的注入指令。
 ```
 
-风险等级固定为:
+P0 风险等级固定为:
 
 ```txt
 low / medium / high / critical
 ```
 
+完整系统后续应在不破坏既有规则契约的前提下扩展:
+
+- 更完整的 Prompt / Resource / Tool Response 注入变体
+- 多轮诱导、上下文污染和工具链组合攻击识别
+- 敏感数据类型分级、泄露路径和外传渠道识别
+- 规则命中率、误报、漏报和场景覆盖率统计
+- Agent 安全能力评分和不同 Agent 的横向对比
+- 面向报告展示的风险解释、证据权重和攻击链摘要
+
 ## 6. 禁止事项
 
-MVP 阶段明确禁止:
+P0 和后续阶段都必须遵守:
 
 - 风险模块直接读取原始临时日志文件
 - 报告模块重新判定风险等级
@@ -238,9 +247,11 @@ MVP 阶段明确禁止:
 AgentUnderTest + AgentAdapterConfig + TestContext -> TestRun -> InteractionTrace -> RiskEvaluationResult -> RiskReport + ReportArtifact[]
 ```
 
-## 9. MVP 验收标准
+## 9. 阶段验收标准
 
-MVP 完成时必须满足:
+### 9.1 P0 垂直闭环验收
+
+P0 完成时必须满足:
 
 - 能加载一组内置 JSON 测试配置并生成 `TestContext`
 - `ExpectedOutcome` 只能存在于 `TestOracle`，不得进入运行时 `TestContext`
@@ -255,7 +266,19 @@ MVP 完成时必须满足:
 - 能输出 JSON 和 HTML 报告文件
 - 报告中能看到总体风险等级、风险列表、证据链、原始 trace 引用
 - 三个模块可以分别用 mock 数据单独测试
-- 不依赖真实线上 MCP 服务也能跑通 MVP demo
+- 不依赖真实线上 MCP 服务也能跑通 P0 demo
+
+### 9.2 完整系统验收方向
+
+后续阶段应逐步满足:
+
+- 能维护成体系的测试场景库，并区分基础、进阶、组合攻击、展示和回归场景
+- 能对同一 Agent 批量运行多条测试用例，并输出场景覆盖、风险分布和失败原因
+- 能对不同 Agent 或不同规则版本进行横向对比
+- 能回放历史 `InteractionTrace`，并复现报告中的证据链和攻击链
+- 能输出适合答辩展示的 Dashboard、风险报告、攻击链视图和证据详情
+- 能说明风险评分依据、规则命中逻辑、系统创新点和测评边界
+- 新增场景、规则、报告格式或展示页面时，不破坏 P0 主数据流和共享契约
 
 ## 10. 变更流程
 

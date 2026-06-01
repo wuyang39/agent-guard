@@ -4,7 +4,7 @@
 基线日期: 2026-05-21
 状态: 初始规范基线
 
-说明: 本文档是开发者交接接口的初始基线。字段类型以 `docs/contracts.md` 和 `packages/contracts/src/types/**` 为准。
+说明: 本文档是开发者交接接口的初始基线。当前接口优先保障 P0 垂直闭环并行开发；后续完整系统扩展仍必须通过本文档约束交接对象。字段类型以 `docs/contracts.md` 和 `packages/contracts/src/types/**` 为准。
 
 ## 1. 接口边界总览
 

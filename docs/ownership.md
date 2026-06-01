@@ -4,7 +4,7 @@
 基线日期: 2026-05-21
 状态: 初始规范基线
 
-说明: 本文档是三人工作区 ownership 的初始基线。目录结构以 `docs/directory-structure.md` 为准。
+说明: 本文档是三人工作区 ownership 的初始基线。当前 ownership 优先保障 P0 垂直闭环并行开发，后续竞赛级完整系统扩展目录时也必须先明确归属。目录结构以 `docs/directory-structure.md` 为准。
 
 ## 1. 总则
 

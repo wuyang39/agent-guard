@@ -4,7 +4,7 @@
 基线日期: 2026-05-21
 状态: 初始规范基线
 
-说明: 本文档是运行时共享数据契约的初始基线。文档版本不等于运行时对象版本；当前运行时对象继续使用 `schemaVersion: "mvp-1"`。
+说明: 本文档是运行时共享数据契约的初始基线。文档版本不等于运行时对象版本；当前运行时对象继续使用 `schemaVersion: "mvp-1"` 作为 P0 阶段契约版本。系统最终目标是完整的竞赛级 Agent-MCP 交互安全测评系统，后续阶段可以在版本演进规则下扩展契约。
 
 ## 1. 契约总则
 
@@ -17,7 +17,7 @@
 - 明确的时间字段
 - 可序列化为 JSON 的数据结构
 
-MVP 统一版本:
+P0 统一版本:
 
 ```txt
 schemaVersion: "mvp-1"
@@ -84,7 +84,7 @@ type AgentUnderTest = {
 }
 ```
 
-`AgentAdapterConfig` 描述如何调用被测 Agent。MVP 不在该对象中保存明文密钥；密钥通过本地环境变量或运行时安全配置注入。
+`AgentAdapterConfig` 描述如何调用被测 Agent。任何阶段都不得在该对象中保存明文密钥；密钥通过本地环境变量或运行时安全配置注入。
 
 ```ts
 type AgentAdapterConfig = {
@@ -273,7 +273,7 @@ type ExpectedOutcome = {
 
 `TestOracle` 只允许用于验收测试、回归测试和评测统计，不得进入 `TestContext`，也不得作为风险判定模块的运行时输入。风险判定模块只能基于 `TestContext`、`InteractionTrace` 和 `riskRules` 生成结论。
 
-MVP 至少覆盖:
+P0 至少覆盖:
 
 - 恶意 Prompt 诱导工具误用
 - 恶意 Resource 导致敏感资源访问
@@ -491,11 +491,11 @@ type FieldMatcher = {
 
 - `relation` 决定 `matchers` 之间是全部满足还是任一满足。
 - `fieldPath` 使用点路径访问事件字段，例如 `type`、`payload.toolId`、`payload.parameters.path`。
-- MVP 不支持数组通配符；数组字段只能整体参与 `contains`、`in` 或 `regex` 匹配。
+- P0 不支持数组通配符；数组字段只能整体参与 `contains`、`in` 或 `regex` 匹配。后续如扩展数组路径、表达式语言或更复杂规则，需要升级版本并补充兼容策略。
 - `caseSensitive` 默认 `false`。
 - `normalize` 默认 `"none"`，多个 normalize 不叠加。
 - `regex` 使用宿主语言默认正则实现，但规则中必须写明完整 pattern，不允许运行时代码。
-- 复杂表达式语言、动态脚本规则和机器学习判定不进入 MVP。
+- P0 不引入复杂表达式语言、动态脚本规则和机器学习判定。后续如引入高级规则引擎或统计/模型辅助判定，必须保持可解释证据链，并明确哪些结论来自规则、哪些结论来自辅助模型。
 
 ```ts
 type RiskEvaluationResult = {
@@ -652,7 +652,7 @@ type ReportArtifact = {
 
 报告约束:
 
-- MVP 必须导出 JSON 与 HTML
+- P0 必须导出 JSON 与 HTML
 - Markdown 与 PDF 可以后续实现
 - `RiskReport.findings`、`RiskReport.evidenceChains`、`RiskReport.attackChains` 必须与对应 `RiskEvaluationResult` 保持一致
 - JSON 报告必须是自包含报告，不能要求读取额外 evaluation 文件才能看到完整风险、证据链和攻击链
@@ -661,7 +661,7 @@ type ReportArtifact = {
 
 ## 10. 配置文件契约
 
-MVP 内置配置文件:
+P0 内置配置文件:
 
 ```txt
 configs/tools.json

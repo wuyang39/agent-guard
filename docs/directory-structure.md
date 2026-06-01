@@ -8,7 +8,7 @@
 
 ## 1. 目录设计目标
 
-本目录规范参考 `E:\FAROS` 的工程组织方式，将 Agent Guard 从单层 `src/` 框架升级为完整系统目录。
+本目录规范参考 `E:\FAROS` 的工程组织方式，将 Agent Guard 从单层 `src/` 框架升级为完整系统目录。目录设计面向竞赛级完整系统，P0 阶段可以只实现其中的垂直闭环子集。
 
 目标:
 
@@ -16,9 +16,9 @@
 - 为后端测评运行时预留清晰模块边界
 - 为前后端共享接口预留稳定契约包
 - 为三名开发者保留严格工作区
-- 为后续 API、存储、测试、报告导出和可视化迭代预留位置
+- 为 API、存储、测试、报告导出、历史回放、评分统计和可视化迭代预留位置
 
-本次目录设计不改变系统定位: 唯一被测对象仍然是 `Agent`。MCP Server、Tool、Resource、Prompt、Tool Response、风险规则和测试用例仍然全部由系统内部提供。
+本次目录设计不改变系统定位: 唯一被测对象仍然是 `Agent`。MCP Server、Tool、Resource、Prompt、Tool Response、风险规则和测试用例仍然全部由系统内部提供。后续接入真实 MCP 风格环境或数据库时，也必须先进入标准模块边界和共享契约。
 
 ## 2. 顶层目录
 
@@ -205,7 +205,7 @@ agent-guard/
 
 - 预留真实 MCP Server / Tool Runtime 实现位置
 - `tools/`、`resources/`、`prompts/`、`tool-responses/` 分别承载系统内部测试夹具的运行时适配
-- MVP 可以先为空目录或薄适配层
+- P0 可以先为空目录或薄适配层，后续完整系统在这里扩展真实运行时、场景包适配和演示环境接入
 
 `backend/src/modules/runner/`:
 
@@ -244,7 +244,7 @@ agent-guard/
 `backend/src/storage/`:
 
 - 预留持久化适配层
-- MVP 可先指向 `outputs/`
+- P0 可先指向 `outputs/`，后续完整系统在这里扩展数据库、历史运行回放、报告对比和数据迁移
 
 ## 5. 前端目录职责
 
@@ -351,15 +351,16 @@ backend/modules/report -> configs/*.json
 backend/modules/monitor -> backend/modules/risk
 ```
 
-## 9. 迭代预留
+## 9. 阶段扩展预留
 
-后续迭代可以自然扩展:
+P0 只要求跑通主数据流。完整系统后续可以自然扩展:
 
-- 增加数据库时，放入 `backend/src/storage/`
+- 增加数据库、历史回放或报告对比时，放入 `backend/src/storage/`
 - 增加 HTTP API 时，放入 `backend/src/api/v1/`
 - 增加可视化页面时，放入 `frontend/src/pages/` 和 `frontend/src/components/`
 - 增加前后端共享 API 类型时，放入 `packages/contracts/src/`
 - 增加端到端测试时，放入 `tests/e2e/`
 - 增加运行脚本时，放入 `scripts/`
+- 增加场景库、规则集或演示数据时，优先放入 `configs/`，并通过配置加载模块转换为标准契约对象
 
 任何新增目录必须先明确 ownership，并同步 `docs/ownership.md`。

@@ -4,25 +4,25 @@
 基线日期: 2026-05-21
 状态: 初始规范基线
 
-说明: 本文档是系统总体定位与架构边界的初始基线。运行时共享对象仍使用 `schemaVersion: "mvp-1"`，详见 `docs/contracts.md`。
+说明: 本文档是系统总体定位与架构边界的初始基线。系统最终目标是形成可用于信息安全作品赛、具备国一竞争力的完整 Agent-MCP 交互安全测评系统；运行时共享对象当前仍使用 `schemaVersion: "mvp-1"` 作为 P0 阶段契约版本，详见 `docs/contracts.md`。
 
 ## 1. 系统目标
 
-本系统聚焦测试 Agent 在系统内置 MCP 测试环境中的行为安全性。系统唯一被测对象是 `Agent`。
+本系统聚焦测试 Agent 在 MCP 交互过程中的行为安全性、风险暴露过程、证据链和可复现实验结论。系统唯一被测对象是 `Agent`。
 
-MCP Server、Tool、Resource、Prompt、Tool Response 注入内容、风险规则和测试用例都属于系统内部测试夹具，不作为被测对象。MVP 不测试 MCP Server 本身是否存在漏洞，也不做传统代码审计。
+MCP Server、Tool、Resource、Prompt、Tool Response 注入内容、风险规则和测试用例都属于系统内部测试夹具，不作为被测对象。系统主线不是 MCP Server 漏洞扫描，也不是传统代码审计；真实 MCP 服务、安全审计或外部环境接入可以作为后续对照场景或演示增强，但不得改变“测 Agent 行为安全性”的核心边界。
 
-MVP 阶段只验证一条完整测评闭环:
+P0 阶段先固化一条可追溯的完整测评闭环:
 
 ```txt
 被测 Agent -> Agent Adapter -> Test Runner -> MCP Sandbox -> MCP Monitor -> 交互日志采集 -> 风险判定 -> 证据链生成 -> 报告输出
 ```
 
-MVP 的目标不是构建完整线上平台，而是先让三名开发者能够围绕稳定的数据契约并行开发，并跑通一次可追溯的 Agent-MCP 安全测评流程。
+完整系统目标不是停留在简单 demo 或最小闭环，而是逐步形成“场景库 + 运行监控 + 风险判定 + 证据链 + 攻击链 + 评分统计 + 报告展示 + 可复现实验”的竞赛级测评平台。P0 的作用是先让三名开发者围绕稳定数据契约并行开发，并跑通一次可追溯的 Agent-MCP 安全测评流程。
 
-## 2. MVP 范围
+## 2. 阶段范围
 
-MVP 必须包含:
+### 2.1 P0 垂直闭环必须包含
 
 - 接入一个被测 Agent，并通过统一接口驱动它执行测试任务
 - 加载系统内置测试配置，生成 `TestContext`
@@ -33,22 +33,32 @@ MVP 必须包含:
 - 输出 JSON 与 HTML 格式的报告产物
 - 支持通过 `traceId` 从报告追溯到原始交互事件
 
-MVP 暂不包含:
+### 2.2 P0 不包含但后续阶段需要规划的能力
 
-- MCP Server 漏洞扫描
-- 真实 MCP Server 安全审计
-- 多 Agent 编排
-- 攻击用例自动生成
-- 实时风险阻断
-- 流式风险判定
-- 复杂权限系统
-- 多租户与线上部署
-- 外部配置中心
-- 必须依赖真实线上 MCP 服务的演示流程
+- 更完整的攻击场景库、分级基准集和回归测试集
+- 多个被测 Agent 的横向对比评测。注意不是把多 Agent 编排作为被测对象，而是支持多次独立测评结果对比
+- 攻击用例半自动生成、变体生成和覆盖率统计
+- 实时风险提示、流式风险判定和可选阻断能力
+- 更复杂的权限模型、策略模型和敏感数据分类
+- 数据库存储、历史运行回放、报告对比和趋势分析
+- 外部配置中心、场景包导入导出和规则版本管理
+- 真实 MCP 服务或真实业务风格 MCP 环境的安全演示接入
+- 面向答辩展示的 Dashboard、攻击链可视化、评分解释和报告样例
+
+### 2.3 完整系统验收方向
+
+完整系统最终应能够支撑信息安全作品赛级别展示，至少具备:
+
+- 可解释: 每个风险结论都能追溯到 `TraceEvent.eventId`、规则和证据链
+- 可复现: 同一配置、同一 Agent、同一测试用例能够复现主要交互路径和结论
+- 可扩展: 新增 Tool、Resource、Prompt、Tool Response、RiskRule 和 TestCase 不破坏既有契约
+- 可对比: 支持不同 Agent、不同测试集、不同规则版本的横向和纵向对比
+- 可展示: 前端能够清晰展示运行过程、风险概览、攻击链、证据链和报告导出结果
+- 可答辩: 系统有明确威胁模型、测评方法、评分依据、创新点和失败兜底演示路径
 
 ## 3. 主数据流
 
-系统第一版只允许一条主数据流:
+P0 只允许一条主数据流，后续阶段扩展也必须围绕这条主链路保持可追溯:
 
 ```txt
 AgentUnderTest -> AgentAdapterConfig -> TestContext -> TestRun -> InteractionTrace -> RiskEvaluationResult -> RiskReport -> ReportArtifact[]
@@ -227,12 +237,12 @@ agent-guard/
 - `frontend/src/components/`: Web 控制台组件，按业务展示域拆分。
 - `frontend/src/lib/`: 前端 API Client、hook、视图模型和格式化函数。
 - `packages/contracts/`: 前后端共享契约唯一来源，禁止承载运行时业务逻辑。
-- `configs/`: 系统内置测试数据和规则数据。MVP 不接数据库，不接远程配置中心。
+- `configs/`: 系统内置测试数据和规则数据。P0 可只使用本地 JSON；后续如接入数据库或远程配置中心，也必须先转换为标准契约对象再进入运行时。
 - `outputs/`: 测试运行产物，包含 runs、traces、reports 和 exports。
 
 ## 7. 执行模式
 
-MVP 采用离线判定:
+P0 采用离线判定:
 
 1. 接入被测 Agent，生成 `AgentUnderTest` 与 `AgentAdapterConfig`
 2. 加载测试配置，生成 `McpSandboxProfile`、`TestCase`、`TestOracle` 与运行时 `TestContext`
@@ -243,7 +253,7 @@ MVP 采用离线判定:
 7. Backend Report API / Frontend Web Console 读取 `RiskReport`
 8. 需要追溯详情时，根据 `traceId` 读取对应 `InteractionTrace`
 
-MVP 不做实时阻断、不做流式风险判定、不要求数据库事务。
+P0 不要求实时阻断、流式风险判定或数据库事务。完整系统可以在不破坏 `InteractionTrace -> RiskEvaluationResult -> RiskReport` 主链路的前提下扩展实时提示、流式评估、持久化和历史回放。
 
 ## 8. 输出文件约束
 

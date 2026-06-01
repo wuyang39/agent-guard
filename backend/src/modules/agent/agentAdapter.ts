@@ -4,6 +4,7 @@ import type {
   AgentTask,
   AgentUnderTest,
 } from "./agentTypes";
+import type { AgentMcpBridge } from "./agentMcpBridge";
 import type { ToolCallPayload, ToolResultPayload } from "../monitor/traceTypes";
 import { NotImplementedError } from "../../shared/errors";
 
@@ -11,10 +12,20 @@ export type AgentToolBridge = {
   handleToolCall(call: ToolCallPayload): Promise<ToolResultPayload>;
 };
 
+export type AgentRunMeta = {
+  runId: string;
+  caseId: string;
+  agentId: string;
+};
+
 export type AgentSession = {
   agent: AgentUnderTest;
   config: AgentAdapterConfig;
-  sendTask(task: AgentTask, bridge?: AgentToolBridge): Promise<AgentRunResult>;
+  sendTask(
+    task: AgentTask,
+    bridge?: AgentMcpBridge,
+    runMeta?: AgentRunMeta,
+  ): Promise<AgentRunResult>;
   close?(): Promise<void>;
 };
 
@@ -35,7 +46,7 @@ export type SendTask = (
   agent: AgentUnderTest,
   config: AgentAdapterConfig,
   task: AgentTask,
-  bridge?: AgentToolBridge,
+  bridge?: AgentMcpBridge,
 ) => Promise<AgentRunResult>;
 
 export const sendTask: SendTask = async () => {

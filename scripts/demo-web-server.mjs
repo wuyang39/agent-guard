@@ -22,6 +22,7 @@ const contentTypes = {
   ".css": "text/css; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
   ".json": "application/json; charset=utf-8",
+  ".pdf": "application/pdf",
   ".svg": "image/svg+xml; charset=utf-8",
 };
 
@@ -679,16 +680,176 @@ function buildEnvironmentSummary(configs, context) {
   };
 }
 
+function sanitizePdfText(value) {
+  return String(value ?? "")
+    .replace(/[^\x09\x0a\x0d\x20-\x7e]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function escapePdfLiteral(value) {
+  return sanitizePdfText(value).replaceAll("\\", "\\\\").replaceAll("(", "\\(").replaceAll(")", "\\)");
+}
+
+function wrapPdfLine(value, maxLength = 92) {
+  const text = sanitizePdfText(value);
+  if (!text) return [""];
+
+  const lines = [];
+  let line = "";
+  for (const word of text.split(" ")) {
+    if (word.length > maxLength) {
+      if (line) {
+        lines.push(line);
+        line = "";
+      }
+      for (let index = 0; index < word.length; index += maxLength) {
+        lines.push(word.slice(index, index + maxLength));
+      }
+      continue;
+    }
+
+    const next = line ? `${line} ${word}` : word;
+    if (next.length > maxLength) {
+      lines.push(line);
+      line = word;
+    } else {
+      line = next;
+    }
+  }
+
+  if (line) lines.push(line);
+  return lines;
+}
+
+function buildPdfLines(report) {
+  const lines = [
+    "Agent Guard Risk Report",
+    "",
+    `Report ID: ${report.reportId}`,
+    `Evaluation ID: ${report.evaluationId}`,
+    `Case ID: ${report.caseId}`,
+    `Trace ID: ${report.traceId}`,
+    `Risk Level: ${report.riskLevel}`,
+    `Generated At: ${report.generatedAt}`,
+    "",
+    "Summary",
+    `Total Events: ${report.summary.totalEvents}`,
+    `Total Findings: ${report.summary.totalFindings}`,
+    `Attack Entry Type: ${report.caseReport.attackEntryType}`,
+  ];
+
+  const categories = Object.entries(report.summary.countsByCategory || {});
+  if (categories.length) {
+    lines.push("", "Findings By Category");
+    for (const [category, count] of categories) {
+      lines.push(`${category}: ${count}`);
+    }
+  }
+
+  lines.push("", "Findings");
+  if (report.findings.length) {
+    report.findings.forEach((finding, index) => {
+      lines.push(`${index + 1}. ${finding.title || finding.name || finding.findingId}`);
+      lines.push(`Risk: ${finding.riskLevel} | Category: ${finding.category} | Rule: ${finding.ruleId}`);
+      lines.push(`Finding ID: ${finding.findingId}`);
+      lines.push(`Evidence Events: ${(finding.evidenceEventIds || []).join(", ") || finding.eventId || "n/a"}`);
+      if (finding.description) lines.push(`Description: ${finding.description}`);
+      lines.push("");
+    });
+  } else {
+    lines.push("No findings.");
+  }
+
+  if (report.attackChainViews.length) {
+    lines.push("", "Attack Chains");
+    for (const chain of report.attackChainViews) {
+      lines.push(`${chain.chainId}: ${chain.summary}`);
+      lines.push(`Event IDs: ${chain.eventIds.join(", ") || "n/a"}`);
+    }
+  }
+
+  return lines;
+}
+
+function createPdfPageContent(lines, pageNumber, pageCount) {
+  const commands = ["BT", "/F1 10 Tf", "48 744 Td", "14 TL"];
+  for (const line of lines) {
+    if (!line) {
+      commands.push("T*");
+      continue;
+    }
+    commands.push(`(${escapePdfLiteral(line)}) Tj`, "T*");
+  }
+  commands.push(
+    "ET",
+    "BT",
+    "/F1 9 Tf",
+    "48 32 Td",
+    `(Page ${pageNumber} of ${pageCount}) Tj`,
+    "ET",
+  );
+  return commands.join("\n");
+}
+
+function createPdfDocument(lines) {
+  const wrappedLines = lines.flatMap((line) => wrapPdfLine(line));
+  const maxLinesPerPage = 48;
+  const pageChunks = [];
+  for (let index = 0; index < wrappedLines.length; index += maxLinesPerPage) {
+    pageChunks.push(wrappedLines.slice(index, index + maxLinesPerPage));
+  }
+  if (!pageChunks.length) pageChunks.push(["Agent Guard Risk Report"]);
+
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+  ];
+  const pageIds = [];
+
+  pageChunks.forEach((chunk, index) => {
+    const content = createPdfPageContent(chunk, index + 1, pageChunks.length);
+    const contentId = objects.push(`<< /Length ${Buffer.byteLength(content, "ascii")} >>\nstream\n${content}\nendstream`);
+    const pageId = objects.push(
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents ${contentId} 0 R >>`,
+    );
+    pageIds.push(pageId);
+  });
+
+  objects[1] = `<< /Type /Pages /Kids [${pageIds.map((id) => `${id} 0 R`).join(" ")}] /Count ${pageIds.length} >>`;
+
+  let pdf = "%PDF-1.4\n";
+  const offsets = [0];
+  objects.forEach((object, index) => {
+    offsets.push(Buffer.byteLength(pdf, "ascii"));
+    pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  });
+
+  const xrefOffset = Buffer.byteLength(pdf, "ascii");
+  pdf += `xref\n0 ${objects.length + 1}\n`;
+  pdf += "0000000000 65535 f \n";
+  for (let index = 1; index < offsets.length; index += 1) {
+    pdf += `${String(offsets[index]).padStart(10, "0")} 00000 n \n`;
+  }
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
+  return Buffer.from(pdf, "ascii");
+}
+
 async function saveArtifacts({ trace, report }) {
   await mkdir(path.join(outputsDir, "traces"), { recursive: true });
   await mkdir(path.join(outputsDir, "reports"), { recursive: true });
+  await mkdir(path.join(outputsDir, "exports"), { recursive: true });
   const tracePath = path.join(outputsDir, "traces", `${trace.caseId}-${trace.traceId}.json`);
   const reportPath = path.join(outputsDir, "reports", `${report.caseId}-${report.reportId}.json`);
+  const pdfPath = path.join(outputsDir, "exports", `${report.caseId}-${report.reportId}.pdf`);
   await writeFile(tracePath, JSON.stringify(trace, null, 2), "utf8");
   await writeFile(reportPath, JSON.stringify(report, null, 2), "utf8");
+  await writeFile(pdfPath, createPdfDocument(buildPdfLines(report)));
   return {
     tracePath: path.relative(rootDir, tracePath).replaceAll("\\", "/"),
     reportPath: path.relative(rootDir, reportPath).replaceAll("\\", "/"),
+    pdfPath: path.relative(rootDir, pdfPath).replaceAll("\\", "/"),
   };
 }
 
@@ -743,7 +904,12 @@ async function serveOutputArtifact(request, response) {
     return;
   }
 
-  response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+  const ext = path.extname(filePath);
+  const headers = { "Content-Type": contentTypes[ext] || "application/octet-stream" };
+  if (ext === ".pdf") {
+    headers["Content-Disposition"] = `attachment; filename="${path.basename(filePath)}"`;
+  }
+  response.writeHead(200, headers);
   response.end(await readFile(filePath));
 }
 

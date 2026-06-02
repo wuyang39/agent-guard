@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(taskkill /PID 4412 /PID 30908 /F)",
+      "Bash(cmd //c \"taskkill /PID 4412 /F & taskkill /PID 30908 /F\")",
+      "Bash(npm run *)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:5177/)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:5177/styles.css)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:5177/app.js)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:5177/api/bootstrap)"
+    ]
+  }
+}

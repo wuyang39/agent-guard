@@ -1,10 +1,21 @@
+import { readFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import type {
   AgentUnderTest,
   TestContext,
   TestOracle,
 } from "@agent-guard/contracts";
-import { NotImplementedError } from "../../shared/errors";
-import type { ConfigRepository } from "./configRepository";
+import { createId } from "../../shared/ids";
+import { SCHEMA_VERSION } from "../../shared/schemaVersion";
+import {
+  buildConfigIndex,
+  buildSandboxProfile,
+  type ConfigRepository,
+} from "./configRepository";
+import {
+  validateConfigRepository,
+  type ValidationIssue,
+} from "./configValidator";
 
 export type LoadedConfigRepository = ConfigRepository;
 
@@ -13,15 +24,94 @@ export type LoadTestContextResult = {
   testOracles: TestOracle[];
 };
 
+export class ConfigLoadError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ConfigLoadError";
+  }
+}
+
+export class ConfigValidationError extends Error {
+  readonly issues: ValidationIssue[];
+
+  constructor(issues: ValidationIssue[]) {
+    super(formatValidationMessage(issues));
+    this.name = "ConfigValidationError";
+    this.issues = issues;
+  }
+}
+
 export async function loadConfigRepository(
-  _configDir: string,
+  configDir: string,
 ): Promise<LoadedConfigRepository> {
-  throw new NotImplementedError("Config repository loading");
+  const root = resolve(configDir);
+  const repository: LoadedConfigRepository = {
+    tools: await readJsonArray(root, "tools.json"),
+    resources: await readJsonArray(root, "resources.json"),
+    prompts: await readJsonArray(root, "prompts.json"),
+    toolResponseTemplates: await readJsonArray(root, "tool_responses.json"),
+    riskRules: await readJsonArray(root, "risk_rules.json"),
+    testCases: await readJsonArray(root, "test_cases.json"),
+    testOracles: await readJsonArray(root, "test_oracles.json"),
+  };
+
+  const validation = validateConfigRepository(repository);
+  if (!validation.ok) {
+    throw new ConfigValidationError(validation.issues);
+  }
+
+  return repository;
 }
 
 export async function loadTestContexts(
-  _configDir: string,
-  _agent: AgentUnderTest,
+  configDir: string,
+  agent: AgentUnderTest,
 ): Promise<LoadTestContextResult> {
-  throw new NotImplementedError("TestContext construction");
+  const repository = await loadConfigRepository(configDir);
+  const index = buildConfigIndex(repository);
+  const sandbox = buildSandboxProfile(repository);
+  const contexts = repository.testCases
+    .filter((testCase) => testCase.enabled)
+    .map<TestContext>((testCase) => ({
+      schemaVersion: SCHEMA_VERSION,
+      configVersion: SCHEMA_VERSION,
+      contextId: createId("context"),
+      caseId: testCase.caseId,
+      caseName: testCase.caseName,
+      agent,
+      sandbox,
+      testCase,
+      riskRules: [...index.riskRulesById.values()],
+    }));
+
+  return {
+    contexts,
+    testOracles: repository.testOracles,
+  };
+}
+
+async function readJsonArray<T>(configDir: string, fileName: string): Promise<T[]> {
+  const filePath = join(configDir, fileName);
+  let parsed: unknown;
+
+  try {
+    parsed = JSON.parse(await readFile(filePath, "utf8")) as unknown;
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new ConfigLoadError(`Failed to read ${fileName}: ${detail}`);
+  }
+
+  if (!Array.isArray(parsed)) {
+    throw new ConfigLoadError(`Config file ${fileName} must contain a JSON array.`);
+  }
+
+  return parsed as T[];
+}
+
+function formatValidationMessage(issues: ValidationIssue[]): string {
+  const details = issues
+    .filter((issue) => issue.severity === "error")
+    .map((issue) => `${issue.path}: ${issue.message}`)
+    .join("; ");
+  return details ? `Invalid config repository: ${details}` : "Invalid config repository.";
 }

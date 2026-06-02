@@ -21,6 +21,7 @@
 - `ownership.md`: 三名开发者的严格工作区、可协作区、禁止修改区和共享受控区。
 - `development-rules.md`: 开发协作纪律、命名规范、Import 约束、禁止事项、开发顺序、P0 验收和完整系统演进约束。
 - `framework-risk-audit.md`: 当前文件框架和迭代风险审计记录。
+- `work-log-a-config-sandbox.md`: A 线配置加载、Sandbox runtime、验证命令和后续协作注意事项。
 
 ## 3. 唯一来源规则
 

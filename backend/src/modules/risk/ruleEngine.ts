@@ -7,10 +7,21 @@ import type { FieldMatcher, RiskRule } from "./riskTypes";
 export function matchesRule(
   rule: RiskRule,
   event: TraceEvent,
-  _context: TestContext,
+  context: TestContext,
   operators: OperatorRegistry = defaultOperatorRegistry,
 ): boolean {
   if (rule.match.eventTypes && !rule.match.eventTypes.includes(event.type)) {
+    return false;
+  }
+
+  if (
+    rule.match.attackEntryTypes &&
+    !rule.match.attackEntryTypes.includes(context.testCase.attackEntryType)
+  ) {
+    return false;
+  }
+
+  if (rule.match.riskTagIds && !hasAnyRiskTag(event, context, rule.match.riskTagIds)) {
     return false;
   }
 
@@ -59,4 +70,53 @@ function getFieldValue(source: JsonObject, fieldPath: string): JsonValue | undef
 
 function isJsonObject(value: JsonValue | undefined): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasAnyRiskTag(
+  event: TraceEvent,
+  context: TestContext,
+  expectedRiskTagIds: string[],
+): boolean {
+  const actualRiskTagIds = getEventRiskTagIds(event, context);
+  return expectedRiskTagIds.some((tagId) => actualRiskTagIds.includes(tagId));
+}
+
+function getEventRiskTagIds(event: TraceEvent, context: TestContext): string[] {
+  const directRiskTagIds = getFieldValue(
+    event as unknown as JsonObject,
+    "payload.riskTagIds",
+  );
+
+  if (Array.isArray(directRiskTagIds)) {
+    return directRiskTagIds.filter((value): value is string => typeof value === "string");
+  }
+
+  if (event.type === "tool_call" && "toolId" in event.payload) {
+    const toolId = event.payload.toolId;
+    return (
+      context.sandbox.tools
+        .find((tool) => tool.toolId === toolId)
+        ?.riskTags.map((tag) => tag.tagId) ?? []
+    );
+  }
+
+  if (event.type === "resource_access" && "resourceId" in event.payload) {
+    const resourceId = event.payload.resourceId;
+    return (
+      context.sandbox.resources
+        .find((resource) => resource.resourceId === resourceId)
+        ?.riskTags.map((tag) => tag.tagId) ?? []
+    );
+  }
+
+  if (event.type === "prompt_load" && "promptId" in event.payload) {
+    const promptId = event.payload.promptId;
+    return (
+      context.sandbox.prompts
+        .find((prompt) => prompt.promptId === promptId)
+        ?.riskTags.map((tag) => tag.tagId) ?? []
+    );
+  }
+
+  return [];
 }

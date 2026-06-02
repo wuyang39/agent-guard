@@ -20,7 +20,7 @@ export const defaultOperatorRegistry: OperatorRegistry = new Map<
   ["starts_with", ({ actual, matcher }) => stringify(actual, matcher).startsWith(stringify(matcher.value, matcher))],
   ["ends_with", ({ actual, matcher }) => stringify(actual, matcher).endsWith(stringify(matcher.value, matcher))],
   ["in", ({ actual, matcher }) => Array.isArray(matcher.value) && matcher.value.includes(actual ?? null)],
-  ["regex", ({ actual, matcher }) => new RegExp(stringify(matcher.value, matcher)).test(stringify(actual, matcher))],
+  ["regex", ({ actual, matcher }) => matchesRegex(stringify(actual, matcher), stringify(matcher.value, matcher))],
 ]);
 
 function stringify(value: JsonValue | undefined, matcher: FieldMatcher): string {
@@ -66,5 +66,13 @@ function safeDecodeURIComponent(value: string): string {
     return decodeURIComponent(value);
   } catch {
     return value;
+  }
+}
+
+function matchesRegex(actual: string, pattern: string): boolean {
+  try {
+    return new RegExp(pattern).test(actual);
+  } catch {
+    return false;
   }
 }

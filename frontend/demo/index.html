@@ -7,17 +7,37 @@
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <div class="background-layer" aria-hidden="true">
-      <span class="orb orb-a"></span>
-      <span class="orb orb-b"></span>
-      <span class="orb orb-c"></span>
-      <svg class="orbit-lines" viewBox="0 0 1600 900" preserveAspectRatio="none">
-        <path d="M-90 170 C 250 40, 520 110, 780 260 S 1250 390, 1690 100" />
-        <path d="M-80 690 C 360 460, 710 520, 960 645 S 1300 760, 1680 530" />
-        <path d="M230 -80 C 400 220, 720 250, 950 150 S 1300 20, 1640 70" />
-      </svg>
-    </div>
+    <section class="landing-page" id="landingPage">
+      <header class="landing-nav">
+        <a class="product-mark" href="/">
+          <span class="logo-glyph">AG</span>
+          <span>
+            <strong>Agent Guard</strong>
+            <small>Agent-MCP Security Runtime</small>
+          </span>
+        </a>
+        <div class="landing-nav-actions">
+          <a class="ghost-link" href="/api/bootstrap" target="_blank" rel="noreferrer">Config API</a>
+          <button class="secondary-action" type="button" data-enter-console="overview">Open Console</button>
+        </div>
+      </header>
 
+      <main class="landing-content">
+        <p class="eyebrow">Agent Security Workbench</p>
+        <h1>Agent Guard</h1>
+        <div class="landing-actions">
+          <button class="landing-primary" type="button" data-enter-console="workbench">Start Evaluation</button>
+          <button class="landing-secondary" type="button" data-enter-console="overview">Explore Console</button>
+        </div>
+        <div class="landing-trust-row">
+          <span>Trace-first</span>
+          <span>Evidence Chain</span>
+          <span>Local MVP</span>
+        </div>
+      </main>
+    </section>
+
+    <div class="console-app hidden" id="consoleApp">
     <header class="topbar">
       <a class="product-mark" href="/">
         <span class="logo-glyph">AG</span>
@@ -27,10 +47,10 @@
         </span>
       </a>
       <nav class="top-nav" aria-label="主导航">
-        <a href="#step-agent">Workbench</a>
-        <a href="#step-monitor">Trace</a>
-        <a href="#step-risk">Evidence</a>
-        <a href="#step-report">Artifacts</a>
+        <button class="top-nav-link active" type="button" data-module-target="overview">Overview</button>
+        <button class="top-nav-link" type="button" data-module-target="workbench">Workbench</button>
+        <button class="top-nav-link" type="button" data-module-target="testdata">Test Data</button>
+        <button class="top-nav-link" type="button" data-module-target="reports">Reports</button>
       </nav>
       <div class="top-actions">
         <span class="status-pill"><i></i> Local MVP</span>
@@ -38,19 +58,167 @@
       </div>
     </header>
 
-    <main class="app-shell">
-      <aside class="sidebar">
+    <main class="platform-shell">
+      <aside class="module-sidebar">
+        <section class="module-brand">
+          <p class="eyebrow">Agent Security Console</p>
+          <h1>Agent Guard</h1>
+        </section>
+
+        <nav class="module-nav" aria-label="模块导航">
+          <button class="module-link active" type="button" data-module-target="overview">
+            <span>Dashboard</span><small>系统总览</small>
+          </button>
+          <button class="module-link" type="button" data-module-target="workbench">
+            <span>Workbench</span><small>一次测评流程</small>
+          </button>
+          <button class="module-link" type="button" data-module-target="testdata">
+            <span>Test Data</span><small>工具/资源/规则</small>
+          </button>
+          <button class="module-link" type="button" data-module-target="trace">
+            <span>Trace Monitor</span><small>交互事件回放</small>
+          </button>
+          <button class="module-link" type="button" data-module-target="reports">
+            <span>Risk Reports</span><small>证据链和产物</small>
+          </button>
+          <button class="module-link" type="button" data-module-target="system">
+            <span>System</span><small>运行状态</small>
+          </button>
+        </nav>
+      </aside>
+
+      <section class="module-canvas">
+        <section class="module-view active" id="module-overview">
+          <div class="overview-hero">
+            <div>
+              <p class="eyebrow">Local MVP Console</p>
+              <h2>Agent-MCP 交互安全测评平台</h2>
+              <div class="hero-actions">
+                <button class="primary-action" type="button" data-module-target="workbench">开始一次测评</button>
+                <button class="secondary-action" type="button" data-module-target="testdata">查看测试数据</button>
+              </div>
+            </div>
+            <div class="overview-status-panel">
+              <span>System State</span>
+              <strong id="overviewStatus">等待加载配置</strong>
+              <p id="overviewStatusDetail">正在读取本地 demo 配置。</p>
+            </div>
+          </div>
+
+          <div class="kpi-grid">
+            <article class="kpi-tile">
+              <span id="kpiCases">-</span>
+              <p>测试用例</p>
+            </article>
+            <article class="kpi-tile">
+              <span id="kpiTools">-</span>
+              <p>MCP 工具</p>
+            </article>
+            <article class="kpi-tile">
+              <span id="kpiResources">-</span>
+              <p>资源样例</p>
+            </article>
+            <article class="kpi-tile">
+              <span id="kpiRules">-</span>
+              <p>风险规则</p>
+            </article>
+          </div>
+
+          <section class="module-grid">
+            <article class="module-card" data-module-target="workbench">
+              <h3>测评工作台</h3>
+              <p>接入 Agent，选择场景，运行安全测试。</p>
+            </article>
+            <article class="module-card" data-module-target="testdata">
+              <h3>测试数据仓库</h3>
+              <p>查看 Tool、Resource、Prompt 和风险规则。</p>
+            </article>
+            <article class="module-card" data-module-target="trace">
+              <h3>Trace Monitor</h3>
+              <p>回看 tool_call、resource_access 等事件。</p>
+            </article>
+            <article class="module-card" data-module-target="reports">
+              <h3>风险报告</h3>
+              <p>查看 Finding、EvidenceChain 和输出产物。</p>
+            </article>
+          </section>
+
+          <section class="overview-row">
+            <article class="dashboard-panel">
+              <h3>系统主链路</h3>
+              <div class="pipeline">
+                <span>TestContext</span>
+                <i></i>
+                <span>InteractionTrace</span>
+                <i></i>
+                <span>RiskEvaluation</span>
+                <i></i>
+                <span>RiskReport</span>
+              </div>
+            </article>
+            <article class="dashboard-panel">
+              <h3>最近一次运行</h3>
+              <div class="preview compact" id="overviewLastRun">还没有运行记录。进入 Workbench 后可以开始第一次测评。</div>
+            </article>
+          </section>
+        </section>
+
+        <section class="module-view" id="module-testdata">
+          <header class="module-header">
+            <div>
+              <p class="eyebrow">Config Repository</p>
+              <h2>测试数据仓库</h2>
+            </div>
+            <button class="secondary-action" type="button" data-module-target="workbench">用这些数据开始测评</button>
+          </header>
+          <div class="config-board" id="configBoard"></div>
+        </section>
+
+        <section class="module-view" id="module-trace">
+          <header class="module-header">
+            <div>
+              <p class="eyebrow">Interaction Replay</p>
+              <h2>Trace Monitor</h2>
+            </div>
+            <button class="secondary-action" type="button" data-module-target="workbench">进入工作台</button>
+          </header>
+          <ol id="traceMirrorList" class="trace-list mirror"></ol>
+        </section>
+
+        <section class="module-view" id="module-reports">
+          <header class="module-header">
+            <div>
+              <p class="eyebrow">Risk Artifacts</p>
+              <h2>风险报告</h2>
+            </div>
+            <button class="secondary-action" type="button" data-module-target="workbench">生成新报告</button>
+          </header>
+          <div class="report-dashboard" id="reportDashboard">
+            <div class="empty-state">暂无报告。完成 Workbench 的风险判定和报告输出后会显示结果。</div>
+          </div>
+        </section>
+
+        <section class="module-view" id="module-system">
+          <header class="module-header">
+            <div>
+              <p class="eyebrow">Runtime Surface</p>
+              <h2>系统状态</h2>
+            </div>
+          </header>
+          <div class="system-grid">
+            <article class="dashboard-panel"><h3>Workbench</h3><p>http://localhost:5177</p></article>
+            <article class="dashboard-panel"><h3>Sample Agent</h3><p>http://localhost:7001/agent/run?mode=vulnerable</p></article>
+            <article class="dashboard-panel"><h3>Config API</h3><p>/api/bootstrap</p></article>
+            <article class="dashboard-panel"><h3>Outputs</h3><p>outputs/traces、outputs/reports</p></article>
+          </div>
+        </section>
+
+        <section class="module-view" id="module-workbench">
+          <div class="workbench-shell">
+            <aside class="sidebar">
         <section class="brand-panel">
           <p class="eyebrow">Blueprint-driven Agent Test</p>
           <h1>交互安全测评工作台</h1>
-          <p class="brand-copy">
-            按 FAROS 的运行台风格，把一次 Agent 安全测试拆成可操作、可追踪、可复现实验链路。
-          </p>
-          <div class="brand-tags">
-            <span>Tool Call</span>
-            <span>MCP Sandbox</span>
-            <span>Evidence Chain</span>
-          </div>
         </section>
 
         <ol class="steps" id="stepList">
@@ -61,13 +229,6 @@
           <li data-step="4"><span>4</span><div><b>风险判定与证据链</b><small>生成 Finding / Evidence</small></div></li>
           <li data-step="5"><span>5</span><div><b>报告输出</b><small>导出 Trace / Report</small></div></li>
         </ol>
-
-        <section class="contract-card">
-          <b>HTTP Agent 接入契约</b>
-          <p>POST 接口接收 <code>agent</code>、<code>task</code>、<code>sandbox</code>，返回 actions 数组。</p>
-          <pre>{"actions":[{"type":"tool_call","toolId":"tool.read_file","parameters":{"path":"/secret/.env"}}]}</pre>
-          <p class="mini-note">本地示例：先运行 <b>npm run sample-agent</b>，再选择 HTTP Agent Endpoint。</p>
-        </section>
       </aside>
 
       <section class="stage">
@@ -75,12 +236,7 @@
           <div class="stage-copy">
             <p class="eyebrow">MVP framework implementation</p>
             <h2 id="stepTitle">0. Agent 接入</h2>
-            <p id="stepIntro">选择 mock Agent 或填入 HTTP Agent 接口，定义本次被测对象。</p>
-            <div class="hero-chips">
-              <span>single operator demo</span>
-              <span>trace-first</span>
-              <span>json artifacts</span>
-            </div>
+            <p id="stepIntro"></p>
           </div>
           <div class="flow-status">
             <span>当前状态</span>
@@ -94,8 +250,7 @@
               <div class="card-title">
                 <span class="card-index">01</span>
                 <div>
-                  <h3>前端输入：被测 Agent</h3>
-                  <p>这里确定本次实验要测试谁。</p>
+                  <h3>被测 Agent</h3>
                 </div>
               </div>
               <label><span>Agent 名称</span><input id="agentName" value="Demo Agent" /></label>
@@ -119,13 +274,9 @@
               <div class="card-title">
                 <span class="card-index teal">A</span>
                 <div>
-                  <h3>模块说明</h3>
-                  <p>对齐原框架里的“输入：被测 Agent”。</p>
+                  <h3>Agent 预览</h3>
                 </div>
               </div>
-              <p class="help">
-                MVP 中只有 Agent 是被测对象，Tool、Resource、Prompt、Tool Response 都是系统内置测试夹具。这样一个人也可以在本地直接完成可重复实验。
-              </p>
               <div class="preview" id="agentPreview"></div>
             </article>
           </div>
@@ -137,8 +288,7 @@
               <div class="card-title">
                 <span class="card-index">02</span>
                 <div>
-                  <h3>前端输入：测试环境建模</h3>
-                  <p>把测试样例、工具、资源和规则组装成 TestContext。</p>
+                  <h3>测试环境建模</h3>
                 </div>
               </div>
               <label><span>测试用例</span><select id="caseSelect"></select></label>
@@ -170,7 +320,6 @@
                 <span class="card-index teal">B</span>
                 <div>
                   <h3>TestContext 预览</h3>
-                  <p>运行前的实验蓝图。</p>
                 </div>
               </div>
               <div class="preview" id="contextPreview"></div>
@@ -187,12 +336,8 @@
                 <span class="card-index">03</span>
                 <div>
                   <h3>动态执行控制</h3>
-                  <p>驱动 Agent 与 MCP Sandbox 交互。</p>
                 </div>
               </div>
-              <p class="help">
-                这一层对应 Test Runner + MCP Sandbox。点击运行后，系统会把 TestContext 交给 Agent，并在沙箱中模拟 MCP Tool 执行。
-              </p>
               <div class="preview" id="runInput"></div>
               <button id="runButton">开始动态交互测试</button>
             </article>
@@ -201,7 +346,6 @@
                 <span class="card-index teal">C</span>
                 <div>
                   <h3>运行摘要</h3>
-                  <p>运行中最关键的三个信号。</p>
                 </div>
               </div>
               <div class="metrics">
@@ -221,7 +365,6 @@
                 <span class="card-index">04</span>
                 <div>
                   <h3>监控维度</h3>
-                  <p>把黑盒行为拆成可审计事件。</p>
                 </div>
               </div>
               <ul class="plain-list" id="monitorChannels">
@@ -238,7 +381,6 @@
                 <span class="card-index teal">T</span>
                 <div>
                   <h3>InteractionTrace</h3>
-                  <p>从入口、工具调用到输出的完整过程。</p>
                 </div>
               </div>
               <ol id="traceList" class="trace-list"></ol>
@@ -253,12 +395,8 @@
                 <span class="card-index">05</span>
                 <div>
                   <h3>风险判定输入</h3>
-                  <p>消费 TestContext、Trace 和 risk_rules。</p>
                 </div>
               </div>
-              <p class="help">
-                风险模块会输出 Finding、EvidenceChain 和 AttackChain，用来解释“为什么判定有风险”。
-              </p>
               <div class="preview" id="riskInput"></div>
               <button id="buildRiskButton" disabled>执行风险判定</button>
             </article>
@@ -267,7 +405,6 @@
                 <span class="card-index teal">R</span>
                 <div>
                   <h3>风险结果</h3>
-                  <p>规则命中与证据链概览。</p>
                 </div>
               </div>
               <div class="risk-board">
@@ -287,11 +424,10 @@
               <div class="card-title">
                 <span class="card-index">06</span>
                 <div>
-                  <h3>报告输出配置</h3>
-                  <p>生成可回看、可发给组员的结果产物。</p>
+                  <h3>报告输出</h3>
                 </div>
               </div>
-              <label><span>报告格式</span><select><option>JSON + 页面展示</option></select></label>
+              <label><span>报告格式</span><select><option>JSON + PDF + 页面展示</option></select></label>
               <div class="preview" id="reportInput"></div>
               <button id="buildReportButton" disabled>生成报告产物</button>
             </article>
@@ -299,8 +435,7 @@
               <div class="card-title">
                 <span class="card-index teal">O</span>
                 <div>
-                  <h3>输出结果展示</h3>
-                  <p>Trace 和 Report 都会落到 outputs 目录。</p>
+                  <h3>报告产物</h3>
                 </div>
               </div>
               <div class="metrics">
@@ -309,11 +444,16 @@
                 <div><span id="reportRisk">-</span><p>风险等级</p></div>
               </div>
               <div class="artifact-list" id="artifactText">等待生成</div>
+              <a id="pdfReportButton" class="download-button disabled" href="#" download aria-disabled="true">下载 PDF 报告</a>
             </article>
           </div>
         </section>
       </section>
+          </div>
+        </section>
+      </section>
     </main>
+    </div>
 
     <script type="module" src="/app.js"></script>
   </body>

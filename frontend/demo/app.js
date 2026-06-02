@@ -1,21 +1,37 @@
 let bootstrap = null;
 let currentStep = 0;
+let currentModule = "overview";
 let runPayload = null;
 let riskBuilt = false;
 let reportBuilt = false;
 
 const stepMeta = [
-  ["0. Agent 接入", "选择 mock Agent 或填入 HTTP Agent 接口，定义本次被测对象。", "等待接入 Agent"],
-  ["1. 测试环境建模", "选择测试用例、工具、资源和风险规则，生成 TestContext。", "等待环境建模"],
-  ["2. 动态交互执行", "驱动 Agent 与系统内置 MCP Sandbox 交互。", "等待动态执行"],
-  ["3. 交互监控", "查看 InteractionTrace、Tool Call、Resource Access 和 Tool Response。", "等待确认 Trace"],
-  ["4. 风险判定与证据链", "匹配 risk_rules，生成风险发现、证据链和攻击链。", "等待风险判定"],
-  ["5. 报告输出", "导出 trace/report JSON，并展示最终风险概览。", "等待报告输出"],
+  ["0. Agent 接入", "", "等待接入 Agent"],
+  ["1. 测试环境建模", "", "等待环境建模"],
+  ["2. 动态交互执行", "", "等待动态执行"],
+  ["3. 交互监控", "", "等待确认 Trace"],
+  ["4. 风险判定与证据链", "", "等待风险判定"],
+  ["5. 报告输出", "", "等待报告输出"],
 ];
 
 const $ = (selector) => document.querySelector(selector);
 
 const els = {
+  landingPage: $("#landingPage"),
+  consoleApp: $("#consoleApp"),
+  enterConsoleButtons: document.querySelectorAll("[data-enter-console]"),
+  moduleViews: document.querySelectorAll(".module-view"),
+  moduleTriggers: document.querySelectorAll("[data-module-target]"),
+  overviewStatus: $("#overviewStatus"),
+  overviewStatusDetail: $("#overviewStatusDetail"),
+  overviewLastRun: $("#overviewLastRun"),
+  kpiCases: $("#kpiCases"),
+  kpiTools: $("#kpiTools"),
+  kpiResources: $("#kpiResources"),
+  kpiRules: $("#kpiRules"),
+  configBoard: $("#configBoard"),
+  traceMirrorList: $("#traceMirrorList"),
+  reportDashboard: $("#reportDashboard"),
   stepList: $("#stepList"),
   stepTitle: $("#stepTitle"),
   stepIntro: $("#stepIntro"),
@@ -58,6 +74,7 @@ const els = {
   evidenceCount: $("#evidenceCount"),
   reportRisk: $("#reportRisk"),
   artifactText: $("#artifactText"),
+  pdfReportButton: $("#pdfReportButton"),
 };
 
 function esc(value) {
@@ -71,6 +88,27 @@ function esc(value) {
 
 function riskText(risk) {
   return { none: "无风险", low: "低风险", medium: "中风险", high: "高风险", critical: "严重风险" }[risk] || risk || "未判定";
+}
+
+function showModule(module) {
+  currentModule = module;
+  els.moduleViews.forEach((view) => view.classList.toggle("active", view.id === `module-${module}`));
+  els.moduleTriggers.forEach((trigger) => {
+    trigger.classList.toggle("active", trigger.dataset.moduleTarget === module);
+  });
+
+  if (module === "trace") renderTraceMirror();
+  if (module === "reports") renderReportDashboard();
+}
+
+function enterConsole(module = "overview") {
+  els.landingPage.classList.add("hidden");
+  els.consoleApp.classList.remove("hidden");
+  showModule(module);
+  if (module === "workbench") {
+    showStep(currentStep);
+  }
+  window.scrollTo({ top: 0, behavior: "auto" });
 }
 
 function isDone(step) {
@@ -92,6 +130,7 @@ function showStep(step) {
   });
   els.stepTitle.textContent = stepMeta[step][0];
   els.stepIntro.textContent = stepMeta[step][1];
+  els.stepIntro.hidden = !stepMeta[step][1];
   els.flowStatus.textContent = stepMeta[step][2];
 }
 
@@ -240,8 +279,74 @@ function renderFileStrip() {
     .join("");
 }
 
+function renderOverview() {
+  if (!bootstrap) return;
+  els.kpiCases.textContent = String(bootstrap.testCases.length);
+  els.kpiTools.textContent = String(bootstrap.tools.length);
+  els.kpiResources.textContent = String(bootstrap.resources.length);
+  els.kpiRules.textContent = String(bootstrap.riskRules.length);
+  els.overviewStatus.textContent = "配置已就绪";
+  els.overviewStatusDetail.textContent = "配置已加载，系统就绪。";
+}
+
+function renderConfigBoard() {
+  if (!bootstrap) return;
+  const groups = [
+    ["Tools", bootstrap.tools, "toolId", (item) => `${item.name} · ${item.riskLevel} · ${item.sideEffect}`],
+    ["Resources", bootstrap.resources, "resourceId", (item) => `${item.path || item.resourceId} · ${item.sensitivity} · injection=${item.containsInjection}`],
+    ["Prompts", bootstrap.prompts, "promptId", (item) => `${item.attackEntryType || "prompt"} · ${item.name}`],
+    ["Tool Responses", bootstrap.toolResponses, "responseTemplateId", (item) => `${item.toolId} · injection=${item.containsInjection}`],
+    ["Risk Rules", bootstrap.riskRules, "ruleId", (item) => `${item.category} · ${item.riskLevel}`],
+    ["Test Cases", bootstrap.testCases, "caseId", (item) => `${item.attackEntryType} · ${item.enabled ? "enabled" : "disabled"}`],
+  ];
+
+  els.configBoard.innerHTML = groups
+    .map(
+      ([title, items, idKey, detailFn]) => `
+        <article class="config-section">
+          <div class="config-section-header">
+            <h3>${esc(title)}</h3>
+            <span>${items.length}</span>
+          </div>
+          <div class="config-list">
+            ${items
+              .map(
+                (item) => `
+                  <div class="config-row">
+                    <strong>${esc(item[idKey])}</strong>
+                    <small>${esc(detailFn(item))}</small>
+                  </div>
+                `,
+              )
+              .join("")}
+          </div>
+        </article>
+      `,
+    )
+    .join("");
+}
+
 function renderTrace(trace) {
   els.traceList.innerHTML = trace.events
+    .map(
+      (event) => `
+        <li>
+          <div><span class="event-type">${esc(event.eventType)}</span> · ${esc(event.actor)} · #${event.sequence}</div>
+          <div class="payload">${esc(JSON.stringify(event.payload))}</div>
+        </li>
+      `,
+    )
+    .join("");
+  renderTraceMirror();
+}
+
+function renderTraceMirror() {
+  if (!els.traceMirrorList) return;
+  if (!runPayload?.trace) {
+    els.traceMirrorList.innerHTML = `<li class="empty-state">暂无 Trace。进入 Workbench 运行一次测评后会同步到这里。</li>`;
+    return;
+  }
+  els.traceMirrorList.innerHTML = runPayload.trace.events
     .map(
       (event) => `
         <li>
@@ -272,6 +377,12 @@ function renderMonitor(payload) {
     <p><b>riskRules：</b>${payload.context.riskRules.length} 条</p>
   `;
   els.buildRiskButton.disabled = false;
+  els.overviewLastRun.innerHTML = `
+    <p><b>traceId：</b>${esc(payload.trace.traceId)}</p>
+    <p><b>事件数：</b>${payload.monitor.totalEvents}</p>
+    <p><b>当前状态：</b>已生成 InteractionTrace，等待风险判定。</p>
+  `;
+  renderTraceMirror();
 }
 
 function renderFindings(findings) {
@@ -307,6 +418,7 @@ function renderRisk(payload) {
     <p><b>attackChainCount：</b>${payload.risk.attackChainCount}</p>
   `;
   els.buildReportButton.disabled = false;
+  renderReportDashboard();
   showStep(4);
 }
 
@@ -317,12 +429,93 @@ function renderReport(payload) {
   els.reportRisk.textContent = riskText(payload.report.riskLevel);
   const traceUrl = `/${payload.artifacts.tracePath}`;
   const reportUrl = `/${payload.artifacts.reportPath}`;
+  const pdfUrl = payload.artifacts.pdfPath ? `/${payload.artifacts.pdfPath}` : "";
   els.artifactText.innerHTML = `
     <p><b>Trace JSON：</b><a href="${esc(traceUrl)}" target="_blank" rel="noreferrer">${esc(payload.artifacts.tracePath)}</a></p>
     <p><b>Report JSON：</b><a href="${esc(reportUrl)}" target="_blank" rel="noreferrer">${esc(payload.artifacts.reportPath)}</a></p>
+    ${pdfUrl ? `<p><b>PDF：</b><a href="${esc(pdfUrl)}" download>${esc(payload.artifacts.pdfPath)}</a></p>` : ""}
     <p><b>Report ID：</b>${esc(payload.report.reportId)}</p>
   `;
+  if (els.pdfReportButton) {
+    if (pdfUrl) {
+      els.pdfReportButton.href = pdfUrl;
+      els.pdfReportButton.download = payload.artifacts.pdfPath.split("/").pop();
+      els.pdfReportButton.setAttribute("aria-disabled", "false");
+      els.pdfReportButton.classList.remove("disabled");
+    } else {
+      els.pdfReportButton.href = "#";
+      els.pdfReportButton.removeAttribute("download");
+      els.pdfReportButton.setAttribute("aria-disabled", "true");
+      els.pdfReportButton.classList.add("disabled");
+    }
+  }
+  renderReportDashboard();
   showStep(5);
+}
+
+function renderReportDashboard() {
+  if (!els.reportDashboard) return;
+  if (!runPayload) {
+    els.reportDashboard.innerHTML = `<div class="empty-state">暂无报告。完成 Workbench 的风险判定和报告输出后会显示结果。</div>`;
+    return;
+  }
+
+  const artifacts = runPayload.artifacts
+    ? `
+      <div class="artifact-list compact">
+        <p><b>Trace：</b>${esc(runPayload.artifacts.tracePath)}</p>
+        <p><b>Report：</b>${esc(runPayload.artifacts.reportPath)}</p>
+        ${
+          runPayload.artifacts.pdfPath
+            ? `<a class="download-button compact-download" href="/${esc(runPayload.artifacts.pdfPath)}" download>下载 PDF 报告</a>`
+            : ""
+        }
+      </div>
+    `
+    : `<div class="empty-state">风险已判定，报告产物尚未生成。</div>`;
+
+  els.reportDashboard.innerHTML = `
+    <div class="report-grid">
+      <article class="kpi-tile">
+        <span>${esc(riskText(runPayload.risk?.riskLevel))}</span>
+        <p>风险等级</p>
+      </article>
+      <article class="kpi-tile">
+        <span>${esc(runPayload.risk?.findingCount ?? 0)}</span>
+        <p>风险发现</p>
+      </article>
+      <article class="kpi-tile">
+        <span>${esc(runPayload.risk?.evidenceCount ?? 0)}</span>
+        <p>证据链</p>
+      </article>
+    </div>
+    <div class="finding-list">
+      ${
+        runPayload.report?.findings?.length
+          ? runPayload.report.findings
+              .map(
+                (finding) => `
+                  <article class="finding-card">
+                    <strong>${esc(finding.name || finding.title)} · ${esc(riskText(finding.riskLevel))}</strong>
+                    <p>${esc(finding.description)}</p>
+                  </article>
+                `,
+              )
+              .join("")
+          : `<div class="empty-state">暂无 Finding。</div>`
+      }
+    </div>
+    ${artifacts}
+  `;
+}
+
+function resetReportDownload() {
+  els.artifactText.textContent = "等待生成";
+  if (!els.pdfReportButton) return;
+  els.pdfReportButton.href = "#";
+  els.pdfReportButton.removeAttribute("download");
+  els.pdfReportButton.setAttribute("aria-disabled", "true");
+  els.pdfReportButton.classList.add("disabled");
 }
 
 async function runDemo() {
@@ -341,6 +534,7 @@ async function runDemo() {
     reportBuilt = false;
     els.nextReportButton.disabled = true;
     els.buildReportButton.disabled = true;
+    resetReportDownload();
     renderMonitor(runPayload);
     showStep(3);
   } catch (error) {
@@ -352,6 +546,12 @@ async function runDemo() {
 }
 
 function bindEvents() {
+  els.enterConsoleButtons.forEach((button) => {
+    button.addEventListener("click", () => enterConsole(button.dataset.enterConsole || "overview"));
+  });
+  els.moduleTriggers.forEach((trigger) => {
+    trigger.addEventListener("click", () => showModule(trigger.dataset.moduleTarget));
+  });
   els.useSampleApiButton.addEventListener("click", startSampleAgentFromWorkbench);
   els.finishAgentButton.addEventListener("click", () => {
     renderAgentPreview();
@@ -393,10 +593,17 @@ async function init() {
     .map((item) => `<option value="${esc(item.caseId)}">${esc(item.caseName)}</option>`)
     .join("");
   renderAgentPreview();
+  renderOverview();
+  renderConfigBoard();
   renderFileStrip();
   renderEnvironmentInputs();
+  renderTraceMirror();
+  renderReportDashboard();
   bindEvents();
   showStep(0);
+  showModule("overview");
+  els.consoleApp.classList.add("hidden");
+  els.landingPage.classList.remove("hidden");
 }
 
 init();

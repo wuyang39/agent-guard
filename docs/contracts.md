@@ -659,7 +659,247 @@ type ReportArtifact = {
 - 报告模块不得重新判定风险等级
 - 报告模块不得绕过 `Finding` 直接解析原始日志生成结论
 
-## 10. 配置文件契约
+## 10. P1 检测画像、策略包、运行时监督和防御报告类型
+
+P1 新增对象用于支撑“监督前检测 -> 风险画像 -> 策略包 -> 真实运行监督 -> 防御报告”的扩展链路。P1 对象仍必须保持 JSON 可序列化，并使用 `schemaVersion: "mvp-1"`，除非协调人明确启动版本升级。
+
+P1 类型草案已落到 `packages/contracts/src/types/detection.ts`、`policy.ts`、`supervision.ts` 和 `defense.ts`。后续字段变更必须同步本文档和对应类型文件。
+
+P1 主链路:
+
+```txt
+RiskReport
+  -> DetectionReport
+  -> AgentRiskProfile
+  -> SupervisionPolicyPack
+  -> RuntimeSupervisionRecord[]
+  -> DefenseReport
+```
+
+### 10.1 DetectionReport
+
+`DetectionReport` 是监督前检测报告，用于总结红队场景检测结果。它是人读报告和风险画像生成的输入，不直接作为运行时监督逻辑。
+
+```ts
+type DetectionReport = {
+  schemaVersion: "mvp-1"
+  reportId: string
+  agentId: string
+  sourceRiskReportIds: string[]
+  scenarioSummary: DetectionScenarioSummary[]
+  riskSummary: DetectionRiskSummary
+  failedScenarios: FailedScenario[]
+  findingIds: string[]
+  evidenceChainIds: string[]
+  recommendedPolicyTemplateIds: string[]
+  generatedAt: string
+}
+```
+
+```ts
+type DetectionScenarioSummary = {
+  scenarioId: string
+  caseIds: string[]
+  status: "passed" | "failed" | "partially_failed"
+  triggeredFindingIds: string[]
+}
+```
+
+```ts
+type DetectionRiskSummary = {
+  totalScenarios: number
+  failedScenarioCount: number
+  totalFindings: number
+  highestRiskLevel: RiskLevel
+  countsByCategory: Record<RiskCategory, number>
+}
+```
+
+```ts
+type FailedScenario = {
+  scenarioId: string
+  caseId: string
+  findingIds: string[]
+  weaknessCategory: RiskCategory
+  evidenceEventIds: string[]
+}
+```
+
+### 10.2 AgentRiskProfile
+
+`AgentRiskProfile` 是检测报告的结构化风险画像，用于生成策略包。它描述某个 Agent 在检测阶段暴露的失守模式。
+
+```ts
+type AgentRiskProfile = {
+  schemaVersion: "mvp-1"
+  profileId: string
+  agentId: string
+  sourceDetectionReportId: string
+  weaknesses: AgentWeakness[]
+  highRiskTools: string[]
+  sensitiveResourcePatterns: string[]
+  exfiltrationPatterns: string[]
+  recommendedControls: string[]
+  confidence: "low" | "medium" | "high"
+  generatedAt: string
+}
+```
+
+```ts
+type AgentWeakness = {
+  weaknessId: string
+  category: RiskCategory
+  title: string
+  description: string
+  sourceFindingIds: string[]
+  recommendedPolicyTemplateIds: string[]
+}
+```
+
+### 10.3 SupervisionPolicyPack
+
+`SupervisionPolicyPack` 是从检测结论生成的机器可执行策略包。C 负责生成，B 负责加载和执行。运行时监督不得绕过策略包私自增加阻断逻辑。
+
+```ts
+type SupervisionAction =
+  | "allow"
+  | "deny"
+  | "ask"
+  | "warn"
+  | "redact"
+  | "isolate"
+```
+
+```ts
+type SupervisionPolicyPack = {
+  schemaVersion: "mvp-1"
+  policyPackId: string
+  agentId: string
+  sourceDetectionReportId: string
+  sourceRiskProfileId: string
+  policies: SupervisionPolicy[]
+  defaultAction: SupervisionAction
+  createdAt: string
+  expiresAt?: string
+}
+```
+
+```ts
+type SupervisionPolicy = {
+  policyId: string
+  sourcePolicyTemplateId?: string
+  sourceWeaknessIds: string[]
+  name: string
+  description: string
+  targetType: "tool_call" | "resource_access" | "api_call" | "file_write" | "email_send" | "code_execution" | "agent_message"
+  action: SupervisionAction
+  riskLevel: RiskLevel
+  match: RuleMatchCondition
+  reason: string
+}
+```
+
+`SupervisionPolicy.match` 可以复用 `RuleMatchCondition` 与 `FieldMatcher`，但语义不同: `RiskRule` 用于检测归因，`SupervisionPolicy` 用于运行时动作判定。二者不得混用。
+
+### 10.4 RuntimeSupervisionRecord
+
+`RuntimeSupervisionRecord` 是 B 交给 C 的运行时监督事实。防御报告只能基于该对象证明告警、阻断、询问、脱敏等防御效果。
+
+```ts
+type RuntimeSupervisionRecord = {
+  schemaVersion: "mvp-1"
+  recordId: string
+  runtimeSessionId: string
+  agentId: string
+  policyPackId: string
+  policyId: string
+  action: SupervisionAction
+  decisionReason: string
+  targetType: SupervisionPolicy["targetType"]
+  targetId?: string
+  inputEventId?: string
+  outputEventId?: string
+  createdAt: string
+}
+```
+
+```ts
+type RuntimeAlert = {
+  alertId: string
+  recordId: string
+  riskLevel: RiskLevel
+  title: string
+  message: string
+  createdAt: string
+}
+```
+
+```ts
+type BlockedAction = {
+  blockedActionId: string
+  recordId: string
+  policyId: string
+  targetType: SupervisionPolicy["targetType"]
+  targetId?: string
+  reason: string
+  createdAt: string
+}
+```
+
+### 10.5 DefenseReport
+
+`DefenseReport` 是最终防御报告，用于证明检测阶段发现的问题在真实运行中被监督、告警、阻断或缓解。
+
+```ts
+type DefenseReport = {
+  schemaVersion: "mvp-1"
+  defenseReportId: string
+  agentId: string
+  detectionReportId: string
+  riskProfileId: string
+  policyPackId: string
+  runtimeSessionIds: string[]
+  detectedWeaknesses: AgentWeakness[]
+  generatedPolicies: SupervisionPolicy[]
+  runtimeAlerts: RuntimeAlert[]
+  blockedActions: BlockedAction[]
+  defenseEffectiveness: DefenseEffectiveness
+  residualRisk: ResidualRisk[]
+  generatedAt: string
+}
+```
+
+```ts
+type DefenseEffectiveness = {
+  blockedHighRiskActionCount: number
+  alertedActionCount: number
+  redactedActionCount: number
+  askDecisionCount: number
+  mitigatedWeaknessIds: string[]
+}
+```
+
+```ts
+type ResidualRisk = {
+  residualRiskId: string
+  category: RiskCategory
+  riskLevel: RiskLevel
+  description: string
+  relatedWeaknessIds: string[]
+}
+```
+
+P1 报告约束:
+
+- `DetectionReport` 必须能追溯到一个或多个 `RiskReport`
+- `AgentRiskProfile` 必须能追溯到一个 `DetectionReport`
+- `SupervisionPolicyPack` 必须能追溯到一个 `AgentRiskProfile`
+- `RuntimeSupervisionRecord.policyId` 必须存在于对应 `SupervisionPolicyPack.policies`
+- `DefenseReport` 中的告警和阻断必须来自真实 `RuntimeSupervisionRecord[]`
+- 防御报告模块不得编造运行时阻断记录
+- 前端不得直接读取策略模板配置来解释策略命中
+
+## 11. 配置文件契约
 
 P0 内置配置文件:
 
@@ -677,7 +917,64 @@ configs/test_oracles.json
 
 `configs/test_oracles.json` 只用于验收测试、回归测试和评测统计，不得进入运行时 `TestContext`。
 
-## 11. 契约演进规则
+P1 新增配置文件:
+
+```txt
+configs/red_team_scenarios.json
+configs/supervision_policy_templates.json
+```
+
+`configs/red_team_scenarios.json` 用于维护红队场景索引、用例归属和样本引用。`configs/supervision_policy_templates.json` 用于维护可复用策略模板。根据某个 Agent 检测结果生成的 `SupervisionPolicyPack` 不得写回策略模板配置文件。
+
+P1 配置对象:
+
+```ts
+type RedTeamScenarioSet = {
+  schemaVersion: "mvp-1"
+  scenarioSetId: string
+  name: string
+  description?: string
+  scenarios: RedTeamScenario[]
+}
+
+type RedTeamScenario = {
+  scenarioId: string
+  name: string
+  attackType: string
+  caseIds: string[]
+  sampleIds: string[]
+  expectedWeaknessCategories: RiskCategory[]
+  recommendedPolicyTemplateIds: string[]
+}
+
+type PolicyTemplate = {
+  schemaVersion: "mvp-1"
+  policyTemplateId: string
+  name: string
+  description: string
+  targetType: SupervisionPolicy["targetType"]
+  action: SupervisionAction
+  riskCategory: RiskCategory
+  match: RuleMatchCondition
+  reasonTemplate: string
+}
+```
+
+P1 运行时监督动作 payload 固定使用 `SupervisionRuntimeAction.payload`，禁止 B 线自定义未进入契约的 payload 结构。标准 payload 包括:
+
+```txt
+RuntimeToolCallPayload
+RuntimeResourceAccessPayload
+RuntimeApiCallPayload
+RuntimeFileWritePayload
+RuntimeEmailSendPayload
+RuntimeCodeExecutionPayload
+RuntimeAgentMessagePayload
+```
+
+P1 检测报告和防御报告导出产物统一复用 `ReportArtifact`。暂不新增 `DetectionReportArtifact` 或 `DefenseReportArtifact` 专用类型；如后续确需区分，必须先修改本文档和 `packages/contracts/src/types/**`。
+
+## 12. 契约演进规则
 
 允许:
 

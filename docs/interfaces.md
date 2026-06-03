@@ -10,7 +10,7 @@
 
 本系统唯一被测对象是 `AgentUnderTest`。MCP Server、Tool、Resource、Prompt、Tool Response、风险规则和测试用例都由系统内部提供。
 
-三名开发者之间只通过下列对象交接:
+P0 后端三条线之间只通过下列对象交接:
 
 ```txt
 外部输入 -> A/B:
@@ -30,6 +30,8 @@ C -> Backend Report API / Frontend Web Console:
 ```
 
 任何模块不得要求其他开发者提供私有类、临时日志、缓存对象或未写入契约文档的字段。
+
+开发者 D 负责正式前端。D 不参与运行时主链路的数据生产，只消费 Backend API、报告产物和 `packages/contracts` 中的共享契约对象。
 
 ## 2. 开发者 A 对外接口
 
@@ -271,3 +273,323 @@ TestContext + InteractionTrace
 - 每个 `ReportArtifact.reportId` 都指向本次 `RiskReport.reportId`
 
 联调失败时，先修接口契约和 mock 数据，再讨论业务逻辑。
+
+## 6. P1 检测画像驱动监督接口扩展
+
+P1 在不破坏 P0 主链路的前提下，新增“监督前检测 -> 风险画像 -> 策略包 -> 真实运行监督 -> 防御报告”的扩展链路。
+
+P1 主链路:
+
+```txt
+AgentUnderTest + AgentAdapterConfig
+  -> TestContext
+  -> TestRun + InteractionTrace
+  -> RiskEvaluationResult + RiskReport
+  -> DetectionReport
+  -> AgentRiskProfile
+  -> SupervisionPolicyPack
+  -> RuntimeSupervisionRecord[]
+  -> DefenseReport + ReportArtifact[]
+```
+
+P1 新增对象只允许通过公开契约交接，不得通过私有类、临时日志、前端 demo payload 或未文档化字段交接。
+
+### 6.1 P1 交接边界总览
+
+```txt
+A -> B/C:
+  TestContext
+  RedTeamScenarioSet
+  PolicyTemplate[]
+
+B -> C:
+  TestRun
+  InteractionTrace
+  RuntimeSupervisionRecord[]
+
+C -> B:
+  SupervisionPolicyPack
+
+C -> Backend API / Frontend:
+  DetectionReport
+  AgentRiskProfile
+  DefenseReport
+  ReportArtifact[]
+
+Backend API / Report Artifacts -> D:
+  TestContext view
+  TestRun
+  InteractionTrace
+  RiskReport
+  DetectionReport
+  AgentRiskProfile
+  SupervisionPolicyPack
+  RuntimeSupervisionRecord[]
+  DefenseReport
+  ReportArtifact[]
+```
+
+协调人必须优先冻结 `DetectionReport`、`AgentRiskProfile`、`SupervisionPolicyPack`、`RuntimeSupervisionRecord`、`DefenseReport` 的字段草案，再允许后端 A/B/C 三条线与前端 D 并行实现。
+
+### 6.2 开发者 A 的 P1 输出
+
+职责: 红队场景、业务工具画像、策略模板和测试数据扩展。
+
+输入:
+
+```txt
+configs/tools.json
+configs/resources.json
+configs/prompts.json
+configs/tool_responses.json
+configs/risk_rules.json
+configs/test_cases.json
+configs/test_oracles.json
+configs/red_team_scenarios.json
+configs/supervision_policy_templates.json
+```
+
+输出给 B 和 C:
+
+```txt
+TestContext
+RedTeamScenarioSet
+PolicyTemplate[]
+```
+
+`RedTeamScenarioSet` 必须说明:
+
+```txt
+scenarioId
+name
+attackType
+caseIds
+sampleIds
+expectedWeaknessCategories
+recommendedPolicyTemplateIds
+```
+
+`PolicyTemplate` 只描述可复用的策略模板，不绑定某个 Agent 的检测结果。根据检测结果生成的实例化策略包由 C 输出为 `SupervisionPolicyPack`。
+
+A 不得:
+
+- 根据运行时 trace 直接生成 `AgentRiskProfile`
+- 直接生成 `SupervisionPolicyPack`
+- 在配置中写入某次检测运行的私有结论
+
+### 6.3 开发者 B 的 P1 输出
+
+职责: 检测运行、真实或半真实 Agent 接入、运行时监督接口执行和监督记录输出。
+
+输入:
+
+```txt
+AgentUnderTest
+AgentAdapterConfig
+TestContext
+SupervisionPolicyPack
+```
+
+输出给 C:
+
+```txt
+TestRun
+InteractionTrace
+RuntimeSupervisionRecord[]
+```
+
+`RuntimeSupervisionRecord` 必须包含:
+
+```txt
+recordId
+runtimeSessionId
+agentId
+policyPackId
+policyId
+action
+decisionReason
+targetType
+targetId
+inputEventId
+outputEventId
+createdAt
+```
+
+B 负责解释策略包如何在运行时执行，但不得修改策略包含义。发现策略包无法执行时，B 应输出兼容性问题给协调人和 C，而不是在运行时代码中私自改变策略语义。
+
+B 不得:
+
+- 根据 `RiskReport` 自行推导新策略
+- 直接计算 `AgentRiskProfile`
+- 在监督接口中内置未进入 `SupervisionPolicyPack` 的临时风险规则
+
+### 6.4 开发者 C 的 P1 输出
+
+职责: 检测报告、风险画像、策略包生成和防御报告。
+
+输入:
+
+```txt
+TestContext
+TestRun
+InteractionTrace
+RiskEvaluationResult
+RiskReport
+PolicyTemplate[]
+RuntimeSupervisionRecord[]
+```
+
+输出给 B:
+
+```txt
+SupervisionPolicyPack
+```
+
+输出给 Backend API / Frontend:
+
+```txt
+DetectionReport
+AgentRiskProfile
+DefenseReport
+ReportArtifact[]
+```
+
+`DetectionReport` 必须包含:
+
+```txt
+reportId
+agentId
+sourceRiskReportIds
+scenarioSummary
+riskSummary
+failedScenarios
+findingIds
+evidenceChainIds
+recommendedPolicyTemplateIds
+generatedAt
+```
+
+`AgentRiskProfile` 必须包含:
+
+```txt
+profileId
+agentId
+sourceDetectionReportId
+weaknesses
+highRiskTools
+sensitiveResourcePatterns
+exfiltrationPatterns
+recommendedControls
+confidence
+generatedAt
+```
+
+`SupervisionPolicyPack` 必须包含:
+
+```txt
+policyPackId
+agentId
+sourceDetectionReportId
+sourceRiskProfileId
+policies
+defaultAction
+createdAt
+expiresAt
+```
+
+`DefenseReport` 必须包含:
+
+```txt
+defenseReportId
+agentId
+detectionReportId
+riskProfileId
+policyPackId
+runtimeSessionIds
+detectedWeaknesses
+generatedPolicies
+runtimeAlerts
+blockedActions
+defenseEffectiveness
+residualRisk
+generatedAt
+```
+
+C 不得:
+
+- 绕过 `RuntimeSupervisionRecord` 编造防御效果
+- 在报告模块中重新采集 Agent 运行时行为
+- 让前端直接读取 `configs/supervision_policy_templates.json` 解释策略命中
+
+### 6.5 P1 联调检查表
+
+每次 P1 联调前检查:
+
+- `DetectionReport.sourceRiskReportIds` 指向真实风险报告
+- `AgentRiskProfile.sourceDetectionReportId` 指向真实检测报告
+- `SupervisionPolicyPack.sourceRiskProfileId` 指向真实风险画像
+- `RuntimeSupervisionRecord.policyPackId` 指向本次加载的策略包
+- `RuntimeSupervisionRecord.policyId` 能在策略包中找到
+- 每个 `deny`、`ask`、`redact` 记录都有可追溯的输入事件或运行时动作
+- `DefenseReport.policyPackId` 与运行时监督记录一致
+- 防御报告中的阻断和告警来自真实 `RuntimeSupervisionRecord[]`
+- 前端只消费 API、报告产物或共享契约对象，不直接解释配置文件
+
+P1 联调失败时，按以下顺序排查:
+
+1. 共享契约字段是否一致
+2. P1 对象 ID 引用是否断裂
+3. A 的策略模板是否能被 C 实例化
+4. C 的策略包是否能被 B 执行
+5. B 的运行时记录是否足够让 C 生成防御报告
+
+## 7. 开发者 D 前端消费接口
+
+职责: 正式 Frontend Web Console。D 只消费后端 API、报告产物和共享契约，不直接读取后端模块、配置文件或 outputs 原始文件。
+
+D 输入:
+
+```txt
+Backend API response
+ReportArtifact[]
+packages/contracts types
+```
+
+D 展示对象:
+
+```txt
+TestContext view
+TestRun
+InteractionTrace
+RiskReport
+DetectionReport
+AgentRiskProfile
+SupervisionPolicyPack
+RuntimeSupervisionRecord[]
+DefenseReport
+```
+
+D 输出:
+
+```txt
+Frontend route / page
+ViewModel
+User action request
+API request payload
+```
+
+D 不得:
+
+- 直接 import `backend/src/**`
+- 直接读取 `configs/*.json` 解释规则、场景或策略
+- 直接读取 `outputs/**` 原始文件作为业务数据源
+- 在前端重新计算风险等级、风险画像或防御效果
+- 用 demo payload 反向修改正式 contracts
+
+D 联调检查表:
+
+- 前端页面只从 API client 或 report artifact 加载数据
+- 前端类型只从 `@agent-guard/contracts` 或前端私有 view model 引入
+- 前端 view model 不改变共享契约字段语义
+- Dashboard、Detection、Supervision、DefenseReports 页面都能追溯到对应 reportId / traceId / policyPackId
+- 如果 D 需要新增展示字段，必须先通过协调人更新 `docs/contracts.md` 和 `packages/contracts/src/types/**`

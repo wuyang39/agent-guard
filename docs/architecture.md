@@ -18,7 +18,7 @@ P0 阶段先固化一条可追溯的完整测评闭环:
 被测 Agent -> Agent Adapter -> Test Runner -> MCP Sandbox -> MCP Monitor -> 交互日志采集 -> 风险判定 -> 证据链生成 -> 报告输出
 ```
 
-完整系统目标不是停留在简单 demo 或最小闭环，而是逐步形成“场景库 + 运行监控 + 风险判定 + 证据链 + 攻击链 + 评分统计 + 报告展示 + 可复现实验”的竞赛级测评平台。P0 的作用是先让三名开发者围绕稳定数据契约并行开发，并跑通一次可追溯的 Agent-MCP 安全测评流程。
+完整系统目标不是停留在简单 demo 或最小闭环，而是逐步形成“场景库 + 运行监控 + 风险判定 + 证据链 + 攻击链 + 评分统计 + 报告展示 + 可复现实验”的竞赛级测评平台。P0 的作用是先让后端 A/B/C 围绕稳定数据契约并行开发，并跑通一次可追溯的 Agent-MCP 安全测评流程；正式前端由 D 作为独立消费线接入 Backend API、报告产物和共享契约。
 
 ## 2. 阶段范围
 
@@ -66,7 +66,7 @@ AgentUnderTest -> AgentAdapterConfig -> TestContext -> TestRun -> InteractionTra
 
 后一个模块只能消费前一个模块公开输出的数据对象。禁止跨层直接读取其他模块的内部文件、私有类、缓存对象或临时日志。
 
-## 4. 三人开发边界
+## 4. 开发边界
 
 ### 开发者 A: 测试数据仓库与 MCP Sandbox 建模
 
@@ -149,9 +149,32 @@ AgentUnderTest + AgentAdapterConfig + TestContext -> TestRun + InteractionTrace
 TestContext + InteractionTrace -> RiskEvaluationResult -> RiskReport + ReportArtifact[]
 ```
 
+### 开发者 D: 正式前端 Web Console
+
+负责:
+
+- 实现 Web 控制台页面、组件、路由和状态管理
+- 通过 API Client 消费 Backend API
+- 展示配置视图、运行视图、Trace、风险报告、检测报告、策略包、运行时监督记录和防御报告
+- 将 `packages/contracts` 中的共享对象转换为前端 view model
+- 维护正式前端与 `frontend/demo/` 的边界
+
+不负责:
+
+- 不维护后端模块
+- 不读取 `configs/*.json` 或 `outputs/raw files`
+- 不执行风险判定、检测画像生成、策略包生成或防御报告生成
+- 不直接 import `backend/src/**`
+
+核心交付物:
+
+```txt
+Backend API + ReportArtifact[] + packages/contracts -> Frontend Web Console
+```
+
 ## 5. 开发者接口交接
 
-三名开发者之间只允许通过公开数据对象交接:
+A/B/C 后端三条线和 D 前端消费线之间只允许通过公开数据对象交接:
 
 ```txt
 外部输入:
@@ -171,6 +194,17 @@ B -> C:
 C -> Backend Report API / Frontend Web Console:
   RiskReport
   ReportArtifact[]
+
+Backend API / Report Artifacts -> D:
+  TestContext view
+  TestRun
+  InteractionTrace
+  RiskReport
+  DetectionReport
+  AgentRiskProfile
+  SupervisionPolicyPack
+  RuntimeSupervisionRecord[]
+  DefenseReport
 ```
 
 详细字段以 `docs/contracts.md` 和 `docs/interfaces.md` 为准。任何共享字段变更必须先更新文档，再进入联调。
@@ -275,4 +309,4 @@ outputs/reports/{caseId}-{reportId}.html
 - 风险判定只相信 `TestContext`、`InteractionTrace` 和 `riskRules`
 - 报告只呈现风险模块产出的结果，不重新解释原始日志
 - 所有可追溯结论都必须引用 `eventId`
-- 三人协作以契约对齐，不以口头约定对齐
+- A/B/C/D 协作以契约对齐，不以口头约定对齐

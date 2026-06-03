@@ -15,7 +15,7 @@
 - 为前端控制台预留独立工作区
 - 为后端测评运行时预留清晰模块边界
 - 为前后端共享接口预留稳定契约包
-- 为三名开发者保留严格工作区
+- 为 A/B/C/D 开发者保留严格工作区
 - 为 API、存储、测试、报告导出、历史回放、评分统计和可视化迭代预留位置
 
 本次目录设计不改变系统定位: 唯一被测对象仍然是 `Agent`。MCP Server、Tool、Resource、Prompt、Tool Response、风险规则和测试用例仍然全部由系统内部提供。后续接入真实 MCP 风格环境或数据库时，也必须先进入标准模块边界和共享契约。
@@ -64,6 +64,10 @@ agent-guard/
           traces/
           risks/
           reports/
+          detection/
+          policies/
+          supervision/
+          defense/
           system/
 
       core/
@@ -76,6 +80,8 @@ agent-guard/
       modules/
         agent/
         config/
+        detection/
+        policy/
         sandbox/
         mcp-server/
           tools/
@@ -86,6 +92,8 @@ agent-guard/
         monitor/
         risk/
         report/
+        supervisor/
+        defense/
 
       services/
       shared/
@@ -102,10 +110,13 @@ agent-guard/
       pages/
         Dashboard/
         AgentConnect/
+        Detection/
+        DefenseReports/
         TestCases/
         TestRuns/
         TraceDetail/
         RiskReports/
+        Supervision/
         Configs/
         System/
       components/
@@ -117,6 +128,10 @@ agent-guard/
         risk/
         attack-chain/
         report/
+        detection/
+        policy/
+        supervision/
+        defense/
       lib/
         api/
         hooks/
@@ -138,6 +153,10 @@ agent-guard/
           sandbox.ts
           test.ts
           trace.ts
+          detection.ts
+          policy.ts
+          supervision.ts
+          defense.ts
 
   configs/
     tools.json
@@ -147,6 +166,10 @@ agent-guard/
     risk_rules.json
     test_cases.json
     test_oracles.json
+    red_team_scenarios.json
+    supervision_policy_templates.json
+
+  scenarios/
 
   outputs/
     runs/
@@ -195,6 +218,18 @@ agent-guard/
 - 构造 `TestContext`
 - 管理测试数据仓库到运行时上下文的转换
 
+`backend/src/modules/detection/`:
+
+- 输入 `RiskEvaluationResult`、`RiskReport` 和 `InteractionTrace`
+- 输出 `DetectionReport`
+- 抽取监督前检测结论，不执行运行时监督
+
+`backend/src/modules/policy/`:
+
+- 输入 `AgentRiskProfile` 和策略模板
+- 输出 `SupervisionPolicyPack`
+- 只负责生成策略包，不执行策略包
+
 `backend/src/modules/sandbox/`:
 
 - 定义系统内置 MCP Sandbox 画像
@@ -231,6 +266,19 @@ agent-guard/
 - 输出 `RiskReport` 和 `ReportArtifact[]`
 - 不重新解释原始日志，不重新计算风险等级
 
+`backend/src/modules/supervisor/`:
+
+- 加载 `SupervisionPolicyPack`
+- 对真实或半真实 Agent 运行环境中的工具调用、资源访问、API 调用和高风险动作做监督
+- 输出 `RuntimeSupervisionRecord[]`
+- 不生成策略包，不生成风险画像，不生成防御报告
+
+`backend/src/modules/defense/`:
+
+- 输入 `DetectionReport`、`AgentRiskProfile`、`SupervisionPolicyPack` 和 `RuntimeSupervisionRecord[]`
+- 输出 `DefenseReport` 和防御报告产物
+- 不编造运行时阻断记录，不重新采集 Agent 行为
+
 `backend/src/services/`:
 
 - 预留后端应用服务层
@@ -259,10 +307,13 @@ agent-guard/
 
 - `Dashboard/`: 总体风险概览
 - `AgentConnect/`: 被测 Agent 接入配置页
+- `Detection/`: 监督前检测报告、失守场景和 Agent 风险画像页
+- `DefenseReports/`: 防御报告列表与详情页
 - `TestCases/`: 测试用例与测试数据查看页
 - `TestRuns/`: 测试运行列表和运行状态页
 - `TraceDetail/`: Tool Call Trace 与原始事件详情页
 - `RiskReports/`: 风险报告列表与详情页
+- `Supervision/`: 运行时监督、策略包加载、告警和阻断记录页
 - `Configs/`: 内置 Tool、Resource、Prompt、Rule 查看页
 - `System/`: 系统状态、版本和诊断页
 
@@ -276,6 +327,10 @@ agent-guard/
 - `risk/`: 风险等级、Finding、高危问题列表组件
 - `attack-chain/`: 攻击链视图组件
 - `report/`: 报告详情、导出入口、证据链展示组件
+- `detection/`: 检测报告、风险画像、失守场景展示组件
+- `policy/`: 策略包、策略模板和策略命中说明组件
+- `supervision/`: 运行时监督事件、告警、阻断和询问记录组件
+- `defense/`: 防御报告、防御效果和残余风险展示组件
 
 `frontend/src/lib/`:
 
@@ -305,6 +360,11 @@ agent-guard/
 - `RiskEvaluationResult`
 - `RiskReport`
 - `ReportArtifact`
+- `DetectionReport`
+- `AgentRiskProfile`
+- `SupervisionPolicyPack`
+- `RuntimeSupervisionRecord`
+- `DefenseReport`
 - API request / response 的稳定类型
 
 禁止放入:
@@ -316,15 +376,16 @@ agent-guard/
 - 报告导出逻辑
 - 前端组件状态逻辑
 
-## 7. 三人工作区摘要
+## 7. 四人工作区摘要
 
 详细目录 ownership 只在 `docs/ownership.md` 中维护，避免同一份工作区清单在多个文档中重复漂移。
 
 职责摘要:
 
 - 开发者 A: 测试数据仓库、配置加载、MCP Sandbox 建模、系统内置 Tool / Resource / Prompt / Tool Response 运行时适配。
-- 开发者 B: Agent 接入、测试执行、动态监控、Trace API 与运行详情前端区域。
-- 开发者 C: 风险判定、证据链、攻击链、报告生成、风险报告 API 与报告展示前端区域。
+- 开发者 B: Agent 接入、测试执行、动态监控、Trace API 与运行详情后端支撑。
+- 开发者 C: 风险判定、证据链、攻击链、报告生成、风险报告 API 与报告展示数据支撑。
+- 开发者 D: 正式 Frontend Web Console、API Client、view model、页面和组件展示。
 
 共享受控区、可协作区和禁止修改区以 `docs/ownership.md` 为准。
 
@@ -334,6 +395,7 @@ agent-guard/
 
 ```txt
 frontend -> packages/contracts
+frontend -> backend API
 backend -> packages/contracts
 backend/api -> backend/services -> backend/modules
 backend/modules -> backend/shared
@@ -346,6 +408,8 @@ backend/modules -> packages/contracts
 packages/contracts -> backend
 packages/contracts -> frontend
 frontend -> backend/src
+frontend -> configs/*.json
+frontend -> outputs/raw files
 backend/modules/risk -> outputs/raw files
 backend/modules/report -> configs/*.json
 backend/modules/monitor -> backend/modules/risk
@@ -362,5 +426,7 @@ P0 只要求跑通主数据流。完整系统后续可以自然扩展:
 - 增加端到端测试时，放入 `tests/e2e/`
 - 增加运行脚本时，放入 `scripts/`
 - 增加场景库、规则集或演示数据时，优先放入 `configs/`，并通过配置加载模块转换为标准契约对象
+- 增加红队场景说明、对抗样本和攻击动作序列时，放入 `scenarios/`，并在 `configs/red_team_scenarios.json` 中维护索引
+- 增加检测报告、策略包、运行时监督和防御报告时，分别放入 `backend/src/modules/detection/`、`policy/`、`supervisor/`、`defense/`
 
 任何新增目录必须先明确 ownership，并同步 `docs/ownership.md`。

@@ -4,11 +4,11 @@
 基线日期: 2026-05-21
 状态: 初始规范基线
 
-说明: 本文档是开发协作纪律的初始基线。系统最终目标是形成可用于信息安全作品赛的完整 Agent-MCP 交互安全测评系统；当前规则优先保障 P0 垂直闭环和三人并行开发。目录 ownership 以 `docs/ownership.md` 为准，数据契约以 `docs/contracts.md` 为准。
+说明: 本文档是开发协作纪律的初始基线。系统最终目标是形成可用于信息安全作品赛的完整 Agent-MCP 交互安全测评系统；当前规则优先保障 P0 垂直闭环、P1 检测画像驱动监督和正式前端并行开发。目录 ownership 以 `docs/ownership.md` 为准，数据契约以 `docs/contracts.md` 为准。
 
 ## 1. 协作原则
 
-三人开发以共享契约为边界:
+开发者以共享契约为边界:
 
 ```txt
 AgentUnderTest -> AgentAdapterConfig -> TestContext -> TestRun -> InteractionTrace -> RiskEvaluationResult -> RiskReport -> ReportArtifact[]
@@ -78,6 +78,24 @@ AgentUnderTest -> AgentAdapterConfig -> TestContext -> TestRun -> InteractionTra
 - 绕过 `InteractionTrace` 读取临时日志
 - 直接修改配置仓库
 - 在报告展示中重新判定风险
+
+### 开发者 D
+
+负责正式前端 Web Console:
+
+- 维护 `frontend/src/**`
+- 实现 Dashboard、AgentConnect、TestCases、TestRuns、TraceDetail、RiskReports、Detection、Supervision、DefenseReports、Configs、System 等页面
+- 实现前端 API Client、view model、hook、格式化函数和展示组件
+- 只通过 Backend API、报告产物和 `packages/contracts` 消费数据
+- 展示 A/B/C 产出的运行、风险、检测、策略、监督和防御结果
+
+不得:
+
+- 直接 import `backend/src/**`
+- 直接读取 `configs/*.json`、`outputs/**` 作为业务数据源
+- 在前端重新判定风险、生成策略包或生成防御报告
+- 修改共享契约字段，除非已经经过协调人冻结流程
+- 让 `frontend/demo/**` 的临时字段反向决定正式前端或 contracts
 
 ## 3. 命名规范
 
@@ -210,6 +228,8 @@ P0 和后续阶段都必须遵守:
 - 在 `AgentAdapterConfig` 中保存明文密钥
 - 将 `ExpectedOutcome`、`TestOracle` 传入风险判定运行时
 - 在共享对象中使用 `any`、`unknown` 或不可 JSON 序列化的字段
+- 正式前端直接读取后端私有模块、配置文件或 outputs 原始文件
+- 正式前端重新计算风险等级、风险画像、策略包或防御效果
 
 ## 7. 开发顺序
 
@@ -219,7 +239,7 @@ P0 和后续阶段都必须遵守:
 2. 再做 mock 数据闭环: 用 mock Agent 和 mock trace 跑通风险判定与报告生成
 3. 再接入 Agent Adapter: 通过 `sendTask()` 驱动被测 Agent
 4. 再接入真实监控: 监控模块替换 mock trace，但保持 `InteractionTrace` 格式不变
-5. 最后实现前端展示: Frontend Web Console 只通过 Report API 或报告产物消费 `RiskReport` 和 `ReportArtifact[]`
+5. 最后实现前端展示: Frontend Web Console 只通过 Backend API 或报告产物消费共享契约对象
 
 `frontend/demo/` 只用于展示理想功能流程，不参与正式前端开发顺序。正式前端实现仍以 `frontend/src/**` 为准。
 
@@ -239,6 +259,10 @@ P0 和后续阶段都必须遵守:
 开发者 C:
   input: TestContext + InteractionTrace
   output: RiskEvaluationResult + RiskReport + ReportArtifact[]
+
+开发者 D:
+  input: Backend API response + ReportArtifact[] + packages/contracts types
+  output: Frontend Web Console page + ViewModel + API request payload
 ```
 
 总联调只接受:
@@ -291,3 +315,119 @@ P0 完成时必须满足:
 5. 通知其他开发者按文档更新
 
 未经文档更新的共享字段变更不得进入联调分支。
+
+## 11. P1 协调人工作规则
+
+P1 采用“检测发现弱点 -> 生成策略包 -> 真实运行监督 -> 防御报告证明有效”的两段式开发。协调人的首要任务是冻结跨模块对象，而不是让后端 A/B/C 三条线和前端 D 同时抢改接口。
+
+P1 主链路:
+
+```txt
+TestContext
+  -> TestRun + InteractionTrace
+  -> RiskEvaluationResult + RiskReport
+  -> DetectionReport
+  -> AgentRiskProfile
+  -> SupervisionPolicyPack
+  -> RuntimeSupervisionRecord[]
+  -> DefenseReport
+```
+
+### 11.1 P1 里程碑
+
+P1-A: 监督前检测与策略包生成
+
+```txt
+Trace -> RiskReport -> DetectionReport -> AgentRiskProfile -> SupervisionPolicyPack
+```
+
+验收:
+
+- 至少 3 类红队场景可运行
+- 全链路检测输出风险报告
+- 能生成检测报告和风险画像
+- 能基于风险画像生成策略包
+
+P1-B: 运行时监督与防御报告
+
+```txt
+SupervisionPolicyPack -> AgentSupervisor -> RuntimeSupervisionRecord[] -> DefenseReport
+```
+
+验收:
+
+- 一个真实或半真实 Agent 能加载策略包
+- 至少 4 类工具行为被监督
+- 至少 1 个高风险行为被阻断
+- 能生成防御报告并追溯到检测报告和策略包
+
+### 11.2 P1 冻结顺序
+
+协调人按以下顺序冻结接口:
+
+1. `DetectionReport`、`AgentRiskProfile`、`SupervisionPolicyPack`
+2. `RuntimeSupervisionRecord`、`RuntimeAlert`、`BlockedAction`
+3. `DefenseReport`
+4. API request / response
+5. 前端视图模型
+
+冻结前可以讨论字段；冻结后只允许新增可选字段。删除字段、修改字段含义、修改枚举含义必须重新同步:
+
+```txt
+docs/contracts.md
+docs/interfaces.md
+docs/ownership.md
+packages/contracts/src/types/**
+至少一个 mock 样例
+至少一个验证脚本
+```
+
+### 11.3 Contracts 修改纪律
+
+P1 初期禁止 A/B/C/D 同时修改 `packages/contracts/src/types/**`。推荐做法:
+
+1. 协调人先收集 A/B/C/D 字段需求
+2. 由一人集中提交 P1 类型草案
+3. A/B/C/D 分别确认是否可生产、可执行、可报告、可展示
+4. 冻结后各自实现模块
+
+新增类型建议:
+
+```txt
+detection.ts
+policy.ts
+supervision.ts
+defense.ts
+```
+
+### 11.4 P1 合并前检查
+
+任何 P1 分支合并前必须确认:
+
+- 没有把 `TestOracle` 传入运行时风险判定
+- 没有让 B 根据 `RiskReport` 私自生成策略
+- 没有让 C 编造运行时阻断记录
+- 没有让前端直接读取 `configs/*.json` 解释风险或策略
+- 没有让前端直接 import `backend/src/**`
+- `SupervisionPolicyPack` 的每条策略都能追溯到检测报告或策略模板
+- `RuntimeSupervisionRecord` 的每条阻断都能追溯到策略包
+- `DefenseReport` 的防御效果来自真实监督记录
+
+合并前至少运行:
+
+```txt
+npm run typecheck
+npm run verify:p1:detection-policy
+npm run verify:p1:supervision-defense
+```
+
+### 11.5 冲突处理顺序
+
+P1 并行开发出现冲突时，协调人按以下顺序处理:
+
+1. 先确认对象归属: 谁生产、谁消费、谁展示
+2. 再确认字段语义: 字段是否属于检测、策略、运行时监督或防御报告
+3. 再确认数据来源: 是否来自配置、trace、risk report、策略包或运行时记录
+4. 最后再改代码
+
+不要用临时代码绕过接口冲突。接口冲突必须回到 `docs/interfaces.md` 和 `docs/contracts.md` 解决。

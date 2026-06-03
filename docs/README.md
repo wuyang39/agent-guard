@@ -16,12 +16,14 @@
 
 - `architecture.md`: 系统定位、阶段范围、主数据流、模块边界、完整系统验收方向和架构原则。
 - `contracts.md`: 运行时共享数据契约，是字段、枚举和 JSON 可序列化约束的唯一来源。
-- `interfaces.md`: 三名开发者之间的交接对象、输入输出和联调检查表。
+- `interfaces.md`: A/B/C/D 开发者之间的交接对象、输入输出和联调检查表。
 - `directory-structure.md`: FAROS-style 完整文件目录、前后端分离结构和依赖方向。
-- `ownership.md`: 三名开发者的严格工作区、可协作区、禁止修改区和共享受控区。
+- `ownership.md`: A/B/C/D 开发者的严格工作区、可协作区、禁止修改区和共享受控区。
 - `development-rules.md`: 开发协作纪律、命名规范、Import 约束、禁止事项、开发顺序、P0 验收和完整系统演进约束。
 - `framework-risk-audit.md`: 当前文件框架和迭代风险审计记录。
 - `work-log-a-config-sandbox.md`: A 线配置加载、Sandbox runtime、验证命令和后续协作注意事项。
+- `next-round-supervision-defense-plan.md`: 下一轮检测画像驱动的 Agent 运行时监督、策略包生成和防御报告规划。
+- `frontend-d-handoff.md`: 开发者 D 正式前端 Web Console 的开工边界、页面优先级、API Client 和联调检查点。
 
 ## 3. 唯一来源规则
 

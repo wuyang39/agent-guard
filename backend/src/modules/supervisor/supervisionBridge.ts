@@ -1,4 +1,5 @@
 import { createId } from "../../shared";
+import type { SupervisionPolicy } from "../policy/policyTypes";
 import type { AgentMcpBridge, ToolCallRequest } from "../agent/agentMcpBridge";
 import type {
   JsonObject,
@@ -18,6 +19,7 @@ import type {
 } from "@agent-guard/contracts";
 import type { TraceRecorder } from "../monitor/traceRecorder";
 import type { AgentSupervisor } from "./agentSupervisor";
+import { findMatchingPolicies } from "./policyEngine";
 
 export type SupervisionBridgeOptions = {
   baseBridge: AgentMcpBridge;
@@ -109,21 +111,62 @@ function isJsonObject(value: JsonValue | undefined): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/**
+ * 根据命中的 redact 策略的 matchers 脱敏 request.parameters。
+ *
+ * matcher.fieldPath 使用 runtime payload 路径：
+ *   payload.parameters.X  → request.parameters["X"]  (tool_call)
+ *   payload.X             → request.parameters["X"]  (file_write, email_send, api_call 等)
+ *   payload.Y.Z           → request.parameters["Y"]["Z"]  (嵌套)
+ *
+ * 第一版实现：对 fieldPath 最终指向的字符串字段替换为 "[REDACTED]"。
+ */
 function redactRequestParameters(
   request: ToolCallRequest,
-  _record: RuntimeSupervisionRecord,
+  targetType: SupervisionTargetType,
+  policies: SupervisionPolicy[],
 ): ToolCallRequest {
+  const redactPolicies = policies.filter((p) => p.action === "redact");
+  if (redactPolicies.length === 0) return request;
+
   const params: Record<string, JsonValue> = { ...request.parameters };
 
-  // 对 bodyPreview 中匹配 "token" 的字段脱敏
-  if (
-    typeof params["bodyPreview"] === "string" &&
-    (params["bodyPreview"] as string).includes("token")
-  ) {
-    params["bodyPreview"] = "[REDACTED]";
+  for (const policy of redactPolicies) {
+    for (const matcher of policy.match.matchers ?? []) {
+      const paramKey = resolveRequestParameterKey(matcher.fieldPath, targetType);
+      if (paramKey && typeof params[paramKey] === "string") {
+        params[paramKey] = "[REDACTED]";
+      }
+    }
   }
 
   return { ...request, parameters: params as JsonObject };
+}
+
+/**
+ * 将 matcher.fieldPath (runtime payload 路径) 映射到 request.parameters 的 key。
+ *
+ * 映射规则：
+ *   payload.parameters.X  → "X"      (tool_call 的嵌套参数)
+ *   payload.X             → "X"      (file_write, email_send, api_call 的直接字段)
+ *   其他                    → 最后一段作为 key
+ */
+function resolveRequestParameterKey(
+  fieldPath: string,
+  _targetType: SupervisionTargetType,
+): string | null {
+  // 去掉 "payload." 前缀
+  const withoutPayload = fieldPath.startsWith("payload.")
+    ? fieldPath.slice(8)
+    : fieldPath;
+
+  // 去掉 "parameters." 前缀（tool_call 场景）
+  const key = withoutPayload.startsWith("parameters.")
+    ? withoutPayload.slice(11)
+    : withoutPayload;
+
+  // 只支持一级 key，不支持嵌套
+  return key.includes(".") ? null : key;
 }
 
 export function createSupervisionBridge(
@@ -193,7 +236,15 @@ export function createSupervisionBridge(
           return baseBridge.handleToolCall(request);
 
         case "redact": {
-          const sanitized = redactRequestParameters(request, decision);
+          const matchedPolicies = findMatchingPolicies(
+            supervisor.policyPack,
+            action,
+          );
+          const sanitized = redactRequestParameters(
+            request,
+            targetType,
+            matchedPolicies,
+          );
           return baseBridge.handleToolCall(sanitized);
         }
 

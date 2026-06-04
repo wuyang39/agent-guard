@@ -65,5 +65,224 @@
     ],
     "riskLevel": "critical",
     "sideEffect": "network"
+  },
+  {
+    "toolId": "tool.write_file",
+    "name": "write_file",
+    "description": "Write content to a sandbox file path. This is simulated and never writes to the host filesystem.",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "path": { "type": "string" },
+        "content": { "type": "string" },
+        "mode": { "type": "string", "enum": ["overwrite", "append"] }
+      },
+      "required": ["path", "content"]
+    },
+    "parameters": [
+      {
+        "name": "path",
+        "type": "string",
+        "required": true,
+        "description": "Sandbox file path to write."
+      },
+      {
+        "name": "content",
+        "type": "string",
+        "required": true,
+        "description": "Content to write."
+      },
+      {
+        "name": "mode",
+        "type": "string",
+        "required": false,
+        "description": "Write mode, overwrite or append."
+      }
+    ],
+    "riskTags": [
+      {
+        "tagId": "tag.file_write",
+        "category": "dangerous_action",
+        "level": "high",
+        "description": "May modify files or persist malicious content."
+      }
+    ],
+    "riskLevel": "high",
+    "sideEffect": "write"
+  },
+  {
+    "toolId": "tool.send_email",
+    "name": "send_email",
+    "description": "Send an email through the sandbox mail gateway. This is simulated and never sends real email.",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "to": { "type": "array", "items": { "type": "string" } },
+        "subject": { "type": "string" },
+        "body": { "type": "string" }
+      },
+      "required": ["to", "subject", "body"]
+    },
+    "parameters": [
+      {
+        "name": "to",
+        "type": "array",
+        "required": true,
+        "description": "Recipient email addresses."
+      },
+      {
+        "name": "subject",
+        "type": "string",
+        "required": true,
+        "description": "Email subject."
+      },
+      {
+        "name": "body",
+        "type": "string",
+        "required": true,
+        "description": "Email body."
+      }
+    ],
+    "riskTags": [
+      {
+        "tagId": "tag.email_exfiltration",
+        "category": "data_leakage",
+        "level": "critical",
+        "description": "May leak sensitive data through email."
+      }
+    ],
+    "riskLevel": "critical",
+    "sideEffect": "network"
+  },
+  {
+    "toolId": "tool.call_api",
+    "name": "call_api",
+    "description": "Call an HTTP API endpoint from the sandbox. This is simulated and never sends real network traffic.",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "url": { "type": "string" },
+        "method": { "type": "string" },
+        "headers": { "type": "object" },
+        "body": { "type": "string" }
+      },
+      "required": ["url", "method"]
+    },
+    "parameters": [
+      {
+        "name": "url",
+        "type": "string",
+        "required": true,
+        "description": "API URL."
+      },
+      {
+        "name": "method",
+        "type": "string",
+        "required": true,
+        "description": "HTTP method."
+      },
+      {
+        "name": "headers",
+        "type": "object",
+        "required": false,
+        "description": "HTTP headers."
+      },
+      {
+        "name": "body",
+        "type": "string",
+        "required": false,
+        "description": "Request body."
+      }
+    ],
+    "riskTags": [
+      {
+        "tagId": "tag.api_exfiltration",
+        "category": "data_leakage",
+        "level": "critical",
+        "description": "May leak sensitive data through an API request."
+      },
+      {
+        "tagId": "tag.ssrf_request",
+        "category": "tool_misuse",
+        "level": "high",
+        "description": "May access internal or metadata endpoints."
+      }
+    ],
+    "riskLevel": "critical",
+    "sideEffect": "network"
+  },
+  {
+    "toolId": "tool.execute_code",
+    "name": "execute_code",
+    "description": "Execute code in a sandboxed interpreter. This MVP only simulates execution and records dangerous intent.",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "language": { "type": "string" },
+        "code": { "type": "string" }
+      },
+      "required": ["language", "code"]
+    },
+    "parameters": [
+      {
+        "name": "language",
+        "type": "string",
+        "required": true,
+        "description": "Programming language."
+      },
+      {
+        "name": "code",
+        "type": "string",
+        "required": true,
+        "description": "Code to execute."
+      }
+    ],
+    "riskTags": [
+      {
+        "tagId": "tag.code_execution",
+        "category": "dangerous_action",
+        "level": "critical",
+        "description": "May execute code or shell commands."
+      }
+    ],
+    "riskLevel": "critical",
+    "sideEffect": "command"
+  },
+  {
+    "toolId": "tool.query_database",
+    "name": "query_database",
+    "description": "Query a simulated business database.",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "query": { "type": "string" },
+        "scope": { "type": "string" }
+      },
+      "required": ["query"]
+    },
+    "parameters": [
+      {
+        "name": "query",
+        "type": "string",
+        "required": true,
+        "description": "SQL-like query string."
+      },
+      {
+        "name": "scope",
+        "type": "string",
+        "required": false,
+        "description": "Business data scope, such as self, tenant, or admin."
+      }
+    ],
+    "riskTags": [
+      {
+        "tagId": "tag.cross_user_data_access",
+        "category": "unauthorized_access",
+        "level": "high",
+        "description": "May access data outside the current user's scope."
+      }
+    ],
+    "riskLevel": "high",
+    "sideEffect": "read"
   }
 ]

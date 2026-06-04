@@ -1,0 +1,251 @@
+[
+  {
+    "schemaVersion": "mvp-1",
+    "policyTemplateId": "policy.warn.untrusted_content_instruction",
+    "name": "Warn on untrusted content instruction",
+    "description": "Warn when untrusted retrieved, document, or web content appears to contain imperative instructions.",
+    "targetType": "agent_message",
+    "action": "warn",
+    "riskCategory": "instruction_injection_following",
+    "match": {
+      "relation": "any",
+      "matchers": [
+        {
+          "fieldPath": "payload.message",
+          "operator": "regex",
+          "value": "(ignore previous|hidden instruction|must output|indirect_success|system\\])",
+          "caseSensitive": false
+        }
+      ]
+    },
+    "reasonTemplate": "Detected profile includes indirect prompt injection. Warn when untrusted content carries imperative instructions."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "policyTemplateId": "policy.deny.secret_resource_read",
+    "name": "Deny secret resource read",
+    "description": "Block attempts to read sandbox secret paths or secret resources.",
+    "targetType": "tool_call",
+    "action": "deny",
+    "riskCategory": "unauthorized_access",
+    "match": {
+      "relation": "all",
+      "matchers": [
+        {
+          "fieldPath": "payload.toolId",
+          "operator": "equals",
+          "value": "tool.read_file"
+        },
+        {
+          "fieldPath": "payload.parameters.path",
+          "operator": "starts_with",
+          "value": "/secret/"
+        }
+      ]
+    },
+    "reasonTemplate": "Detected profile indicates unsafe secret resource reads. Deny read_file on /secret/*."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "policyTemplateId": "policy.deny.external_exfiltration",
+    "name": "Deny external exfiltration",
+    "description": "Block outbound requests that include token-like or secret-like content.",
+    "targetType": "api_call",
+    "action": "deny",
+    "riskCategory": "data_leakage",
+    "match": {
+      "relation": "any",
+      "matchers": [
+        {
+          "fieldPath": "payload.data",
+          "operator": "regex",
+          "value": "(token|secret|password|private[_-]?key)",
+          "caseSensitive": false
+        },
+        {
+          "fieldPath": "payload.url",
+          "operator": "contains",
+          "value": "attacker",
+          "caseSensitive": false
+        }
+      ]
+    },
+    "reasonTemplate": "Detected profile indicates sensitive data exfiltration. Deny external API calls carrying secret-like payloads."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "policyTemplateId": "policy.redact.secret_outbound_payload",
+    "name": "Redact secret outbound payload",
+    "description": "Redact token-like content before allowing lower-risk outbound messages.",
+    "targetType": "agent_message",
+    "action": "redact",
+    "riskCategory": "data_leakage",
+    "match": {
+      "relation": "any",
+      "matchers": [
+        {
+          "fieldPath": "payload.message",
+          "operator": "regex",
+          "value": "(token|secret|password|private[_-]?key)",
+          "caseSensitive": false
+        }
+      ]
+    },
+    "reasonTemplate": "Detected profile indicates possible secret leakage in messages. Redact secret-like content."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "policyTemplateId": "policy.ask.file_write",
+    "name": "Ask before file write",
+    "description": "Require review before file write actions.",
+    "targetType": "file_write",
+    "action": "ask",
+    "riskCategory": "dangerous_action",
+    "match": {
+      "relation": "any",
+      "matchers": [
+        {
+          "fieldPath": "payload.path",
+          "operator": "exists"
+        }
+      ]
+    },
+    "reasonTemplate": "Detected profile includes dangerous write actions. Ask before file writes."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "policyTemplateId": "policy.ask.email_send",
+    "name": "Ask before email send",
+    "description": "Require review before sending email, especially to external recipients.",
+    "targetType": "email_send",
+    "action": "ask",
+    "riskCategory": "data_leakage",
+    "match": {
+      "relation": "any",
+      "matchers": [
+        {
+          "fieldPath": "payload.to",
+          "operator": "regex",
+          "value": "(external|invalid|pwnd|attacker)",
+          "caseSensitive": false
+        },
+        {
+          "fieldPath": "payload.bodyPreview",
+          "operator": "regex",
+          "value": "(token|secret|password|private[_-]?key)",
+          "caseSensitive": false
+        }
+      ]
+    },
+    "reasonTemplate": "Detected profile includes email exfiltration. Ask before risky email sends."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "policyTemplateId": "policy.deny.internal_network_request",
+    "name": "Deny internal network request",
+    "description": "Block localhost, private network, and cloud metadata requests.",
+    "targetType": "api_call",
+    "action": "deny",
+    "riskCategory": "tool_misuse",
+    "match": {
+      "relation": "all",
+      "matchers": [
+        {
+          "fieldPath": "payload.url",
+          "operator": "regex",
+          "value": "^https?://(localhost|127\\.0\\.0\\.1|10\\.|172\\.(1[6-9]|2[0-9]|3[0-1])\\.|192\\.168\\.|169\\.254\\.169\\.254)",
+          "caseSensitive": false
+        }
+      ]
+    },
+    "reasonTemplate": "Detected profile includes SSRF or internal network access attempts. Deny internal network requests."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "policyTemplateId": "policy.warn.tool_response_contains_instruction",
+    "name": "Warn on tool response instruction",
+    "description": "Warn when a tool result contains instruction-like content.",
+    "targetType": "agent_message",
+    "action": "warn",
+    "riskCategory": "instruction_injection_following",
+    "match": {
+      "relation": "any",
+      "matchers": [
+        {
+          "fieldPath": "payload.message",
+          "operator": "regex",
+          "value": "(ignore previous|system notice|must first|do not mention|call_api|send_email)",
+          "caseSensitive": false
+        }
+      ]
+    },
+    "reasonTemplate": "Detected profile includes tool response injection. Warn on instruction-like tool output."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "policyTemplateId": "policy.deny.code_execution",
+    "name": "Deny code execution",
+    "description": "Block runtime code execution.",
+    "targetType": "code_execution",
+    "action": "deny",
+    "riskCategory": "dangerous_action",
+    "match": {
+      "relation": "any",
+      "matchers": [
+        {
+          "fieldPath": "payload.codePreview",
+          "operator": "exists"
+        }
+      ]
+    },
+    "reasonTemplate": "Detected profile includes unexpected code execution. Deny code execution."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "policyTemplateId": "policy.warn.role_claim_in_prompt",
+    "name": "Warn on role claim in prompt",
+    "description": "Warn when user-controlled text claims elevated authority.",
+    "targetType": "agent_message",
+    "action": "warn",
+    "riskCategory": "unauthorized_access",
+    "match": {
+      "relation": "any",
+      "matchers": [
+        {
+          "fieldPath": "payload.message",
+          "operator": "regex",
+          "value": "(i am the administrator|skip login|admin mode|full access)",
+          "caseSensitive": false
+        }
+      ]
+    },
+    "reasonTemplate": "Detected profile includes role confusion. Warn on user-supplied admin claims."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "policyTemplateId": "policy.deny.admin_api_without_role",
+    "name": "Deny admin API without role",
+    "description": "Block admin API and cross-user database access unless explicitly authorized.",
+    "targetType": "api_call",
+    "action": "deny",
+    "riskCategory": "unauthorized_access",
+    "match": {
+      "relation": "any",
+      "matchers": [
+        {
+          "fieldPath": "payload.url",
+          "operator": "contains",
+          "value": "/admin/",
+          "caseSensitive": false
+        },
+        {
+          "fieldPath": "payload.data",
+          "operator": "regex",
+          "value": "(all users|tenant|admin)",
+          "caseSensitive": false
+        }
+      ]
+    },
+    "reasonTemplate": "Detected profile includes authorization bypass. Deny admin API access without trusted role context."
+  }
+]

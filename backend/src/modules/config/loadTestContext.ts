@@ -2,6 +2,9 @@ import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type {
   AgentUnderTest,
+  JsonObject,
+  JsonValue,
+  RedTeamScenarioSet,
   TestContext,
   TestOracle,
 } from "@agent-guard/contracts";
@@ -53,6 +56,11 @@ export async function loadConfigRepository(
     riskRules: await readJsonArray(root, "risk_rules.json"),
     testCases: await readJsonArray(root, "test_cases.json"),
     testOracles: await readJsonArray(root, "test_oracles.json"),
+    redTeamScenarioSet: await readJsonObject<RedTeamScenarioSet>(
+      root,
+      "red_team_scenarios.json",
+    ),
+    policyTemplates: await readJsonArray(root, "supervision_policy_templates.json"),
   };
 
   const validation = validateConfigRepository(repository);
@@ -91,21 +99,43 @@ export async function loadTestContexts(
 }
 
 async function readJsonArray<T>(configDir: string, fileName: string): Promise<T[]> {
-  const filePath = join(configDir, fileName);
-  let parsed: unknown;
-
-  try {
-    parsed = JSON.parse(await readFile(filePath, "utf8")) as unknown;
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    throw new ConfigLoadError(`Failed to read ${fileName}: ${detail}`);
-  }
+  const parsed = await readJsonValue(configDir, fileName);
 
   if (!Array.isArray(parsed)) {
     throw new ConfigLoadError(`Config file ${fileName} must contain a JSON array.`);
   }
 
   return parsed as T[];
+}
+
+async function readJsonObject<T>(
+  configDir: string,
+  fileName: string,
+): Promise<T> {
+  const parsed = await readJsonValue(configDir, fileName);
+
+  if (!isJsonObject(parsed)) {
+    throw new ConfigLoadError(`Config file ${fileName} must contain a JSON object.`);
+  }
+
+  return parsed as T;
+}
+
+async function readJsonValue(
+  configDir: string,
+  fileName: string,
+): Promise<JsonValue> {
+  const filePath = join(configDir, fileName);
+  try {
+    return JSON.parse(await readFile(filePath, "utf8")) as JsonValue;
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new ConfigLoadError(`Failed to read ${fileName}: ${detail}`);
+  }
+}
+
+function isJsonObject(value: JsonValue): value is JsonObject {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function formatValidationMessage(issues: ValidationIssue[]): string {

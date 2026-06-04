@@ -8,6 +8,7 @@
     "demo:web": "node scripts/demo-web-server.mjs",
     "demo:sample-agent": "node scripts/sample-agent-server.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "verify:a-config-sandbox": "node --import tsx scripts/verify-a-config-sandbox.ts",
     "verify:p1:detection-policy": "node --import tsx scripts/verify-p1-detection-policy.ts",
     "verify:p1:supervision-defense": "node --import tsx scripts/verify-p1-supervision-defense.ts"
   },

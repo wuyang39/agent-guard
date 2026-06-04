@@ -1,23 +1,24 @@
 import { createId, nowIso } from "../../shared";
 import type { AgentAdapterConfig, AgentUnderTest } from "../agent/agentTypes";
 import type { TestContext } from "../config/schemas";
-import type { InteractionTrace } from "../monitor/traceTypes";
-import type { TestRun } from "./runTypes";
+import type { TestRun, TestRunResult } from "./runTypes";
+import type { SupervisionPolicyPack } from "@agent-guard/contracts";
 import { TraceRecorder } from "../monitor/traceRecorder";
 import { createMCPMonitor } from "../monitor/mcpMonitor";
-import { createMockMcpSandboxRuntime } from "../sandbox/mockMcpSandboxRuntime";
+import { createMcpSandboxForContext } from "../sandbox/mcpSandbox";
 import { createAgentAdapterRegistry } from "../agent/agentAdapter";
 import { MockAgentAdapter } from "../agent/mockAgentSession";
 
-export type TestRunResult = {
-  testRun: TestRun;
-  trace: InteractionTrace;
+export type RunTestCaseOptions = {
+  supervisionPolicyPack?: SupervisionPolicyPack;
+  runtimeSessionId?: string;
 };
 
 export async function runTestCase(
   agent: AgentUnderTest,
   adapterConfig: AgentAdapterConfig,
   testContext: TestContext,
+  options?: RunTestCaseOptions,
 ): Promise<TestRunResult> {
   // 1. validate
   if (!agent.schemaVersion) throw new Error("agent.schemaVersion required");
@@ -42,8 +43,8 @@ export async function runTestCase(
     startedAt: nowIso(),
   };
 
-  // 3. 创建 Sandbox + Monitor + Bridge
-  const sandbox = createMockMcpSandboxRuntime(testContext);
+  // 3. 创建 Sandbox（正式入口）+ Monitor + Bridge
+  const sandbox = createMcpSandboxForContext(testContext);
   const recorder = new TraceRecorder({ traceId, runId, contextId, caseId });
   const monitor = createMCPMonitor(sandbox, recorder);
   const bridge = monitor.createBridge();
@@ -103,6 +104,6 @@ export async function runTestCase(
       endedAt: testRun.endedAt,
     });
 
-    return { testRun, trace };
+    return { testRun, trace, supervisionRecords: [] };
   }
 }

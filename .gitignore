@@ -12,6 +12,10 @@ outputs/reports/*.json
 outputs/reports/*.html
 outputs/reports/*.md
 outputs/reports/*.pdf
+outputs/reports/**/*.json
+outputs/reports/**/*.html
+outputs/reports/**/*.md
+outputs/reports/**/*.pdf
 outputs/exports/*
 !outputs/runs/.gitkeep
 !outputs/traces/.gitkeep

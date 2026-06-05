@@ -1,23 +1,27 @@
 import { createId, nowIso } from "../../shared";
 import type { AgentAdapterConfig, AgentUnderTest } from "../agent/agentTypes";
+import type { AgentMcpBridge } from "../agent/agentMcpBridge";
 import type { TestContext } from "../config/schemas";
-import type { InteractionTrace } from "../monitor/traceTypes";
-import type { TestRun } from "./runTypes";
+import type { TestRun, TestRunResult } from "./runTypes";
+import type { RuntimeSupervisionRecord, SupervisionPolicyPack } from "@agent-guard/contracts";
 import { TraceRecorder } from "../monitor/traceRecorder";
 import { createMCPMonitor } from "../monitor/mcpMonitor";
-import { createMockMcpSandboxRuntime } from "../sandbox/mockMcpSandboxRuntime";
+import { createMcpSandboxForContext } from "../sandbox/mcpSandbox";
 import { createAgentAdapterRegistry } from "../agent/agentAdapter";
 import { MockAgentAdapter } from "../agent/mockAgentSession";
+import { createSupervisionBridge } from "../supervisor/supervisionBridge";
+import { createAgentSupervisor } from "../supervisor/agentSupervisor";
 
-export type TestRunResult = {
-  testRun: TestRun;
-  trace: InteractionTrace;
+export type RunTestCaseOptions = {
+  supervisionPolicyPack?: SupervisionPolicyPack;
+  runtimeSessionId?: string;
 };
 
 export async function runTestCase(
   agent: AgentUnderTest,
   adapterConfig: AgentAdapterConfig,
   testContext: TestContext,
+  options?: RunTestCaseOptions,
 ): Promise<TestRunResult> {
   // 1. validate
   if (!agent.schemaVersion) throw new Error("agent.schemaVersion required");
@@ -42,11 +46,28 @@ export async function runTestCase(
     startedAt: nowIso(),
   };
 
-  // 3. 创建 Sandbox + Monitor + Bridge
-  const sandbox = createMockMcpSandboxRuntime(testContext);
+  // 3. 创建 Sandbox（正式入口）+ Monitor + Bridge
+  const sandbox = createMcpSandboxForContext(testContext);
   const recorder = new TraceRecorder({ traceId, runId, contextId, caseId });
   const monitor = createMCPMonitor(sandbox, recorder);
   const bridge = monitor.createBridge();
+
+  // 3b. 如果有策略包，包装 SupervisionBridge
+  let activeBridge: AgentMcpBridge = bridge;
+  const supervisionRecords: RuntimeSupervisionRecord[] = [];
+  if (options?.supervisionPolicyPack) {
+    const supervisor = createAgentSupervisor(options.supervisionPolicyPack);
+    const runtimeSessionId =
+      options.runtimeSessionId ?? createId("session");
+    const supervised = createSupervisionBridge({
+      baseBridge: bridge,
+      supervisor,
+      recorder,
+      runtimeSessionId,
+      agentId,
+    });
+    activeBridge = supervised;
+  }
 
   // 4. 记录 test_started
   recorder.record("test_started", "system", { contextId, sandboxId });
@@ -69,7 +90,7 @@ export async function runTestCase(
 
   // 7. try/catch/finally
   try {
-    const result = await session.sendTask(task, bridge, {
+    const result = await session.sendTask(task, activeBridge, {
       runId,
       caseId,
       agentId,
@@ -90,6 +111,12 @@ export async function runTestCase(
     await session.close?.();
     testRun.endedAt = nowIso();
 
+    // 收集监督记录
+    const supervised = activeBridge as unknown as { getRecords?: () => RuntimeSupervisionRecord[] };
+    if (typeof supervised.getRecords === "function") {
+      supervisionRecords.push(...supervised.getRecords());
+    }
+
     const trace = monitor.finalizeTrace({
       schemaVersion: "mvp-1",
       traceId,
@@ -103,6 +130,6 @@ export async function runTestCase(
       endedAt: testRun.endedAt,
     });
 
-    return { testRun, trace };
+    return { testRun, trace, supervisionRecords };
   }
 }

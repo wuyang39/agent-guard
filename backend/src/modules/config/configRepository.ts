@@ -1,6 +1,8 @@
 import type {
   McpSandboxProfile,
+  PolicyTemplate,
   PromptDefinition,
+  RedTeamScenarioSet,
   ResourceDefinition,
   RiskRule,
   TestCase,
@@ -17,6 +19,8 @@ export type ConfigRepository = {
   riskRules: RiskRule[];
   testCases: TestCase[];
   testOracles: TestOracle[];
+  redTeamScenarioSet: RedTeamScenarioSet;
+  policyTemplates: PolicyTemplate[];
 };
 
 export type ConfigIndex = {
@@ -27,6 +31,8 @@ export type ConfigIndex = {
   riskRulesById: ReadonlyMap<string, RiskRule>;
   testCasesById: ReadonlyMap<string, TestCase>;
   testOraclesByCaseId: ReadonlyMap<string, TestOracle>;
+  redTeamScenariosById: ReadonlyMap<string, RedTeamScenarioSet["scenarios"][number]>;
+  policyTemplatesById: ReadonlyMap<string, PolicyTemplate>;
 };
 
 export function buildConfigIndex(repository: ConfigRepository): ConfigIndex {
@@ -41,6 +47,14 @@ export function buildConfigIndex(repository: ConfigRepository): ConfigIndex {
     riskRulesById: indexBy(repository.riskRules, (rule) => rule.ruleId),
     testCasesById: indexBy(repository.testCases, (testCase) => testCase.caseId),
     testOraclesByCaseId: indexBy(repository.testOracles, (oracle) => oracle.caseId),
+    redTeamScenariosById: indexBy(
+      repository.redTeamScenarioSet.scenarios,
+      (scenario) => scenario.scenarioId,
+    ),
+    policyTemplatesById: indexBy(
+      repository.policyTemplates,
+      (template) => template.policyTemplateId,
+    ),
   };
 }
 

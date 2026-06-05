@@ -24,6 +24,30 @@ const matcherOperators = new Set([
   "in",
   "regex",
 ]);
+const riskCategories = new Set([
+  "tool_misuse",
+  "unauthorized_access",
+  "data_leakage",
+  "dangerous_action",
+  "instruction_injection_following",
+]);
+const supervisionActions = new Set([
+  "allow",
+  "deny",
+  "ask",
+  "warn",
+  "redact",
+  "isolate",
+]);
+const supervisionTargetTypes = new Set([
+  "tool_call",
+  "resource_access",
+  "api_call",
+  "file_write",
+  "email_send",
+  "code_execution",
+  "agent_message",
+]);
 
 export function validateConfigRepository(
   repository: ConfigRepository,
@@ -61,6 +85,16 @@ export function validateConfigRepository(
     "testOracles",
     repository.testOracles.map((oracle) => oracle.oracleId),
   );
+  assertUnique(
+    issues,
+    "redTeamScenarios",
+    repository.redTeamScenarioSet.scenarios.map((scenario) => scenario.scenarioId),
+  );
+  assertUnique(
+    issues,
+    "policyTemplates",
+    repository.policyTemplates.map((template) => template.policyTemplateId),
+  );
 
   const toolIds = new Set(repository.tools.map((tool) => tool.toolId));
   const resourceIds = new Set(
@@ -71,6 +105,14 @@ export function validateConfigRepository(
     repository.toolResponseTemplates.map((response) => response.responseTemplateId),
   );
   const caseIds = new Set(repository.testCases.map((testCase) => testCase.caseId));
+  const enabledCaseIds = new Set(
+    repository.testCases
+      .filter((testCase) => testCase.enabled)
+      .map((testCase) => testCase.caseId),
+  );
+  const policyTemplateIds = new Set(
+    repository.policyTemplates.map((template) => template.policyTemplateId),
+  );
   const riskTagIds = new Set<string>();
 
   for (const riskTagOwner of [
@@ -104,24 +146,10 @@ export function validateConfigRepository(
     }
 
     for (const tagId of rule.match.riskTagIds ?? []) {
-      assertReference(
-        issues,
-        riskTagIds,
-        tagId,
-        `riskRules.${rule.ruleId}.match.riskTagIds`,
-      );
+      assertReference(issues, riskTagIds, tagId, `riskRules.${rule.ruleId}.match.riskTagIds`);
     }
 
-    for (const matcher of rule.match.matchers ?? []) {
-      if (!matcherOperators.has(matcher.operator)) {
-        issues.push({
-          severity: "error",
-          code: "invalid_match_operator",
-          message: `Unknown matcher operator "${matcher.operator}".`,
-          path: `riskRules.${rule.ruleId}.match.matchers.${matcher.fieldPath}`,
-        });
-      }
-    }
+    validateMatchCondition(issues, rule.match, `riskRules.${rule.ruleId}.match`);
   }
 
   for (const testCase of repository.testCases) {
@@ -245,10 +273,162 @@ export function validateConfigRepository(
     }
   }
 
+  if (repository.redTeamScenarioSet.schemaVersion !== schemaVersion) {
+    issues.push({
+      severity: "error",
+      code: "invalid_schema_version",
+      message: `Red team scenario set "${repository.redTeamScenarioSet.scenarioSetId}" must use schemaVersion "${schemaVersion}".`,
+      path: "redTeamScenarioSet.schemaVersion",
+    });
+  }
+
+  for (const scenario of repository.redTeamScenarioSet.scenarios) {
+    if (!scenario.scenarioId) {
+      issues.push({
+        severity: "error",
+        code: "missing_id",
+        message: "Red team scenario must have scenarioId.",
+        path: "redTeamScenarioSet.scenarios.scenarioId",
+      });
+    }
+
+    for (const caseId of scenario.caseIds) {
+      assertReference(
+        issues,
+        caseIds,
+        caseId,
+        `redTeamScenarioSet.scenarios.${scenario.scenarioId}.caseIds`,
+      );
+    }
+
+    if (!scenario.caseIds.some((caseId) => enabledCaseIds.has(caseId))) {
+      issues.push({
+        severity: "warning",
+        code: "scenario_without_enabled_case",
+        message: `Scenario "${scenario.scenarioId}" has no enabled test case.`,
+        path: `redTeamScenarioSet.scenarios.${scenario.scenarioId}.caseIds`,
+      });
+    }
+
+    for (const category of scenario.expectedWeaknessCategories) {
+      if (!riskCategories.has(category)) {
+        issues.push({
+          severity: "error",
+          code: "invalid_risk_category",
+          message: `Unknown risk category "${category}".`,
+          path: `redTeamScenarioSet.scenarios.${scenario.scenarioId}.expectedWeaknessCategories`,
+        });
+      }
+    }
+
+    for (const policyTemplateId of scenario.recommendedPolicyTemplateIds) {
+      assertReference(
+        issues,
+        policyTemplateIds,
+        policyTemplateId,
+        `redTeamScenarioSet.scenarios.${scenario.scenarioId}.recommendedPolicyTemplateIds`,
+      );
+    }
+  }
+
+  const referencedPolicyTemplateIds = new Set(
+    repository.redTeamScenarioSet.scenarios.flatMap(
+      (scenario) => scenario.recommendedPolicyTemplateIds,
+    ),
+  );
+
+  for (const template of repository.policyTemplates) {
+    if (template.schemaVersion !== schemaVersion) {
+      issues.push({
+        severity: "error",
+        code: "invalid_schema_version",
+        message: `Policy template "${template.policyTemplateId}" must use schemaVersion "${schemaVersion}".`,
+        path: `policyTemplates.${template.policyTemplateId}.schemaVersion`,
+      });
+    }
+
+    if (!supervisionTargetTypes.has(template.targetType)) {
+      issues.push({
+        severity: "error",
+        code: "invalid_supervision_target_type",
+        message: `Unknown supervision target type "${template.targetType}".`,
+        path: `policyTemplates.${template.policyTemplateId}.targetType`,
+      });
+    }
+
+    if (!supervisionActions.has(template.action)) {
+      issues.push({
+        severity: "error",
+        code: "invalid_supervision_action",
+        message: `Unknown supervision action "${template.action}".`,
+        path: `policyTemplates.${template.policyTemplateId}.action`,
+      });
+    }
+
+    if (!riskCategories.has(template.riskCategory)) {
+      issues.push({
+        severity: "error",
+        code: "invalid_risk_category",
+        message: `Unknown risk category "${template.riskCategory}".`,
+        path: `policyTemplates.${template.policyTemplateId}.riskCategory`,
+      });
+    }
+
+    validateMatchCondition(
+      issues,
+      template.match,
+      `policyTemplates.${template.policyTemplateId}.match`,
+    );
+
+    for (const tagId of template.match.riskTagIds ?? []) {
+      assertReference(
+        issues,
+        riskTagIds,
+        tagId,
+        `policyTemplates.${template.policyTemplateId}.match.riskTagIds`,
+      );
+    }
+
+    if (!referencedPolicyTemplateIds.has(template.policyTemplateId)) {
+      issues.push({
+        severity: "warning",
+        code: "unreferenced_policy_template",
+        message: `Policy template "${template.policyTemplateId}" is not recommended by any red team scenario.`,
+        path: `policyTemplates.${template.policyTemplateId}`,
+      });
+    }
+  }
+
   return {
     ok: !issues.some((issue) => issue.severity === "error"),
     issues,
   };
+}
+
+function validateMatchCondition(
+  issues: ValidationIssue[],
+  match: { relation: string; matchers?: { operator: string; fieldPath: string }[] },
+  path: string,
+): void {
+  if (match.relation !== "all" && match.relation !== "any") {
+    issues.push({
+      severity: "error",
+      code: "invalid_match_relation",
+      message: `Unknown match relation "${match.relation}".`,
+      path: `${path}.relation`,
+    });
+  }
+
+  for (const matcher of match.matchers ?? []) {
+    if (!matcherOperators.has(matcher.operator)) {
+      issues.push({
+        severity: "error",
+        code: "invalid_match_operator",
+        message: `Unknown matcher operator "${matcher.operator}".`,
+        path: `${path}.matchers.${matcher.fieldPath}`,
+      });
+    }
+  }
 }
 
 function assertUnique(

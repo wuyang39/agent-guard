@@ -22,6 +22,7 @@
 - `development-rules.md`: 开发协作纪律、命名规范、Import 约束、禁止事项、开发顺序、P0 验收和完整系统演进约束。
 - `framework-risk-audit.md`: 当前文件框架和迭代风险审计记录。
 - `work-log-a-config-sandbox.md`: A 线配置加载、Sandbox runtime、验证命令和后续协作注意事项。
+- `a-line-aig-adaptation-plan.md`: A 线攻击库、Sandbox 扩展和 AIG `mcp-scan` / `agent-scan` 可迁移能力分析。
 - `next-round-supervision-defense-plan.md`: 下一轮检测画像驱动的 Agent 运行时监督、策略包生成和防御报告规划。
 - `frontend-d-handoff.md`: 开发者 D 正式前端 Web Console 的开工边界、页面优先级、API Client 和联调检查点。
 

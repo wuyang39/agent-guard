@@ -6,10 +6,11 @@ import type {
   AgentWeakness,
   DetectionReport,
 } from "./detectionTypes";
-import type { RiskCategory } from "@agent-guard/contracts";
+import type { RiskCategory, RiskReport } from "@agent-guard/contracts";
 
 export function buildAgentRiskProfile(
   detectionReport: DetectionReport,
+  riskReports: RiskReport[] = [],
 ): AgentRiskProfile {
   const weaknesses = buildWeaknesses(detectionReport);
 
@@ -19,13 +20,13 @@ export function buildAgentRiskProfile(
     agentId: detectionReport.agentId,
     sourceDetectionReportId: detectionReport.reportId,
     weaknesses,
-    highRiskTools: [],
-    sensitiveResourcePatterns: buildSensitiveResourcePatterns(weaknesses),
-    exfiltrationPatterns: buildExfiltrationPatterns(weaknesses),
+    highRiskTools: buildHighRiskTools(riskReports),
+    sensitiveResourcePatterns: buildSensitiveResourcePatterns(weaknesses, riskReports),
+    exfiltrationPatterns: buildExfiltrationPatterns(weaknesses, riskReports),
     recommendedControls: [
       ...new Set(weaknesses.flatMap((weakness) => weakness.recommendedPolicyTemplateIds)),
     ],
-    confidence: detectionReport.riskSummary.totalFindings > 0 ? "medium" : "low",
+    confidence: buildConfidence(detectionReport),
     generatedAt: nowIso(),
   };
 }
@@ -36,7 +37,9 @@ function buildWeaknesses(report: DetectionReport): AgentWeakness[] {
   for (const scenario of report.failedScenarios) {
     const existing = grouped.get(scenario.weaknessCategory);
     if (existing) {
-      existing.sourceFindingIds.push(...scenario.findingIds);
+      existing.sourceFindingIds = [
+        ...new Set([...existing.sourceFindingIds, ...scenario.findingIds]),
+      ];
       continue;
     }
 
@@ -44,7 +47,7 @@ function buildWeaknesses(report: DetectionReport): AgentWeakness[] {
       weaknessId: createId("weakness"),
       category: scenario.weaknessCategory,
       title: formatWeaknessTitle(scenario.weaknessCategory),
-      description: `Agent triggered ${scenario.weaknessCategory} findings during pre-supervision detection.`,
+      description: formatWeaknessDescription(scenario.weaknessCategory),
       sourceFindingIds: [...scenario.findingIds],
       recommendedPolicyTemplateIds: [
         `policy_template.${scenario.weaknessCategory}`,
@@ -55,16 +58,80 @@ function buildWeaknesses(report: DetectionReport): AgentWeakness[] {
   return [...grouped.values()];
 }
 
-function buildSensitiveResourcePatterns(weaknesses: AgentWeakness[]): string[] {
-  return weaknesses.some((weakness) => weakness.category === "unauthorized_access")
-    ? ["/secret/*"]
-    : [];
+function buildHighRiskTools(riskReports: RiskReport[]): string[] {
+  return [
+    ...new Set(
+      riskReports.flatMap((report) =>
+        report.highRiskIssues
+          .map((issue) => issue.triggeredToolId)
+          .filter((toolId): toolId is string => toolId !== undefined),
+      ),
+    ),
+  ];
 }
 
-function buildExfiltrationPatterns(weaknesses: AgentWeakness[]): string[] {
-  return weaknesses.some((weakness) => weakness.category === "data_leakage")
-    ? ["token", "secret", "password"]
-    : [];
+function buildSensitiveResourcePatterns(
+  weaknesses: AgentWeakness[],
+  riskReports: RiskReport[],
+): string[] {
+  const patterns = new Set<string>();
+
+  if (weaknesses.some((weakness) => weakness.category === "unauthorized_access")) {
+    patterns.add("/secret/*");
+  }
+
+  for (const report of riskReports) {
+    for (const issue of report.highRiskIssues) {
+      if (issue.triggeredResourceId) {
+        patterns.add(issue.triggeredResourceId);
+      }
+    }
+  }
+
+  return [...patterns];
+}
+
+function buildExfiltrationPatterns(
+  weaknesses: AgentWeakness[],
+  riskReports: RiskReport[],
+): string[] {
+  const patterns = new Set<string>();
+
+  if (weaknesses.some((weakness) => weakness.category === "data_leakage")) {
+    for (const token of ["token", "secret", "password", "credential"]) {
+      patterns.add(token);
+    }
+  }
+
+  for (const report of riskReports) {
+    for (const finding of report.findings) {
+      const text = `${finding.title} ${finding.description}`.toLowerCase();
+      for (const token of ["token", "secret", "password", "credential"]) {
+        if (text.includes(token)) {
+          patterns.add(token);
+        }
+      }
+    }
+  }
+
+  return [...patterns];
+}
+
+function buildConfidence(
+  detectionReport: DetectionReport,
+): AgentRiskProfile["confidence"] {
+  if (detectionReport.riskSummary.totalFindings === 0) {
+    return "low";
+  }
+
+  if (
+    detectionReport.riskSummary.totalFindings >= 3 &&
+    detectionReport.evidenceChainIds.length >= 3
+  ) {
+    return "high";
+  }
+
+  return "medium";
 }
 
 function formatWeaknessTitle(category: RiskCategory): string {
@@ -77,4 +144,21 @@ function formatWeaknessTitle(category: RiskCategory): string {
   };
 
   return titles[category];
+}
+
+function formatWeaknessDescription(category: RiskCategory): string {
+  const descriptions: Record<RiskCategory, string> = {
+    tool_misuse:
+      "Agent used a tool outside the intended safety boundary during pre-supervision detection.",
+    unauthorized_access:
+      "Agent accessed sensitive or unauthorized resources during pre-supervision detection.",
+    data_leakage:
+      "Agent exposed sensitive content or attempted to send it through an outbound channel.",
+    dangerous_action:
+      "Agent attempted a write, execution, deletion, or other side-effecting action that needs runtime control.",
+    instruction_injection_following:
+      "Agent followed untrusted instructions from a prompt, resource, or tool response.",
+  };
+
+  return descriptions[category];
 }

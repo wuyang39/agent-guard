@@ -33,8 +33,8 @@ export type BuildDetectionReportInput = {
 export function buildDetectionReport(
   input: BuildDetectionReportInput,
 ): DetectionReport {
-  const failedScenarios = buildFailedScenarios(input.riskReports);
   const scenarioSummary = buildScenarioSummary(input.riskReports);
+  const failedScenarios = buildFailedScenarios(input.riskReports);
   const findingIds = input.riskReports.flatMap((report) =>
     report.findings.map((finding) => finding.findingId),
   );
@@ -57,7 +57,7 @@ export function buildDetectionReport(
     agentId: input.agentId,
     sourceRiskReportIds: input.riskReports.map((report) => report.reportId),
     scenarioSummary,
-    riskSummary: buildRiskSummary(input.riskReports, failedScenarios),
+    riskSummary: buildRiskSummary(input.riskReports, scenarioSummary),
     failedScenarios,
     findingIds,
     evidenceChainIds,
@@ -69,35 +69,82 @@ export function buildDetectionReport(
 function buildScenarioSummary(
   riskReports: RiskReport[],
 ): DetectionScenarioSummary[] {
-  return riskReports.map((report) => {
+  const grouped = new Map<
+    string,
+    {
+      caseIds: Set<string>;
+      failedCaseCount: number;
+      totalCaseCount: number;
+      triggeredFindingIds: string[];
+    }
+  >();
+
+  for (const report of riskReports) {
+    const scenarioId = report.caseReport.attackEntryType;
     const triggeredFindingIds = report.findings.map(
       (finding) => finding.findingId,
     );
 
-    return {
-      scenarioId: report.caseReport.attackEntryType,
-      caseIds: [report.caseId],
-      status: triggeredFindingIds.length > 0 ? "failed" : "passed",
-      triggeredFindingIds,
-    };
-  });
+    const current =
+      grouped.get(scenarioId) ??
+      {
+        caseIds: new Set<string>(),
+        failedCaseCount: 0,
+        totalCaseCount: 0,
+        triggeredFindingIds: [],
+      };
+
+    current.caseIds.add(report.caseId);
+    current.totalCaseCount += 1;
+    current.triggeredFindingIds.push(...triggeredFindingIds);
+    if (triggeredFindingIds.length > 0) {
+      current.failedCaseCount += 1;
+    }
+
+    grouped.set(scenarioId, current);
+  }
+
+  return [...grouped.entries()].map(([scenarioId, summary]) => ({
+    scenarioId,
+    caseIds: [...summary.caseIds],
+    status: getScenarioStatus(summary.failedCaseCount, summary.totalCaseCount),
+    triggeredFindingIds: [...new Set(summary.triggeredFindingIds)],
+  }));
 }
 
 function buildFailedScenarios(riskReports: RiskReport[]): FailedScenario[] {
-  return riskReports.flatMap((report) =>
-    report.findings.map((finding) => ({
-      scenarioId: report.caseReport.attackEntryType,
-      caseId: report.caseId,
-      findingIds: [finding.findingId],
-      weaknessCategory: finding.category,
-      evidenceEventIds: finding.evidenceEventIds,
-    })),
-  );
+  const grouped = new Map<string, FailedScenario>();
+
+  for (const report of riskReports) {
+    for (const finding of report.findings) {
+      const scenarioId = report.caseReport.attackEntryType;
+      const key = `${scenarioId}:${report.caseId}:${finding.category}`;
+      const current =
+        grouped.get(key) ??
+        {
+          scenarioId,
+          caseId: report.caseId,
+          findingIds: [],
+          weaknessCategory: finding.category,
+          evidenceEventIds: [],
+        };
+
+      current.findingIds.push(finding.findingId);
+      current.evidenceEventIds.push(...finding.evidenceEventIds);
+      grouped.set(key, current);
+    }
+  }
+
+  return [...grouped.values()].map((scenario) => ({
+    ...scenario,
+    findingIds: [...new Set(scenario.findingIds)],
+    evidenceEventIds: [...new Set(scenario.evidenceEventIds)],
+  }));
 }
 
 function buildRiskSummary(
   riskReports: RiskReport[],
-  failedScenarios: FailedScenario[],
+  scenarioSummary: DetectionScenarioSummary[],
 ): DetectionRiskSummary {
   const countsByCategory = { ...emptyCategoryCounts };
   let highestRiskLevel: RiskLevel = "low";
@@ -114,14 +161,25 @@ function buildRiskSummary(
   }
 
   return {
-    totalScenarios: riskReports.length,
-    failedScenarioCount: new Set(
-      failedScenarios.map((scenario) => scenario.scenarioId),
-    ).size,
+    totalScenarios: scenarioSummary.length,
+    failedScenarioCount: scenarioSummary.filter(
+      (scenario) => scenario.status !== "passed",
+    ).length,
     totalFindings,
     highestRiskLevel,
     countsByCategory,
   };
+}
+
+function getScenarioStatus(
+  failedCaseCount: number,
+  totalCaseCount: number,
+): DetectionScenarioSummary["status"] {
+  if (failedCaseCount === 0) {
+    return "passed";
+  }
+
+  return failedCaseCount === totalCaseCount ? "failed" : "partially_failed";
 }
 
 function toPolicyTemplateId(category: RiskCategory): string {

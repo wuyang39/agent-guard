@@ -74,7 +74,7 @@ export async function runTestCase(
 
   // 5. 创建 AgentSession
   const registry = createAgentAdapterRegistry();
-  registry.register(new MockAgentAdapter(testContext.testCase.toolIds));
+  registry.register(new MockAgentAdapter(testContext));
   const adapter = registry.get(agent.adapterType);
   if (!adapter) {
     throw new Error(`No adapter registered for type: ${agent.adapterType}`);

@@ -6,9 +6,14 @@
  */
 import path from "node:path";
 import fs from "node:fs";
-import type { AgentUnderTest, AgentAdapterConfig } from "@agent-guard/contracts";
+import type {
+  AgentUnderTest,
+  AgentAdapterConfig,
+  RiskLevel,
+} from "@agent-guard/contracts";
 import { loadTestContexts } from "../backend/src/modules/config/loadTestContext";
 import { runTestCase } from "../backend/src/modules/runner/testRunner";
+import { evaluateRisk } from "../backend/src/modules/risk/riskEvaluator";
 
 const ROOT_DIR = path.resolve(process.cwd());
 const CONFIGS_DIR = path.resolve(ROOT_DIR, "configs");
@@ -19,6 +24,13 @@ function assert(condition: boolean, message: string): asserts condition {
     throw new Error(`Assertion failed: ${message}`);
   }
 }
+
+const riskRank: Record<RiskLevel, number> = {
+  low: 1,
+  medium: 2,
+  high: 3,
+  critical: 4,
+};
 
 async function main(): Promise<void> {
   const agent: AgentUnderTest = {
@@ -63,6 +75,7 @@ async function main(): Promise<void> {
   const allEventTypes = new Set<string>();
   let totalEvents = 0;
   let allTraces: Awaited<ReturnType<typeof runTestCase>>[] = [];
+  const evaluationsByCaseId = new Map<string, ReturnType<typeof evaluateRisk>>();
 
   for (const context of contexts) {
     console.log(`--- Running: ${context.caseId} (${context.caseName}) ---`);
@@ -83,6 +96,9 @@ async function main(): Promise<void> {
     assert(trace.events.length > 0, "trace has events");
     assert(trace.status === "completed", "trace status=completed");
 
+    const evaluation = evaluateRisk(context, trace);
+    evaluationsByCaseId.set(context.caseId, evaluation);
+
     // 统计事件类型
     for (const e of trace.events) {
       allEventTypes.add(e.type);
@@ -101,6 +117,7 @@ async function main(): Promise<void> {
 
     const eventTypes = [...new Set(trace.events.map((e) => e.type))];
     console.log(`  Events: ${trace.events.length}, Types: ${eventTypes.join(", ")}`);
+    console.log(`  Findings: ${evaluation.findings.length}, Risk: ${evaluation.riskLevel}`);
     console.log(`  Status: ${testRun.status}`);
     totalEvents += trace.events.length;
     allTraces.push({ testRun, trace });
@@ -144,16 +161,53 @@ async function main(): Promise<void> {
   // 验证与 TestOracle 的对照（离线比对能力）
   console.log(`\nTestOracle cross-check:`);
   for (const oracle of testOracles) {
-    const trace = allTraces.find(
+    const runResult = allTraces.find(
       (t) => t.testRun.caseId === oracle.caseId,
     );
+    const evaluation = evaluationsByCaseId.get(oracle.caseId);
+    assert(!!runResult, `trace exists for oracle case ${oracle.caseId}`);
+    assert(!!evaluation, `risk evaluation exists for oracle case ${oracle.caseId}`);
+
+    const findingCategories = new Set(
+      evaluation.findings.map((finding) => finding.category),
+    );
+    const observedToolIds = new Set(
+      runResult.trace.events
+        .filter((event) => event.type === "tool_call")
+        .map((event) => (event.payload as Record<string, unknown>).toolId)
+        .filter((toolId): toolId is string => typeof toolId === "string"),
+    );
+
+    if (oracle.expectedOutcome.shouldTriggerFinding) {
+      assert(
+        evaluation.findings.length > 0,
+        `${oracle.caseId} should trigger at least one finding`,
+      );
+    }
+    for (const category of oracle.expectedOutcome.expectedRiskCategories) {
+      assert(
+        findingCategories.has(category),
+        `${oracle.caseId} should trigger category ${category}`,
+      );
+    }
+    for (const toolId of oracle.expectedOutcome.expectedToolIds) {
+      assert(
+        observedToolIds.has(toolId),
+        `${oracle.caseId} should call expected tool ${toolId}`,
+      );
+    }
+    assert(
+      riskRank[evaluation.riskLevel] >= riskRank[oracle.expectedOutcome.expectedRiskLevel],
+      `${oracle.caseId} risk level ${evaluation.riskLevel} should cover expected ${oracle.expectedOutcome.expectedRiskLevel}`,
+    );
+
     console.log(
       `  ${oracle.caseId}: expectedFinding=${oracle.expectedOutcome.shouldTriggerFinding}, ` +
-        `traceStatus=${trace?.trace.status ?? "NOT_FOUND"}`,
+        `traceStatus=${runResult.trace.status}, findings=${evaluation.findings.length}, risk=${evaluation.riskLevel}`,
     );
   }
 
-  console.log("\n✅ PASS: Full pipeline verification (Config→Runner→Trace)");
+  console.log("\n✅ PASS: Full pipeline verification (Config→Runner→Trace→Risk)");
 }
 
 main().catch((err) => {

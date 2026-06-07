@@ -47,6 +47,10 @@ AgentUnderTest
 ```bash
 npm run demo
 npm run typecheck
+npm run verify:all
+npm run verify:e2e
 ```
 
 `npm run demo` starts the isolated display demo from `frontend/demo`. It is for product-flow demonstration only and is not the formal frontend implementation baseline.
+
+`npm run verify:all` runs the standard typecheck and module verification suite. `npm run verify:e2e` runs the three-stage end-to-end pipeline: pre-supervision detection, supervised rerun, and defense report export.

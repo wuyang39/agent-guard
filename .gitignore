@@ -7,6 +7,7 @@ frontend/node_modules/
 .env
 .env.*
 outputs/runs/*.json
+outputs/runs/*.log
 outputs/traces/*.json
 outputs/reports/*.json
 outputs/reports/*.html

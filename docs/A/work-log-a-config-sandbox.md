@@ -1,11 +1,19 @@
 # A 线配置与 Sandbox 开发工作日志
 
 日期: 2026-06-02
-分支: `feature/a-config-sandbox`
-基线: `origin/main` @ `2e13048`
-状态: A 线开发完成，暂不合并回 `main`
+当前主线: `main` @ `1fbc1fa`
+状态: A 线 P1 配置、攻击库与 Sandbox 基线已合并主线；本文保留早期分支记录并持续追加协作日志
 
 ## 1. Git 工作流记录
+
+### 1.1 当前状态
+
+- `feature/a-config-sandbox` 和 `feature/a-attack-library-sandbox` 的 A 线成果均已合并到 `main`。
+- 当前 `agent-guard/main` 与 `origin/main` 同步且工作区干净。
+- 本地 `E:\XinAnProject\AIG` 已移除 `.git`，仅作为本地参考资料，不参与 `agent-guard` 提交、拉取或合并。
+- 后续 A 线开发仍应先从 `main` 新建功能分支，提交信息继续使用中文。
+
+### 1.2 历史分支记录
 
 - 开发前检查到本地 `main` 干净，但落后 `origin/main` 17 个提交。
 - 为避免基于过期本地 `main` 开发，直接从最新 `origin/main` 创建分支:
@@ -14,7 +22,7 @@
 git switch -c feature/a-config-sandbox origin/main
 ```
 
-- 本分支只提交 A 线相关内容，不合并回 `main`。
+- 当时要求本分支只提交 A 线相关内容，先不合并回 `main`；后续已按用户指令完成合并。
 - 提交信息按团队要求使用中文。
 
 ## 2. 本次开发范围
@@ -279,4 +287,61 @@ C 前端:
 通用:
 
 - `TestOracle` 仍未进入 `TestContext`，只作为验收和离线比对输入。
-- AIG 临时仓库仍在 `E:\XinAnProject\AIG`，不在 `agent-guard` Git 仓库内。
+- AIG 本地参考目录仍在 `E:\XinAnProject\AIG`，已移除 `.git`，不在 `agent-guard` Git 仓库内。
+
+## 10. 2026-06-08 主线复审与 AIG 二次审阅
+
+### 10.1 当前 A 线主线基线
+
+当前主线已经具备:
+
+- 9 类配置加载: tools、resources、prompts、tool_responses、risk_rules、test_cases、test_oracles、red_team_scenarios、supervision_policy_templates。
+- 5 类红队场景: indirect prompt injection、data exfiltration、tool abuse、authorization bypass、tool poisoning / rug pull。
+- 7 类 sandbox 工具: read file、send request、write file、send email、call api、execute code、query database。
+- 7 个测试用例和 7 个 oracle。
+- 12 条候选 risk rule。
+- 11 个 supervision policy template。
+
+当前 `npm run verify:all` 和 `npm run verify:e2e` 均可用于验证 A/B/C 三阶段链路。`verify:all` 暂未包含 `verify:e2e`，后续可考虑把 E2E 纳入标准门禁。
+
+### 10.2 本次文档修正
+
+- 已更新 `docs/A/p1-a-line-aig-adaptation-plan.md`，把旧的“P1 配置尚未存在”“下一次直接开发配置和工具”等描述改为当前主线事实。
+- 已在 A 线计划中补充 `AIG-PromptSecurity/deepteam` 的二次审阅结论。
+- 已更新本工作日志顶部状态，明确 A 线成果已经进入 `main`，AIG 目录已变成本地非 Git 参考目录。
+
+### 10.3 AIG 二次审阅结论
+
+本次重点复查:
+
+- `agent-scan/prompt/skills/*`: data leakage、tool abuse、indirect injection、authorization bypass、OWASP ASI。
+- `mcp-scan/redteam`: Crescendo / TAP 多轮红队策略。
+- `mcp-scan/testcase/case1/main1.py`: rug pull、shadow tool、secret resource、code/command execution、SSRF、外传行为。
+- `AIG-PromptSecurity/deepteam/attacks`: encoding、stego、stratasword 等攻击变体。
+- `AIG-PromptSecurity/deepteam/metrics`: prompt extraction、SSRF、shell injection、SQL injection、debug access、hijacking、excessive agency、overreliance。
+- `AIG-PromptSecurity/deepteam/vulnerabilities/unauthorized_access/template.py`: BOLA、BFLA、RBAC、debug、shell、SQL、SSRF 的基线样本生成思路。
+
+可迁移方向:
+
+- 抽取攻击思想、样本结构、成功判据、分类映射。
+- 不迁移 Python/Go 扫描框架、provider client、plugin system 或真实危险执行逻辑。
+- 不复制长 prompt；只转成 Agent Guard 自己的短样本、配置字段、oracle 和规则候选。
+
+### 10.4 下一轮 A 线建议任务
+
+优先按以下顺序开发:
+
+1. 新增 `scenario.prompt_extraction`，补系统提示词/内部规则泄露用例。
+2. 新增 `scenario.debug_access_leakage`，补 debug mode、env、stack trace、内部配置泄露用例。
+3. 增强 `scenario.authorization_bypass`，拆出 BOLA、BFLA、RBAC 子样本。
+4. 增强 `scenario.tool_abuse`，补 SQL injection、shell injection、SSRF 多 payload 变体。
+5. 为 indirect injection 和 data leakage 增加 direct / evasion / jailbreak 阶段样本。
+6. 评估是否新增 `tool.update_memory` 或 memory resource，覆盖 memory/context poisoning。
+7. 为 P2 API/前端补场景说明、攻击目标、攻击阶段、AIG 来源说明、推荐控制等展示 metadata。
+8. 扩展 A 线验证脚本，增加覆盖率、样本来源、demo secret 合规和 no-side-effect 检查。
+
+协作提醒:
+
+- 如果只是为前端展示补 metadata，优先放在 P2 API view 或可选配置字段，不要贸然改共享契约。
+- 如果新增 `RiskCategory`、`AttackEntryType` 或 `RedTeamScenario` 必填字段，必须先同步 `docs/contracts.md`、`packages/contracts/src/types/**`、`docs/interfaces.md` 和 `docs/ownership.md`。
+- 新增 risk rule 仍属于 A/C 协作区，C 线负责最终规则语义和报告解释。

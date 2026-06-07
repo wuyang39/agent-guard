@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Agent Guard MVP Workbench</title>
+    <title>Agent Guard OpenClaw Demo</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
@@ -13,7 +13,7 @@
           <span class="logo-glyph">AG</span>
           <span>
             <strong>Agent Guard</strong>
-            <small>Agent-MCP Security Runtime</small>
+            <small>OpenClaw Runtime Defense</small>
           </span>
         </a>
         <div class="landing-nav-actions">
@@ -23,436 +23,512 @@
       </header>
 
       <main class="landing-content">
-        <p class="eyebrow">Agent Security Workbench</p>
-        <h1>Agent Guard</h1>
+        <p class="eyebrow">P2 OpenClaw Demo</p>
+        <h1>Agent Guard for OpenClaw</h1>
         <div class="landing-actions">
-          <button class="landing-primary" type="button" data-enter-console="workbench">Start Evaluation</button>
-          <button class="landing-secondary" type="button" data-enter-console="overview">Explore Console</button>
+          <button class="landing-primary" type="button" data-enter-console="workbench">Run E2E Demo</button>
+          <button class="landing-secondary" type="button" data-enter-console="overview">View Console</button>
         </div>
         <div class="landing-trust-row">
-          <span>Trace-first</span>
-          <span>Evidence Chain</span>
-          <span>Local MVP</span>
+          <span>OpenClaw Adapter</span>
+          <span>Runtime Supervision</span>
+          <span>DefenseReport HTML</span>
         </div>
       </main>
     </section>
 
     <div class="console-app hidden" id="consoleApp">
-    <header class="topbar">
-      <a class="product-mark" href="/">
-        <span class="logo-glyph">AG</span>
-        <span>
-          <strong>Agent Guard</strong>
-          <small>Agent-MCP Security Runtime</small>
-        </span>
-      </a>
-      <nav class="top-nav" aria-label="主导航">
-        <button class="top-nav-link active" type="button" data-module-target="overview">Overview</button>
-        <button class="top-nav-link" type="button" data-module-target="workbench">Workbench</button>
-        <button class="top-nav-link" type="button" data-module-target="testdata">Test Data</button>
-        <button class="top-nav-link" type="button" data-module-target="reports">Reports</button>
-      </nav>
-      <div class="top-actions">
-        <span class="status-pill"><i></i> Local MVP</span>
-        <a class="ghost-link" href="/api/bootstrap" target="_blank" rel="noreferrer">Config API</a>
-      </div>
-    </header>
-
-    <main class="platform-shell">
-      <aside class="module-sidebar">
-        <section class="module-brand">
-          <p class="eyebrow">Agent Security Console</p>
-          <h1>Agent Guard</h1>
-        </section>
-
-        <nav class="module-nav" aria-label="模块导航">
-          <button class="module-link active" type="button" data-module-target="overview">
-            <span>Dashboard</span><small>系统总览</small>
-          </button>
-          <button class="module-link" type="button" data-module-target="workbench">
-            <span>Workbench</span><small>一次测评流程</small>
-          </button>
-          <button class="module-link" type="button" data-module-target="testdata">
-            <span>Test Data</span><small>工具/资源/规则</small>
-          </button>
-          <button class="module-link" type="button" data-module-target="trace">
-            <span>Trace Monitor</span><small>交互事件回放</small>
-          </button>
-          <button class="module-link" type="button" data-module-target="reports">
-            <span>Risk Reports</span><small>证据链和产物</small>
-          </button>
-          <button class="module-link" type="button" data-module-target="system">
-            <span>System</span><small>运行状态</small>
-          </button>
+      <header class="topbar">
+        <a class="product-mark" href="/">
+          <span class="logo-glyph">AG</span>
+          <span>
+            <strong>Agent Guard</strong>
+            <small>OpenClaw Runtime Defense</small>
+          </span>
+        </a>
+        <nav class="top-nav" aria-label="主导航">
+          <button class="top-nav-link active" type="button" data-module-target="overview">Overview</button>
+          <button class="top-nav-link" type="button" data-module-target="workbench">Run E2E</button>
+          <button class="top-nav-link" type="button" data-module-target="detection">Detection</button>
+          <button class="top-nav-link" type="button" data-module-target="reports">Defense</button>
+          <button class="top-nav-link" type="button" data-module-target="external">External</button>
         </nav>
-      </aside>
+        <div class="top-actions">
+          <span class="status-pill"><i></i> P2 Demo</span>
+          <a class="ghost-link" href="/api/bootstrap" target="_blank" rel="noreferrer">Config API</a>
+        </div>
+      </header>
 
-      <section class="module-canvas">
-        <section class="module-view active" id="module-overview">
-          <div class="overview-hero">
-            <div>
-              <p class="eyebrow">Local MVP Console</p>
-              <h2>Agent-MCP 交互安全测评平台</h2>
-              <div class="hero-actions">
-                <button class="primary-action" type="button" data-module-target="workbench">开始一次测评</button>
-                <button class="secondary-action" type="button" data-module-target="testdata">查看测试数据</button>
-              </div>
-            </div>
-            <div class="overview-status-panel">
-              <span>System State</span>
-              <strong id="overviewStatus">等待加载配置</strong>
-              <p id="overviewStatusDetail">正在读取本地 demo 配置。</p>
-            </div>
-          </div>
-
-          <div class="kpi-grid">
-            <article class="kpi-tile">
-              <span id="kpiCases">-</span>
-              <p>测试用例</p>
-            </article>
-            <article class="kpi-tile">
-              <span id="kpiTools">-</span>
-              <p>MCP 工具</p>
-            </article>
-            <article class="kpi-tile">
-              <span id="kpiResources">-</span>
-              <p>资源样例</p>
-            </article>
-            <article class="kpi-tile">
-              <span id="kpiRules">-</span>
-              <p>风险规则</p>
-            </article>
-          </div>
-
-          <section class="module-grid">
-            <article class="module-card" data-module-target="workbench">
-              <h3>测评工作台</h3>
-              <p>接入 Agent，选择场景，运行安全测试。</p>
-            </article>
-            <article class="module-card" data-module-target="testdata">
-              <h3>测试数据仓库</h3>
-              <p>查看 Tool、Resource、Prompt 和风险规则。</p>
-            </article>
-            <article class="module-card" data-module-target="trace">
-              <h3>Trace Monitor</h3>
-              <p>回看 tool_call、resource_access 等事件。</p>
-            </article>
-            <article class="module-card" data-module-target="reports">
-              <h3>风险报告</h3>
-              <p>查看 Finding、EvidenceChain 和输出产物。</p>
-            </article>
+      <main class="platform-shell">
+        <aside class="module-sidebar">
+          <section class="module-brand">
+            <p class="eyebrow">Agent Security Console</p>
+            <h1>Agent Guard</h1>
           </section>
 
-          <section class="overview-row">
-            <article class="dashboard-panel">
-              <h3>系统主链路</h3>
-              <div class="pipeline">
-                <span>TestContext</span>
-                <i></i>
-                <span>InteractionTrace</span>
-                <i></i>
-                <span>RiskEvaluation</span>
-                <i></i>
-                <span>RiskReport</span>
+          <nav class="module-nav" aria-label="模块导航">
+            <button class="module-link active" type="button" data-module-target="overview">
+              <span>Dashboard</span><small>链路总览</small>
+            </button>
+            <button class="module-link" type="button" data-module-target="workbench">
+              <span>E2E Workbench</span><small>一次完整演示</small>
+            </button>
+            <button class="module-link" type="button" data-module-target="testdata">
+              <span>Test Data</span><small>场景/工具/规则</small>
+            </button>
+            <button class="module-link" type="button" data-module-target="detection">
+              <span>Detection</span><small>检测画像与策略</small>
+            </button>
+            <button class="module-link" type="button" data-module-target="supervision">
+              <span>Supervision</span><small>监督记录</small>
+            </button>
+            <button class="module-link" type="button" data-module-target="reports">
+              <span>Defense Report</span><small>防御效果</small>
+            </button>
+            <button class="module-link" type="button" data-module-target="external">
+              <span>External Tests</span><small>留出测试预览</small>
+            </button>
+            <button class="module-link" type="button" data-module-target="system">
+              <span>System</span><small>运行状态</small>
+            </button>
+          </nav>
+        </aside>
+
+        <section class="module-canvas">
+          <section class="module-view active" id="module-overview">
+            <div class="overview-hero">
+              <div>
+                <p class="eyebrow">OpenClaw Primary Agent</p>
+                <h2>从 Agent 接入到运行时防御报告的完整演示链路</h2>
+                <div class="hero-actions">
+                  <button class="primary-action" type="button" data-module-target="workbench">开始演示</button>
+                  <button class="secondary-action" type="button" data-module-target="reports">查看报告</button>
+                </div>
               </div>
-            </article>
-            <article class="dashboard-panel">
-              <h3>最近一次运行</h3>
-              <div class="preview compact" id="overviewLastRun">还没有运行记录。进入 Workbench 后可以开始第一次测评。</div>
-            </article>
+              <div class="overview-status-panel">
+                <span>System State</span>
+                <strong id="overviewStatus">等待加载配置</strong>
+                <p id="overviewStatusDetail">正在读取本地 demo 配置。</p>
+              </div>
+            </div>
+
+            <div class="kpi-grid">
+              <article class="kpi-tile">
+                <span id="kpiCases">-</span>
+                <p>测试场景</p>
+              </article>
+              <article class="kpi-tile">
+                <span id="kpiTools">-</span>
+                <p>工具定义</p>
+              </article>
+              <article class="kpi-tile">
+                <span id="kpiResources">-</span>
+                <p>资源样例</p>
+              </article>
+              <article class="kpi-tile">
+                <span id="kpiRules">-</span>
+                <p>风险规则</p>
+              </article>
+            </div>
+
+            <section class="module-grid">
+              <article class="module-card" data-module-target="workbench">
+                <h3>OpenClaw E2E</h3>
+                <p>接入 OpenClaw 或本地 HTTP 兜底 Agent，触发一次安全测评。</p>
+              </article>
+              <article class="module-card" data-module-target="detection">
+                <h3>Detection</h3>
+                <p>汇总 RiskReport，形成 DetectionReport、风险画像和策略包。</p>
+              </article>
+              <article class="module-card" data-module-target="supervision">
+                <h3>Supervision</h3>
+                <p>查看策略命中的阻断、告警和工具输出净化记录。</p>
+              </article>
+              <article class="module-card" data-module-target="external">
+                <h3>External Tests</h3>
+                <p>预留系统外测试集，用来验证监督策略的泛化能力。</p>
+              </article>
+            </section>
+
+            <section class="overview-row">
+              <article class="dashboard-panel">
+                <h3>系统主链路</h3>
+                <div class="pipeline">
+                  <span>OpenClaw</span>
+                  <i></i>
+                  <span>TestContext</span>
+                  <i></i>
+                  <span>RiskReport</span>
+                  <i></i>
+                  <span>PolicyPack</span>
+                  <i></i>
+                  <span>DefenseReport</span>
+                </div>
+              </article>
+              <article class="dashboard-panel">
+                <h3>最近一次运行</h3>
+                <div class="preview compact" id="overviewLastRun">还没有运行记录。进入 E2E Workbench 后可以开始第一次演示。</div>
+              </article>
+            </section>
+          </section>
+
+          <section class="module-view" id="module-testdata">
+            <header class="module-header">
+              <div>
+                <p class="eyebrow">Config Repository</p>
+                <h2>测试数据仓库</h2>
+              </div>
+              <button class="secondary-action" type="button" data-module-target="workbench">开始演示</button>
+            </header>
+            <div class="config-board" id="configBoard"></div>
+          </section>
+
+          <section class="module-view" id="module-detection">
+            <header class="module-header">
+              <div>
+                <p class="eyebrow">Detection & Policy</p>
+                <h2>检测画像与策略包</h2>
+              </div>
+              <button class="secondary-action" type="button" data-module-target="workbench">生成检测结果</button>
+            </header>
+            <div class="report-dashboard" id="detectionDashboard">
+              <div class="empty-state">暂无检测结果。完成 Workbench 的检测画像与策略生成后会显示结果。</div>
+            </div>
+          </section>
+
+          <section class="module-view" id="module-supervision">
+            <header class="module-header">
+              <div>
+                <p class="eyebrow">Runtime Supervision</p>
+                <h2>监督记录</h2>
+              </div>
+              <button class="secondary-action" type="button" data-module-target="workbench">查看运行链路</button>
+            </header>
+            <div class="report-dashboard" id="supervisionDashboard">
+              <div class="empty-state">暂无监督记录。生成 DefenseReport 后会显示阻断、告警和净化动作。</div>
+            </div>
+          </section>
+
+          <section class="module-view" id="module-reports">
+            <header class="module-header">
+              <div>
+                <p class="eyebrow">Defense Artifacts</p>
+                <h2>防御报告</h2>
+              </div>
+              <button class="secondary-action" type="button" data-module-target="workbench">生成新报告</button>
+            </header>
+            <div class="report-dashboard" id="reportDashboard">
+              <div class="empty-state">暂无报告。完成 Workbench 的监督防御与报告输出后会显示结果。</div>
+            </div>
+          </section>
+
+          <section class="module-view" id="module-external">
+            <header class="module-header">
+              <div>
+                <p class="eyebrow">External Holdout Evaluation</p>
+                <h2>系统外测试预览</h2>
+              </div>
+              <button class="secondary-action" type="button" data-module-target="workbench">先跑 P2 演示</button>
+            </header>
+            <div class="report-dashboard" id="externalDashboard">
+              <div class="empty-state">暂无外部测试预览。生成 DefenseReport 后会给出下一轮留出测试建议。</div>
+            </div>
+          </section>
+
+          <section class="module-view" id="module-system">
+            <header class="module-header">
+              <div>
+                <p class="eyebrow">Runtime Surface</p>
+                <h2>系统状态</h2>
+              </div>
+            </header>
+            <div class="system-grid">
+              <article class="dashboard-panel"><h3>Demo Web</h3><p>http://localhost:5177</p></article>
+              <article class="dashboard-panel"><h3>HTTP Sample Agent</h3><p>http://localhost:7001/agent/run?mode=vulnerable</p></article>
+              <article class="dashboard-panel"><h3>Config API</h3><p>/api/bootstrap</p></article>
+              <article class="dashboard-panel"><h3>Outputs</h3><p>outputs/reports/demo、outputs/reports/defense</p></article>
+            </div>
+          </section>
+
+          <section class="module-view" id="module-workbench">
+            <div class="workbench-shell">
+              <aside class="sidebar">
+                <section class="brand-panel">
+                  <p class="eyebrow">OpenClaw E2E</p>
+                  <h1>演示工作台</h1>
+                </section>
+
+                <ol class="steps" id="stepList">
+                  <li class="active" data-step="0"><span>0</span><div><b>Agent 接入</b><small>OpenClaw / HTTP / Mock</small></div></li>
+                  <li data-step="1"><span>1</span><div><b>攻击场景</b><small>3 类以上红队测试</small></div></li>
+                  <li data-step="2"><span>2</span><div><b>监督前风险画像</b><small>Risk / Detection / Profile</small></div></li>
+                  <li data-step="3"><span>3</span><div><b>监督策略包</b><small>SupervisionPolicyPack</small></div></li>
+                  <li data-step="4"><span>4</span><div><b>监督验证</b><small>阻断 / 观察 / 询问</small></div></li>
+                  <li data-step="5"><span>5</span><div><b>未知风险复测</b><small>外部留出样本</small></div></li>
+                  <li data-step="6"><span>6</span><div><b>防御报告</b><small>效果与证据链</small></div></li>
+                </ol>
+              </aside>
+
+              <section class="stage">
+                <header class="stage-header">
+                  <div class="stage-copy">
+                    <p class="eyebrow">P2 demo runtime</p>
+                    <h2 id="stepTitle">0. Agent 接入</h2>
+                    <p id="stepIntro"></p>
+                  </div>
+                  <div class="flow-status">
+                    <span>当前状态</span>
+                    <strong id="flowStatus">等待接入 Agent</strong>
+                  </div>
+                </header>
+
+                <section class="step-panel active" id="step-agent">
+                  <div class="two-col">
+                    <article class="card">
+                      <div class="card-title">
+                        <span class="card-index">01</span>
+                        <div>
+                          <h3>被测 Agent</h3>
+                        </div>
+                      </div>
+                      <label><span>Agent 名称</span><input id="agentName" value="OpenClaw Demo Agent" /></label>
+                      <label><span>Agent ID</span><input id="agentId" value="agent.openclaw.demo" /></label>
+                      <label>
+                        <span>Adapter Kind</span>
+                        <select id="adapterType">
+                          <option value="openclaw">OpenClaw Adapter（核心演示）</option>
+                          <option value="http_sample">HTTP Sample Agent（本地兜底）</option>
+                          <option value="mock">Mock Agent（最后兜底）</option>
+                        </select>
+                      </label>
+                      <label><span>OpenClaw Workspace</span><input id="openClawWorkspace" placeholder="例如：E:\\openclaw-demo" /></label>
+                      <label><span>Adapter Endpoint</span><input id="agentEndpoint" placeholder="例如：http://localhost:8000/agent/run" /></label>
+                      <label><span>超时时间 ms</span><input id="timeoutMs" type="number" value="8000" /></label>
+                      <div class="button-row">
+                        <button id="useSampleApiButton" class="secondary-button" type="button">启动 HTTP 兜底 Agent</button>
+                        <button id="finishAgentButton" type="button">保存 Agent 配置</button>
+                      </div>
+                    </article>
+
+                    <article class="card elevated">
+                      <div class="card-title">
+                        <span class="card-index teal">A</span>
+                        <div>
+                          <h3>Agent 预览</h3>
+                        </div>
+                      </div>
+                      <div class="preview" id="agentPreview"></div>
+                    </article>
+                  </div>
+                </section>
+
+                <section class="step-panel" id="step-scenarios">
+                  <div class="two-col">
+                    <article class="card">
+                      <div class="card-title">
+                        <span class="card-index">02</span>
+                        <div>
+                          <h3>攻击场景</h3>
+                        </div>
+                      </div>
+                      <label>
+                        <span>演示行为模式</span>
+                        <select id="modeSelect">
+                          <option value="vulnerable">Baseline：暴露风险</option>
+                          <option value="guarded">Guarded：边界检查</option>
+                        </select>
+                      </label>
+                      <div class="scenario-board" id="scenarioBoard"></div>
+                      <button id="finishEnvButton">运行监督前检测</button>
+                    </article>
+
+                    <article class="card elevated">
+                      <div class="card-title">
+                        <span class="card-index teal">B</span>
+                        <div>
+                          <h3>测试集预览</h3>
+                        </div>
+                      </div>
+                      <div class="preview" id="contextPreview"></div>
+                      <h3 class="subheading">配置文件</h3>
+                      <div class="file-strip" id="fileStrip"></div>
+                    </article>
+                  </div>
+                </section>
+
+                <section class="step-panel" id="step-profile">
+                  <div class="two-col">
+                    <article class="card">
+                      <div class="card-title">
+                        <span class="card-index">03</span>
+                        <div>
+                          <h3>监督前风险画像</h3>
+                        </div>
+                      </div>
+                      <div class="preview" id="runInput"></div>
+                      <div class="runtime-strip">
+                        <div><span>开始时间</span><strong id="runStartedAt">-</strong></div>
+                        <div><span>运行耗时</span><strong id="runDuration">-</strong></div>
+                        <div><span>完成时间</span><strong id="runCompletedAt">-</strong></div>
+                      </div>
+                      <div class="preview" id="runSummary">等待运行监督前检测</div>
+                      <button id="runButton">重新运行监督前检测</button>
+                    </article>
+                    <article class="card elevated">
+                      <div class="card-title">
+                        <span class="card-index teal">P</span>
+                        <div>
+                          <h3>风险画像</h3>
+                        </div>
+                      </div>
+                      <div class="metrics">
+                        <div><span id="runEvents">0</span><p>事件数</p></div>
+                        <div><span id="runToolCalls">0</span><p>Tool Call</p></div>
+                        <div><span id="runErrors">0</span><p>System Error</p></div>
+                      </div>
+                      <div class="risk-board">
+                        <div class="risk-badge" id="riskBadge">未判定</div>
+                        <div><span id="riskScore">0</span><p>风险评分</p></div>
+                        <div><span id="findingCount">0</span><p>风险发现</p></div>
+                        <div><span id="weaknessCount">0</span><p>弱点画像</p></div>
+                        <div><span id="policyCount">0</span><p>策略数</p></div>
+                      </div>
+                      <div class="finding-list" id="findingList"></div>
+                      <button id="toPolicyButton" type="button" disabled>生成监督策略包</button>
+                    </article>
+                  </div>
+                </section>
+
+                <section class="step-panel" id="step-policy">
+                  <div class="two-col">
+                    <article class="card">
+                      <div class="card-title">
+                        <span class="card-index">04</span>
+                        <div>
+                          <h3>监督策略包</h3>
+                        </div>
+                      </div>
+                      <div class="preview" id="riskInput">等待风险画像</div>
+                      <div class="policy-group-grid" id="policyGroupGrid"></div>
+                      <button id="buildRiskButton" disabled>进入监督验证</button>
+                    </article>
+                    <article class="card elevated">
+                      <div class="card-title">
+                        <span class="card-index teal">P</span>
+                        <div>
+                          <h3>策略详情</h3>
+                        </div>
+                      </div>
+                      <div class="finding-list" id="policyList"></div>
+                    </article>
+                  </div>
+                </section>
+
+                <section class="step-panel" id="step-validation">
+                  <div class="two-col">
+                    <article class="card">
+                      <div class="card-title">
+                        <span class="card-index">05</span>
+                        <div>
+                          <h3>监督验证</h3>
+                        </div>
+                      </div>
+                      <label>
+                        <span>验证模式</span>
+                        <select id="verificationMode">
+                          <option value="block_high_risk">阻断模式：真实阻断高危行为</option>
+                          <option value="observe_only">观察模式：只告警，不阻断</option>
+                          <option value="ask_confirm">询问模式：高危动作需要确认</option>
+                        </select>
+                      </label>
+                      <div class="preview" id="validationInput">等待选择验证模式</div>
+                      <button id="runValidationButton" disabled>运行监督验证</button>
+                    </article>
+                    <article class="card elevated">
+                      <div class="card-title">
+                        <span class="card-index teal">V</span>
+                        <div>
+                          <h3>验证结果</h3>
+                        </div>
+                      </div>
+                      <div class="metrics">
+                        <div><span id="validationHitCount">0</span><p>策略命中</p></div>
+                        <div><span id="validationBlockedCount">0</span><p>阻断数量</p></div>
+                        <div><span id="validationAlertCount">0</span><p>告警数量</p></div>
+                      </div>
+                      <div class="finding-list" id="supervisionList"></div>
+                      <button id="toHoldoutButton" type="button" disabled>运行未知风险复测</button>
+                    </article>
+                  </div>
+                </section>
+
+                <section class="step-panel" id="step-holdout">
+                  <div class="two-col">
+                    <article class="card">
+                      <div class="card-title">
+                        <span class="card-index">06</span>
+                        <div>
+                          <h3>未知风险复测</h3>
+                        </div>
+                      </div>
+                      <div class="preview" id="externalPreview">等待监督验证完成</div>
+                      <button id="runHoldoutButton" disabled>运行未知风险复测</button>
+                    </article>
+                    <article class="card elevated">
+                      <div class="card-title">
+                        <span class="card-index teal">U</span>
+                        <div>
+                          <h3>复测结果</h3>
+                        </div>
+                      </div>
+                      <div class="metrics">
+                        <div><span id="holdoutCaseCount">0</span><p>留出样本</p></div>
+                        <div><span id="holdoutHitRate">0%</span><p>命中率</p></div>
+                        <div><span id="holdoutResidualCount">0</span><p>残余风险</p></div>
+                      </div>
+                      <div class="finding-list" id="holdoutList"></div>
+                      <button id="buildReportButton" type="button" disabled>生成防御报告</button>
+                    </article>
+                  </div>
+                </section>
+
+                <section class="step-panel" id="step-report">
+                  <div class="two-col">
+                    <article class="card">
+                      <div class="card-title">
+                        <span class="card-index">05</span>
+                        <div>
+                          <h3>防御报告产物</h3>
+                        </div>
+                      </div>
+                      <label><span>报告格式</span><select><option>JSON + HTML</option></select></label>
+                      <div class="artifact-list" id="artifactText">等待生成</div>
+                      <a id="defenseHtmlButton" class="download-button disabled" href="#" target="_blank" rel="noreferrer" aria-disabled="true">打开 HTML 防御报告</a>
+                    </article>
+                    <article class="card elevated">
+                      <div class="card-title">
+                        <span class="card-index teal">D</span>
+                        <div>
+                          <h3>防御产物</h3>
+                        </div>
+                      </div>
+                      <div class="metrics">
+                        <div><span id="preRiskCount">0</span><p>监督前风险</p></div>
+                        <div><span id="policyHitCount">0</span><p>策略命中</p></div>
+                        <div><span id="chainCount">0</span><p>阻断动作</p></div>
+                        <div><span id="evidenceCount">0</span><p>告警数量</p></div>
+                        <div><span id="finalHoldoutRate">0%</span><p>未知复测命中率</p></div>
+                        <div><span id="reportRisk">0</span><p>残余风险</p></div>
+                      </div>
+                      <div class="finding-list" id="evidenceList"></div>
+                    </article>
+                  </div>
+                </section>
+              </section>
+            </div>
           </section>
         </section>
-
-        <section class="module-view" id="module-testdata">
-          <header class="module-header">
-            <div>
-              <p class="eyebrow">Config Repository</p>
-              <h2>测试数据仓库</h2>
-            </div>
-            <button class="secondary-action" type="button" data-module-target="workbench">用这些数据开始测评</button>
-          </header>
-          <div class="config-board" id="configBoard"></div>
-        </section>
-
-        <section class="module-view" id="module-trace">
-          <header class="module-header">
-            <div>
-              <p class="eyebrow">Interaction Replay</p>
-              <h2>Trace Monitor</h2>
-            </div>
-            <button class="secondary-action" type="button" data-module-target="workbench">进入工作台</button>
-          </header>
-          <ol id="traceMirrorList" class="trace-list mirror"></ol>
-        </section>
-
-        <section class="module-view" id="module-reports">
-          <header class="module-header">
-            <div>
-              <p class="eyebrow">Risk Artifacts</p>
-              <h2>风险报告</h2>
-            </div>
-            <button class="secondary-action" type="button" data-module-target="workbench">生成新报告</button>
-          </header>
-          <div class="report-dashboard" id="reportDashboard">
-            <div class="empty-state">暂无报告。完成 Workbench 的风险判定和报告输出后会显示结果。</div>
-          </div>
-        </section>
-
-        <section class="module-view" id="module-system">
-          <header class="module-header">
-            <div>
-              <p class="eyebrow">Runtime Surface</p>
-              <h2>系统状态</h2>
-            </div>
-          </header>
-          <div class="system-grid">
-            <article class="dashboard-panel"><h3>Workbench</h3><p>http://localhost:5177</p></article>
-            <article class="dashboard-panel"><h3>Sample Agent</h3><p>http://localhost:7001/agent/run?mode=vulnerable</p></article>
-            <article class="dashboard-panel"><h3>Config API</h3><p>/api/bootstrap</p></article>
-            <article class="dashboard-panel"><h3>Outputs</h3><p>outputs/traces、outputs/reports</p></article>
-          </div>
-        </section>
-
-        <section class="module-view" id="module-workbench">
-          <div class="workbench-shell">
-            <aside class="sidebar">
-        <section class="brand-panel">
-          <p class="eyebrow">Blueprint-driven Agent Test</p>
-          <h1>交互安全测评工作台</h1>
-        </section>
-
-        <ol class="steps" id="stepList">
-          <li class="active" data-step="0"><span>0</span><div><b>Agent 接入</b><small>定义被测对象</small></div></li>
-          <li data-step="1"><span>1</span><div><b>测试环境建模</b><small>选择 Tool / Resource / Rule</small></div></li>
-          <li data-step="2"><span>2</span><div><b>动态交互执行</b><small>驱动 Agent 调用 MCP</small></div></li>
-          <li data-step="3"><span>3</span><div><b>交互监控</b><small>查看 Tool Call Trace</small></div></li>
-          <li data-step="4"><span>4</span><div><b>风险判定与证据链</b><small>生成 Finding / Evidence</small></div></li>
-          <li data-step="5"><span>5</span><div><b>报告输出</b><small>导出 Trace / Report</small></div></li>
-        </ol>
-      </aside>
-
-      <section class="stage">
-        <header class="stage-header">
-          <div class="stage-copy">
-            <p class="eyebrow">MVP framework implementation</p>
-            <h2 id="stepTitle">0. Agent 接入</h2>
-            <p id="stepIntro"></p>
-          </div>
-          <div class="flow-status">
-            <span>当前状态</span>
-            <strong id="flowStatus">等待接入 Agent</strong>
-          </div>
-        </header>
-
-        <section class="step-panel active" id="step-agent">
-          <div class="two-col">
-            <article class="card">
-              <div class="card-title">
-                <span class="card-index">01</span>
-                <div>
-                  <h3>被测 Agent</h3>
-                </div>
-              </div>
-              <label><span>Agent 名称</span><input id="agentName" value="Demo Agent" /></label>
-              <label><span>Agent ID</span><input id="agentId" value="agent.demo" /></label>
-              <label>
-                <span>接入方式</span>
-                <select id="adapterType">
-                  <option value="mock">Mock Agent（内置演示）</option>
-                  <option value="api">HTTP Agent Endpoint（测试真实 Agent）</option>
-                </select>
-              </label>
-              <label><span>HTTP Endpoint</span><input id="agentEndpoint" placeholder="例如：http://localhost:8000/agent/run" /></label>
-              <label><span>超时时间 ms</span><input id="timeoutMs" type="number" value="8000" /></label>
-              <div class="button-row">
-                <button id="useSampleApiButton" class="secondary-button" type="button">一键启动并使用示例 HTTP Agent</button>
-                <button id="finishAgentButton" type="button">保存 Agent 配置</button>
-              </div>
-            </article>
-
-            <article class="card elevated">
-              <div class="card-title">
-                <span class="card-index teal">A</span>
-                <div>
-                  <h3>Agent 预览</h3>
-                </div>
-              </div>
-              <div class="preview" id="agentPreview"></div>
-            </article>
-          </div>
-        </section>
-
-        <section class="step-panel" id="step-env">
-          <div class="two-col">
-            <article class="card">
-              <div class="card-title">
-                <span class="card-index">02</span>
-                <div>
-                  <h3>测试环境建模</h3>
-                </div>
-              </div>
-              <label><span>测试用例</span><select id="caseSelect"></select></label>
-              <label>
-                <span>Mock Agent 行为模式</span>
-                <select id="modeSelect">
-                  <option value="vulnerable">Baseline：跟随注入</option>
-                  <option value="guarded">Guarded：检查边界</option>
-                </select>
-              </label>
-              <label><span>任务指令（可改）</span><textarea id="customInstruction" rows="5"></textarea></label>
-              <div class="picker-block">
-                <h4>启用工具</h4>
-                <div id="toolPicker" class="picker-grid"></div>
-              </div>
-              <div class="picker-block">
-                <h4>启用资源</h4>
-                <div id="resourcePicker" class="picker-grid"></div>
-              </div>
-              <div class="picker-block">
-                <h4>启用风险规则</h4>
-                <div id="rulePicker" class="picker-grid"></div>
-              </div>
-              <button id="finishEnvButton">生成 TestContext</button>
-            </article>
-
-            <article class="card elevated">
-              <div class="card-title">
-                <span class="card-index teal">B</span>
-                <div>
-                  <h3>TestContext 预览</h3>
-                </div>
-              </div>
-              <div class="preview" id="contextPreview"></div>
-              <h3 class="subheading">测试数据仓库</h3>
-              <div class="file-strip" id="fileStrip"></div>
-            </article>
-          </div>
-        </section>
-
-        <section class="step-panel" id="step-run">
-          <div class="two-col">
-            <article class="card">
-              <div class="card-title">
-                <span class="card-index">03</span>
-                <div>
-                  <h3>动态执行控制</h3>
-                </div>
-              </div>
-              <div class="preview" id="runInput"></div>
-              <button id="runButton">开始动态交互测试</button>
-            </article>
-            <article class="card elevated">
-              <div class="card-title">
-                <span class="card-index teal">C</span>
-                <div>
-                  <h3>运行摘要</h3>
-                </div>
-              </div>
-              <div class="metrics">
-                <div><span id="runEvents">0</span><p>事件数</p></div>
-                <div><span id="runToolCalls">0</span><p>Tool Call</p></div>
-                <div><span id="runErrors">0</span><p>System Error</p></div>
-              </div>
-              <div class="preview" id="runSummary">等待运行</div>
-            </article>
-          </div>
-        </section>
-
-        <section class="step-panel" id="step-monitor">
-          <div class="two-col wide-right">
-            <article class="card">
-              <div class="card-title">
-                <span class="card-index">04</span>
-                <div>
-                  <h3>监控维度</h3>
-                </div>
-              </div>
-              <ul class="plain-list" id="monitorChannels">
-                <li>Tool 调用记录</li>
-                <li>工具参数记录</li>
-                <li>Resource 访问记录</li>
-                <li>Tool Response 记录</li>
-                <li>时间顺序记录</li>
-              </ul>
-              <button id="finishMonitorButton" disabled>确认 Trace，进入风险判定</button>
-            </article>
-            <article class="card elevated">
-              <div class="card-title">
-                <span class="card-index teal">T</span>
-                <div>
-                  <h3>InteractionTrace</h3>
-                </div>
-              </div>
-              <ol id="traceList" class="trace-list"></ol>
-            </article>
-          </div>
-        </section>
-
-        <section class="step-panel" id="step-risk">
-          <div class="two-col">
-            <article class="card">
-              <div class="card-title">
-                <span class="card-index">05</span>
-                <div>
-                  <h3>风险判定输入</h3>
-                </div>
-              </div>
-              <div class="preview" id="riskInput"></div>
-              <button id="buildRiskButton" disabled>执行风险判定</button>
-            </article>
-            <article class="card elevated">
-              <div class="card-title">
-                <span class="card-index teal">R</span>
-                <div>
-                  <h3>风险结果</h3>
-                </div>
-              </div>
-              <div class="risk-board">
-                <div class="risk-badge" id="riskBadge">未判定</div>
-                <div><span id="riskScore">0</span><p>风险评分</p></div>
-                <div><span id="findingCount">0</span><p>风险发现</p></div>
-              </div>
-              <div class="finding-list" id="findingList"></div>
-              <button id="nextReportButton" class="secondary-button" type="button" disabled>进入报告输出模块</button>
-            </article>
-          </div>
-        </section>
-
-        <section class="step-panel" id="step-report">
-          <div class="two-col">
-            <article class="card">
-              <div class="card-title">
-                <span class="card-index">06</span>
-                <div>
-                  <h3>报告输出</h3>
-                </div>
-              </div>
-              <label><span>报告格式</span><select><option>JSON + PDF + 页面展示</option></select></label>
-              <div class="preview" id="reportInput"></div>
-              <button id="buildReportButton" disabled>生成报告产物</button>
-            </article>
-            <article class="card elevated">
-              <div class="card-title">
-                <span class="card-index teal">O</span>
-                <div>
-                  <h3>报告产物</h3>
-                </div>
-              </div>
-              <div class="metrics">
-                <div><span id="chainCount">0</span><p>攻击链</p></div>
-                <div><span id="evidenceCount">0</span><p>证据链</p></div>
-                <div><span id="reportRisk">-</span><p>风险等级</p></div>
-              </div>
-              <div class="artifact-list" id="artifactText">等待生成</div>
-              <a id="pdfReportButton" class="download-button disabled" href="#" download aria-disabled="true">下载 PDF 报告</a>
-            </article>
-          </div>
-        </section>
-      </section>
-          </div>
-        </section>
-      </section>
-    </main>
+      </main>
     </div>
 
     <script type="module" src="/app.js"></script>

@@ -92,7 +92,7 @@ async function readJson(fileName) {
 }
 
 async function loadConfigs() {
-  const [testCases, tools, resources, riskRules, toolResponses, prompts, testOracles] = await Promise.all([
+  const [testCases, tools, resources, riskRules, toolResponses, prompts, testOracles, redTeamScenarios] = await Promise.all([
     readJson("test_cases.json"),
     readJson("tools.json"),
     readJson("resources.json"),
@@ -100,8 +100,9 @@ async function loadConfigs() {
     readJson("tool_responses.json"),
     readJson("prompts.json"),
     readJson("test_oracles.json"),
+    readJson("red_team_scenarios.json"),
   ]);
-  return { testCases, tools, resources, riskRules, toolResponses, prompts, testOracles };
+  return { testCases, tools, resources, riskRules, toolResponses, prompts, testOracles, redTeamScenarios };
 }
 
 function createId(prefix) {
@@ -165,20 +166,24 @@ function buildContext(configs, body) {
     promptIds: body.selectedPromptIds?.length ? body.selectedPromptIds : testCase.promptIds,
   };
 
+  const adapterKind = body.agent?.adapterKind || body.agent?.adapterType || "openclaw";
   const agent = {
     schemaVersion: "mvp-1",
-    agentId: body.agent?.agentId || "agent.demo",
-    name: body.agent?.name || "Demo Agent",
-    description: body.agent?.description || "Agent selected in the MVP demo workspace.",
-    adapterType: body.agent?.adapterType || "mock",
+    agentId: body.agent?.agentId || "agent.openclaw.demo",
+    name: body.agent?.name || "OpenClaw Demo Agent",
+    description: body.agent?.description || "Agent selected in the P2 demo workspace.",
+    adapterKind,
+    adapterType: adapterKind,
   };
 
   const adapter = {
     schemaVersion: "mvp-1",
     adapterId: createId("adapter"),
     agentId: agent.agentId,
-    adapterType: agent.adapterType,
+    adapterKind,
+    adapterType: adapterKind,
     endpoint: body.agent?.endpoint || "",
+    workspace: body.agent?.workspace || "",
     timeoutMs: Number(body.agent?.timeoutMs || 8000),
   };
 
@@ -481,9 +486,16 @@ async function buildTrace({ context, mode }) {
     });
   }
 
-  if (context.agent.adapterType === "api") {
+  const adapterKind = context.agent.adapterKind || context.agent.adapterType;
+  if (adapterKind === "api" || adapterKind === "http_sample" || (adapterKind === "openclaw" && context.adapter.endpoint)) {
     await runHttpAgent({ context, push });
   } else {
+    if (adapterKind === "openclaw") {
+      push("agent_message", "monitor", {
+        message:
+          "OpenClaw adapter shim is selected. No live OpenClaw endpoint is configured, so the demo uses the local deterministic sandbox path.",
+      });
+    }
     runMockAgent({ context, mode, push });
   }
 
@@ -645,6 +657,436 @@ function buildReport({ context, trace, evaluation }) {
     })),
     generatedAt: now(),
   };
+}
+
+function countBy(items, getKey) {
+  return items.reduce((acc, item) => {
+    const key = getKey(item) || "unknown";
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+}
+
+function buildDetectionReport({ context, report }) {
+  const highRiskFindings = report.findings.filter((finding) =>
+    ["high", "critical"].includes(finding.riskLevel),
+  );
+  const categories = countBy(report.findings, (finding) => finding.category);
+
+  return {
+    schemaVersion: "p2-demo-1",
+    reportId: createId("detection"),
+    agentId: context.agent.agentId,
+    agentName: context.agent.name,
+    generatedAt: now(),
+    sourceRiskReportIds: [report.reportId],
+    sourceTraceIds: [report.traceId],
+    summary: {
+      scenarioCount: 1,
+      riskyScenarioCount: report.findings.length ? 1 : 0,
+      findingCount: report.findings.length,
+      highRiskFindingCount: highRiskFindings.length,
+      topCategories: Object.entries(categories).map(([category, count]) => ({ category, count })),
+      overallRiskLevel: report.riskLevel,
+    },
+    scenarioResults: [
+      {
+        scenarioId: context.caseId,
+        scenarioName: context.caseName,
+        attackEntryType: context.testCase.attackEntryType,
+        riskLevel: report.riskLevel,
+        status: report.findings.length ? "risk_found" : "clean",
+        findingIds: report.findings.map((finding) => finding.findingId),
+      },
+    ],
+    findingDigest: report.findings.map((finding) => ({
+      findingId: finding.findingId,
+      title: finding.title || finding.name,
+      category: finding.category,
+      riskLevel: finding.riskLevel,
+      ruleId: finding.ruleId,
+      evidenceEventIds: finding.evidenceEventIds,
+    })),
+  };
+}
+
+function weaknessTargetForCategory(category) {
+  const value = String(category || "");
+  if (value.includes("resource") || value.includes("secret") || value.includes("data")) return "resource_access";
+  if (value.includes("tool") || value.includes("exfiltration") || value.includes("api")) return "tool_call";
+  if (value.includes("prompt") || value.includes("injection")) return "prompt_or_tool_output";
+  return "runtime_action";
+}
+
+function buildRiskProfile({ context, detectionReport, report }) {
+  const groups = new Map();
+  for (const finding of report.findings) {
+    const key = finding.category || "unknown";
+    const current = groups.get(key) || {
+      sourceFindingIds: [],
+      riskLevel: finding.riskLevel,
+      titles: [],
+    };
+    current.sourceFindingIds.push(finding.findingId);
+    current.titles.push(finding.title || finding.name);
+    if (riskPriority[finding.riskLevel] > riskPriority[current.riskLevel]) {
+      current.riskLevel = finding.riskLevel;
+    }
+    groups.set(key, current);
+  }
+
+  const weaknesses = [...groups.entries()].map(([category, group]) => ({
+    weaknessId: createId("weakness"),
+    title: group.titles[0] || `${category} weakness`,
+    category,
+    riskLevel: group.riskLevel,
+    targetType: weaknessTargetForCategory(category),
+    sourceFindingIds: group.sourceFindingIds,
+    recommendedControl: `Apply runtime supervision to ${weaknessTargetForCategory(category)} events before tool execution.`,
+  }));
+
+  return {
+    schemaVersion: "p2-demo-1",
+    profileId: createId("profile"),
+    agentId: context.agent.agentId,
+    sourceDetectionReportId: detectionReport.reportId,
+    generatedAt: now(),
+    overallRiskLevel: detectionReport.summary.overallRiskLevel,
+    weaknessCount: weaknesses.length,
+    weaknesses,
+  };
+}
+
+function buildPolicyForWeakness(weakness, index) {
+  const action = weakness.riskLevel === "critical" || weakness.riskLevel === "high" ? "deny" : "warn";
+  const targetType = weakness.targetType || "runtime_action";
+  return {
+    policyId: createId("policy"),
+    name: `${action.toUpperCase()} ${targetType} for ${weakness.category}`,
+    priority: 100 - index,
+    action,
+    targetType,
+    sourceWeaknessId: weakness.weaknessId,
+    sourceFindingIds: weakness.sourceFindingIds,
+    match: {
+      category: weakness.category,
+      minimumRiskLevel: weakness.riskLevel,
+    },
+    rationale: weakness.recommendedControl,
+  };
+}
+
+function buildSupervisionPolicyPack(riskProfile) {
+  const policies = riskProfile.weaknesses.map((weakness, index) => buildPolicyForWeakness(weakness, index));
+  policies.push({
+    policyId: createId("policy"),
+    name: "Sanitize tool outputs before model context merge",
+    priority: 40,
+    action: "sanitize",
+    targetType: "tool_result",
+    sourceWeaknessId: null,
+    sourceFindingIds: [],
+    match: { containsInjection: true },
+    rationale: "Treat tool outputs as data and remove instruction-like payload before feeding the agent.",
+  });
+
+  return {
+    schemaVersion: "p2-demo-1",
+    policyPackId: createId("policy_pack"),
+    agentId: riskProfile.agentId,
+    sourceRiskProfileId: riskProfile.profileId,
+    sourceDetectionReportId: riskProfile.sourceDetectionReportId,
+    generatedAt: now(),
+    policyCount: policies.length,
+    defaultMode: "block_high_risk_warn_medium",
+    policies,
+  };
+}
+
+function eventHasInjectedContent(event) {
+  return Boolean(event.payload?.containsInjection || event.payload?.riskTagIds?.length);
+}
+
+function policyForTarget(policyPack, targetType) {
+  return policyPack.policies.find((policy) => policy.targetType === targetType) || policyPack.policies[0];
+}
+
+function normalizeSupervisionOptions(body) {
+  const options = body.supervisionOptions || {};
+  const enforcementModes = new Set(["block_high_risk", "observe_only", "ask_confirm"]);
+  return {
+    runtimeSupervisionEnabled: options.runtimeSupervisionEnabled !== false,
+    unknownRiskHoldoutEnabled: options.unknownRiskHoldoutEnabled !== false,
+    enforcementMode: enforcementModes.has(options.enforcementMode) ? options.enforcementMode : "block_high_risk",
+  };
+}
+
+function enforcementDecision(supervisionOptions, defaultAction, defaultDecision, blockedOutput, observedOutput) {
+  if (supervisionOptions.enforcementMode === "ask_confirm") {
+    return {
+      action: "ask",
+      decision: "approved_after_prompt",
+      output: {
+        asked: true,
+        approvedForDemo: true,
+        wouldHaveBlocked: defaultDecision === "blocked",
+      },
+    };
+  }
+  if (supervisionOptions.enforcementMode === "observe_only") {
+    return {
+      action: defaultAction === "sanitize" ? "warn" : "warn",
+      decision: "alerted",
+      output: observedOutput || { alerted: true, wouldHaveBlocked: defaultDecision === "blocked" },
+    };
+  }
+  return { action: defaultAction, decision: defaultDecision, output: blockedOutput };
+}
+
+function buildSupervisionRecords({ context, trace, policyPack, supervisionOptions }) {
+  if (!supervisionOptions.runtimeSupervisionEnabled) return [];
+
+  const records = [];
+  const pushRecord = ({ event, targetType, action, decision, reason, output }) => {
+    const policy = policyForTarget(policyPack, targetType);
+    records.push({
+      schemaVersion: "p2-demo-1",
+      recordId: createId("supervision_record"),
+      runtimeSessionId: trace.runId,
+      policyPackId: policyPack.policyPackId,
+      policyId: policy?.policyId || null,
+      agentId: context.agent.agentId,
+      traceId: trace.traceId,
+      eventId: event.eventId,
+      sequence: records.length + 1,
+      targetType,
+      action,
+      decision,
+      reason,
+      input: event.payload,
+      output,
+      createdAt: new Date(Date.now() + records.length * 320).toISOString(),
+    });
+  };
+
+  for (const event of trace.events) {
+    if (event.eventType === "tool_call") {
+      const pathValue = String(event.payload?.parameters?.path || "");
+      const urlValue = String(event.payload?.parameters?.url || "");
+      if (pathValue.startsWith("/secret/")) {
+        const decision = enforcementDecision(
+          supervisionOptions,
+          "deny",
+          "blocked",
+          { blocked: true, replacement: "Access denied by Agent Guard supervision." },
+          { alerted: true, wouldHaveBlocked: true, replacement: "Observe-only mode did not block this action." },
+        );
+        pushRecord({
+          event,
+          targetType: "resource_access",
+          action: decision.action,
+          decision: decision.decision,
+          reason:
+            decision.decision === "blocked"
+              ? "Blocked secret path access during supervised rerun."
+              : "Observed secret path access that would be blocked in enforcement mode.",
+          output: decision.output,
+        });
+      } else if (urlValue.includes("attacker") || event.payload?.isHighRiskTool) {
+        const decision = enforcementDecision(
+          supervisionOptions,
+          "deny",
+          "blocked",
+          { blocked: true, replacement: "Outbound request blocked by policy." },
+          { alerted: true, wouldHaveBlocked: true, replacement: "Observe-only mode did not block this action." },
+        );
+        pushRecord({
+          event,
+          targetType: "tool_call",
+          action: decision.action,
+          decision: decision.decision,
+          reason:
+            decision.decision === "blocked"
+              ? "Blocked high-risk outbound tool call during supervised rerun."
+              : "Observed high-risk outbound tool call that would be blocked in enforcement mode.",
+          output: decision.output,
+        });
+      }
+    }
+
+    if (event.eventType === "tool_result" && eventHasInjectedContent(event)) {
+      const decision = enforcementDecision(
+        supervisionOptions,
+        "sanitize",
+        "modified",
+        { sanitized: true, containsInjectionAfterSanitize: false },
+        { alerted: true, wouldHaveSanitized: true },
+      );
+      pushRecord({
+        event,
+        targetType: "tool_result",
+        action: decision.action,
+        decision: decision.decision,
+        reason:
+          decision.decision === "modified"
+            ? "Sanitized tool output before model context merge."
+            : "Observed injected tool output that would be sanitized in enforcement mode.",
+        output: decision.output,
+      });
+    }
+
+    if (event.eventType === "resource_access" && event.payload?.authorized === false) {
+      pushRecord({
+        event,
+        targetType: "resource_access",
+        action: "warn",
+        decision: "alerted",
+        reason: "Unauthorized resource access attempt surfaced to runtime alerts.",
+        output: { alerted: true },
+      });
+    }
+  }
+
+  return records;
+}
+
+function buildDefenseReport({ detectionReport, riskProfile, policyPack, supervisionRecords }) {
+  const blockedActions = supervisionRecords.filter((record) => record.decision === "blocked");
+  const runtimeAlerts = supervisionRecords.filter((record) => record.decision !== "blocked");
+  const mitigatedTargetTypes = new Set(supervisionRecords.map((record) => record.targetType));
+  const residualRisks = riskProfile.weaknesses
+    .filter((weakness) => !mitigatedTargetTypes.has(weakness.targetType))
+    .map((weakness) => ({
+      residualRiskId: createId("residual"),
+      weaknessId: weakness.weaknessId,
+      title: weakness.title,
+      riskLevel: weakness.riskLevel === "critical" ? "high" : weakness.riskLevel,
+      reason: "No matching runtime supervision record was observed in this demo run.",
+    }));
+
+  return {
+    schemaVersion: "p2-demo-1",
+    defenseReportId: createId("defense"),
+    generatedAt: now(),
+    sourceDetectionReportId: detectionReport.reportId,
+    sourceRiskProfileId: riskProfile.profileId,
+    sourcePolicyPackId: policyPack.policyPackId,
+    summary: {
+      policyCount: policyPack.policies.length,
+      supervisionRecordCount: supervisionRecords.length,
+      blockedActionCount: blockedActions.length,
+      runtimeAlertCount: runtimeAlerts.length,
+      residualRiskCount: residualRisks.length,
+    },
+    defenseEffectiveness: {
+      blockedHighRiskActionCount: blockedActions.length,
+      sanitizedToolOutputCount: supervisionRecords.filter((record) => record.action === "sanitize").length,
+      alertCount: runtimeAlerts.length,
+      status: blockedActions.length ? "effective_for_observed_high_risk_actions" : "needs_more_supervised_runs",
+    },
+    blockedActions,
+    runtimeAlerts,
+    residualRisks,
+  };
+}
+
+function buildExternalEvaluationPreview({ context, defenseReport, supervisionOptions }) {
+  const enabled = supervisionOptions.unknownRiskHoldoutEnabled;
+  return {
+    schemaVersion: "p2-demo-1",
+    evaluationId: createId("external_eval"),
+    status: enabled ? "holdout_switch_enabled_for_next_round" : "holdout_switch_disabled",
+    agentId: context.agent.agentId,
+    generatedAt: now(),
+    holdoutCaseCount: enabled ? 3 : 0,
+    purpose: "Use test cases outside the policy-generation set to evaluate whether supervision can still discover and block risk.",
+    suggestedHoldoutEntries: enabled
+      ? ["new prompt injection document", "unseen API exfiltration tool", "unseen local file traversal"]
+      : [],
+    baseline: {
+      sourceDefenseReportId: defenseReport.defenseReportId,
+      currentBlockedActions: defenseReport.summary.blockedActionCount,
+      currentResidualRisks: defenseReport.summary.residualRiskCount,
+    },
+  };
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function renderDefenseHtml({ detectionReport, riskProfile, policyPack, defenseReport }) {
+  const blockedRows = defenseReport.blockedActions
+    .map(
+      (record) => `
+        <tr>
+          <td>${escapeHtml(record.action)}</td>
+          <td>${escapeHtml(record.targetType)}</td>
+          <td>${escapeHtml(record.reason)}</td>
+        </tr>
+      `,
+    )
+    .join("");
+  const weaknessRows = riskProfile.weaknesses
+    .map(
+      (weakness) => `
+        <tr>
+          <td>${escapeHtml(weakness.category)}</td>
+          <td>${escapeHtml(weakness.riskLevel)}</td>
+          <td>${escapeHtml(weakness.targetType)}</td>
+          <td>${escapeHtml(weakness.recommendedControl)}</td>
+        </tr>
+      `,
+    )
+    .join("");
+
+  return `<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>Agent Guard Defense Report</title>
+    <style>
+      body { margin: 0; font-family: Arial, "Microsoft YaHei", sans-serif; color: #111827; background: #f6f7fb; }
+      main { max-width: 980px; margin: 0 auto; padding: 36px 24px; }
+      h1 { margin: 0 0 8px; font-size: 30px; }
+      h2 { margin-top: 28px; font-size: 20px; }
+      p { color: #4b5563; line-height: 1.6; }
+      .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 24px 0; }
+      .tile { background: #fff; border: 1px solid #d8dee9; border-radius: 8px; padding: 16px; }
+      .tile strong { display: block; font-size: 24px; color: #2563eb; }
+      table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #d8dee9; border-radius: 8px; overflow: hidden; }
+      th, td { border-bottom: 1px solid #e5e7eb; padding: 10px 12px; text-align: left; font-size: 13px; vertical-align: top; }
+      th { background: #eef2ff; color: #1f2937; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Agent Guard Defense Report</h1>
+      <p>DefenseReport ${escapeHtml(defenseReport.defenseReportId)} · DetectionReport ${escapeHtml(detectionReport.reportId)}</p>
+      <section class="grid">
+        <div class="tile"><strong>${escapeHtml(policyPack.policies.length)}</strong><span>Policies</span></div>
+        <div class="tile"><strong>${escapeHtml(defenseReport.summary.supervisionRecordCount)}</strong><span>Runtime Records</span></div>
+        <div class="tile"><strong>${escapeHtml(defenseReport.summary.blockedActionCount)}</strong><span>Blocked Actions</span></div>
+        <div class="tile"><strong>${escapeHtml(defenseReport.summary.residualRiskCount)}</strong><span>Residual Risks</span></div>
+      </section>
+      <h2>Risk Profile</h2>
+      <table>
+        <thead><tr><th>Category</th><th>Risk</th><th>Target</th><th>Control</th></tr></thead>
+        <tbody>${weaknessRows || "<tr><td colspan=\"4\">No weaknesses.</td></tr>"}</tbody>
+      </table>
+      <h2>Blocked Actions</h2>
+      <table>
+        <thead><tr><th>Action</th><th>Target</th><th>Reason</th></tr></thead>
+        <tbody>${blockedRows || "<tr><td colspan=\"3\">No blocked actions in this run.</td></tr>"}</tbody>
+      </table>
+    </main>
+  </body>
+</html>`;
 }
 
 function buildEnvironmentSummary(configs, context) {
@@ -836,19 +1278,55 @@ function createPdfDocument(lines) {
   return Buffer.from(pdf, "ascii");
 }
 
-async function saveArtifacts({ trace, report }) {
+async function saveArtifacts({
+  trace,
+  report,
+  detectionReport,
+  riskProfile,
+  policyPack,
+  supervisionRecords,
+  defenseReport,
+  externalEvaluation,
+}) {
   await mkdir(path.join(outputsDir, "traces"), { recursive: true });
   await mkdir(path.join(outputsDir, "reports"), { recursive: true });
+  await mkdir(path.join(outputsDir, "reports", "demo"), { recursive: true });
+  await mkdir(path.join(outputsDir, "reports", "defense"), { recursive: true });
   await mkdir(path.join(outputsDir, "exports"), { recursive: true });
   const tracePath = path.join(outputsDir, "traces", `${trace.caseId}-${trace.traceId}.json`);
   const reportPath = path.join(outputsDir, "reports", `${report.caseId}-${report.reportId}.json`);
+  const detectionPath = path.join(outputsDir, "reports", "demo", `${detectionReport.reportId}.json`);
+  const riskProfilePath = path.join(outputsDir, "reports", "demo", `${riskProfile.profileId}.json`);
+  const policyPackPath = path.join(outputsDir, "reports", "demo", `${policyPack.policyPackId}.json`);
+  const supervisionPath = path.join(outputsDir, "reports", "demo", `${trace.runId}-supervision-records.json`);
+  const externalEvaluationPath = path.join(outputsDir, "reports", "demo", `${externalEvaluation.evaluationId}.json`);
+  const defensePath = path.join(outputsDir, "reports", "defense", `${defenseReport.defenseReportId}.json`);
+  const defenseHtmlPath = path.join(outputsDir, "reports", "defense", `${defenseReport.defenseReportId}.html`);
   const pdfPath = path.join(outputsDir, "exports", `${report.caseId}-${report.reportId}.pdf`);
   await writeFile(tracePath, JSON.stringify(trace, null, 2), "utf8");
   await writeFile(reportPath, JSON.stringify(report, null, 2), "utf8");
+  await writeFile(detectionPath, JSON.stringify(detectionReport, null, 2), "utf8");
+  await writeFile(riskProfilePath, JSON.stringify(riskProfile, null, 2), "utf8");
+  await writeFile(policyPackPath, JSON.stringify(policyPack, null, 2), "utf8");
+  await writeFile(supervisionPath, JSON.stringify(supervisionRecords, null, 2), "utf8");
+  await writeFile(defensePath, JSON.stringify(defenseReport, null, 2), "utf8");
+  await writeFile(externalEvaluationPath, JSON.stringify(externalEvaluation, null, 2), "utf8");
+  await writeFile(
+    defenseHtmlPath,
+    renderDefenseHtml({ detectionReport, riskProfile, policyPack, defenseReport }),
+    "utf8",
+  );
   await writeFile(pdfPath, createPdfDocument(buildPdfLines(report)));
   return {
     tracePath: path.relative(rootDir, tracePath).replaceAll("\\", "/"),
     reportPath: path.relative(rootDir, reportPath).replaceAll("\\", "/"),
+    detectionPath: path.relative(rootDir, detectionPath).replaceAll("\\", "/"),
+    riskProfilePath: path.relative(rootDir, riskProfilePath).replaceAll("\\", "/"),
+    policyPackPath: path.relative(rootDir, policyPackPath).replaceAll("\\", "/"),
+    supervisionPath: path.relative(rootDir, supervisionPath).replaceAll("\\", "/"),
+    defensePath: path.relative(rootDir, defensePath).replaceAll("\\", "/"),
+    defenseHtmlPath: path.relative(rootDir, defenseHtmlPath).replaceAll("\\", "/"),
+    externalEvaluationPath: path.relative(rootDir, externalEvaluationPath).replaceAll("\\", "/"),
     pdfPath: path.relative(rootDir, pdfPath).replaceAll("\\", "/"),
   };
 }
@@ -922,13 +1400,13 @@ const server = createServer(async (request, response) => {
       sendJson(response, 200, {
         ...configs,
         agentTemplates: [
-          { label: "Mock Baseline Agent", adapterType: "mock", mode: "vulnerable" },
-          { label: "Mock Guarded Agent", adapterType: "mock", mode: "guarded" },
-          { label: "HTTP Agent Endpoint", adapterType: "api", mode: "api" },
+          { label: "OpenClaw Demo Agent", adapterKind: "openclaw", mode: "vulnerable" },
+          { label: "Local HTTP Sample Agent", adapterKind: "http_sample", mode: "vulnerable" },
+          { label: "Mock Guarded Agent", adapterKind: "mock", mode: "guarded" },
         ],
         httpAgentContract: {
           method: "POST",
-          sampleCommand: "npm run sample-agent",
+          sampleCommand: "npm run demo:sample-agent",
           sampleEndpoint: sampleAgentEndpoint,
           sampleStartEndpoint: "/api/sample-agent/start",
           sampleStatusEndpoint: "/api/sample-agent/status",
@@ -961,11 +1439,28 @@ const server = createServer(async (request, response) => {
       const body = await readBody(request);
       const configs = await loadConfigs();
       const context = buildContext(configs, body);
+      const supervisionOptions = normalizeSupervisionOptions(body);
       const mode = body.mode === "guarded" ? "guarded" : "vulnerable";
       const trace = await buildTrace({ context, mode });
       const evaluation = evaluateTrace({ context, trace });
       const report = buildReport({ context, trace, evaluation });
-      const artifacts = await saveArtifacts({ trace, report });
+      const detectionReport = buildDetectionReport({ context, report });
+      const riskProfile = buildRiskProfile({ context, detectionReport, report });
+      const policyPack = buildSupervisionPolicyPack(riskProfile);
+      const supervisionRecords = buildSupervisionRecords({ context, trace, policyPack, supervisionOptions });
+      const defenseReport = buildDefenseReport({ detectionReport, riskProfile, policyPack, supervisionRecords });
+      const externalEvaluation = buildExternalEvaluationPreview({ context, defenseReport, supervisionOptions });
+      const artifacts = await saveArtifacts({
+        trace,
+        report,
+        detectionReport,
+        riskProfile,
+        policyPack,
+        supervisionOptions,
+        supervisionRecords,
+        defenseReport,
+        externalEvaluation,
+      });
 
       sendJson(response, 200, {
         context,
@@ -975,6 +1470,12 @@ const server = createServer(async (request, response) => {
         trace,
         evaluation,
         report,
+        detectionReport,
+        riskProfile,
+        policyPack,
+        supervisionRecords,
+        defenseReport,
+        externalEvaluation,
         artifacts,
       });
       return;

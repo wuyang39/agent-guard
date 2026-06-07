@@ -163,7 +163,7 @@ C 线后续重点:
 
 ## 8. 2026-06-04 AIG 审阅补充
 
-已新增 `docs/a-line-aig-adaptation-plan.md`，记录对本地临时 AIG 仓库 `mcp-scan` 和 `agent-scan` 的审阅结论，并将可迁移内容映射到 A 线后续任务。
+已新增 `docs/A/p1-a-line-aig-adaptation-plan.md`，记录对本地临时 AIG 仓库 `mcp-scan` 和 `agent-scan` 的审阅结论，并将可迁移内容映射到 A 线后续任务。
 
 下一步 A 线建议优先:
 
@@ -176,7 +176,7 @@ C 线后续重点:
 
 分支: `feature/a-attack-library-sandbox`
 
-本轮按 `docs/a-line-aig-adaptation-plan.md` 的第一优先级完成 A 线增强，重点是把 AIG 中可复用的 Agent/MCP 检测思路落成 Agent Guard 自己的结构化配置和确定性 sandbox 行为。
+本轮按 `docs/A/p1-a-line-aig-adaptation-plan.md` 的第一优先级完成 A 线增强，重点是把 AIG 中可复用的 Agent/MCP 检测思路落成 Agent Guard 自己的结构化配置和确定性 sandbox 行为。
 
 ### 9.1 配置加载与校验
 
@@ -272,7 +272,7 @@ C 线:
 - 新增 risk rule 是 A 线候选规则和验收支撑，规则语义仍建议由 C 线复核。
 - `PolicyTemplate` 是模板，不是 `SupervisionPolicyPack` 实例。策略包仍由 C 线根据 `AgentRiskProfile` 生成。
 
-D 线:
+C 前端:
 
 - 如果需要展示场景库或策略模板，应通过后端 API 或报告产物消费，不得直接读取 `configs/*.json`。
 

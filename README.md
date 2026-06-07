@@ -17,11 +17,11 @@ scripts/        Engineering scripts for validation, build, and local startup
 tests/          Cross-system end-to-end tests
 ```
 
-See `docs/framework-risk-audit.md` for the current framework risk register and the iteration risks already addressed.
+Line-specific implementation notes are grouped under `docs/A/`, `docs/B/`, and `docs/C/`.
+
+See `docs/architecture.md` for the system boundary, directory baseline, dependency rules, and development workflow.
 
 See `docs/ownership.md` for strict A/B/C workspace ownership, shared controlled files, and cross-workspace change rules.
-
-See `docs/directory-structure.md` for the FAROS-style complete system directory baseline.
 
 See `docs/README.md` for the documentation index and source-of-truth rules.
 

@@ -1,4 +1,4 @@
-# Developer B 模块运行时设计规范
+# Developer B P0 垂直闭环运行时设计规范
 
 设计日期: 2026-06-01
 文档版本: design-1

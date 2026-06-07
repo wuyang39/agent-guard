@@ -5,7 +5,7 @@
 状态: 待执行
 负责人: 开发者 B
 
-说明: 本计划承接 `docs/next-round-supervision-defense-plan.md`、`docs/interfaces.md`、`docs/ownership.md` 和当前主线代码。B 本轮的核心任务不是判定风险或生成策略，而是把 C 生成的 `SupervisionPolicyPack` 真正加载到 Agent 运行链路中执行，并输出可追溯的 `RuntimeSupervisionRecord[]`。
+说明: 本计划承接 `docs/p1-supervision-defense-plan.md`、`docs/interfaces.md`、`docs/ownership.md` 和当前主线代码。B 本轮的核心任务不是判定风险或生成策略，而是把 C 生成的 `SupervisionPolicyPack` 真正加载到 Agent 运行链路中执行，并输出可追溯的 `RuntimeSupervisionRecord[]`。
 
 ## 1. 本轮目标
 
@@ -426,7 +426,7 @@ redact: email_send bodyPreview contains token
 
 该脚本可以晚于 `verify-b-runtime-supervision.ts`，不作为第一阶段阻塞项。
 
-## 9. 与 A/C/D 协作点
+## 9. 与 A/C 协作点
 
 ### 9.1 与 A 协作
 
@@ -449,9 +449,9 @@ B 需要 C 确认:
 
 B 不从 `RiskReport` 自行生成策略。
 
-### 9.3 与 D 协作
+### 9.3 与 C 前端协作
 
-B 需要 D 确认:
+B 需要 C 前端确认:
 
 - 监督台需要展示哪些运行时记录字段。
 - 前端是否需要按 `runtimeSessionId`、`policyPackId`、`policyId` 过滤。
@@ -540,6 +540,6 @@ B 本轮最终交付:
 7. 新增 verify-b-runtime-supervision.ts
 8. 接入半真实 HTTP Agent
 9. 与 C 联调 DefenseReport
-10. 根据 D 展示需要补充 API 或导出字段
+10. 根据 C 前端展示需要补充 API 或导出字段
 ```
 

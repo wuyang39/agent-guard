@@ -1,4 +1,4 @@
-# Developer B 模块实现计划
+# Developer B P0 垂直闭环实现计划
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript + `@agent-guard/contracts` + Node.js
 
-**依赖基线:** [docs/superpowers/specs/2026-06-01-developer-B-design.md](../../specs/2026-06-01-developer-B-design.md)
+**依赖基线:** [docs/B/superpowers/specs/2026-06-01-developer-B-p0-runtime-loop-design-spec.md](../specs/2026-06-01-developer-B-p0-runtime-loop-design-spec.md)
 
 ---
 

@@ -31,7 +31,7 @@ C -> Backend Report API / Frontend Web Console:
 
 任何模块不得要求其他开发者提供私有类、临时日志、缓存对象或未写入契约文档的字段。
 
-开发者 D 负责正式前端。D 不参与运行时主链路的数据生产，只消费 Backend API、报告产物和 `packages/contracts` 中的共享契约对象。
+独立开发者 D 模块已移交给 C。C 前端不参与 A/B 运行时数据生产，只消费 Backend API、报告产物和 `packages/contracts` 中的共享契约对象。
 
 ## 2. 开发者 A 对外接口
 
@@ -316,7 +316,7 @@ C -> Backend API / Frontend:
   DefenseReport
   ReportArtifact[]
 
-Backend API / Report Artifacts -> D:
+Backend API / Report Artifacts -> C 前端:
   TestContext view
   TestRun
   InteractionTrace
@@ -329,7 +329,7 @@ Backend API / Report Artifacts -> D:
   ReportArtifact[]
 ```
 
-协调人必须优先冻结 `DetectionReport`、`AgentRiskProfile`、`SupervisionPolicyPack`、`RuntimeSupervisionRecord`、`DefenseReport` 的字段草案，再允许后端 A/B/C 三条线与前端 D 并行实现。
+协调人必须优先冻结 `DetectionReport`、`AgentRiskProfile`、`SupervisionPolicyPack`、`RuntimeSupervisionRecord`、`DefenseReport` 的字段草案，再允许 A/B/C 三条线并行实现；原 D 前端实现归入 C。
 
 ### 6.2 开发者 A 的 P1 输出
 
@@ -543,11 +543,11 @@ P1 联调失败时，按以下顺序排查:
 4. C 的策略包是否能被 B 执行
 5. B 的运行时记录是否足够让 C 生成防御报告
 
-## 7. 开发者 D 前端消费接口
+## 7. 开发者 C 前端展示接口
 
-职责: 正式 Frontend Web Console。D 只消费后端 API、报告产物和共享契约，不直接读取后端模块、配置文件或 outputs 原始文件。
+职责: 正式 Frontend Web Console。该职责归入 C 线。C 前端只消费后端 API、报告产物和共享契约，不直接读取后端模块、配置文件或 outputs 原始文件。
 
-D 输入:
+C 前端输入:
 
 ```txt
 Backend API response
@@ -555,7 +555,7 @@ ReportArtifact[]
 packages/contracts types
 ```
 
-D 展示对象:
+C 前端展示对象:
 
 ```txt
 TestContext view
@@ -569,7 +569,7 @@ RuntimeSupervisionRecord[]
 DefenseReport
 ```
 
-D 输出:
+C 前端输出:
 
 ```txt
 Frontend route / page
@@ -578,7 +578,7 @@ User action request
 API request payload
 ```
 
-D 不得:
+C 前端不得:
 
 - 直接 import `backend/src/**`
 - 直接读取 `configs/*.json` 解释规则、场景或策略
@@ -586,10 +586,42 @@ D 不得:
 - 在前端重新计算风险等级、风险画像或防御效果
 - 用 demo payload 反向修改正式 contracts
 
-D 联调检查表:
+C 前端联调检查表:
 
 - 前端页面只从 API client 或 report artifact 加载数据
 - 前端类型只从 `@agent-guard/contracts` 或前端私有 view model 引入
 - 前端 view model 不改变共享契约字段语义
 - Dashboard、Detection、Supervision、DefenseReports 页面都能追溯到对应 reportId / traceId / policyPackId
-- 如果 D 需要新增展示字段，必须先通过协调人更新 `docs/contracts.md` 和 `packages/contracts/src/types/**`
+- 如果 C 前端需要新增展示字段，必须先通过协调人更新 `docs/contracts.md` 和 `packages/contracts/src/types/**`
+
+## 8. P2 前后端 API 冻结
+
+P2 以 OpenClaw 作为核心演示 Agent，正式前端通过 Fastify API 消费后端产物。并行开发前必须以 `docs/p2-api-contract-plan.md` 冻结首批 API。
+
+首批冻结对象:
+
+```txt
+ApiResponse<T>
+P2AdapterKind
+P2RunGroup
+P2ArtifactView
+```
+
+首批冻结接口:
+
+```txt
+GET  /api/v1/system/status
+GET  /api/v1/dashboard/summary
+POST /api/v1/agents/check
+POST /api/v1/test-runs/e2e
+GET  /api/v1/test-runs
+GET  /api/v1/test-runs/:runGroupId
+GET  /api/v1/traces/:traceId
+GET  /api/v1/reports/detection/:reportId
+GET  /api/v1/policies/:policyPackId
+GET  /api/v1/supervision/sessions/:runtimeSessionId
+GET  /api/v1/reports/defense/:reportId
+GET  /api/v1/artifacts/:artifactId
+```
+
+P2 前端不得依赖未进入 `docs/p2-api-contract-plan.md` 的临时字段。P2 后端如果需要新增字段，应优先新增可选字段，并同步该 API 冻结文档。

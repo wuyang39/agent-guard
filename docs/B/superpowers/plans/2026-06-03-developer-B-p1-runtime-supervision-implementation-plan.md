@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript + `@agent-guard/contracts` + existing supervisor module
 
-**依赖基线:** [docs/superpowers/specs/2026-06-03-developer-B-p1-supervision-design.md](../../specs/2026-06-03-developer-B-p1-supervision-design.md)
+**依赖基线:** [docs/B/superpowers/specs/2026-06-03-developer-B-p1-supervision-design.md](../specs/2026-06-03-developer-B-p1-supervision-design.md)
 
 ---
 

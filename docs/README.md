@@ -14,23 +14,24 @@
 
 ## 2. 文档职责
 
-- `architecture.md`: 系统定位、阶段范围、主数据流、模块边界、完整系统验收方向和架构原则。
+- `architecture.md`: 系统定位、阶段范围、主数据流、模块边界、目录基线、开发规则、验收方向和架构原则。
 - `contracts.md`: 运行时共享数据契约，是字段、枚举和 JSON 可序列化约束的唯一来源。
-- `interfaces.md`: A/B/C/D 开发者之间的交接对象、输入输出和联调检查表。
-- `directory-structure.md`: FAROS-style 完整文件目录、前后端分离结构和依赖方向。
-- `ownership.md`: A/B/C/D 开发者的严格工作区、可协作区、禁止修改区和共享受控区。
-- `development-rules.md`: 开发协作纪律、命名规范、Import 约束、禁止事项、开发顺序、P0 验收和完整系统演进约束。
-- `framework-risk-audit.md`: 当前文件框架和迭代风险审计记录。
-- `work-log-a-config-sandbox.md`: A 线配置加载、Sandbox runtime、验证命令和后续协作注意事项。
-- `a-line-aig-adaptation-plan.md`: A 线攻击库、Sandbox 扩展和 AIG `mcp-scan` / `agent-scan` 可迁移能力分析。
-- `next-round-supervision-defense-plan.md`: 下一轮检测画像驱动的 Agent 运行时监督、策略包生成和防御报告规划。
-- `frontend-d-handoff.md`: 开发者 D 正式前端 Web Console 的开工边界、页面优先级、API Client 和联调检查点。
+- `interfaces.md`: A/B/C 开发者之间的交接对象、输入输出和联调检查表。
+- `ownership.md`: A/B/C 开发者的严格工作区、可协作区、禁止修改区和共享受控区。
+- `A/work-log-a-config-sandbox.md`: A 线配置加载、Sandbox runtime、验证命令和后续协作注意事项。
+- `A/p1-a-line-aig-adaptation-plan.md`: A 线 P1 攻击库、Sandbox 扩展和 AIG `mcp-scan` / `agent-scan` 可迁移能力分析。
+- `B/p1-b-runtime-supervision-work-plan.md`: B 线 P1 运行时监督实现计划。
+- `B/superpowers/**`: B 线历史设计规格和实现计划。
+- `p1-supervision-defense-plan.md`: P1 检测画像驱动的 Agent 运行时监督、策略包生成和防御报告规划。
+- `p2-real-agent-api-frontend-plan.md`: P2 以 OpenClaw 为核心演示 Agent 的正式 API、运行历史和前端演示系统规划。
+- `p2-api-contract-plan.md`: P2 并行开发前必须冻结的前后端 API 草案。
+- `C/frontend-d-handoff.md`: C 线前端 Web Console 的开工边界、页面优先级、API Client 和联调检查点。文件名保留历史入口，职责已归入 C。
 
 ## 3. 唯一来源规则
 
 - 字段类型以 `contracts.md` 和 `packages/contracts/src/types/**` 为准。
 - 开发者工作区以 `ownership.md` 为准。
-- 物理目录结构以 `directory-structure.md` 为准。
+- 物理目录结构、依赖方向和开发规则以 `architecture.md` 为准。
 - 交接链路以 `interfaces.md` 为准。
 - 系统边界和主流程以 `architecture.md` 为准。
 

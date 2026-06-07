@@ -3,7 +3,7 @@
 设计日期: 2026-06-03
 文档版本: p1-design-1
 状态: 设计通过，待实现
-依赖基线: docs/developer-b-p1-runtime-supervision-work-plan.md, docs/architecture.md, docs/contracts.md, docs/ownership.md
+依赖基线: docs/B/p1-b-runtime-supervision-work-plan.md, docs/architecture.md, docs/contracts.md, docs/ownership.md
 
 ## 1. 设计概述
 

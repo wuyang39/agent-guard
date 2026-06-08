@@ -37,6 +37,8 @@ import { buildInitialRunGroup, saveRunGroup } from "../storage/fileRunStore";
 import type { SupervisionSessionSummary } from "../storage/fileRunStore";
 import { saveSessionRecords } from "../storage/fileRunStore";
 import { indexReport, indexArtifact } from "../storage/fileReportStore";
+import type { AgentAdapter } from "../modules/agent/agentAdapter";
+import { HttpAgentAdapter } from "../modules/agent/httpAgentAdapter";
 
 const CONFIGS_DIR = path.resolve(process.cwd(), "configs");
 const OUTPUT_DIR = path.resolve(process.cwd(), "outputs", "reports");
@@ -48,6 +50,36 @@ export class CaseIdValidationError extends Error {
   }
 }
 
+// ---- helpers ----
+
+function mapAdapterKind(kind: string): AgentUnderTest["adapterType"] {
+  switch (kind) {
+    case "http_sample":
+      return "http_sample" as AgentUnderTest["adapterType"];
+    case "openclaw":
+      return "openclaw" as AgentUnderTest["adapterType"];
+    default:
+      return "mock";
+  }
+}
+
+function buildCustomAdapter(request: RunE2ERequest): AgentAdapter | undefined {
+  switch (request.adapterKind) {
+    case "http_sample": {
+      const endpointUrl =
+        request.connection?.endpointUrl ??
+        `http://localhost:${process.env.SAMPLE_AGENT_PORT ?? 7001}/agent/run`;
+      return new HttpAgentAdapter({
+        endpointUrl,
+        timeoutMs: request.connection?.timeoutMs ?? 15_000,
+        mode: "vulnerable",
+      });
+    }
+    default:
+      return undefined;
+  }
+}
+
 // ---- public API ----
 
 export type RunE2EResult = {
@@ -56,11 +88,9 @@ export type RunE2EResult = {
 };
 
 export async function runE2E(request: RunE2ERequest): Promise<RunE2EResult> {
-  // P2 adapterKind 映射到 contracts adapterType。
-  // "http_sample" / "openclaw" 暂通过 as "mock" 兜底，后续 B-2/B-3 正式注册。
-  const adapterType = (
-    request.adapterKind === "mock" ? "mock" : "mock"
-  ) as AgentUnderTest["adapterType"];
+  // P2 adapterKind 映射到 contracts adapterType + 自定义 adapter。
+  const adapterType = mapAdapterKind(request.adapterKind);
+  const customAdapter = buildCustomAdapter(request);
 
   const agent: AgentUnderTest = {
     schemaVersion: "mvp-1",
@@ -116,6 +146,7 @@ export async function runE2E(request: RunE2ERequest): Promise<RunE2EResult> {
         agent,
         adapterConfig,
         context,
+        { customAdapter },
       );
 
       const evaluation = evaluateRisk(context, trace);
@@ -154,6 +185,7 @@ export async function runE2E(request: RunE2ERequest): Promise<RunE2EResult> {
         {
           supervisionPolicyPack: policyPack,
           runtimeSessionId,
+          customAdapter,
         },
       );
 

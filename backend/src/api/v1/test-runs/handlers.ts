@@ -30,12 +30,12 @@ export async function testRunRoutes(app: FastifyInstance): Promise<void> {
       );
     }
 
-    // P2-B-1: 仅支持 mock；B-2/B-3 加入 http_sample/openclaw
-    if (body.adapterKind !== "mock") {
+    // P2-B-2: 支持 mock + http_sample
+    if (body.adapterKind === "openclaw") {
       reply.code(400);
       return failure(
         "NOT_YET_SUPPORTED",
-        `adapterKind "${body.adapterKind}" is not yet available in B-1. Use "mock".`,
+        `adapterKind "openclaw" is not yet available. Use "mock" or "http_sample".`,
       );
     }
 

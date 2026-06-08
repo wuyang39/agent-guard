@@ -1,7 +1,13 @@
 import type { FastifyInstance } from "fastify";
+import type {
+  RuntimeSupervisionRecord,
+  BlockedAction,
+  RuntimeAlert,
+} from "@agent-guard/contracts";
+import { createId, nowIso } from "../../../shared";
 import { success, failure } from "../../response";
 import type { SupervisorActionCounts } from "../../types";
-import { getSessionSummary } from "../../../storage/fileRunStore";
+import { getSessionRecords } from "../../../storage/fileRunStore";
 
 export async function supervisionRoutes(app: FastifyInstance): Promise<void> {
   // GET /api/v1/supervision/sessions/:runtimeSessionId
@@ -12,9 +18,9 @@ export async function supervisionRoutes(app: FastifyInstance): Promise<void> {
         runtimeSessionId: string;
       };
 
-      const summary = await getSessionSummary(runtimeSessionId);
+      const session = await getSessionRecords(runtimeSessionId);
 
-      if (!summary) {
+      if (!session) {
         reply.code(404);
         return failure(
           "NOT_FOUND",
@@ -22,36 +28,67 @@ export async function supervisionRoutes(app: FastifyInstance): Promise<void> {
         );
       }
 
+      const records: RuntimeSupervisionRecord[] = session.records ?? [];
+      const blockedActions = buildBlockedActions(records);
+      const alerts = buildAlerts(records);
+
       const actionCounts: SupervisorActionCounts = {
-        allow: summary.actionCounts["allow"] ?? 0,
-        deny: summary.actionCounts["deny"] ?? 0,
-        ask: summary.actionCounts["ask"] ?? 0,
-        warn: summary.actionCounts["warn"] ?? 0,
-        redact: summary.actionCounts["redact"] ?? 0,
-        isolate: summary.actionCounts["isolate"] ?? 0,
+        allow: session.actionCounts["allow"] ?? 0,
+        deny: session.actionCounts["deny"] ?? 0,
+        ask: session.actionCounts["ask"] ?? 0,
+        warn: session.actionCounts["warn"] ?? 0,
+        redact: session.actionCounts["redact"] ?? 0,
+        isolate: session.actionCounts["isolate"] ?? 0,
       };
 
       return success({
-        runtimeSessionId: summary.runtimeSessionId,
-        agentId: summary.agentId,
-        policyPackId: summary.policyPackId,
-        records: [] as unknown[], // B-1: 完整记录查询留 B-4
-        blockedActions: [] as unknown[],
-        alerts: [] as unknown[],
+        runtimeSessionId: session.runtimeSessionId,
+        agentId: session.agentId,
+        policyPackId: session.policyPackId,
+        records,
+        blockedActions,
+        alerts,
         actionCounts,
         links: [
           {
             kind: "runtime_session" as const,
-            id: summary.runtimeSessionId,
-            label: `Runtime Session ${summary.runtimeSessionId}`,
+            id: session.runtimeSessionId,
+            label: `Runtime Session ${session.runtimeSessionId}`,
           },
           {
             kind: "policy_pack" as const,
-            id: summary.policyPackId,
+            id: session.policyPackId,
             label: "Supervision Policy Pack",
           },
         ],
       });
     },
   );
+}
+
+function buildBlockedActions(records: RuntimeSupervisionRecord[]): BlockedAction[] {
+  return records
+    .filter((r) => r.action === "deny")
+    .map((r) => ({
+      blockedActionId: createId("blocked_action"),
+      recordId: r.recordId,
+      policyId: r.policyId,
+      targetType: r.targetType,
+      targetId: r.targetId,
+      reason: r.decisionReason,
+      createdAt: nowIso(),
+    }));
+}
+
+function buildAlerts(records: RuntimeSupervisionRecord[]): RuntimeAlert[] {
+  return records
+    .filter((r) => r.action === "warn")
+    .map((r) => ({
+      alertId: createId("runtime_alert"),
+      recordId: r.recordId,
+      riskLevel: "medium" as const,
+      title: "Runtime supervision warning",
+      message: r.decisionReason,
+      createdAt: nowIso(),
+    }));
 }

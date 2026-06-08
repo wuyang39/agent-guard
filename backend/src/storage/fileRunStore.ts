@@ -8,7 +8,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { createId, nowIso } from "../shared";
 import type { RunE2ERequest, P2RunGroup, P2AdapterKind } from "../api/types";
-import type { RunStatus } from "@agent-guard/contracts";
+import type { RunStatus, RuntimeSupervisionRecord } from "@agent-guard/contracts";
 
 const ROOT = path.resolve(process.cwd(), "outputs", "run-index");
 const RUN_GROUPS_FILE = path.join(ROOT, "run-groups.json");
@@ -118,26 +118,40 @@ export type SupervisionSessionSummary = {
   actionCounts: Record<string, number>;
 };
 
-export async function saveSessionSummary(
+export type SupervisionSessionFull = SupervisionSessionSummary & {
+  records: RuntimeSupervisionRecord[];
+};
+
+export async function saveSessionRecords(
   summary: SupervisionSessionSummary,
+  records: RuntimeSupervisionRecord[],
 ): Promise<void> {
   await ensureDir(SESSIONS_DIR);
   await writeJson(
     path.join(SESSIONS_DIR, `${summary.runtimeSessionId}.json`),
-    summary,
+    { ...summary, records } satisfies SupervisionSessionFull,
   );
 }
 
-export async function getSessionSummary(
+export async function getSessionRecords(
   runtimeSessionId: string,
-): Promise<SupervisionSessionSummary | undefined> {
+): Promise<SupervisionSessionFull | undefined> {
   try {
     const raw = await fs.readFile(
       path.join(SESSIONS_DIR, `${runtimeSessionId}.json`),
       "utf-8",
     );
-    return JSON.parse(raw) as SupervisionSessionSummary;
+    const parsed = JSON.parse(raw);
+    // 兼容旧格式（无 records 字段）
+    if (!Array.isArray(parsed.records)) {
+      return undefined;
+    }
+    return parsed as SupervisionSessionFull;
   } catch {
     return undefined;
   }
 }
+
+// 保留兼容别名
+export const saveSessionSummary = saveSessionRecords;
+export const getSessionSummary = getSessionRecords;

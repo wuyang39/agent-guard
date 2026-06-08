@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { success, failure } from "../../response";
 import type { RunE2ERequest } from "../../types";
-import { runE2E } from "../../../services/e2eRunService";
+import { runE2E, CaseIdValidationError } from "../../../services/e2eRunService";
 import {
   getRunGroup,
   listRunGroups,
@@ -44,6 +44,10 @@ export async function testRunRoutes(app: FastifyInstance): Promise<void> {
       reply.code(201);
       return success(result);
     } catch (err) {
+      if (err instanceof CaseIdValidationError) {
+        reply.code(400);
+        return failure("INVALID_CASE_IDS", err.message);
+      }
       request.log.error({ err }, "E2E run failed");
       reply.code(500);
       return failure(

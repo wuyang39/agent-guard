@@ -35,11 +35,18 @@ import {
 import type { RunE2ERequest, P2RunGroup, EntityLink } from "../api/types";
 import { buildInitialRunGroup, saveRunGroup } from "../storage/fileRunStore";
 import type { SupervisionSessionSummary } from "../storage/fileRunStore";
-import { saveSessionSummary } from "../storage/fileRunStore";
+import { saveSessionRecords } from "../storage/fileRunStore";
 import { indexReport, indexArtifact } from "../storage/fileReportStore";
 
 const CONFIGS_DIR = path.resolve(process.cwd(), "configs");
 const OUTPUT_DIR = path.resolve(process.cwd(), "outputs", "reports");
+
+export class CaseIdValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CaseIdValidationError";
+  }
+}
 
 // ---- public API ----
 
@@ -76,9 +83,27 @@ export async function runE2E(request: RunE2ERequest): Promise<RunE2EResult> {
     // ====== 阶段 1: 监督前检测 ======
     const { contexts } = await loadTestContexts(CONFIGS_DIR, agent);
 
+    // caseIds 有效性校验：传入不存在的 caseId 时返回 400 级别错误
+    if (request.caseIds && request.caseIds.length > 0) {
+      const validIds = new Set(contexts.map((ctx) => ctx.caseId));
+      const invalid = request.caseIds.filter((id) => !validIds.has(id));
+      if (invalid.length > 0) {
+        throw new CaseIdValidationError(
+          `Unknown caseIds: ${invalid.join(", ")}. ` +
+          `Available: ${[...validIds].join(", ")}`,
+        );
+      }
+    }
+
     const targetCases = request.caseIds
       ? contexts.filter((ctx: (typeof contexts)[number]) => request.caseIds!.includes(ctx.caseId))
       : contexts;
+
+    if (targetCases.length === 0) {
+      throw new CaseIdValidationError(
+        "No test cases matched. Provide valid caseIds or omit the field to run all enabled cases.",
+      );
+    }
 
     runGroup.caseCount = targetCases.length;
 
@@ -158,7 +183,7 @@ export async function runE2E(request: RunE2ERequest): Promise<RunE2EResult> {
         askCount,
         actionCounts,
       };
-      await saveSessionSummary(sessionSummary);
+      await saveSessionRecords(sessionSummary, supervisionRecords);
     }
 
     // ====== 阶段 3: 防御报告 ======

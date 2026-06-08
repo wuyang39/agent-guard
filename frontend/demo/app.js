@@ -5,6 +5,9 @@ let selectedScenarioIds = [];
 let runPayloads = [];
 let validationPayloads = [];
 let holdoutPayloads = [];
+let supervisionSession = null;
+let externalEventSource = null;
+let liveEvents = [];
 let policyBuilt = false;
 let validationDone = false;
 let holdoutDone = false;
@@ -14,12 +17,12 @@ let runStartedAtMs = null;
 
 const stepMeta = [
   ["0. Agent 接入", "选择 OpenClaw 作为核心演示 Agent，HTTP 示例和 Mock 作为兜底。", "等待接入 Agent"],
-  ["1. 攻击场景", "选择 3 类以上红队攻击场景，包含对抗样本、越狱测试用例和攻击脚本。", "等待选择测试集"],
-  ["2. 监督前风险画像", "系统不做阻断，只观察 Agent 行为并生成 RiskReport、DetectionReport 和 AgentRiskProfile。", "等待运行监督前检测"],
-  ["3. 监督策略包", "根据风险画像生成 SupervisionPolicyPack，并按策略组展示防御逻辑。", "等待生成策略包"],
-  ["4. 监督验证", "选择阻断、观察或询问模式，验证策略包能否拦截或发现风险行为。", "等待运行监督验证"],
-  ["5. 未知风险复测", "使用未参与策略生成的外部留出样本，验证策略包对未知风险的发现能力。", "等待运行未知风险复测"],
-  ["6. 防御报告", "汇总监督前风险、策略命中、阻断、告警、未知复测命中率和残余风险。", "等待生成防御报告"],
+  ["1. 内置画像测试", "选择 3 类以上红队攻击场景，系统使用内置用例和算法建立 Agent 风险画像。", "等待选择内置测试集"],
+  ["2. Agent 风险画像", "系统不做阻断，只观察 Agent 行为并生成 RiskReport、DetectionReport 和 AgentRiskProfile。", "等待运行监督前检测"],
+  ["3. 监督策略包", "根据风险画像生成 SupervisionPolicyPack，作为旁路监督网关的运行依据。", "等待生成策略包"],
+  ["4. 旁路监督会话", "像网关一样开启监督能力，使用风险画像实时审计 Agent 行为；此步不再运行内置测试集。", "等待开启旁路监督"],
+  ["5. 系统外测试流量", "把系统外准备的测试用例接入旁路监督网关，观察策略包对新风险的命中效果。", "等待系统外流量进入"],
+  ["6. 防御报告", "关闭本次旁路监督会话，汇总监督前风险、策略命中、阻断、告警、外部流量命中率和残余风险。", "等待生成防御报告"],
 ];
 
 const riskRank = { none: 0, low: 1, medium: 2, high: 3, critical: 4 };
@@ -146,9 +149,16 @@ const els = {
   toHoldoutButton: $("#toHoldoutButton"),
   externalPreview: $("#externalPreview"),
   runHoldoutButton: $("#runHoldoutButton"),
+  stopExternalRunnerButton: $("#stopExternalRunnerButton"),
+  externalRunnerStatus: $("#externalRunnerStatus"),
+  externalRunnerCommand: $("#externalRunnerCommand"),
   holdoutCaseCount: $("#holdoutCaseCount"),
   holdoutHitRate: $("#holdoutHitRate"),
   holdoutResidualCount: $("#holdoutResidualCount"),
+  liveEventCount: $("#liveEventCount"),
+  liveBlockedCount: $("#liveBlockedCount"),
+  liveAlertCount: $("#liveAlertCount"),
+  liveEventList: $("#liveEventList"),
   holdoutList: $("#holdoutList"),
   buildReportButton: $("#buildReportButton"),
   artifactText: $("#artifactText"),
@@ -298,12 +308,133 @@ function aggregatePayloads(payloads) {
   };
 }
 
-function verificationModeText() {
+function verificationModeText(mode = els.verificationMode.value) {
   return {
     block_high_risk: "阻断模式",
     observe_only: "观察模式",
     ask_confirm: "询问模式",
-  }[els.verificationMode.value] || "阻断模式";
+  }[mode] || "阻断模式";
+}
+
+function selectedSupervisionMode() {
+  return supervisionSession?.mode || els.verificationMode.value;
+}
+
+function sessionDisplayName() {
+  return supervisionSession?.sessionId || "尚未开启";
+}
+
+function externalRunnerCommand() {
+  return [
+    "npm run external:attack",
+    "--",
+    `--gateway http://localhost:5177/gateway/${sessionDisplayName()}`,
+    `--mode ${selectedSupervisionMode()}`,
+    `--cases ${holdoutCaseIds().join(",")}`,
+  ].join(" ");
+}
+
+function setRunnerStatus(state, text) {
+  if (!els.externalRunnerStatus) return;
+  els.externalRunnerStatus.dataset.state = state;
+  els.externalRunnerStatus.querySelector("strong").textContent = text;
+}
+
+function liveEventLevel(event) {
+  if (event.type === "supervision_record" && event.record?.decision === "blocked") return "blocked";
+  if (event.type === "supervision_record") return "alert";
+  if (event.type === "runner_complete" || event.type === "case_complete") return "complete";
+  if (event.type === "runner_stopped" || event.type === "runner_error") return "error";
+  return "running";
+}
+
+function liveEventTitle(event) {
+  if (event.type === "runner_started") return "External Attack Runner 已启动";
+  if (event.type === "external_request") return `外部流量进入网关 · ${event.caseName || event.caseId}`;
+  if (event.type === "agent_trace_event") return `Agent 行为事件 · ${event.eventType}`;
+  if (event.type === "supervision_record") return `策略命中 · ${event.record?.decision || "alerted"}`;
+  if (event.type === "case_complete") return `外部用例完成 · ${event.caseName || event.caseId}`;
+  if (event.type === "runner_complete") return "外部攻击进程运行完成";
+  if (event.type === "runner_stopped") return "外部攻击进程已停止";
+  if (event.type === "runner_error") return "外部攻击进程异常";
+  return event.type || "实时事件";
+}
+
+function liveEventDetail(event) {
+  if (event.type === "external_request") return `source=${event.source || "external"}；attack=${event.attackEntryType || "unknown"}`;
+  if (event.type === "agent_trace_event") return `${event.actor || "agent"} 触发 ${event.eventType}；caseId=${event.caseId || "n/a"}`;
+  if (event.type === "supervision_record") {
+    const record = event.record || {};
+    return `${record.action || "warn"} ${record.targetType || "target"}；policyId=${record.policyId || "n/a"}；${record.reason || ""}`;
+  }
+  if (event.type === "case_complete") {
+    return `监督记录 ${event.supervisionRecordCount || 0} 条；风险发现 ${event.findingCount || 0} 个`;
+  }
+  if (event.type === "runner_complete") return `总用例 ${event.caseCount || 0} 个；命中 ${event.hitCount || 0} 个`;
+  if (event.type === "runner_error") return event.message || "运行失败";
+  return event.message || "事件已写入实时监督流。";
+}
+
+function renderLiveEvents() {
+  const blocked = liveEvents.filter((event) => event.type === "supervision_record" && event.record?.decision === "blocked").length;
+  const alerts = liveEvents.filter((event) => event.type === "supervision_record" && event.record?.decision !== "blocked").length;
+  els.liveEventCount.textContent = String(liveEvents.length);
+  els.liveBlockedCount.textContent = String(blocked);
+  els.liveAlertCount.textContent = String(alerts);
+
+  if (!liveEvents.length) {
+    els.liveEventList.innerHTML = `<div class="empty-state">等待外部攻击进程产生流量。</div>`;
+    return;
+  }
+
+  els.liveEventList.innerHTML = liveEvents
+    .slice(-12)
+    .reverse()
+    .map(
+      (event) => `
+        <article class="live-event-card" data-level="${esc(liveEventLevel(event))}">
+          <strong>${esc(liveEventTitle(event))}</strong>
+          <p>${esc(liveEventDetail(event))}</p>
+          <p><code>${esc(event.timestamp || "")}</code></p>
+        </article>
+      `,
+    )
+    .join("");
+}
+
+function resetExternalRunnerUi() {
+  liveEvents = [];
+  holdoutPayloads = [];
+  validationPayloads = [];
+  holdoutDone = false;
+  reportBuilt = false;
+  els.holdoutCaseCount.textContent = "0";
+  els.holdoutHitRate.textContent = "0%";
+  els.holdoutResidualCount.textContent = "0";
+  els.holdoutList.innerHTML = "";
+  els.buildReportButton.disabled = true;
+  if (els.externalRunnerCommand) els.externalRunnerCommand.textContent = externalRunnerCommand();
+  setRunnerStatus("idle", "外部攻击进程未启动");
+  renderLiveEvents();
+}
+
+function closeExternalRunner(reason = "stopped") {
+  if (externalEventSource) {
+    externalEventSource.close();
+    externalEventSource = null;
+  }
+  els.runHoldoutButton.disabled = !supervisionSession?.active;
+  els.stopExternalRunnerButton.disabled = true;
+  if (reason === "stopped") {
+    liveEvents.push({ type: "runner_stopped", timestamp: new Date().toISOString(), message: "用户停止外部流量输入。" });
+    setRunnerStatus("stopped", "外部攻击进程已停止");
+    if (holdoutPayloads.length) {
+      holdoutDone = true;
+      els.buildReportButton.disabled = false;
+      els.flowStatus.textContent = "外部流量已停止，可关闭监督并生成报告";
+    }
+    renderLiveEvents();
+  }
 }
 
 function showModule(module) {
@@ -485,7 +616,7 @@ function renderContextPreview() {
   els.runInput.innerHTML = `
     <p><b>Agent：</b>${esc(currentAgent().name)} (${esc(adapterText(currentAgent().adapterKind))})</p>
     <p><b>攻击场景：</b>${esc(scenarios.map((scenario) => attackTypeLabels[scenario.attackType] || scenario.attackType).join("、"))}</p>
-    <p><b>运行模式：</b>监督前仅观察，不做阻断</p>
+    <p><b>运行模式：</b>内置画像测试，仅观察不阻断</p>
   `;
 }
 
@@ -510,7 +641,7 @@ function renderOverview() {
   els.kpiResources.textContent = String(bootstrap.resources.length);
   els.kpiRules.textContent = String(bootstrap.riskRules.length);
   els.overviewStatus.textContent = "P2 Demo 已就绪";
-  els.overviewStatusDetail.textContent = "红队场景、OpenClaw 主入口、策略监督和防御报告演示已加载。";
+  els.overviewStatusDetail.textContent = "OpenClaw 主入口、内置画像测试、旁路监督网关和防御报告演示已加载。";
 }
 
 function renderConfigBoard() {
@@ -599,6 +730,7 @@ function renderPolicyGroups() {
   els.riskInput.innerHTML = `
     <p><b>策略来源：</b>${runPayloads.length} 份 RiskReport 与 ${summary.weaknessCount} 类弱点画像</p>
     <p><b>SupervisionPolicyPack：</b>按输入输出过滤、上下文隔离、工具阻断、敏感资源和出站审计聚合展示</p>
+    <p><b>运行形态：</b>策略包加载到 Agent Guard Gateway，后续作为旁路监督依据</p>
   `;
   els.policyGroupGrid.innerHTML = policyGroups
     .map(
@@ -624,7 +756,8 @@ function renderPolicyGroups() {
     .join("");
   els.validationInput.innerHTML = `
     <p><b>策略组：</b>${policyGroups.length} 组</p>
-    <p><b>待验证场景：</b>${selectedCaseIds().length} 个测试用例</p>
+    <p><b>会话形态：</b>旁路监督网关，当前不运行内置测试集</p>
+    <p><b>外部流量：</b>${holdoutCaseIds().length} 个系统外测试用例等待接入</p>
     <p><b>当前模式：</b>${esc(verificationModeText())}</p>
   `;
   els.buildRiskButton.disabled = false;
@@ -633,7 +766,7 @@ function renderPolicyGroups() {
 
 function renderSupervisionRecords(records = []) {
   if (!records.length) {
-    els.supervisionList.innerHTML = `<div class="empty-state">还没有监督验证记录。</div>`;
+    els.supervisionList.innerHTML = `<div class="empty-state">旁路监督已就绪，等待系统外测试流量进入网关。</div>`;
     return;
   }
   els.supervisionList.innerHTML = records
@@ -655,6 +788,12 @@ function renderValidationResults() {
   els.validationHitCount.textContent = String(summary.recordCount);
   els.validationBlockedCount.textContent = String(summary.blockedCount);
   els.validationAlertCount.textContent = String(summary.alertCount);
+  els.validationInput.innerHTML = `
+    <p><b>会话 ID：</b>${esc(sessionDisplayName())}</p>
+    <p><b>会话状态：</b>${supervisionSession?.active ? "运行中" : "已关闭"}</p>
+    <p><b>旁路监督模式：</b>${esc(verificationModeText(selectedSupervisionMode()))}</p>
+    <p><b>监督依据：</b>AgentRiskProfile + SupervisionPolicyPack</p>
+  `;
   renderSupervisionRecords(summary.records);
   els.toHoldoutButton.disabled = false;
   els.runHoldoutButton.disabled = false;
@@ -669,9 +808,10 @@ function renderHoldoutResults() {
   els.holdoutHitRate.textContent = `${rate}%`;
   els.holdoutResidualCount.textContent = String(summary.residualCount);
   els.externalPreview.innerHTML = `
-    <p><b>留出样本：</b>${holdoutCaseIds().join("、")}</p>
-    <p><b>验证问题：</b>策略包能不能发现未参与策略生成的新风险？</p>
-    <p><b>命中率：</b>${rate}%</p>
+    <p><b>网关会话：</b>${esc(sessionDisplayName())}</p>
+    <p><b>系统外用例：</b>${holdoutCaseIds().join("、")}</p>
+    <p><b>验证问题：</b>风险画像驱动的旁路监督能否发现系统外流量中的新风险？</p>
+    <p><b>监督命中率：</b>${rate}%</p>
   `;
   els.holdoutList.innerHTML = holdoutPayloads
     .map((payload) => {
@@ -679,7 +819,7 @@ function renderHoldoutResults() {
       return `
         <article class="finding-card">
           <strong>${esc(payload.context.caseName)} · ${recordCount ? "命中" : "未命中"}</strong>
-          <p>监督记录：${recordCount}；风险发现：${payload.risk.findingCount}</p>
+          <p>旁路监督记录：${recordCount}；风险发现：${payload.risk.findingCount}</p>
         </article>
       `;
     })
@@ -689,23 +829,22 @@ function renderHoldoutResults() {
 }
 
 function latestArtifact() {
-  return validationPayloads[0]?.artifacts || runPayloads[0]?.artifacts || {};
+  return holdoutPayloads[0]?.artifacts || validationPayloads[0]?.artifacts || runPayloads[0]?.artifacts || {};
 }
 
 function renderDefenseReport() {
   const pre = aggregatePayloads(runPayloads);
-  const validation = aggregatePayloads(validationPayloads);
-  const holdout = aggregatePayloads(holdoutPayloads);
+  const external = aggregatePayloads(holdoutPayloads);
   const hitCases = holdoutPayloads.filter((payload) => (payload.supervisionRecords || []).length > 0).length;
-  const holdoutRate = holdoutPayloads.length ? Math.round((hitCases / holdoutPayloads.length) * 100) : 0;
+  const externalRate = holdoutPayloads.length ? Math.round((hitCases / holdoutPayloads.length) * 100) : 0;
   const artifacts = latestArtifact();
 
   els.preRiskCount.textContent = String(pre.findingCount);
-  els.policyHitCount.textContent = String(validation.recordCount);
-  els.chainCount.textContent = String(validation.blockedCount);
-  els.evidenceCount.textContent = String(validation.alertCount);
-  els.finalHoldoutRate.textContent = `${holdoutRate}%`;
-  els.reportRisk.textContent = String(holdout.residualCount || validation.residualCount);
+  els.policyHitCount.textContent = String(external.recordCount);
+  els.chainCount.textContent = String(external.blockedCount);
+  els.evidenceCount.textContent = String(external.alertCount);
+  els.finalHoldoutRate.textContent = `${externalRate}%`;
+  els.reportRisk.textContent = String(external.residualCount);
   els.artifactText.innerHTML = `
     <p><b>RiskReport JSON：</b>${artifactLink(artifacts.reportPath)}</p>
     <p><b>DetectionReport JSON：</b>${artifactLink(artifacts.detectionPath)}</p>
@@ -717,8 +856,8 @@ function renderDefenseReport() {
   els.evidenceList.innerHTML = `
     <article class="finding-card">
       <strong>证据链摘要</strong>
-      <p>监督前风险 ${pre.findingCount} 个，策略命中 ${validation.recordCount} 次，阻断 ${validation.blockedCount} 次，告警 ${validation.alertCount} 次。</p>
-      <p>未知风险复测命中率 ${holdoutRate}%，残余风险 ${holdout.residualCount || validation.residualCount} 个。</p>
+      <p>监督前内置画像测试发现风险 ${pre.findingCount} 个；旁路监督会话 ${esc(sessionDisplayName())} 命中 ${external.recordCount} 次，阻断 ${external.blockedCount} 次，告警/询问 ${external.alertCount} 次。</p>
+      <p>系统外测试流量命中率 ${externalRate}%，残余风险 ${external.residualCount} 个；报告生成时已关闭本次监督会话。</p>
     </article>
   `;
   if (artifacts.defenseHtmlPath) {
@@ -728,8 +867,8 @@ function renderDefenseReport() {
   }
   els.overviewLastRun.innerHTML = `
     <p><b>防御报告：</b>已生成</p>
-    <p><b>监督前风险：</b>${pre.findingCount}；<b>策略命中：</b>${validation.recordCount}</p>
-    <p><b>未知复测命中率：</b>${holdoutRate}%</p>
+    <p><b>监督前风险：</b>${pre.findingCount}；<b>外部流量策略命中：</b>${external.recordCount}</p>
+    <p><b>系统外流量命中率：</b>${externalRate}%</p>
   `;
   renderReportDashboard();
 }
@@ -752,12 +891,13 @@ function renderDetectionDashboard() {
 
 function renderSupervisionDashboard() {
   if (!validationDone) {
-    els.supervisionDashboard.innerHTML = `<div class="empty-state">暂无监督验证结果。</div>`;
+    els.supervisionDashboard.innerHTML = `<div class="empty-state">暂无旁路监督会话。生成策略包后可以开启网关监督。</div>`;
     return;
   }
   const summary = aggregatePayloads(validationPayloads);
   els.supervisionDashboard.innerHTML = `
     <div class="report-grid">
+      <article class="kpi-tile"><span>${supervisionSession?.active ? "ON" : "OFF"}</span><p>会话状态</p></article>
       <article class="kpi-tile"><span>${summary.recordCount}</span><p>策略命中</p></article>
       <article class="kpi-tile"><span>${summary.blockedCount}</span><p>阻断</p></article>
       <article class="kpi-tile"><span>${summary.alertCount}</span><p>告警/询问</p></article>
@@ -767,16 +907,16 @@ function renderSupervisionDashboard() {
 
 function renderExternalDashboard() {
   if (!holdoutDone) {
-    els.externalDashboard.innerHTML = `<div class="empty-state">暂无未知风险复测结果。</div>`;
+    els.externalDashboard.innerHTML = `<div class="empty-state">暂无系统外测试流量结果。开启旁路监督后再把外部用例接入网关。</div>`;
     return;
   }
   const hitCases = holdoutPayloads.filter((payload) => (payload.supervisionRecords || []).length > 0).length;
   const rate = holdoutPayloads.length ? Math.round((hitCases / holdoutPayloads.length) * 100) : 0;
   els.externalDashboard.innerHTML = `
     <div class="report-grid">
-      <article class="kpi-tile"><span>${holdoutPayloads.length}</span><p>留出样本</p></article>
-      <article class="kpi-tile"><span>${rate}%</span><p>命中率</p></article>
-      <article class="kpi-tile"><span>${hitCases}</span><p>命中样本</p></article>
+      <article class="kpi-tile"><span>${holdoutPayloads.length}</span><p>系统外用例</p></article>
+      <article class="kpi-tile"><span>${rate}%</span><p>监督命中率</p></article>
+      <article class="kpi-tile"><span>${hitCases}</span><p>命中用例</p></article>
     </div>
   `;
 }
@@ -787,22 +927,24 @@ function renderReportDashboard() {
     return;
   }
   const pre = aggregatePayloads(runPayloads);
-  const validation = aggregatePayloads(validationPayloads);
+  const external = aggregatePayloads(holdoutPayloads);
   els.reportDashboard.innerHTML = `
     <div class="report-grid">
       <article class="kpi-tile"><span>${pre.findingCount}</span><p>监督前风险</p></article>
-      <article class="kpi-tile"><span>${validation.recordCount}</span><p>策略命中</p></article>
-      <article class="kpi-tile"><span>${validation.blockedCount}</span><p>阻断</p></article>
+      <article class="kpi-tile"><span>${external.recordCount}</span><p>外部流量命中</p></article>
+      <article class="kpi-tile"><span>${external.blockedCount}</span><p>阻断</p></article>
     </div>
   `;
 }
 
 function resetDownstream(fromStep) {
   if (fromStep <= 2) {
+    closeExternalRunner("restart");
     policyBuilt = false;
     validationDone = false;
     holdoutDone = false;
     reportBuilt = false;
+    supervisionSession = null;
     validationPayloads = [];
     holdoutPayloads = [];
     els.policyList.innerHTML = "";
@@ -813,7 +955,9 @@ function resetDownstream(fromStep) {
     els.runValidationButton.disabled = true;
     els.toHoldoutButton.disabled = true;
     els.runHoldoutButton.disabled = true;
+    els.stopExternalRunnerButton.disabled = true;
     els.buildReportButton.disabled = true;
+    renderLiveEvents();
   }
 }
 
@@ -822,7 +966,7 @@ async function runPreDetection() {
   if (!caseIds.length) return;
   els.finishEnvButton.disabled = true;
   els.runButton.disabled = true;
-  els.flowStatus.textContent = "监督前检测运行中";
+  els.flowStatus.textContent = "内置画像测试运行中";
   showStep(2);
   startRunTimer();
   try {
@@ -842,7 +986,7 @@ async function runPreDetection() {
   } finally {
     els.finishEnvButton.disabled = false;
     els.runButton.disabled = false;
-    els.flowStatus.textContent = "风险画像已生成";
+    els.flowStatus.textContent = "Agent 风险画像已生成";
   }
 }
 
@@ -856,71 +1000,124 @@ function buildPolicyPackStage() {
 function enterValidationStage() {
   if (!policyBuilt) return;
   els.validationInput.innerHTML = `
-    <p><b>验证模式：</b>${esc(verificationModeText())}</p>
-    <p><b>验证用例：</b>${selectedCaseIds().length} 个</p>
+    <p><b>旁路监督模式：</b>${esc(verificationModeText())}</p>
+    <p><b>网关形态：</b>Agent Guard Gateway 旁路接入，不改变内置画像测试结果</p>
+    <p><b>监督依据：</b>AgentRiskProfile + SupervisionPolicyPack</p>
+    <p><b>下一步：</b>开启监督后接入系统外测试流量</p>
     <p><b>策略组：</b>${policyGroups.length} 组</p>
   `;
+  els.runValidationButton.textContent = supervisionSession?.active ? "旁路监督运行中" : "开启旁路监督";
   els.runValidationButton.disabled = false;
   showStep(4);
 }
 
 async function runValidation() {
   if (!policyBuilt) return;
+  validationPayloads = [];
+  holdoutPayloads = [];
+  liveEvents = [];
+  holdoutDone = false;
+  reportBuilt = false;
+  supervisionSession = {
+    sessionId: `gateway_${Date.now().toString(16)}`,
+    active: true,
+    mode: els.verificationMode.value,
+    startedAt: new Date().toISOString(),
+    endedAt: null,
+  };
+  validationDone = true;
   els.runValidationButton.disabled = true;
-  els.flowStatus.textContent = "监督验证运行中";
-  try {
-    validationPayloads = await runCaseSet(selectedCaseIds(), {
-      runtimeSupervisionEnabled: true,
-      unknownRiskHoldoutEnabled: false,
-      enforcementMode: els.verificationMode.value,
-    });
-    validationDone = true;
-    renderValidationResults();
-    els.flowStatus.textContent = "监督验证完成";
-    showStep(4);
-  } catch (error) {
-    els.validationInput.innerHTML = `<p>监督验证失败：${esc(error.message)}</p>`;
-  } finally {
-    els.runValidationButton.disabled = false;
-  }
+  els.runValidationButton.textContent = "旁路监督运行中";
+  resetExternalRunnerUi();
+  renderValidationResults();
+  showStep(4);
+  els.flowStatus.textContent = "旁路监督已开启，等待系统外流量";
 }
 
 function enterHoldoutStage() {
-  if (!validationDone) return;
+  if (!validationDone || !supervisionSession?.active) return;
   els.externalPreview.innerHTML = `
-    <p><b>留出样本：</b>${holdoutCaseIds().join("、")}</p>
-    <p><b>目标：</b>验证策略包能否发现没有参与策略生成的新风险。</p>
+    <p><b>网关会话：</b>${esc(sessionDisplayName())}</p>
+    <p><b>旁路监督模式：</b>${esc(verificationModeText(selectedSupervisionMode()))}</p>
+    <p><b>系统外用例：</b>${holdoutCaseIds().join("、")}</p>
+    <p><b>External Attack Runner：</b>模拟独立进程向 Agent Guard Gateway 发送外部攻击流量。</p>
+    <p><b>目标：</b>实时观察 Agent 行为、策略命中、告警与阻断记录。</p>
   `;
+  els.externalRunnerCommand.textContent = externalRunnerCommand();
   els.runHoldoutButton.disabled = false;
+  els.stopExternalRunnerButton.disabled = true;
   showStep(5);
 }
 
-async function runHoldout() {
-  if (!validationDone) return;
+function runHoldout() {
+  if (!validationDone || !supervisionSession?.active) return;
+  closeExternalRunner("restart");
+  resetExternalRunnerUi();
+
+  const params = new URLSearchParams({
+    caseIds: holdoutCaseIds().join(","),
+    mode: els.modeSelect.value,
+    enforcementMode: selectedSupervisionMode(),
+    supervisionSessionId: supervisionSession.sessionId,
+    agent: JSON.stringify(currentAgent()),
+  });
+
+  externalEventSource = new EventSource(`/api/external-attack/stream?${params.toString()}`);
   els.runHoldoutButton.disabled = true;
-  els.flowStatus.textContent = "未知风险复测运行中";
-  try {
-    holdoutPayloads = await runCaseSet(holdoutCaseIds(), {
-      runtimeSupervisionEnabled: true,
-      unknownRiskHoldoutEnabled: true,
-      enforcementMode: els.verificationMode.value,
-    });
-    holdoutDone = true;
-    renderHoldoutResults();
-    els.flowStatus.textContent = "未知风险复测完成";
-    showStep(5);
-  } catch (error) {
-    els.externalPreview.innerHTML = `<p>未知风险复测失败：${esc(error.message)}</p>`;
-  } finally {
-    els.runHoldoutButton.disabled = false;
-  }
+  els.stopExternalRunnerButton.disabled = false;
+  setRunnerStatus("running", "外部攻击进程运行中");
+  els.flowStatus.textContent = "外部攻击流量正在通过 Agent Guard Gateway";
+
+  externalEventSource.onmessage = (message) => {
+    const event = JSON.parse(message.data);
+    liveEvents.push(event);
+
+    if (event.type === "case_complete" && event.payload) {
+      holdoutPayloads.push(event.payload);
+      validationPayloads = holdoutPayloads;
+      renderValidationResults();
+      renderHoldoutResults();
+    }
+
+    if (event.type === "runner_complete") {
+      holdoutDone = true;
+      closeExternalRunner("complete");
+      setRunnerStatus("complete", "外部攻击进程运行完成");
+      renderHoldoutResults();
+      els.flowStatus.textContent = "外部流量监督完成，可关闭监督并生成报告";
+    }
+
+    if (event.type === "runner_error") {
+      closeExternalRunner("error");
+      setRunnerStatus("error", "外部攻击进程异常");
+      els.flowStatus.textContent = "外部攻击进程运行失败";
+    }
+
+    renderLiveEvents();
+  };
+
+  externalEventSource.onerror = () => {
+    if (externalEventSource) {
+      liveEvents.push({ type: "runner_error", timestamp: new Date().toISOString(), message: "实时连接中断。" });
+      closeExternalRunner("error");
+      setRunnerStatus("error", "外部攻击进程连接中断");
+      renderLiveEvents();
+      els.flowStatus.textContent = "外部攻击进程连接中断";
+    }
+  };
 }
 
 function buildFinalReport() {
   if (!holdoutDone) return;
+  closeExternalRunner("complete");
+  if (supervisionSession) {
+    supervisionSession.active = false;
+    supervisionSession.endedAt = new Date().toISOString();
+  }
   reportBuilt = true;
   renderDefenseReport();
   showStep(6);
+  els.flowStatus.textContent = "旁路监督已关闭，防御报告已生成";
 }
 
 function bindEvents() {
@@ -943,13 +1140,15 @@ function bindEvents() {
   els.buildRiskButton.addEventListener("click", enterValidationStage);
   els.verificationMode.addEventListener("change", () => {
     els.validationInput.innerHTML = `
-      <p><b>验证模式：</b>${esc(verificationModeText())}</p>
-      <p><b>阻断模式：</b>真实阻断高危行为；观察模式只告警；询问模式需要确认。</p>
+      <p><b>旁路监督模式：</b>${esc(verificationModeText())}</p>
+      <p><b>模式说明：</b>阻断模式真实拦截高危行为；观察模式只告警；询问模式要求确认。</p>
+      <p><b>状态：</b>${supervisionSession?.active ? "当前会话已开启，模式变更将在下次会话生效" : "等待开启旁路监督"}</p>
     `;
   });
   els.runValidationButton.addEventListener("click", runValidation);
   els.toHoldoutButton.addEventListener("click", enterHoldoutStage);
   els.runHoldoutButton.addEventListener("click", runHoldout);
+  els.stopExternalRunnerButton.addEventListener("click", () => closeExternalRunner("stopped"));
   els.buildReportButton.addEventListener("click", buildFinalReport);
   [...els.stepList.children].forEach((item) => {
     item.addEventListener("click", () => {

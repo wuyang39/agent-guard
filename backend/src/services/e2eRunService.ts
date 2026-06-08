@@ -149,12 +149,23 @@ export async function runE2E(request: RunE2ERequest): Promise<RunE2EResult> {
         { customAdapter },
       );
 
+      runGroup.testRunIds.push(testRun.runId);
+      runGroup.traceIds.push(trace.traceId);
+
+      if (testRun.status === "failed") {
+        // 关键 testRun 失败 → 跳过此 case 的后续处理，记录到 runGroup
+        runGroup.status = "failed";
+        runGroup.error = testRun.error ?? "Detection test run failed";
+        await saveRunGroup(runGroup);
+        throw new Error(
+          `Detection pass failed for ${context.caseId}: ${testRun.error ?? "unknown error"}`,
+        );
+      }
+
       const evaluation = evaluateRisk(context, trace);
       const riskReport = buildRiskReport(context, evaluation, trace);
       riskReports.push(riskReport);
 
-      runGroup.testRunIds.push(testRun.runId);
-      runGroup.traceIds.push(trace.traceId);
       runGroup.riskReportIds.push(riskReport.reportId);
     }
 
@@ -178,7 +189,7 @@ export async function runE2E(request: RunE2ERequest): Promise<RunE2EResult> {
 
     for (const context of targetCases) {
       const runtimeSessionId = createId("session");
-      const { supervisionRecords } = await runTestCase(
+      const { testRun, supervisionRecords } = await runTestCase(
         agent,
         adapterConfig,
         context,
@@ -191,6 +202,14 @@ export async function runE2E(request: RunE2ERequest): Promise<RunE2EResult> {
 
       allSupervisionRecords.push(...supervisionRecords);
       runGroup.runtimeSessionIds.push(runtimeSessionId);
+
+      if (testRun.status === "failed") {
+        // 监督 pass 失败：记录但继续处理其他 case，最后标记 runGroup failed
+        runGroup.status = "failed";
+        if (!runGroup.error) {
+          runGroup.error = `Supervision pass failed for ${context.caseId}: ${testRun.error ?? "unknown error"}`;
+        }
+      }
 
       const actionCounts: Record<string, number> = {};
       let blockedCount = 0;
@@ -290,7 +309,10 @@ export async function runE2E(request: RunE2ERequest): Promise<RunE2EResult> {
     }
 
     // ====== Complete ======
-    runGroup.status = "completed";
+    // runGroup.status 可能已被前面代码设为 "failed"，这里仅当仍为 "running" 时改 completed
+    if (runGroup.status !== "failed") {
+      runGroup.status = "completed";
+    }
     runGroup.endedAt = nowIso();
 
     const links = buildLinks(runGroup);

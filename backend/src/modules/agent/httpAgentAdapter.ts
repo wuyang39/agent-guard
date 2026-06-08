@@ -129,17 +129,10 @@ export class HttpAgentSession implements AgentSession {
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      return {
-        schemaVersion: "mvp-1",
-        runId: runMeta?.runId ?? "unknown",
-        agentId: runMeta?.agentId ?? this.agent.agentId,
-        caseId: runMeta?.caseId ?? task.caseId,
-        status: "failed",
-        error: message,
-        finalMessage: `[HTTP Agent Error] ${message}`,
-        startedAt,
-        endedAt: nowIso(),
-      };
+      throw new Error(
+        `[HTTP Agent] ${this.connection.endpointUrl}: ${message}`,
+        { cause: error instanceof Error ? error : undefined },
+      );
     }
   }
 

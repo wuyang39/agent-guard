@@ -125,6 +125,12 @@ export async function runTestCase(
       caseId,
       agentId,
     });
+
+    // 检查 result.status：即便 adapter 没有 throw，显式 failed 也应传播
+    if (result.status === "failed") {
+      throw new Error(result.error ?? result.finalMessage ?? "Agent task failed");
+    }
+
     recorder.record("agent_message", "agent", {
       message: result.finalMessage ?? "",
     });

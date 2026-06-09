@@ -237,6 +237,12 @@ export async function runE2E(request: RunE2ERequest): Promise<RunE2EResult> {
       await saveSessionRecords(sessionSummary, supervisionRecords);
     }
 
+    // 监督 pass 失败 → 不生成 DefenseReport，直接终止
+    if (runGroup.status === "failed") {
+      await saveRunGroup(runGroup);
+      throw new Error(runGroup.error ?? "Supervision pass failed");
+    }
+
     // ====== 阶段 3: 防御报告 ======
     if (request.generateDefenseReport) {
       const defenseReport = buildDefenseReport({
@@ -309,10 +315,7 @@ export async function runE2E(request: RunE2ERequest): Promise<RunE2EResult> {
     }
 
     // ====== Complete ======
-    // runGroup.status 可能已被前面代码设为 "failed"，这里仅当仍为 "running" 时改 completed
-    if (runGroup.status !== "failed") {
-      runGroup.status = "completed";
-    }
+    runGroup.status = "completed";
     runGroup.endedAt = nowIso();
 
     const links = buildLinks(runGroup);

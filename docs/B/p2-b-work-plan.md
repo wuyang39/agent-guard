@@ -35,7 +35,7 @@ B 线已完成 P1：
 |------|------|------|---------|
 | B-1 | Fastify API 骨架 + e2eRunService | `app.ts`, `server.ts`, `e2eRunService.ts`, `fileRunStore.ts`, 4 个 route handler | `POST /api/v1/test-runs/e2e` 用 `mock` adapter 跑通全链路 |
 | B-2 | HTTP Sample Agent Adapter | `httpAgentAdapter.ts`, `httpAgentBridge.ts`, `httpAgentTypes.ts` | HTTP agent 经 API 触发 → runner → trace → defense report |
-| B-3 | OpenClaw Adapter Shim | `openclawAdapter.ts`, `openclawBridge.ts`, `openclawTypes.ts` | OpenClaw 经 API 触发 → MCP proxy → supervision → defense report |
+| B-3 | OpenClaw CLI Adapter + JSONL Shadow Supervision | `openclawAdapter.ts`, `openclawSession.ts`, `openclawTypes.ts` | OpenClaw CLI → JSONL 解析 → 影子 sandbox + supervision → DefenseReport (post-hoc, 非实时阻断) |
 | B-4 | 半真实 HITL (ask) | `askChannel.ts`, SSE handler, PendingAskDecision 类型 | 高危动作触发 ask → 前端 Approve/Reject → 超时兜底 |
 | B-5 | 验证脚本 | `verify-p2-api-e2e.ts` | mock / http / openclaw 三条 adapter 链路全绿 |
 
@@ -265,90 +265,101 @@ curl -X POST http://localhost:3100/api/v1/test-runs/e2e \
 
 ### 6.1 目标
 
-接入 OpenClaw (github.com/openclaw/openclaw, 343k stars) 作为核心演示 Agent。通过 MCP proxy 模式让 OpenClaw 的工具调用经过 Agent Guard 的 sandbox 和 supervision bridge。
+接入 OpenClaw (github.com/openclaw/openclaw, 343k stars) 作为核心演示 Agent。
 
-### 6.2 接入模式: external_running
+**B-3 定位修订 (2026-06-09 实测后):** B-3 是**真实 OpenClaw 行为采集 + 事后影子监督**，不是实时阻断型 Adapter。使用 `openclaw agent --json` CLI 执行任务，解析 session JSONL 提取 tool_call 事件，通过影子 sandbox + supervision 做 post-hoc 判定。监督结果标注 `shadow`/`post_hoc`，deny/ask 语义为 `would_deny`/`would_ask`。P3 再做 MCP Proxy 实现实时拦截。
+
+详见 [openclaw-connection-notes.md](openclaw-connection-notes.md)。
+
+### 6.2 接入模式: external_running + CLI
 
 ```txt
 Agent Guard (3100)
   │
   ├── OpenClawAdapter
-  │     → 连接已运行的 OpenClaw 实例
-  │     → 通过 OpenClaw API/CLI 发送任务
-  │     → 接收 OpenClaw 的工具调用请求
+  │     → spawn("openclaw", ["agent", "--session-key", key, "--message", task, "--json"])
+  │     → 等待 CLI 返回 → 获取 sessionFile 路径
+  │     → 解析 session JSONL → 提取 tool_call/toolResult 事件
   │
-  ├── MCP Proxy (AgentMcpBridge 实现)
-  │     → OpenClaw 以为在调真实 MCP 工具
-  │     → 实际进入 Agent Guard sandbox (模拟执行)
-  │     → 经 SupervisionBridge 做策略判定
+  ├── Shadow Supervision (事后影子监督)
+  │     → 对每个 tool_call: bridge.handleToolCall() → sandbox 影子执行
+  │     → SupervisionBridge.preCheck() → would_deny/would_ask/would_redact
+  │     → 记录 shadow RuntimeSupervisionRecord (标注 post_hoc)
   │
-  └── 事件采集
-        → TraceRecorder 记录所有 tool_call/resource_access
-        → 产出 InteractionTrace
+  ├── InteractionTrace
+  │     → tool_call/toolResult/agent_message → trace events
+  │
+  └── Artifacts
+        → 原始 JSONL 落盘 outputs/openclaw-sessions/
+        → shadow supervision records → DefenseReport
 ```
 
-### 6.3 输入映射
+### 6.3 任务输入映射
 
 ```typescript
-// openclawBridge.ts — 私有协议转换层
-AgentTaskEnvelope {               OpenClaw 格式:
-  agentId,            ──→         agent identifier
-  sessionId,          ──→         session ID
-  systemPrompt?,      ──→         system instruction
-  userMessage,        ──→         user task text
-  tools,              ──→         available MCP tools
-  resources,          ──→         available MCP resources
-  metadata            ──→         run metadata
+// openclawSession.ts — 结构化 context → OpenClaw message 文本
+AgentTaskEnvelope {               openclaw agent --message:
+  agentId,            ──→         (session key: agent:main:agent-guard-{runId})
+  systemPrompt?,      ──→         system instruction block
+  userMessage,        ──→         task text block
+  tools,              ──→         "Available tools: ..." block
+  resources,          ──→         "Available resources: ..." block
+  metadata            ──→         (not sent to OpenClaw)
 }
 ```
 
-OpenClaw Adapter 内部把 `AgentTaskEnvelope` 转换为 OpenClaw 的 session/task 格式，**转换逻辑不进入 contracts**。
+转换逻辑在 `openclawSession.ts` 内，不入 contracts。
 
-### 6.4 参考项目
+### 6.4 参考
 
-| 项目 | Stars | 参考要点 |
-|------|-------|---------|
-| [openclaw/openclaw](https://github.com/openclaw/openclaw) | 343k | Interceptor pipeline (`tool.before`/`tool.after`)、MCP bridge、session 管理 |
-| [openclaw/openclaw PR #6569](https://github.com/openclaw/openclaw/pull/6569) | - | Typed interceptor registry、priority-sorted pipeline、command-safety-guard |
-| [SeyZ/clawbands](https://github.com/SeyZ/clawbands) | 95 | before_tool_call → ALLOW/ASK/DENY、TTY + Channel 双模式 HITL、JSONL audit |
+| 来源 | 参考要点 |
+|------|---------|
+| [openclaw/openclaw](https://github.com/openclaw/openclaw) | `openclaw agent --json` CLI、session JSONL 格式、toolCall/toolResult 事件结构 |
+| [openclaw-connection-notes.md](openclaw-connection-notes.md) | 实测环境 (2026.6.1)、JSONL 样例、字段映射 |
 
 ### 6.5 关键设计决策
 
 ```txt
-1. OpenClaw 的工具调用 → MCP 协议 → Agent Guard MCP Proxy
-   而不是让 OpenClaw 直接调真实工具
-
-2. OpenClaw adapter shim 是单向转换层:
-   AgentTaskEnvelope → OpenClaw task format (输入)
-   OpenClaw tool_call event → ToolCallRequest (输出)
-
-3. OpenClaw 私有类型放在 openclawTypes.ts，不入 contracts
-
-4. 超时/协议错误 → system_error trace event，不导致 API 崩溃
+1. 使用真实 openclaw agent --json CLI，不伪造 REST API
+2. 原始 JSONL 落盘作为证据链 artifact (outputs/openclaw-sessions/)
+3. toolCall → trace event (type: "tool_call")
+   toolResult → trace event (type: "tool_result")
+4. 影子监督: sandbox 重放 + supervision 判定，标注 post_hoc
+5. deny → "would_deny"，ask → "would_ask"，redact → "would_redact"
+6. 不在报告/前端声称"已实时阻断 OpenClaw"
+7. OpenClaw 私有类型在 openclawTypes.ts，不入 contracts
+8. CLI 不可用时 adapter 标记 unavailable，前端降级 http_sample → mock
 ```
 
 ### 6.6 新增文件
 
 ```
-backend/src/modules/agent/openclawAdapter.ts    OpenClaw adapter (AgentAdapter 实现)
-backend/src/modules/agent/openclawBridge.ts     AgentTaskEnvelope ↔ OpenClaw 格式转换
-backend/src/modules/agent/openclawTypes.ts      OpenClaw 私有类型
+backend/src/modules/agent/openclawAdapter.ts   ← AgentAdapter 实现
+backend/src/modules/agent/openclawSession.ts   ← CLI spawn + JSONL 解析 + shadow supervision
+backend/src/modules/agent/openclawTypes.ts     ← JSONL 事件类型（不入 contracts）
 ```
 
 ### 6.7 验收
 
 ```bash
-# OpenClaw 已在本地运行
-
 curl -X POST http://localhost:3100/api/v1/test-runs/e2e \
   -H "Content-Type: application/json" \
-  -d '{"adapterKind":"openclaw","agent":{"name":"OpenClaw Demo"},"connection":{"endpointUrl":"http://localhost:18700"},"generateDefenseReport":true}'
+  -d '{
+    "adapterKind": "openclaw",
+    "agent": {"name": "OpenClaw Demo"},
+    "connection": {
+      "endpointUrl": "http://localhost:18789",
+      "launchMode": "external_running"
+    },
+    "generateDefenseReport": true
+  }'
 
-# 验证:
-#   - OpenClaw 完成任务并返回 finalMessage
-#   - Trace 事件来自真实 OpenClaw 交互
-#   - Supervision 记录可追溯到具体策略
-#   - DefenseReport 包含 blocked/asked/redacted 动作
+# 验收:
+#   - trace 事件来自真实 OpenClaw JSONL (非 mock)
+#   - supervision records 标签为 shadow/post_hoc
+#   - 语义为 would_deny / would_ask（非实际阻断）
+#   - 原始 JSONL 落盘 outputs/openclaw-sessions/
+#   - DefenseReport 可追溯
 ```
 
 ## 7. 阶段 B-4: 半真实 HITL (ask 通道)
@@ -463,7 +474,7 @@ backend/src/api/v1/supervision/ask-handlers.ts   GET /stream, POST /:id/respond
 
 新增 (B-3):
   backend/src/modules/agent/openclawAdapter.ts
-  backend/src/modules/agent/openclawBridge.ts
+  backend/src/modules/agent/openclawSession.ts
   backend/src/modules/agent/openclawTypes.ts
 
 新增 (B-4):

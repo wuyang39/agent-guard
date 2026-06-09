@@ -1,253 +1,242 @@
 # OpenClaw 接入协议调研与连接方案
 
-文档版本: b3-connection-1
+文档版本: b3-connection-2
 基线日期: 2026-06-09
-状态: 待确认 → 确认后进入 B-3 实现
+状态: 已实测 → B-3 方案修订
 
-## 1. OpenClaw 关键事实
+## 1. 实测环境
 
-### 1.1 项目概况
+| 项目 | 实测值 |
+|------|--------|
+| OpenClaw 版本 | `2026.6.1 (2e08f0f)` |
+| CLI 路径 | `/c/Users/Alienware/AppData/Roaming/npm/openclaw` |
+| Workspace | `C:\Users\Alienware\.openclaw\workspace` |
+| Gateway 端口 | `18789` (loopback, auth: token) |
+| Gateway 协议 | **WebSocket** (端口 18789) + HTML 控制面板 |
+| Agent 模型 | `deepseek/deepseek-v4-flash` |
+| Agent harness | `openclaw` (native, sandbox.mode: off) |
 
-- 仓库: [openclaw/openclaw](https://github.com/openclaw/openclaw) (300k+ stars)
-- 语言: TypeScript/Node.js
-- 核心进程: **Gateway** (默认端口 `18789`)
-- 协议: REST API + WebSocket + MCP (双向)
+## 2. 实测发现
 
-### 1.2 与 Agent Guard 相关的 Gateway API
+### 2.1 OpenClaw 没有传统 REST API
 
-| 端点 | 方法 | 用途 |
-|------|------|------|
-| `/api/status` | GET | 健康检查 |
-| `/api/sessions` | POST | 创建隔离 session |
-| `/api/sessions/:key/messages` | POST | 向 session 发送消息（任务） |
-| `/api/sessions/:key/history` | GET | 读取 session 完整历史（含 tool_call 事件） |
-| `/tools/invoke` | POST | 直接调用工具（经过完整 policy 管线） |
+之前文档上的 `POST /api/sessions` 等 REST 端点在实际版本中**不存在**。Gateway 端口 18789 提供的是：
+- WebSocket (`/ws`) — 主要通信协议
+- HTML 控制面板 (`/status`, `/v1/*`) — SPA 前端路由，不是 JSON API
+- `/health` — 返回 200，仅存活检测
 
-### 1.3 Interceptor Pipeline（PR #6569，已合入）
+### 2.2 正确用法: `openclaw agent` CLI
 
-```txt
-message.before → params.before → tool.before → [tool execute] → tool.after
+```bash
+openclaw agent \
+  --session-key "agent:main:my-test" \
+  --message "任务文本" \
+  --json \
+  --timeout 30
 ```
 
-- `tool.before`: 接收 tool call，可返回 `block: true`（deny）、`allow`、`requireApproval`（ask）、或修改参数
-- 优先级: deny > allow；高优先级先执行
-- 内置 security-audit：阻止读 `.ssh`/`.env`/API key
-- 第三方插件可注册自定义 interceptor
-
-### 1.4 MCP 集成
-
-OpenClaw 双向支持 MCP：
-- **作为 MCP Client**: 连接外部 MCP Server，通过 `mcp-bridge` 插件将 MCP tool 注册为 agent tool
-- **作为 MCP Server**: `openclaw mcp serve` 将 Gateway 会话暴露为 MCP tool
-
----
-
-## 2. B-3 接入方案：两步走
-
-### 2.1 推荐主方案 —— Gateway REST API + Session Polling（P2 实现）
-
-**不写 OpenClaw 插件，不改 OpenClaw 源码，不要求 OpenClaw 安装任何东西。**
-
-Agent Guard 通过 OpenClaw Gateway REST API 控制一个 session 的生命周期：
-
-```txt
-Agent Guard (adapter)
-  │
-  ├─ 1. POST /api/sessions          → 创建隔离 session，获得 sessionKey
-  ├─ 2. POST /api/sessions/:key/messages
-  │      body: { message: <AgentTaskEnvelope 转换的任务文本> }
-  │      → OpenClaw 开始 ReAct loop，可能产生 tool_call
-  │
-  ├─ 3. GET /api/sessions/:key/history  (轮询或长轮询)
-  │      → 解析 events[] 中的 tool_call 事件
-  │
-  ├─ 4. 对每个 tool_call:
-  │      → 构造 ToolCallRequest → Agent Guard sandbox (模拟执行)
-  │      → SupervisionBridge.preCheck() → allow/deny/ask/redact
-  │      → 返回 tool_result
-  │
-  ├─ 5. POST /api/sessions/:key/messages
-  │      body: { toolResults: [...] }  ← 将监督后的结果回传 OpenClaw
-  │      → OpenClaw 继续 ReAct loop
-  │
-  └─ 6. 重复 3-5 直到 OpenClaw 返回 final answer
-       → 采集所有 tool_call / resource_access → InteractionTrace
-```
-
-### 2.2 备选方案 —— Interceptor Plugin（P3 增强）
-
-如果后续需要真正的**实时**拦截（不等轮询），可以写一个最小 OpenClaw 插件：
-
-```typescript
-// openclaw-guard-plugin (安装到 OpenClaw)
-registerInterceptor({
-  name: "agent-guard-supervision",
-  priority: 100, // 高于内置 security-audit
-  toolMatcher: /.*/, // 拦截所有工具
-  "tool.before": async (ctx) => {
-    const decision = await fetch("http://localhost:3100/api/v1/supervision/check", {
-      method: "POST",
-      body: JSON.stringify({ toolId: ctx.toolId, parameters: ctx.parameters }),
-    });
-    if (decision.action === "deny") return { block: true, reason: decision.reason };
-    if (decision.action === "ask") return { requireApproval: true };
-    return { allow: true };
-  },
-});
-```
-
-P2 不走这条路——需要 OpenClaw 安装插件 + 网络可达，增加答辩环境依赖。
-
----
-
-## 3. 待你确认的 3 个前提
-
-### 3.1 本地仓库路径
-
-```
-OpenClaw 本地路径: ____________________ (例如 E:\openclaw)
-```
-
-B 线只需要知道它的存在，用于参考其 API 格式和测试连接。不会直接改 OpenClaw 代码。
-
-### 3.2 已运行实例连接方式
-
-```
-推荐: external_running + Gateway REST API
-Gateway 地址: http://localhost:18789
-```
-
-Agent Guard 不负责 `openclaw gateway start`。答辩/开发环境提前启动 OpenClaw Gateway，B 线 adapter 通过 HTTP 连接。
-
-如果答辩环境不能启动 OpenClaw，B-3 退化为 "API 已就绪但 openclaw adapter 标记为 unavailable"，由 `GET /system/status` 反映，前端走 http_sample → mock 降级链。
-
-### 3.3 任务输入格式映射
-
-Agent Guard `AgentTaskEnvelope` → OpenClaw message 的最小转换：
-
-```typescript
-// Agent Guard 内部结构（不入 contracts）
-type AgentTaskEnvelope = {
-  agentId: string;
-  sessionId: string;
-  systemPrompt?: string;
-  userMessage: string;
-  tools: { toolId: string; description: string }[];
-  resources: { resourceId: string; description: string }[];
-  metadata?: Record<string, unknown>;
-};
-
-// → OpenClaw message 文本
-function toOpenClawMessage(env: AgentTaskEnvelope): string {
-  return [
-    env.systemPrompt,
-    "",
-    "## Task",
-    env.userMessage,
-    "",
-    "## Available Tools",
-    ...env.tools.map(t => `- ${t.toolId}: ${t.description}`),
-    "",
-    "## Available Resources",
-    ...env.resources.map(r => `- ${r.resourceId}: ${r.description}`),
-  ].join("\n");
-}
-```
-
-更结构化的方式（如果 OpenClaw 支持 structured content）：
+返回 JSON：
 
 ```json
-POST /api/sessions/:key/messages
 {
-  "message": "<任务文本>",
-  "context": {
-    "availableTools": [...],
-    "availableResources": [...]
+  "runId": "8ef9f939-...",
+  "status": "ok",
+  "summary": "completed",
+  "result": {
+    "payloads": [{ "text": "agent response...", "mediaUrl": null }],
+    "meta": {
+      "durationMs": 30554,
+      "agentMeta": {
+        "sessionId": "1255e55f-...",
+        "sessionFile": "C:\\Users\\...\\1255e55f-....jsonl",
+        "provider": "deepseek",
+        "model": "deepseek-v4-flash",
+        "contextTokens": 1000000,
+        "usage": { "input": 15197, "output": 816, "total": 17613 },
+        "sandbox": { "mode": "off" }
+      }
+    }
   }
 }
 ```
 
-**你确认用哪种？纯文本拼接先跑通，还是需要结构化 context？**
+### 2.3 Session JSONL 格式（关键）✅ 4.1 已实测
+
+每个 session 对应一个 `.jsonl` 文件，每行是一个事件。**工具调用事件格式**：
+
+```jsonl
+{"type":"message","id":"f0ebe75b","parentId":"...","timestamp":"...","message":{"role":"assistant","content":[
+  {"type":"thinking","thinking":"Let me read the file...","thinkingSignature":"reasoning_content"},
+  {"type":"toolCall",
+   "id":"call_00_iNi664U83qcit8g5DPYA6385",
+   "name":"read",
+   "arguments":{"path":"/c/Users/.../TOOLS.md"}
+  }
+]}}
+
+{"type":"message","id":"12460230","parentId":"f0ebe75b","timestamp":"...","message":{
+  "role":"toolResult",
+  "toolCallId":"call_00_iNi664U83qcit8g5DPYA6385",
+  "toolName":"read",
+  "content":[{"type":"text","text":"文件内容..."}],
+  "details":{"status":"failed"},
+  "isError":false
+}}
+```
+
+**提取到的字段**：
+
+| JSONL 字段 | Agent Guard 映射 | 实测值示例 |
+|-----------|-----------------|-----------|
+| `message.content[].type` = `"toolCall"` | 工具调用事件 | ✅ |
+| `message.content[].id` | `callId` | `"call_00_iNi664..."` ✅ |
+| `message.content[].name` | `toolId` / `toolName` | `"read"`, `"exec"`, `"write"` ✅ |
+| `message.content[].arguments` | `parameters` | `{"path":"..."}` ✅ |
+| `message.role` = `"toolResult"` | 工具返回 | ✅ |
+| `message.toolCallId` | 关联 callId | ✅ |
+| `message.isError` | 工具执行是否出错 | `true`/`false` ✅ |
+| `message.content[].text` | 工具返回内容 | ✅ |
+
+**OpenClaw 原生工具列表**（从 session JSONL 提取）：
+`read`, `exec`, `write`, `process`, `browser`, `web_search`, `message`
+
+### 2.4 MCP 支持
+
+OpenClaw 原生支持 `openclaw mcp add` 连接外部 MCP Server。当前配置：
+- `mcp: none` — 未配置外部 MCP 服务器
+- `plugins: { deepseek: { enabled: true } }` — 仅 deepseek provider 插件
+
+### 2.5 关键约束
+
+- OpenClaw 工具调用 (`read`, `exec`, `write` 等) 是**原生执行**的，不经 MCP/plugin
+- Agent 运行在 `sandbox.mode: "off"` 模式下，有直接系统访问权限
+- `openclaw agent` CLI 是**同步阻塞**的——返回时 Agent 已完成所有工具调用
+- 没有在 CLI 层面提供实时 tool_call 事件流（`--raw-stream` 仅在 Gateway 进程级别）
 
 ---
 
-## 4. 工具调用拦截方案
+## 3. B-3 方案修订
 
-### 选型对比
+### 3.1 约束分析
 
-| 方案 | 实时性 | 侵入性 | 复杂度 | P2 推荐 |
-|------|--------|--------|--------|:---:|
-| Gateway API session polling | 轮询延迟 (~2s) | 零侵入 | 低 | ✅ |
-| Interceptor Plugin | 实时 (~0ms) | 需安装插件 | 中 | P3 |
-| MCP Proxy | 实时 | 需配 OpenClaw MCP server | 高 | P3 |
+| 需求 | 可行性 | 说明 |
+|------|--------|------|
+| 不改 OpenClaw 代码 | ✅ | 只用 CLI + JSONL |
+| 不装 OpenClaw 插件 | ✅ | 同上 |
+| 不改 OpenClaw 配置 | ✅ | 同上 |
+| 工具调用实时拦截 | ❌ | CLI 是同步阻塞的；实时拦截需要 Gateway RPC 或 MCP proxy，两者均需配置变更 |
+| 工具调用事后提取 | ✅ | 解析 session JSONL |
+| 产生 trace events | ✅ | 从 JSONL tool_call 构造 |
+| 监督策略影子分析 | ✅ | 对提取的 tool_call 跑 sandbox + supervision，记录"本应阻断" |
 
-### P2 选 Session Polling 的理由
+### 3.2 修订方案: Post-Hoc Shadow Supervision
 
-1. **零侵入**: 不改 OpenClaw，不加插件。OpenClaw 不知道 Agent Guard 存在。
-2. **协议稳定**: Gateway REST API 是 OpenClaw 的公开接口，不依赖未合入的 PR。
-3. **兼容降级**: 如果 Gateway API 不可用，adapter 返回清晰错误 → 前端降级到 http_sample。
-4. **满足 P2 验收**: 能证明 "OpenClaw 的工具调用进入了 Agent Guard 的 sandbox + supervision"。
-
-轮询延迟在答辩演示场景可接受——Agent Guard 本身就是安全评测工具，不是生产流量网关。
-
-### OpenClaw History 中的 tool_call 事件格式（待实测确认）
-
-```typescript
-// 预期格式（基于 OpenClaw session history JSONL）
-type OpenClawHistoryEvent = {
-  type: "message" | "tool_call" | "tool_result" | "status";
-  timestamp: string;
-  // tool_call:
-  toolId?: string;
-  toolName?: string;
-  parameters?: Record<string, unknown>;
-  callId?: string;
-  // tool_result:
-  result?: unknown;
-  // message:
-  content?: string;
-  role?: "user" | "assistant" | "tool";
-};
+```
+Agent Guard adapter:
+  1. spawn("openclaw", ["agent", "--session-key", key, "--message", task, "--json", "--timeout", "60"])
+  2. 等待 CLI 返回 → 解析 JSON → 获取 sessionFile 路径
+  3. 读取 session JSONL → 逐行解析
+  4. 对每个 tool_call 事件:
+     a. 记录为 trace event (type: "tool_call", payload: {toolId, parameters, callId})
+     b. 通过 Agent Guard sandbox 影子执行 (相同的参数，相同的 sandbox)
+     c. 通过 SupervisionBridge 判定 → allow/deny/ask/redact
+     d. 记录 shadow supervision record
+  5. 构建 InteractionTrace + RuntimeSupervisionRecord[]
+  6. → RiskReport → DetectionReport → ... → DefenseReport
 ```
 
-**需要你确认**: 在本地 OpenClaw 跑一次 `POST /api/sessions/test/messages` 然后 `GET /api/sessions/test/history`，把返回的 JSON 样例贴过来，B 线据此实现精确解析。
+### 3.3 与原始目标的差异
+
+| 原始目标 | B-3 实际能力 | 差距 |
+|---------|-------------|------|
+| "工具调用进入 SupervisionBridge" | 事后影子分析——用相同参数跑 sandbox+supervision | 不能实时阻断 |
+| "allow/deny/ask/redact" | 记录"本应 deny/redact" | 不能实际改变 OpenClaw 行为 |
+
+这个差距是**诚实的架构限制**，应在 DefenseReport 和答辩中明确表述：
+
+> "P2 阶段 Agent Guard 通过 OpenClaw session JSONL 提取真实工具调用事件，在 Agent Guard sandbox 中影子重放并应用监督策略，证明检测到的高风险行为在监督策略下本应被阻断/脱敏。P3 阶段将通过 OpenClaw MCP Proxy 或 Interceptor Plugin 实现实时拦截。"
+
+### 3.4 备选实时方案（P3 增强）
+
+两个可行的实时拦截路径，均需 OpenClaw 配置变更：
+
+**方案 A: MCP Proxy**
+```bash
+openclaw mcp add agent-guard --transport http --url http://localhost:3100/mcp
+```
+Agent Guard 注册为 MCP Server，OpenClaw 的 MCP 工具调用经 Agent Guard sandbox + supervision。
+
+**方案 B: Gateway RPC**
+```bash
+openclaw gateway rpc sessions.send --session-key "..." --message "..."
+```
+直接使用 Gateway RPC 方法，实时接收 tool_call 事件并回传 tool_result。
+
+两个方案均保留到 P3，不在 B-3 实现。
 
 ---
 
-## 5. B-3 实现范围（确认后）
+## 4. B-3 实现范围（修订后）
 
-### 新增文件
+### 4.1 新增文件
 
 ```
-backend/src/modules/agent/openclawAdapter.ts   ← OpenClaw Gateway REST 适配器
-backend/src/modules/agent/openclawTypes.ts     ← OpenClaw 私有类型（History/Event）
-backend/src/modules/agent/openclawSession.ts   ← Session polling + tool interception loop
+backend/src/modules/agent/openclawAdapter.ts   ← OpenClaw CLI adapter (AgentAdapter 实现)
+backend/src/modules/agent/openclawSession.ts   ← CLI spawn + JSONL 解析 + shadow supervision
+backend/src/modules/agent/openclawTypes.ts     ← OpenClaw JSONL 事件类型（不入 contracts）
 ```
 
-### openclawAdapter 核心流程
+### 4.2 openclawSession 核心流程
 
 ```typescript
 class OpenClawSession implements AgentSession {
+  constructor(
+    agent, config,
+    private openclaw: {
+      cliPath: string;        // 默认 "openclaw"，可 env/config 覆盖
+      gatewayUrl?: string;    // http://localhost:18789，可配置
+      timeoutMs: number;      // 默认 60_000
+      workspacePath?: string; // C:\Users\Alienware\.openclaw\workspace
+    }
+  ) {}
+
   async sendTask(task, bridge, runMeta): Promise<AgentRunResult> {
-    // 1. POST /api/sessions → sessionKey
-    // 2. POST /api/sessions/:key/messages → 发送任务
-    // 3. loop:
-    //    a. GET /api/sessions/:key/history → events[]
-    //    b. 对于每个新 tool_call:
-    //       - bridge.handleToolCall() → sandbox + supervision
-    //       - 收集 supervisionRecords
-    //    c. 如果有 tool_results，回传给 OpenClaw
-    //    d. 如果收到 final answer，退出 loop
-    // 4. 返回 AgentRunResult
+    const sessionKey = `agent:main:agent-guard-${runMeta.runId}`;
+
+    // 1. 执行 openclaw agent
+    const { runId, sessionFile } = await this.spawnAgent(sessionKey, task);
+
+    // 2. 解析 session JSONL
+    const events = await this.parseSessionJsonl(sessionFile);
+
+    // 3. 对每个 tool_call 做 shadow supervision
+    for (const tc of events.toolCalls) {
+      // 记录 trace event
+      // 影子执行: bridge.handleToolCall({toolId: tc.name, parameters: tc.arguments})
+      // → sandbox 模拟执行 → supervision 判定 → 记录 shadow record
+    }
+
+    // 4. 返回结果
+    return { status: "completed", finalMessage: events.finalAnswer, ... };
   }
 }
 ```
 
-### 验收标准
+### 4.3 环境变量/配置覆盖
+
+```typescript
+const OPENCLAW_CLI = process.env.OPENCLAW_CLI ?? "openclaw";
+const OPENCLAW_GATEWAY = process.env.OPENCLAW_GATEWAY_URL ?? "http://localhost:18789";
+const OPENCLAW_TIMEOUT_MS = Number(process.env.OPENCLAW_TIMEOUT_MS ?? 60_000);
+```
+
+### 4.4 验收标准
 
 ```bash
-# OpenClaw Gateway 已启动在 localhost:18789
+# 1. GET /system/status 报告 openclawAdapter: true (仅当 CLI 可用)
+openclaw --version  # 返回 2026.6.1 → adapter available
 
+# 2. POST /test-runs/e2e (openclaw)
 curl -X POST http://localhost:3100/api/v1/test-runs/e2e \
   -H "Content-Type: application/json" \
   -d '{
@@ -261,22 +250,42 @@ curl -X POST http://localhost:3100/api/v1/test-runs/e2e \
   }'
 
 # 预期:
-#   traceIds > 0 (trace 来自真实 OpenClaw session history)
+#   traceIds > 0 (trace 来自 OpenClaw session JSONL 的真实 tool_call)
 #   runtimeSessionIds > 0
-#   supervision records 包含 OpenClaw 工具调用的 deny/ask 判定
+#   supervision records 包含 shadow 监督判定
 #   defenseReport 可追溯
+#   defenseReport 中注明 "post-hoc shadow supervision" 模式
+
+# 3. OpenClaw CLI 不可用时
+#    GET /system/status → openclawAdapter: false
+#    POST /test-runs/e2e (openclaw) → 400 NOT_YET_SUPPORTED 或 503
+#    前端自动降级到 http_sample → mock
 ```
 
 ---
 
-## 6. 确认清单
+## 5. 确认清单（已回复）
 
-请逐项回复：
+- [x] **3.1** OpenClaw 本地路径: `C:\Users\Alienware\.openclaw\workspace`（B 线只读参考，不改）
+- [x] **3.2** 连接方式: `external_running`，endpoint 默认 `http://localhost:18789`，代码支持 env/config 覆盖
+- [x] **3.3** 任务输入: 结构化 context 转换，逻辑在 `openclawBridge.ts`，不入 contracts
+- [x] **4** 拦截方案: B-3 先用 CLI + Session JSONL Post-Hoc Shadow Supervision；Interceptor Plugin / MCP Proxy 保留 P3
+- [x] **4.1** 实测完成：session JSONL 格式已确认（见第 2.3 节），tool_call 字段完整可用
 
-- [ ] **3.1** OpenClaw 本地路径: `___________`
-- [ ] **3.2** 连接方式: `external_running` @ `http://localhost:18789`（或其他地址）
-- [ ] **3.3** 任务输入: 纯文本拼接先跑通 / 需要结构化 context（二选一）
-- [ ] **4** 工具调用拦截: Session Polling（推荐）/ Interceptor Plugin / 其他
-- [ ] **4.1** 贴一份 `GET /api/sessions/:key/history` 的真实 JSON 样例
+---
 
-确认后我开始写 B-3 代码。
+## 6. 修订确认
+
+B-3 从原方案的 "Gateway REST API Session Polling（实时拦截）" 修订为 **"CLI + Session JSONL Post-Hoc Shadow Supervision（事后影子监督）"**。
+
+修订原因：
+1. 实测确认 OpenClaw 没有传统 REST API，主要协议是 WebSocket
+2. `openclaw agent --json` CLI 是稳定、可脚本化的接口
+3. Session JSONL 包含完整的 tool_call 事件（id/name/arguments/result 齐全）
+4. 实时拦截需要 Gateway RPC 或 MCP proxy，均需配置变更，保留 P3
+
+修订后的方案仍然满足 P2 核心目标：
+- ✅ 产生来自真实 OpenClaw 的 trace events（不是 mock）
+- ✅ 监督策略对真实 OpenClaw 行为做出判定（shadow supervision）
+- ✅ 证明检测→策略→防御的闭环（DefenseReport 基于真实数据）
+- ✅ 不改 OpenClaw、不装插件、不配 MCP

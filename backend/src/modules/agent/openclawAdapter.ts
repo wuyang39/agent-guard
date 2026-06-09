@@ -80,7 +80,7 @@ export class OpenClawSession implements AgentSession {
 
   async sendTask(
     task: AgentTask,
-    _bridge?: AgentMcpBridge,
+    bridge?: AgentMcpBridge,
     runMeta?: AgentRunMeta,
   ): Promise<AgentRunResult> {
     const startedAt = nowIso();
@@ -88,6 +88,7 @@ export class OpenClawSession implements AgentSession {
     try {
       const result = await runOpenClawSession(
         task,
+        bridge,  // ← 传入 bridge：tool calls 将通过 bridge 写入 trace
         {
           runId: runMeta?.runId ?? "unknown",
           caseId: runMeta?.caseId ?? task.caseId,

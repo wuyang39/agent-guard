@@ -14,7 +14,8 @@ import { exec } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createId } from "../../shared";
-import type { AgentTask } from "@agent-guard/contracts";
+import type { AgentMcpBridge } from "./agentMcpBridge";
+import type { AgentTask, JsonObject } from "@agent-guard/contracts";
 import type {
   OpenClawAgentOutput,
   OpenClawJsonlEvent,
@@ -42,6 +43,7 @@ export type OpenClawRunResult = {
  */
 export async function runOpenClawSession(
   task: AgentTask,
+  bridge: AgentMcpBridge | undefined,
   runMeta: { runId: string; caseId: string; agentId: string },
   sandboxInfo: {
     tools: { toolId: string; toolName?: string; description?: string }[];
@@ -67,6 +69,30 @@ export async function runOpenClawSession(
 
   // 3. 解析 JSONL → 提取 tool_call / tool_result
   const session = await parseSessionJsonl(sessionFile, sessionKey, output);
+
+  // 4. 通过 bridge 回放 tool calls → 写入 InteractionTrace
+  if (bridge) {
+    for (const tc of session.toolCalls) {
+      try {
+        await bridge.handleToolCall({
+          toolId: tc.toolName,
+          toolName: tc.toolName,
+          parameters: tc.arguments as JsonObject,
+        });
+      } catch {
+        // sandbox 可能对某些 tool 抛错（如 sandbox 不认识 OpenClaw 原生工具名）
+        // 不影响 trace 采集，继续处理下一个
+      }
+    }
+    // 回放 resource_access 事件
+    for (const taskResourceId of task.resourceIds) {
+      try {
+        await bridge.handleResourceAccess(taskResourceId);
+      } catch {
+        // 同上
+      }
+    }
+  }
 
   return { session, output, jsonlPath };
 }

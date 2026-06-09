@@ -39,6 +39,7 @@ import { saveSessionRecords } from "../storage/fileRunStore";
 import { indexReport, indexArtifact } from "../storage/fileReportStore";
 import type { AgentAdapter } from "../modules/agent/agentAdapter";
 import { HttpAgentAdapter } from "../modules/agent/httpAgentAdapter";
+import { OpenClawAdapter, getShadowRecords, clearShadowRegistry } from "../modules/agent/openclawAdapter";
 
 const CONFIGS_DIR = path.resolve(process.cwd(), "configs");
 const OUTPUT_DIR = path.resolve(process.cwd(), "outputs", "reports");
@@ -73,6 +74,15 @@ function buildCustomAdapter(request: RunE2ERequest): AgentAdapter | undefined {
         endpointUrl,
         timeoutMs: request.connection?.timeoutMs ?? 15_000,
         mode: "vulnerable",
+      });
+    }
+    case "openclaw": {
+      return new OpenClawAdapter({
+        gatewayUrl:
+          request.connection?.endpointUrl ??
+          process.env.OPENCLAW_GATEWAY_URL ??
+          "http://localhost:18789",
+        timeoutMs: request.connection?.timeoutMs ?? 120_000,
       });
     }
     default:
@@ -187,54 +197,99 @@ export async function runE2E(request: RunE2ERequest): Promise<RunE2EResult> {
       ReturnType<typeof runTestCase>
     >["supervisionRecords"] = [];
 
-    for (const context of targetCases) {
-      const runtimeSessionId = createId("session");
-      const { testRun, supervisionRecords } = await runTestCase(
-        agent,
-        adapterConfig,
-        context,
-        {
-          supervisionPolicyPack: policyPack,
-          runtimeSessionId,
-          customAdapter,
-        },
-      );
+    const isOpenClaw = request.adapterKind === "openclaw";
 
-      allSupervisionRecords.push(...supervisionRecords);
-      runGroup.runtimeSessionIds.push(runtimeSessionId);
+    if (isOpenClaw) {
+      // B-3 OpenClaw: 跳过 supervised re-run，直接使用 detection pass 中已产出的
+      // shadowRecords（post-hoc 影子监督）。不再重新 spawn OpenClaw CLI。
+      for (const context of targetCases) {
+        // 从上一个 pass 的 testRun 中查找对应的 shadow records
+        const testRunId = runGroup.testRunIds.find((id) =>
+          runGroup.riskReportIds.length > 0,
+        );
+        const shadowRecs =
+          testRunId ? getShadowRecords(testRunId) : [];
 
-      if (testRun.status === "failed") {
-        // 监督 pass 失败：记录但继续处理其他 case，最后标记 runGroup failed
-        runGroup.status = "failed";
-        if (!runGroup.error) {
-          runGroup.error = `Supervision pass failed for ${context.caseId}: ${testRun.error ?? "unknown error"}`;
+        const runtimeSessionId = `shadow_session.${testRunId ?? createId("session")}`;
+        allSupervisionRecords.push(...shadowRecs);
+        runGroup.runtimeSessionIds.push(runtimeSessionId);
+
+        const actionCounts: Record<string, number> = {};
+        let blockedCount = 0;
+        let redactedCount = 0;
+        let askCount = 0;
+
+        for (const rec of shadowRecs) {
+          actionCounts[rec.action] = (actionCounts[rec.action] ?? 0) + 1;
+          if (rec.action.includes("deny")) blockedCount++;
+          if (rec.action.includes("redact")) redactedCount++;
+          if (rec.action.includes("ask")) askCount++;
         }
+
+        const sessionSummary: SupervisionSessionSummary = {
+          runtimeSessionId,
+          runGroupId: runGroup.runGroupId,
+          agentId: agent.agentId,
+          policyPackId: policyPack.policyPackId,
+          recordCount: shadowRecs.length,
+          blockedCount,
+          redactedCount,
+          askCount,
+          actionCounts,
+        };
+        await saveSessionRecords(sessionSummary, shadowRecs);
       }
+      clearShadowRegistry();
+    } else {
+      for (const context of targetCases) {
+        const runtimeSessionId = createId("session");
+        const { testRun, supervisionRecords } = await runTestCase(
+          agent,
+          adapterConfig,
+          context,
+          {
+            supervisionPolicyPack: policyPack,
+            runtimeSessionId,
+            customAdapter,
+          },
+        );
 
-      const actionCounts: Record<string, number> = {};
-      let blockedCount = 0;
-      let redactedCount = 0;
-      let askCount = 0;
+        allSupervisionRecords.push(...supervisionRecords);
+        runGroup.runtimeSessionIds.push(runtimeSessionId);
 
-      for (const rec of supervisionRecords) {
-        actionCounts[rec.action] = (actionCounts[rec.action] ?? 0) + 1;
-        if (rec.action === "deny") blockedCount++;
-        if (rec.action === "redact") redactedCount++;
-        if (rec.action === "ask") askCount++;
+        if (testRun.status === "failed") {
+          // 监督 pass 失败：记录但继续处理其他 case，最后标记 runGroup failed
+          runGroup.status = "failed";
+          if (!runGroup.error) {
+            runGroup.error = `Supervision pass failed for ${context.caseId}: ${testRun.error ?? "unknown error"}`;
+          }
+        }
+
+        const actionCounts: Record<string, number> = {};
+        let blockedCount = 0;
+        let redactedCount = 0;
+        let askCount = 0;
+
+        for (const rec of supervisionRecords) {
+          actionCounts[rec.action] = (actionCounts[rec.action] ?? 0) + 1;
+          if (rec.action === "deny") blockedCount++;
+          if (rec.action === "redact") redactedCount++;
+          if (rec.action === "ask") askCount++;
+        }
+
+        const sessionSummary: SupervisionSessionSummary = {
+          runtimeSessionId,
+          runGroupId: runGroup.runGroupId,
+          agentId: agent.agentId,
+          policyPackId: policyPack.policyPackId,
+          recordCount: supervisionRecords.length,
+          blockedCount,
+          redactedCount,
+          askCount,
+          actionCounts,
+        };
+        await saveSessionRecords(sessionSummary, supervisionRecords);
       }
-
-      const sessionSummary: SupervisionSessionSummary = {
-        runtimeSessionId,
-        runGroupId: runGroup.runGroupId,
-        agentId: agent.agentId,
-        policyPackId: policyPack.policyPackId,
-        recordCount: supervisionRecords.length,
-        blockedCount,
-        redactedCount,
-        askCount,
-        actionCounts,
-      };
-      await saveSessionRecords(sessionSummary, supervisionRecords);
     }
 
     // 监督 pass 失败 → 不生成 DefenseReport，直接终止

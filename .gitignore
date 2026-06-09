@@ -19,6 +19,7 @@ outputs/reports/**/*.pdf
 outputs/exports/*
 outputs/report-index/*
 outputs/run-index/*
+outputs/openclaw-sessions/*
 !outputs/runs/.gitkeep
 !outputs/traces/.gitkeep
 !outputs/reports/.gitkeep

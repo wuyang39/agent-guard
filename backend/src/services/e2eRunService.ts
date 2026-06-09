@@ -39,7 +39,10 @@ import { saveSessionRecords } from "../storage/fileRunStore";
 import { indexReport, indexArtifact } from "../storage/fileReportStore";
 import type { AgentAdapter } from "../modules/agent/agentAdapter";
 import { HttpAgentAdapter } from "../modules/agent/httpAgentAdapter";
-import { OpenClawAdapter, getShadowRecords, clearShadowRegistry } from "../modules/agent/openclawAdapter";
+import { OpenClawAdapter, getParsedSessions, clearParsedRegistry } from "../modules/agent/openclawAdapter";
+import { createAgentSupervisor } from "../modules/supervisor/agentSupervisor";
+import type { RuntimeSupervisionRecord, RuntimeToolCallPayload, SupervisionRuntimeAction } from "@agent-guard/contracts";
+import type { ParsedToolCall } from "../modules/agent/openclawTypes";
 
 const CONFIGS_DIR = path.resolve(process.cwd(), "configs");
 const OUTPUT_DIR = path.resolve(process.cwd(), "outputs", "reports");
@@ -200,30 +203,55 @@ export async function runE2E(request: RunE2ERequest): Promise<RunE2EResult> {
     const isOpenClaw = request.adapterKind === "openclaw";
 
     if (isOpenClaw) {
-      // B-3 OpenClaw: 跳过 supervised re-run，直接使用 detection pass 中已产出的
-      // shadowRecords（post-hoc 影子监督）。不再重新 spawn OpenClaw CLI。
-      for (const context of targetCases) {
-        // 从上一个 pass 的 testRun 中查找对应的 shadow records
-        const testRunId = runGroup.testRunIds.find((id) =>
-          runGroup.riskReportIds.length > 0,
-        );
-        const shadowRecs =
-          testRunId ? getShadowRecords(testRunId) : [];
+      // B-3 OpenClaw: 跳过 supervised re-run。用已生成的 PolicyPack 对
+      // detection pass 中采集的 toolCalls 做 post-hoc replay。
+      const supervisor = createAgentSupervisor(policyPack);
 
-        const runtimeSessionId = `shadow_session.${testRunId ?? createId("session")}`;
-        allSupervisionRecords.push(...shadowRecs);
+      for (let i = 0; i < targetCases.length; i++) {
+        const testRunId = runGroup.testRunIds[i];
+        if (!testRunId) continue;
+
+        const entries = getParsedSessions(testRunId);
+        const allToolCalls = entries.flatMap((e) => e.session.toolCalls);
+
+        const runtimeSessionId = createId("session");
+        const records: Awaited<ReturnType<typeof runTestCase>>["supervisionRecords"] = [];
+
+        for (const tc of allToolCalls) {
+          const action = toRuntimeAction(runtimeSessionId, agent.agentId, tc);
+          const decisions = supervisor.preCheck(action);
+
+          for (const dec of decisions) {
+            // 策略判定为非 allow 时，将 action 前缀改为 would_*
+            const effAction =
+              dec.action !== "allow"
+                ? `would_${dec.action}` as RuntimeSupervisionRecord["action"]
+                : "allow";
+            records.push({
+              schemaVersion: "mvp-1",
+              recordId: createId("shadow_rec"),
+              runtimeSessionId,
+              agentId: agent.agentId,
+              policyPackId: policyPack.policyPackId,   // ← 真实 policyPackId
+              policyId: dec.policyId,                   // ← 命中的真实 policyId
+              action: effAction,
+              decisionReason: `[POST-HOC] ${dec.decisionReason} (OpenClaw tool: ${tc.toolName})`.slice(0, 500),
+              targetType: dec.targetType,
+              targetId: tc.toolName,
+              inputEventId: tc.callId,
+              createdAt: nowIso(),
+            });
+          }
+        }
+
+        allSupervisionRecords.push(...records);
         runGroup.runtimeSessionIds.push(runtimeSessionId);
 
         const actionCounts: Record<string, number> = {};
         let blockedCount = 0;
-        let redactedCount = 0;
-        let askCount = 0;
-
-        for (const rec of shadowRecs) {
+        for (const rec of records) {
           actionCounts[rec.action] = (actionCounts[rec.action] ?? 0) + 1;
           if (rec.action.includes("deny")) blockedCount++;
-          if (rec.action.includes("redact")) redactedCount++;
-          if (rec.action.includes("ask")) askCount++;
         }
 
         const sessionSummary: SupervisionSessionSummary = {
@@ -231,15 +259,15 @@ export async function runE2E(request: RunE2ERequest): Promise<RunE2EResult> {
           runGroupId: runGroup.runGroupId,
           agentId: agent.agentId,
           policyPackId: policyPack.policyPackId,
-          recordCount: shadowRecs.length,
+          recordCount: records.length,
           blockedCount,
-          redactedCount,
-          askCount,
+          redactedCount: actionCounts["would_redact"] ?? 0,
+          askCount: actionCounts["would_ask"] ?? 0,
           actionCounts,
         };
-        await saveSessionRecords(sessionSummary, shadowRecs);
+        await saveSessionRecords(sessionSummary, records);
       }
-      clearShadowRegistry();
+      clearParsedRegistry();
     } else {
       for (const context of targetCases) {
         const runtimeSessionId = createId("session");
@@ -443,3 +471,21 @@ function buildLinks(runGroup: P2RunGroup): EntityLink[] {
   return links;
 }
 
+/** 将 ParsedToolCall 转换为 SupervisionRuntimeAction（供 supervisor.preCheck 消费） */
+function toRuntimeAction(
+  runtimeSessionId: string,
+  agentId: string,
+  tc: ParsedToolCall,
+): SupervisionRuntimeAction {
+  const payload: RuntimeToolCallPayload = {
+    toolId: tc.toolName,
+    parameters: tc.arguments as Record<string, unknown>,
+  } as unknown as RuntimeToolCallPayload;
+  return {
+    runtimeSessionId,
+    agentId,
+    targetType: "tool_call",
+    targetId: tc.toolName,
+    payload,
+  };
+}

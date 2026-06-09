@@ -3,9 +3,9 @@
  *
  * B-3 定位: 真实 OpenClaw 行为采集 + 事后影子监督（非实时阻断）
  *
- * 通过 spawn("openclaw", ["agent", "--json", ...]) 执行任务，
- * 解析 session JSONL 提取 tool_call 事件，
- * 对每个 tool_call 做影子 sandbox + supervision 判定。
+ * 两段式:
+ *   1. Detection pass: 执行 openclaw agent --json CLI → 解析 JSONL → 存入 parsedSessionRegistry
+ *   2. 生成 PolicyPack 后: e2eRunService 用真实策略对 toolCalls 做 post-hoc replay
  */
 
 import { nowIso } from "../../shared";
@@ -16,23 +16,23 @@ import type {
   AgentRunResult,
   AgentTask,
   AgentUnderTest,
-  RuntimeSupervisionRecord,
 } from "@agent-guard/contracts";
 import { runOpenClawSession } from "./openclawSession";
+import type { ParsedSession } from "./openclawTypes";
 
-/** 模块级影子记录注册表 —— e2eRunService 通过 runId 查询 */
-const shadowRegistry = new Map<string, RuntimeSupervisionRecord[]>();
+/** 模块级 parsed session 注册表 —— e2eRunService 通过 runId 查询 */
+type ParsedEntry = { session: ParsedSession; jsonlPath: string };
+const parsedRegistry = new Map<string, ParsedEntry[]>();
 
-export function getShadowRecords(runId: string): RuntimeSupervisionRecord[] {
-  return shadowRegistry.get(runId) ?? [];
+export function getParsedSessions(runId: string): ParsedEntry[] {
+  return parsedRegistry.get(runId) ?? [];
 }
 
-export function clearShadowRegistry(): void {
-  shadowRegistry.clear();
+export function clearParsedRegistry(): void {
+  parsedRegistry.clear();
 }
 
 export type OpenClawAdapterOptions = {
-  /** OpenClaw Gateway URL (仅用于可用性检测) */
   gatewayUrl?: string;
   timeoutMs?: number;
 };
@@ -59,8 +59,6 @@ export class OpenClawSession implements AgentSession {
   private readonly gatewayUrl: string;
   private sandboxTools: { toolId: string; toolName?: string; description?: string }[] = [];
   private sandboxResources: { resourceId: string; path?: string; sensitivity?: string; description?: string }[] = [];
-  /** 当前 run 产出的影子监督记录（post-hoc） */
-  public shadowRecords: RuntimeSupervisionRecord[] = [];
 
   constructor(
     agent: AgentUnderTest,
@@ -72,7 +70,6 @@ export class OpenClawSession implements AgentSession {
     this.gatewayUrl = options.gatewayUrl ?? DEFAULT_GATEWAY;
   }
 
-  /** 注入 sandbox 上下文（由 testRunner 在 sendTask 前调用） */
   setSandboxContext(ctx: {
     tools: { toolId: string; toolName?: string; description?: string }[];
     resources: { resourceId: string; path?: string; sensitivity?: string; description?: string }[];
@@ -83,70 +80,37 @@ export class OpenClawSession implements AgentSession {
 
   async sendTask(
     task: AgentTask,
-    bridge?: AgentMcpBridge,
+    _bridge?: AgentMcpBridge,
     runMeta?: AgentRunMeta,
   ): Promise<AgentRunResult> {
     const startedAt = nowIso();
 
-    if (!bridge) {
-      return {
-        schemaVersion: "mvp-1",
-        runId: runMeta?.runId ?? "unknown",
-        agentId: runMeta?.agentId ?? this.agent.agentId,
-        caseId: runMeta?.caseId ?? task.caseId,
-        status: "failed",
-        error: "OpenClaw adapter requires a bridge for shadow supervision",
-        startedAt,
-        endedAt: nowIso(),
-      };
-    }
-
     try {
       const result = await runOpenClawSession(
         task,
-        bridge,
         {
           runId: runMeta?.runId ?? "unknown",
           caseId: runMeta?.caseId ?? task.caseId,
           agentId: runMeta?.agentId ?? this.agent.agentId,
         },
-        {
-          tools: this.sandboxTools,
-          resources: this.sandboxResources,
-        },
+        { tools: this.sandboxTools, resources: this.sandboxResources },
       );
 
-      // 保存影子监督记录到注册表（供 e2eRunService 收集）
-      this.shadowRecords = result.shadowRecords;
+      // 存入 registry 供 e2eRunService 做 post-hoc replay
       if (runMeta?.runId) {
-        shadowRegistry.set(runMeta.runId, result.shadowRecords);
+        const entries = parsedRegistry.get(runMeta.runId) ?? [];
+        entries.push({ session: result.session, jsonlPath: result.jsonlPath });
+        parsedRegistry.set(runMeta.runId, entries);
       }
 
-      // 构建 finalMessage，标注影子模式
-      const shadowSummary =
-        result.shadowRecords.length > 0
-          ? `\n\n[Shadow Supervision — Post-Hoc Analysis]\n` +
-            result.shadowRecords
-              .map(
-                (r) =>
-                  `  ${r.action}: ${r.decisionReason.slice(0, 200)}`,
-              )
-              .join("\n") +
-            `\n\nNote: These are post-hoc shadow judgments, NOT real-time blocks. ` +
-            `The OpenClaw agent executed all tool calls natively. ` +
-            `Real-time interception requires P3 MCP Proxy or Interceptor Plugin.`
-          : "";
-
       const endedAt = nowIso();
-
       return {
         schemaVersion: "mvp-1",
         runId: runMeta?.runId ?? "unknown",
         agentId: runMeta?.agentId ?? this.agent.agentId,
         caseId: runMeta?.caseId ?? task.caseId,
         status: "completed",
-        finalMessage:
-          result.session.finalAnswer + shadowSummary,
+        finalMessage: result.session.finalAnswer,
         startedAt,
         endedAt,
       };
@@ -166,30 +130,23 @@ export class OpenClawSession implements AgentSession {
     }
   }
 
-  async close(): Promise<void> {
-    // no persistent connection
-  }
+  async close(): Promise<void> {}
 }
 
 /** 检测 OpenClaw CLI 是否可用 */
 export async function checkOpenClawAvailable(): Promise<{
-  available: boolean;
-  version?: string;
-  error?: string;
+  available: boolean; version?: string; error?: string;
 }> {
   const { exec } = await import("node:child_process");
   const cli = process.env.OPENCLAW_CLI ?? "openclaw";
   return new Promise((resolve) => {
     exec(`"${cli}" --version`, { timeout: 10_000 }, (error, stdout) => {
       if (error) {
-        resolve({
-          available: false,
-          error: `OpenClaw CLI not available: ${error.message?.slice(0, 100)}`,
-        });
+        resolve({ available: false, error: `CLI not available: ${error.message?.slice(0, 100)}` });
       } else if (stdout.trim()) {
         resolve({ available: true, version: stdout.trim() });
       } else {
-        resolve({ available: false, error: "OpenClaw CLI returned empty output" });
+        resolve({ available: false, error: "Empty output" });
       }
     });
   });

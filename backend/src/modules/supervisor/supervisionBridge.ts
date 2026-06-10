@@ -20,7 +20,7 @@ import type {
 import type { TraceRecorder } from "../monitor/traceRecorder";
 import type { AgentSupervisor } from "./agentSupervisor";
 import { findMatchingPolicies } from "./policyEngine";
-import { askChannel } from "./askChannel";
+import { askChannel, getAskTimeoutConfig } from "./askChannel";
 
 export type SupervisionBridgeOptions = {
   baseBridge: AgentMcpBridge;
@@ -253,16 +253,20 @@ export function createSupervisionBridge(
           if (result === "approved") {
             return baseBridge.handleToolCall(request);
           }
-          // rejected 或 timeout → 阻断
+          // rejected 或 timeout → 阻断，区分原因
+          const failCode = result === "timeout" ? "SUPERVISION_ASK_TIMEOUT" : "SUPERVISION_ASK_REJECTED";
+          const failReason = result === "timeout"
+            ? `Ask ${pending.askId} timed out after ${getAskTimeoutConfig().timeoutMs}ms`
+            : `Ask ${pending.askId} was rejected`;
           recorder.record("system_error", "system", {
-            code: "SUPERVISION_ASK_REJECTED",
-            message: `Ask ${pending.askId} was ${result}: ${askPolicy.reason}`,
+            code: failCode,
+            message: `${failReason}: ${askPolicy.reason}`,
             detail: { policyId: askPolicy.policyId, askId: pending.askId, result },
           });
           return {
             callId: createId("call"),
             toolId: request.toolId,
-            result: { blocked: true, reason: `SUPERVISION_ASK_${result.toUpperCase()}`, policyId: askPolicy.policyId, askId: pending.askId },
+            result: { blocked: true, reason: failCode, policyId: askPolicy.policyId, askId: pending.askId },
             containsInjection: false,
             riskTagIds: [],
           };

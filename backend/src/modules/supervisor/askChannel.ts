@@ -11,13 +11,14 @@ import { EventEmitter } from "node:events";
 import { createId, nowIso } from "../../shared";
 import type { RiskLevel } from "@agent-guard/contracts";
 
-const ASK_TIMEOUT_MS = Number(
-  process.env.AGENT_GUARD_ASK_TIMEOUT_MS ?? 60_000,
-);
-const DEFAULT_TIMEOUT_ACTION: "reject" | "demo_approve" =
-  process.env.AGENT_GUARD_ASK_TIMEOUT === "demo_approve"
+function getAskTimeoutMs(): number {
+  return Number(process.env.AGENT_GUARD_ASK_TIMEOUT_MS ?? 60_000);
+}
+function getTimeoutAction(): "reject" | "demo_approve" {
+  return process.env.AGENT_GUARD_ASK_TIMEOUT === "demo_approve"
     ? "demo_approve"
     : "reject";
+}
 
 export type AskDecision = "approved" | "rejected" | "timeout";
 
@@ -55,8 +56,13 @@ class AskChannel extends EventEmitter {
 
     // 超时计时器
     const timer = setTimeout(() => {
-      this.resolve(ask.askId, DEFAULT_TIMEOUT_ACTION === "demo_approve" ? "approved" : "rejected", "timeout");
-    }, ASK_TIMEOUT_MS);
+      this.resolve(
+        ask.askId,
+        getTimeoutAction() === "demo_approve" ? "approved" : "rejected",
+        "timeout",
+        "timeout",
+      );
+    }, getAskTimeoutMs());
     this.timeouts.set(ask.askId, timer);
 
     // 通知 SSE 订阅者
@@ -81,8 +87,14 @@ class AskChannel extends EventEmitter {
     });
   }
 
-  /** Approve 或 Reject */
-  resolve(askId: string, decision: AskDecision, resolvedBy: string = "api"): PendingAsk | undefined {
+  /** Approve / Reject / Timeout */
+  resolve(
+    askId: string,
+    decision: AskDecision,
+    resolvedBy: string = "api",
+    /** 覆写状态——超时时传 "timeout" 实现真实 timeout 落地 */
+    overrideStatus?: "approved" | "rejected" | "timeout",
+  ): PendingAsk | undefined {
     const ask = this.pending.get(askId);
     if (!ask || ask.status !== "pending") return undefined;
 
@@ -90,7 +102,7 @@ class AskChannel extends EventEmitter {
     const timer = this.timeouts.get(askId);
     if (timer) { clearTimeout(timer); this.timeouts.delete(askId); }
 
-    ask.status = decision === "approved" ? "approved" : "rejected";
+    ask.status = overrideStatus ?? (decision === "approved" ? "approved" : "rejected");
     ask.resolvedAt = nowIso();
     ask.resolvedBy = resolvedBy;
 
@@ -122,7 +134,7 @@ export const askChannel = new AskChannel();
 /** 默认超时策略（供外部查询） */
 export function getAskTimeoutConfig() {
   return {
-    timeoutMs: ASK_TIMEOUT_MS,
-    defaultAction: DEFAULT_TIMEOUT_ACTION,
+    timeoutMs: getAskTimeoutMs(),
+    defaultAction: getTimeoutAction(),
   };
 }

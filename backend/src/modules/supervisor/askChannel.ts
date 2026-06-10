@@ -33,7 +33,10 @@ export type PendingAsk = {
   payload: Record<string, unknown>;
   reason: string;
   riskLevel: RiskLevel;
+  /** 实际状态: 是如何结束的 */
   status: "pending" | "approved" | "rejected" | "timeout";
+  /** 最终决策: approve 放行 / reject 阻断。timeout + demo_approve → approved */
+  finalDecision?: "approved" | "rejected";
   createdAt: string;
   resolvedAt?: string;
   resolvedBy?: string;
@@ -70,17 +73,18 @@ class AskChannel extends EventEmitter {
     return ask;
   }
 
-  /** 等待 ask 被解决（SupervisionBridge 用） */
+  /** 等待 ask 被解决，返回最终决策（approved → 放行, rejected/timeout → 阻断） */
   async wait(askId: string): Promise<AskDecision> {
     const ask = this.pending.get(askId);
     if (!ask) return "rejected";
-    if (ask.status !== "pending") return ask.status as AskDecision;
+    // 已解决：返回 finalDecision（非 pending 时 finalDecision 一定已设置）
+    if (ask.status !== "pending") return ask.finalDecision ?? "rejected";
 
     return new Promise((resolve) => {
       const onResolve = (resolved: PendingAsk) => {
         if (resolved.askId === askId) {
           this.off("ask:resolved", onResolve);
-          resolve(resolved.status as AskDecision);
+          resolve(resolved.finalDecision ?? "rejected");
         }
       };
       this.on("ask:resolved", onResolve);
@@ -92,8 +96,8 @@ class AskChannel extends EventEmitter {
     askId: string,
     decision: AskDecision,
     resolvedBy: string = "api",
-    /** 覆写状态——超时时传 "timeout" 实现真实 timeout 落地 */
-    overrideStatus?: "approved" | "rejected" | "timeout",
+    /** 真实状态覆写——超时时传 "timeout" 落地 */
+    overrideStatus?: "timeout",
   ): PendingAsk | undefined {
     const ask = this.pending.get(askId);
     if (!ask || ask.status !== "pending") return undefined;
@@ -102,7 +106,9 @@ class AskChannel extends EventEmitter {
     const timer = this.timeouts.get(askId);
     if (timer) { clearTimeout(timer); this.timeouts.delete(askId); }
 
+    // status = 如何结束的; finalDecision = 是否放行
     ask.status = overrideStatus ?? (decision === "approved" ? "approved" : "rejected");
+    ask.finalDecision = decision === "approved" ? "approved" : "rejected";
     ask.resolvedAt = nowIso();
     ask.resolvedBy = resolvedBy;
 

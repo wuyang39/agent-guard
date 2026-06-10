@@ -253,15 +253,16 @@ export function createSupervisionBridge(
           if (result === "approved") {
             return baseBridge.handleToolCall(request);
           }
-          // rejected 或 timeout → 阻断，区分原因
-          const failCode = result === "timeout" ? "SUPERVISION_ASK_TIMEOUT" : "SUPERVISION_ASK_REJECTED";
-          const failReason = result === "timeout"
-            ? `Ask ${pending.askId} timed out after ${getAskTimeoutConfig().timeoutMs}ms`
-            : `Ask ${pending.askId} was rejected`;
+          // rejected 或 timeout+reject → 阻断。timeout+demo_approve 在上方 approved 分支已放行。
+          const isTimeout = pending.status === "timeout";
+          const failCode = isTimeout ? "SUPERVISION_ASK_TIMEOUT" : "SUPERVISION_ASK_REJECTED";
+          const failReason = isTimeout
+            ? `Ask ${pending.askId} timed out after ${getAskTimeoutConfig().timeoutMs}ms (default: reject)`
+            : `Ask ${pending.askId} was rejected by ${pending.resolvedBy ?? "api"}`;
           recorder.record("system_error", "system", {
             code: failCode,
             message: `${failReason}: ${askPolicy.reason}`,
-            detail: { policyId: askPolicy.policyId, askId: pending.askId, result },
+            detail: { policyId: askPolicy.policyId, askId: pending.askId, result, status: pending.status },
           });
           return {
             callId: createId("call"),

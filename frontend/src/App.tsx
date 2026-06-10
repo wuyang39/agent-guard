@@ -184,38 +184,38 @@ export function App() {
       <aside className="sidebar">
         <div className="brand-block">
           <strong>Agent Guard</strong>
-          <span>Project Console</span>
+          <span>项目控制台</span>
         </div>
         <nav>
           <button className={view === "dashboard" ? "active" : ""} onClick={() => setView("dashboard")}>
-            Dashboard
+            总览
           </button>
           <button className={view === "agent" ? "active" : ""} onClick={() => setView("agent")}>
-            Agent Connect
+            智能体接入
           </button>
           <button className={view === "runs" ? "active" : ""} onClick={() => setView("runs")}>
-            Test Runs
+            测试运行
           </button>
           <button className={view === "cases" ? "active" : ""} onClick={() => setView("cases")}>
-            Test Cases
+            测试用例
           </button>
           <button className={view === "configs" ? "active" : ""} onClick={() => setView("configs")}>
-            Configs
+            配置中心
           </button>
           <button className={view === "detection" ? "active" : ""} onClick={() => setView("detection")}>
-            Detection & Policy
+            检测与策略
           </button>
           <button className={view === "supervision" ? "active" : ""} onClick={() => setView("supervision")}>
-            Live Supervision
+            实时监督
           </button>
           <button className={view === "defense" ? "active" : ""} onClick={() => setView("defense")}>
-            Defense Report
+            防御报告
           </button>
           <button className={view === "trace" ? "active" : ""} onClick={() => setView("trace")}>
-            Trace Detail
+            调用轨迹
           </button>
           <button className={view === "system" ? "active" : ""} onClick={() => setView("system")}>
-            System
+            系统状态
           </button>
         </nav>
       </aside>

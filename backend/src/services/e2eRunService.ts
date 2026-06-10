@@ -43,6 +43,7 @@ import { OpenClawAdapter, getParsedSessions, clearParsedRegistry } from "../modu
 import { createAgentSupervisor } from "../modules/supervisor/agentSupervisor";
 import type { RuntimeActionPayload, RuntimeSupervisionRecord, SupervisionRuntimeAction } from "@agent-guard/contracts";
 import type { ParsedToolCall } from "../modules/agent/openclawTypes";
+import { normalizeOpenClawTargetType, normalizeOpenClawToolId } from "../modules/agent/openclawSession";
 
 const CONFIGS_DIR = path.resolve(process.cwd(), "configs");
 const OUTPUT_DIR = path.resolve(process.cwd(), "outputs", "reports");
@@ -231,7 +232,7 @@ export async function runE2E(request: RunE2ERequest): Promise<RunE2EResult> {
               policyId: dec.policyId,
               // 使用标准 action 名（不用 would_*），[POST-HOC] 标注在 reason 中
               action: dec.action,
-              decisionReason: `[POST-HOC] ${dec.action === "deny" ? "WOULD_DENY" : dec.action === "ask" ? "WOULD_ASK" : dec.action === "redact" ? "WOULD_REDACT" : "ALLOW"} — ${dec.decisionReason} (OpenClaw tool: ${tc.toolName})`.slice(0, 500),
+              decisionReason: `[POST-HOC] ${dec.action === "deny" ? "WOULD_DENY" : dec.action === "ask" ? "WOULD_ASK" : dec.action === "redact" ? "WOULD_REDACT" : "ALLOW"} — ${dec.decisionReason} (OC:${tc.toolName}→${normalizeOpenClawToolId(tc.toolName)})`.slice(0, 500),
               targetType: dec.targetType,
               targetId: tc.toolName,
               inputEventId: tc.callId,
@@ -473,7 +474,7 @@ function toRuntimeAction(
   agentId: string,
   tc: ParsedToolCall,
 ): SupervisionRuntimeAction {
-  const targetType = mapOpenClawToolToTargetType(tc.toolName);
+  const targetType = normalizeOpenClawTargetType(tc.toolName);
   const payload = buildRuntimePayload(targetType, tc);
   return {
     runtimeSessionId,
@@ -484,36 +485,19 @@ function toRuntimeAction(
   };
 }
 
-/** OpenClaw 工具名 → SupervisionTargetType */
-function mapOpenClawToolToTargetType(toolName: string): SupervisionRuntimeAction["targetType"] {
-  switch (toolName) {
-    case "write": case "edit":           return "file_write";
-    case "exec": case "bash":            return "code_execution";
-    case "send_email": case "email":     return "email_send";
-    case "send_request": case "fetch":
-    case "call_api": case "request":     return "api_call";
-    case "read": case "glob":
-    default:                             return "tool_call";
-  }
-}
 
-/** 构造 RuntimeActionPayload */
+/** 构造与 policy match fieldPath 对齐的 RuntimeActionPayload */
 function buildRuntimePayload(
   targetType: SupervisionRuntimeAction["targetType"],
   tc: ParsedToolCall,
 ): Record<string, unknown> {
   const args = tc.arguments as Record<string, unknown>;
-  switch (targetType) {
-    case "file_write":
-      return { path: args.path ?? args.file ?? "", contentPreview: typeof args.content === "string" ? args.content.slice(0, 200) : undefined };
-    case "code_execution":
-      return { language: typeof args.language === "string" ? args.language : "shell", codePreview: typeof args.command === "string" ? args.command : typeof args.code === "string" ? args.code : JSON.stringify(args).slice(0, 200) };
-    case "email_send":
-      return { to: args.to ?? [], subject: typeof args.subject === "string" ? args.subject : "", bodyPreview: typeof args.body === "string" ? args.body.slice(0, 200) : undefined };
-    case "api_call":
-      return { method: typeof args.method === "string" ? args.method : "GET", url: typeof args.url === "string" ? args.url : "", data: typeof args.data === "string" ? args.data : undefined };
-    default:
-      // tool_call 通用格式
-      return { toolId: tc.toolName, parameters: args };
-  }
+  const canonicalId = normalizeOpenClawToolId(tc.toolName);
+  const base = { toolId: canonicalId, toolName: tc.toolName, parameters: args };
+  // targetType-specific fields for policy matching
+  if (targetType === "file_write") Object.assign(base, { path: args.path ?? args.file ?? "", contentPreview: typeof args.content === "string" ? args.content.slice(0, 200) : undefined });
+  if (targetType === "code_execution") Object.assign(base, { language: typeof args.language === "string" ? args.language : "shell", codePreview: typeof args.command === "string" ? args.command : typeof args.code === "string" ? args.code : JSON.stringify(args).slice(0, 200) });
+  if (targetType === "email_send") Object.assign(base, { to: args.to ?? [], subject: typeof args.subject === "string" ? args.subject : "", bodyPreview: typeof args.body === "string" ? args.body.slice(0, 200) : undefined });
+  if (targetType === "api_call") Object.assign(base, { method: typeof args.method === "string" ? args.method : "GET", url: typeof args.url === "string" ? args.url : "", data: typeof args.data === "string" ? args.data : undefined });
+  return base;
 }

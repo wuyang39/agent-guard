@@ -41,6 +41,58 @@ export type OpenClawRunResult = {
 /**
  * 执行一次 OpenClaw agent run，解析 JSONL。不做监督判定。
  */
+// ---- OpenClaw tool name normalization ----
+
+/** 剥离 tool. 前缀（OpenClaw JSONL 可能带或不带） */
+function stripToolPrefix(name: string): string {
+  return name.startsWith("tool.") ? name.slice(5) : name;
+}
+
+/** OpenClaw JSONL tool name → system canonical toolId */
+export function normalizeOpenClawToolId(ocName: string): string {
+  const base = stripToolPrefix(ocName);
+  const canonical: Record<string, string> = {
+    read_file:      "tool.read_file",
+    read:           "tool.read_file",
+    write_file:     "tool.write_file",
+    write:          "tool.write_file",
+    edit:           "tool.write_file",
+    execute_code:   "tool.execute_code",
+    exec:           "tool.execute_code",
+    bash:           "tool.execute_code",
+    process:        "tool.execute_code",
+    send_email:     "tool.send_email",
+    email:          "tool.send_email",
+    call_api:       "tool.call_api",
+    request:        "tool.call_api",
+    fetch:          "tool.send_request",
+    send_request:   "tool.send_request",
+    web_search:     "tool.web_search",
+    query_database: "tool.query_database",
+    browser:        "tool.browser",
+    navigate:       "tool.browser",
+    glob:           "tool.read_file",
+    message:        "tool.send_message",
+  };
+  return canonical[base] ?? `tool.${base}`;
+}
+
+/** OpenClaw JSONL tool name → SupervisionTargetType */
+export function normalizeOpenClawTargetType(
+  ocName: string,
+): "tool_call" | "file_write" | "code_execution" | "email_send" | "api_call" {
+  const base = stripToolPrefix(ocName);
+  const mapped: Record<string, "file_write" | "code_execution" | "email_send" | "api_call"> = {
+    write_file: "file_write", write: "file_write", edit: "file_write",
+    execute_code: "code_execution", exec: "code_execution", bash: "code_execution", process: "code_execution",
+    send_email: "email_send", email: "email_send",
+    call_api: "api_call", request: "api_call", fetch: "api_call", send_request: "api_call",
+  };
+  return mapped[base] ?? "tool_call";
+}
+
+// ---- public API ----
+
 export async function runOpenClawSession(
   task: AgentTask,
   bridge: AgentMcpBridge | undefined,
@@ -73,24 +125,20 @@ export async function runOpenClawSession(
   // 4. 通过 bridge 回放 tool calls → 写入 InteractionTrace
   if (bridge) {
     for (const tc of session.toolCalls) {
+      const canonicalId = normalizeOpenClawToolId(tc.toolName);
       try {
         await bridge.handleToolCall({
-          toolId: tc.toolName,
-          toolName: tc.toolName,
+          toolId: canonicalId,
+          toolName: tc.toolName,  // 保留原始 OpenClaw 名作为 toolName
           parameters: tc.arguments as JsonObject,
         });
       } catch {
-        // sandbox 可能对某些 tool 抛错（如 sandbox 不认识 OpenClaw 原生工具名）
-        // 不影响 trace 采集，继续处理下一个
+        // sandbox 不认识某些 tool，不影响 trace 采集
       }
     }
     // 回放 resource_access 事件
     for (const taskResourceId of task.resourceIds) {
-      try {
-        await bridge.handleResourceAccess(taskResourceId);
-      } catch {
-        // 同上
-      }
+      try { await bridge.handleResourceAccess(taskResourceId); } catch { /* ok */ }
     }
   }
 

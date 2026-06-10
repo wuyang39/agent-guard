@@ -17,6 +17,8 @@ outputs/reports/**/*.html
 outputs/reports/**/*.md
 outputs/reports/**/*.pdf
 outputs/exports/*
+outputs/p2/*
+outputs/dev-logs/*
 !outputs/runs/.gitkeep
 !outputs/traces/.gitkeep
 !outputs/reports/.gitkeep

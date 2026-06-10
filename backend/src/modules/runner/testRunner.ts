@@ -8,6 +8,7 @@ import { TraceRecorder } from "../monitor/traceRecorder";
 import { createMCPMonitor } from "../monitor/mcpMonitor";
 import { createMcpSandboxForContext } from "../sandbox/mcpSandbox";
 import { createAgentAdapterRegistry } from "../agent/agentAdapter";
+import { ApiAgentAdapter } from "../agent/apiAgentSession";
 import { MockAgentAdapter } from "../agent/mockAgentSession";
 import { createSupervisionBridge } from "../supervisor/supervisionBridge";
 import { createAgentSupervisor } from "../supervisor/agentSupervisor";
@@ -74,6 +75,7 @@ export async function runTestCase(
 
   // 5. 创建 AgentSession
   const registry = createAgentAdapterRegistry();
+  registry.register(new ApiAgentAdapter(testContext));
   registry.register(new MockAgentAdapter(testContext));
   const adapter = registry.get(agent.adapterType);
   if (!adapter) {

@@ -10,6 +10,7 @@ import cors from "@fastify/cors";
 import { systemRoutes } from "./api/v1/system/handlers";
 import { testRunRoutes } from "./api/v1/test-runs/handlers";
 import { supervisionRoutes } from "./api/v1/supervision/handlers";
+import { askRoutes } from "./api/v1/supervision/ask-handlers";
 import { failure } from "./api/response";
 
 export async function buildApp(opts?: {
@@ -52,6 +53,7 @@ export async function buildApp(opts?: {
   await app.register(systemRoutes);
   await app.register(testRunRoutes);
   await app.register(supervisionRoutes);
+  await app.register(askRoutes);
 
   return app;
 }

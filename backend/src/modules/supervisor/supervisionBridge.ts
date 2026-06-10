@@ -20,6 +20,7 @@ import type {
 import type { TraceRecorder } from "../monitor/traceRecorder";
 import type { AgentSupervisor } from "./agentSupervisor";
 import { findMatchingPolicies } from "./policyEngine";
+import { askChannel } from "./askChannel";
 
 export type SupervisionBridgeOptions = {
   baseBridge: AgentMcpBridge;
@@ -231,9 +232,41 @@ export function createSupervisionBridge(
             riskTagIds: [],
           };
 
-        case "ask":
-          // demo 固定确认通过
-          return baseBridge.handleToolCall(request);
+        case "ask": {
+          // B-4 半真实 HITL: 创建 PendingAsk，等待人工确认或超时
+          const matchedAskPolicies = findMatchingPolicies(supervisor.policyPack, action);
+          const askPolicy = matchedAskPolicies[0] ?? decision;
+          const pending = askChannel.create({
+            runtimeSessionId,
+            agentId,
+            policyId: askPolicy.policyId,
+            policyPackId: supervisor.policyPack.policyPackId,
+            targetType: decision.targetType,
+            targetId: request.toolId,
+            payload: runtimePayload as Record<string, unknown>,
+            reason: askPolicy.reason ?? decision.decisionReason,
+            riskLevel: askPolicy.riskLevel ?? "medium",
+          });
+
+          const result = await askChannel.wait(pending.askId);
+
+          if (result === "approved") {
+            return baseBridge.handleToolCall(request);
+          }
+          // rejected 或 timeout → 阻断
+          recorder.record("system_error", "system", {
+            code: "SUPERVISION_ASK_REJECTED",
+            message: `Ask ${pending.askId} was ${result}: ${askPolicy.reason}`,
+            detail: { policyId: askPolicy.policyId, askId: pending.askId, result },
+          });
+          return {
+            callId: createId("call"),
+            toolId: request.toolId,
+            result: { blocked: true, reason: `SUPERVISION_ASK_${result.toUpperCase()}`, policyId: askPolicy.policyId, askId: pending.askId },
+            containsInjection: false,
+            riskTagIds: [],
+          };
+        }
 
         case "redact": {
           const matchedPolicies = findMatchingPolicies(

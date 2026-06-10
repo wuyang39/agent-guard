@@ -31,6 +31,7 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
         mockAdapter: true,
         e2eRun: true,
         reportIndex: true,
+        askChannel: true,
         frontendReady: false,
       },
     });

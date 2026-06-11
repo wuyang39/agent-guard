@@ -14,6 +14,7 @@
  */
 
 import path from "node:path";
+import fs from "node:fs/promises";
 import { createId, nowIso } from "../shared";
 import type {
   AgentUnderTest,
@@ -47,6 +48,7 @@ import { normalizeOpenClawTargetType, normalizeOpenClawToolId } from "../modules
 
 const CONFIGS_DIR = path.resolve(process.cwd(), "configs");
 const OUTPUT_DIR = path.resolve(process.cwd(), "outputs", "reports");
+const TRACES_DIR = path.resolve(process.cwd(), "outputs", "traces");
 
 export class CaseIdValidationError extends Error {
   constructor(message: string) {
@@ -165,6 +167,9 @@ export async function runE2E(request: RunE2ERequest): Promise<RunE2EResult> {
 
       runGroup.testRunIds.push(testRun.runId);
       runGroup.traceIds.push(trace.traceId);
+
+      // 落盘 trace 文件供 GET /traces/:id 查询
+      await writeTraceFile(trace);
 
       if (testRun.status === "failed") {
         // 关键 testRun 失败 → 跳过此 case 的后续处理，记录到 runGroup
@@ -466,6 +471,17 @@ function buildLinks(runGroup: P2RunGroup): EntityLink[] {
   }
 
   return links;
+}
+
+async function writeTraceFile(trace: unknown): Promise<void> {
+  const traceId = (trace as Record<string, unknown>).traceId as string | undefined;
+  if (!traceId) return;
+  await fs.mkdir(TRACES_DIR, { recursive: true });
+  await fs.writeFile(
+    path.join(TRACES_DIR, `${traceId}.json`),
+    JSON.stringify(trace, null, 2),
+    "utf-8",
+  );
 }
 
 /** 将 ParsedToolCall 转换为 SupervisionRuntimeAction（供 supervisor.preCheck 消费） */

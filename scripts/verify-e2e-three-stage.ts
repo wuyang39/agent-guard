@@ -11,6 +11,10 @@
  *   RiskReport[] → DetectionReport → AgentRiskProfile → SupervisionPolicyPack
  *   → 二次运行 Runner (带 PolicyPack) → RuntimeSupervisionRecord[] (真实监督记录)
  *
+ * B-4 ask 通道: 验证脚本默认使用 demo_approve + 短超时，
+ * 避免在没有前端接入时 hang 在人工确认。
+ * 正式运行可通过 AGENT_GUARD_ASK_TIMEOUT 环境变量覆盖。
+ *
  * 阶段 3 (防御报告):
  *   DetectionReport + RiskProfile + PolicyPack + RuntimeSupervisionRecord[]
  *   → DefenseReport → JSON + HTML 导出
@@ -55,6 +59,9 @@ const riskRank: Record<RiskLevel, number> = {
 };
 
 async function main(): Promise<void> {
+  // B-4 ask 通道: 验证脚本默认 demo_approve + 短超时
+  if (!process.env.AGENT_GUARD_ASK_TIMEOUT) process.env.AGENT_GUARD_ASK_TIMEOUT = "demo_approve";
+  if (!process.env.AGENT_GUARD_ASK_TIMEOUT_MS) process.env.AGENT_GUARD_ASK_TIMEOUT_MS = "5000";
   const agent: AgentUnderTest = {
     schemaVersion: "mvp-1",
     agentId: "agent.demo",

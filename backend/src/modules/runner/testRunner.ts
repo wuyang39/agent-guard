@@ -7,6 +7,7 @@ import type { RuntimeSupervisionRecord, SupervisionPolicyPack } from "@agent-gua
 import { TraceRecorder } from "../monitor/traceRecorder";
 import { createMCPMonitor } from "../monitor/mcpMonitor";
 import { createMcpSandboxForContext } from "../sandbox/mcpSandbox";
+import type { AgentAdapter } from "../agent/agentAdapter";
 import { createAgentAdapterRegistry } from "../agent/agentAdapter";
 import { MockAgentAdapter } from "../agent/mockAgentSession";
 import { createSupervisionBridge } from "../supervisor/supervisionBridge";
@@ -15,6 +16,8 @@ import { createAgentSupervisor } from "../supervisor/agentSupervisor";
 export type RunTestCaseOptions = {
   supervisionPolicyPack?: SupervisionPolicyPack;
   runtimeSessionId?: string;
+  /** 自定义 adapter（如 http_sample / openclaw）。不传则默认 MockAgentAdapter。 */
+  customAdapter?: AgentAdapter;
 };
 
 export async function runTestCase(
@@ -74,12 +77,39 @@ export async function runTestCase(
 
   // 5. 创建 AgentSession
   const registry = createAgentAdapterRegistry();
+  // 始终注册 MockAdapter 作为兜底
   registry.register(new MockAgentAdapter(testContext));
+  // 如果有自定义 adapter（http_sample / openclaw），优先注册
+  if (options?.customAdapter) {
+    registry.register(options.customAdapter);
+  }
   const adapter = registry.get(agent.adapterType);
   if (!adapter) {
     throw new Error(`No adapter registered for type: ${agent.adapterType}`);
   }
   const session = await adapter.createSession(agent, adapterConfig);
+
+  // 5b. 为支持 sandbox 感知的 adapter 注入上下文
+  if ("setSandboxContext" in session && typeof (session as Record<string, unknown>).setSandboxContext === "function") {
+    (session as { setSandboxContext(ctx: Record<string, unknown>): void }).setSandboxContext({
+      tools: (testContext.sandbox.tools ?? []).map((t) => ({
+        toolId: t.toolId,
+        toolName: t.name ?? t.toolId,
+        description: t.description,
+      })),
+      resources: (testContext.sandbox.resources ?? []).map((r) => ({
+        resourceId: r.resourceId,
+        path: r.path,
+        sensitivity: r.sensitivity,
+        description: r.description,
+      })),
+      prompts: (testContext.sandbox.prompts ?? []).map((p) => ({
+        promptId: p.promptId,
+        attackEntryType: p.attackEntryType,
+        instruction: p.content,
+      })),
+    });
+  }
 
   // 6. 记录 task_sent
   const task = testContext.testCase.task;
@@ -95,6 +125,12 @@ export async function runTestCase(
       caseId,
       agentId,
     });
+
+    // 检查 result.status：即便 adapter 没有 throw，显式 failed 也应传播
+    if (result.status === "failed") {
+      throw new Error(result.error ?? result.finalMessage ?? "Agent task failed");
+    }
+
     recorder.record("agent_message", "agent", {
       message: result.finalMessage ?? "",
     });

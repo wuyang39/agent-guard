@@ -224,8 +224,20 @@ async function main(): Promise<void> {
     const detRes = await injectJson(app, "GET", `/api/v1/reports/detection/${detectionId}`);
     ok(detRes);
     const detData = detRes.data as Record<string, unknown>;
-    assert(detData.detectionReport?.reportId === detectionId, "detectionReportId matches");
-    console.log("   OK");
+    const detReport = detData.detectionReport as Record<string, unknown>;
+    const riskProfile = detData.riskProfile as Record<string, unknown> | null;
+    const srcReports = detData.sourceRiskReports as Record<string, unknown>[];
+    assert(detReport.reportId === detectionId, "detectionReportId matches");
+    // 合同: riskProfile.sourceDetectionReportId === detectionReport.reportId
+    assert(riskProfile?.sourceDetectionReportId === detectionId,
+      `riskProfile.sourceDetectionReportId matches detectionReportId (got ${riskProfile?.sourceDetectionReportId})`);
+    // 合同: sourceRiskReports 覆盖 detectionReport.sourceRiskReportIds
+    const srcIds = detReport.sourceRiskReportIds as string[];
+    const reportIds = new Set(srcReports.map((r: Record<string, unknown>) => r.reportId as string));
+    for (const id of srcIds) {
+      assert(reportIds.has(id), `sourceRiskReports includes ${id}`);
+    }
+    console.log(`   OK riskProfile=${riskProfile?.profileId?.slice(0, 25)}... srcReports=${srcReports.length}`);
     passed++;
 
     // ================================================================
@@ -235,9 +247,11 @@ async function main(): Promise<void> {
     const polRes = await injectJson(app, "GET", `/api/v1/policies/${policyPackId}`);
     ok(polRes);
     const polData = polRes.data as Record<string, unknown>;
-    assert(polData.policyPack?.policyPackId === policyPackId, "policyPackId matches");
-    assert(polData.policyPack?.policies?.length > 0 || true, "policyPack has policies field");
-    console.log("   OK");
+    const polPack = polData.policyPack as Record<string, unknown>;
+    assert(polPack.policyPackId === policyPackId, "policyPackId matches");
+    assert(Array.isArray(polPack.policies) && (polPack.policies as unknown[]).length > 0,
+      `policyPack has policies (got ${(polPack.policies as unknown[] | undefined)?.length ?? 0})`);
+    console.log(`   OK policies=${(polPack.policies as unknown[]).length}`);
     passed++;
 
     // ================================================================

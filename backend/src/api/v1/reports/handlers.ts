@@ -64,23 +64,30 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
         return failure("NOT_FOUND", `Detection report ${reportId} not found`);
       }
       const runDir = path.join(REPORTS_BASE, entry.runGroupId);
-      const raw = await fs.readFile(path.join(runDir, "detection-report.json"), "utf-8");
-      const detectionReport = JSON.parse(raw);
-
-      // 尝试读取 risk profile
+      const detectionReport = JSON.parse(
+        await fs.readFile(path.join(runDir, "detection-report.json"), "utf-8"),
+      );
+      // 读取完整 RiskProfile + RiskReports
       let riskProfile = null;
+      let sourceRiskReports: unknown[] = [];
       try {
-        const pr = await fs.readFile(path.join(runDir, "supervision-policy-pack.json"), "utf-8");
-        const pp = JSON.parse(pr);
-        riskProfile = { profileId: pp.sourceRiskProfileId, sourceDetectionReportId: pp.sourceDetectionReportId };
+        riskProfile = JSON.parse(
+          await fs.readFile(path.join(runDir, "agent-risk-profile.json"), "utf-8"),
+        );
+      } catch { /* optional */ }
+      try {
+        sourceRiskReports = JSON.parse(
+          await fs.readFile(path.join(runDir, "risk-reports.json"), "utf-8"),
+        );
       } catch { /* optional */ }
 
       return success({
         detectionReport,
         riskProfile,
-        sourceRiskReports: [] as unknown[],
+        sourceRiskReports,
         links: [
           { kind: "detection_report" as const, id: reportId, label: `Detection Report ${reportId}` },
+          { kind: "risk_profile" as const, id: riskProfile?.profileId ?? "", label: "Risk Profile" },
           { kind: "test_run" as const, id: entry.runGroupId, label: `Run ${entry.runGroupId}` },
         ],
       });

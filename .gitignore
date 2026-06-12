@@ -20,6 +20,8 @@ outputs/exports/*
 outputs/report-index/*
 outputs/run-index/*
 outputs/openclaw-sessions/*
+outputs/p2/*
+outputs/dev-logs/*
 !outputs/runs/.gitkeep
 !outputs/traces/.gitkeep
 !outputs/reports/.gitkeep

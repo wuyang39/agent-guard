@@ -8,9 +8,15 @@ type DetectionPageProps = {
   state: LoadState<DetectionDetailView>;
   onGoTrace: () => void;
   onGoDefense: () => void;
+  onActivateRealtime: () => void;
 };
 
-export function DetectionPage({ state, onGoTrace, onGoDefense }: DetectionPageProps) {
+export function DetectionPage({
+  state,
+  onGoTrace,
+  onGoDefense,
+  onActivateRealtime,
+}: DetectionPageProps) {
   if (state.status === "idle" || state.status === "loading") {
     return <LoadingBlock message="正在加载 DetectionReport、RiskProfile 和 PolicyPack..." />;
   }
@@ -42,6 +48,9 @@ export function DetectionPage({ state, onGoTrace, onGoDefense }: DetectionPagePr
             </button>
             <button className="secondary-button" onClick={onGoDefense}>
               Defense
+            </button>
+            <button className="primary-button" onClick={onActivateRealtime}>
+              启用实时监督
             </button>
           </div>
         </div>

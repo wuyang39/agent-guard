@@ -3,10 +3,11 @@ import type {
   DefenseReport,
   DetectionReport,
   InteractionTrace,
-  ReportArtifact,
   RiskReport,
   RuntimeSupervisionRecord,
+  SupervisionAction,
   SupervisionPolicyPack,
+  SupervisionTargetType,
   TestRun,
 } from "@agent-guard/contracts";
 
@@ -14,6 +15,7 @@ export type ApiResponse<T> =
   | {
       ok: true;
       data: T;
+      requestId?: string;
     }
   | {
       ok: false;
@@ -21,14 +23,18 @@ export type ApiResponse<T> =
         code: string;
         message: string;
       };
+      requestId?: string;
     };
 
 export type CLineRunGroup = {
   schemaVersion: "mvp-1";
   runGroupId: string;
   agentId: string;
-  status: "completed" | "failed";
+  agentName?: string;
+  adapterKind?: "openclaw" | "http_sample" | "mock";
+  status: "running" | "completed" | "failed";
   caseIds: string[];
+  caseCount?: number;
   detectionReportId: string;
   riskProfileId: string;
   policyPackId: string;
@@ -39,6 +45,20 @@ export type CLineRunGroup = {
   artifactIds: string[];
   createdAt: string;
   updatedAt: string;
+};
+
+export type P2ArtifactView = {
+  artifactId: string;
+  reportId: string;
+  format: "json" | "html";
+  label: string;
+  url: string;
+  generatedAt: string;
+};
+
+export type P2RunE2EResponse = {
+  runGroup: CLineRunGroup;
+  links: unknown[];
 };
 
 export type CLineRunBundle = {
@@ -52,7 +72,7 @@ export type CLineRunBundle = {
   policyPack: SupervisionPolicyPack;
   supervisionRecords: RuntimeSupervisionRecord[];
   defenseReport: DefenseReport;
-  artifacts: ReportArtifact[];
+  artifacts: P2ArtifactView[];
 };
 
 export type CLineDashboardSummary = {
@@ -77,8 +97,12 @@ export type SystemStatus = {
   schemaVersion: "mvp-1";
   service: string;
   status: "ok";
-  outputDir: string;
-  generatedAt: string;
+  apiVersion?: string;
+  outputDir?: string;
+  generatedAt?: string;
+  defaultAdapterKind?: "openclaw" | "http_sample" | "mock";
+  fallbackAdapterKinds?: ("http_sample" | "mock")[];
+  features?: Record<string, boolean>;
 };
 
 export type SampleAgentStatus = {
@@ -91,22 +115,31 @@ export type SampleAgentStatus = {
 };
 
 export type LiveSupervisionEvent = {
+  eventId?: string;
   timestamp: string;
   type:
-    | "live_started"
-    | "agent_status"
-    | "run_group"
-    | "trace_summary"
-    | "supervision_record"
-    | "defense_report"
-    | "live_complete"
+    | "active_policy_updated"
+    | "session_reset"
+    | "session_created"
+    | "tool_call_started"
+    | "supervision_decision"
+    | "tool_call_result"
+    | "defense_report_generated"
     | "live_error";
   message?: string;
+  runtimeSessionId?: string;
+  policyPackId?: string;
+  traceId?: string;
+  toolId?: string;
+  toolName?: string;
+  action?: SupervisionAction;
+  targetType?: SupervisionTargetType;
+  blocked?: boolean;
+  detail?: Record<string, unknown>;
   status?: SampleAgentStatus;
   runGroup?: CLineRunGroup;
   riskReportCount?: number;
   traceCount?: number;
-  traceId?: string;
   caseId?: string;
   eventCount?: number;
   record?: RuntimeSupervisionRecord;
@@ -114,6 +147,15 @@ export type LiveSupervisionEvent = {
   blockedActions?: number;
   redactions?: number;
   askDecisions?: number;
+};
+
+export type RealtimeActivePolicyState = {
+  requestedPolicyPackId?: string;
+  resolvedPolicyPackId: string;
+  runGroupId: string;
+  source: "request" | "active" | "env" | "latest" | "fallback";
+  policyCount: number;
+  updatedAt?: string;
 };
 
 export type DetectionDetailView = {
@@ -129,7 +171,7 @@ export type DefenseDetailView = {
   riskProfile: AgentRiskProfile;
   policyPack: SupervisionPolicyPack;
   supervisionRecords: RuntimeSupervisionRecord[];
-  artifacts: ReportArtifact[];
+  artifacts: P2ArtifactView[];
 };
 
 export type TraceDetailView = {

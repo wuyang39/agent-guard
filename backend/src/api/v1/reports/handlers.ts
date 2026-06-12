@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { success, failure } from "../../response";
 import { getReportEntry, getArtifactEntry } from "../../../storage/fileReportStore";
+import { getSessionRecords } from "../../../storage/fileRunStore";
 
 const REPORTS_BASE = path.resolve(process.cwd(), "outputs", "reports");
 
@@ -23,6 +24,15 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
       const reportFile = path.join(runDir, "defense-report.json");
       const raw = await fs.readFile(reportFile, "utf-8");
       const defenseReport = JSON.parse(raw);
+      const detectionReport = await readOptionalJson(path.join(runDir, "detection-report.json"));
+      const riskProfile = await readOptionalJson(path.join(runDir, "agent-risk-profile.json"));
+      const policyPack = await readOptionalJson(path.join(runDir, "supervision-policy-pack.json"));
+      const runtimeSessions = await Promise.all(
+        (defenseReport.runtimeSessionIds ?? []).map((runtimeSessionId: string) =>
+          getSessionRecords(runtimeSessionId),
+        ),
+      );
+      const sessionRecords = runtimeSessions.flatMap((session) => session?.records ?? []);
 
       const artifacts = await Promise.all(
         entry.artifactIds.map(async (artifactId: string) => {
@@ -42,6 +52,17 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
 
       return success({
         defenseReport,
+        detectionReport,
+        riskProfile,
+        policyPack,
+        supervisionRecords: sessionRecords,
+        runtimeSessionSummaries: runtimeSessions.filter(Boolean).map((session) => ({
+          runtimeSessionId: session!.runtimeSessionId,
+          recordCount: session!.recordCount,
+          blockedCount: session!.blockedCount,
+          redactedCount: session!.redactedCount,
+          askCount: session!.askCount,
+        })),
         artifacts: artifacts.filter(Boolean),
         links: [
           { kind: "defense_report" as const, id: reportId, label: `Defense Report ${reportId}` },
@@ -70,6 +91,7 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
       // 读取完整 RiskProfile + RiskReports
       let riskProfile = null;
       let sourceRiskReports: unknown[] = [];
+      let policyPack = null;
       try {
         riskProfile = JSON.parse(
           await fs.readFile(path.join(runDir, "agent-risk-profile.json"), "utf-8"),
@@ -80,10 +102,16 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
           await fs.readFile(path.join(runDir, "risk-reports.json"), "utf-8"),
         );
       } catch { /* optional */ }
+      try {
+        policyPack = JSON.parse(
+          await fs.readFile(path.join(runDir, "supervision-policy-pack.json"), "utf-8"),
+        );
+      } catch { /* optional */ }
 
       return success({
         detectionReport,
         riskProfile,
+        policyPack,
         sourceRiskReports,
         links: [
           { kind: "detection_report" as const, id: reportId, label: `Detection Report ${reportId}` },
@@ -96,6 +124,14 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
       return failure("INTERNAL_ERROR", err instanceof Error ? err.message : String(err));
     }
   });
+}
+
+async function readOptionalJson(filePath: string): Promise<unknown | undefined> {
+  try {
+    return JSON.parse(await fs.readFile(filePath, "utf-8"));
+  } catch {
+    return undefined;
+  }
 }
 
 /** 策略查询 + artifact 访问 */

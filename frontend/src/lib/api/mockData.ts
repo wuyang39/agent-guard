@@ -3,7 +3,6 @@ import type {
   DefenseReport,
   DetectionReport,
   InteractionTrace,
-  ReportArtifact,
   RiskReport,
   RuntimeSupervisionRecord,
   SupervisionPolicyPack,
@@ -15,6 +14,7 @@ import type {
   CLineRunGroup,
   DefenseDetailView,
   DetectionDetailView,
+  P2ArtifactView,
   TraceDetailView,
 } from "./types";
 
@@ -350,13 +350,13 @@ const defenseReport: DefenseReport = {
   generatedAt,
 };
 
-const artifacts: ReportArtifact[] = [
+const artifacts: P2ArtifactView[] = [
   {
-    schemaVersion: "mvp-1",
     artifactId: "artifact.mock.defense.html",
     reportId: defenseReport.defenseReportId,
     format: "html",
-    path: "mock://defense-report.html",
+    label: "Mock Defense Report (HTML)",
+    url: "mock://defense-report.html",
     generatedAt,
   },
 ];

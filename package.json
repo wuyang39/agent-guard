@@ -7,7 +7,7 @@
     "demo": "node scripts/start-demo.mjs",
     "demo:web": "node scripts/demo-web-server.mjs",
     "demo:sample-agent": "node scripts/sample-agent-server.mjs",
-    "api:c": "node --import tsx backend/src/api/server.ts",
+    "api:c": "node --import tsx backend/src/server.ts",
     "frontend": "vite --config frontend/vite.config.ts",
     "build:frontend": "vite build --config frontend/vite.config.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",

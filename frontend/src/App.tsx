@@ -170,13 +170,26 @@ export function App() {
         status: "error",
         message:
           error instanceof Error
-            ? `${error.message}。确认 npm run api:c 是否已启动。`
-            : "运行 E2E 检测失败。确认 npm run api:c 是否已启动。",
+            ? `${error.message}。确认 npm run api:start 是否已启动。`
+            : "运行 E2E 检测失败。确认 npm run api:start 是否已启动。",
         fallback: mockDashboardSummary,
       });
     } finally {
       setRunning(false);
     }
+  }
+
+  async function activateRealtimePolicy() {
+    if (detectionState.status !== "ready") {
+      return;
+    }
+    const policyPackId = detectionState.data.policyPack.policyPackId;
+    await agentGuardApi.setRealtimeActivePolicy(policyPackId, true);
+    setView("supervision");
+  }
+
+  function acceptRealtimeDefenseReport(detail: DefenseDetailView) {
+    setDefenseState({ status: "ready", data: detail, source: "api" });
   }
 
   return (
@@ -232,6 +245,7 @@ export function App() {
         ) : null}
         {view === "detection" ? (
           <DetectionPage
+            onActivateRealtime={() => void activateRealtimePolicy()}
             onGoDefense={() => setView("defense")}
             onGoTrace={() => setView("trace")}
             state={detectionState}
@@ -248,6 +262,7 @@ export function App() {
           <LiveSupervisionPage
             onGoDefense={() => setView("defense")}
             onGoRuns={() => setView("runs")}
+            onReportGenerated={acceptRealtimeDefenseReport}
           />
         ) : null}
         {view === "runs" ? (

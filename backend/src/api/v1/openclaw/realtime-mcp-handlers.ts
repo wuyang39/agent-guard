@@ -3,6 +3,7 @@ import { success, failure } from "../../response";
 import {
   getRealtimeActivePolicyState,
   getRealtimeMcpTools,
+  finalizeRealtimeDefenseReport,
   handleRealtimeMcpJsonRpc,
   resetRealtimeSessions,
   setRealtimeActivePolicy,
@@ -18,6 +19,7 @@ const MCP_PATH = "/api/v1/openclaw/realtime/mcp";
 const ACTIVE_POLICY_PATH = "/api/v1/openclaw/realtime/active-policy";
 const SESSION_RESET_PATH = "/api/v1/openclaw/realtime/sessions/reset";
 const EVENTS_STREAM_PATH = "/api/v1/openclaw/realtime/events/stream";
+const DEFENSE_REPORT_PATH = "/api/v1/openclaw/realtime/reports/defense";
 
 export async function openClawRealtimeMcpRoutes(
   app: FastifyInstance,
@@ -97,6 +99,22 @@ export async function openClawRealtimeMcpRoutes(
       typeof body.runtimeSessionId === "string" ? body.runtimeSessionId : undefined;
     const resetCount = resetRealtimeSessions(runtimeSessionId);
     return success({ resetCount, runtimeSessionId });
+  });
+
+  app.post(DEFENSE_REPORT_PATH, async (request, reply) => {
+    const body = isObject(request.body) ? request.body : {};
+    const runtimeSessionId =
+      typeof body.runtimeSessionId === "string" ? body.runtimeSessionId : undefined;
+
+    try {
+      return success(await finalizeRealtimeDefenseReport(runtimeSessionId));
+    } catch (error) {
+      reply.code(400);
+      return failure(
+        "REALTIME_DEFENSE_REPORT_FAILED",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
   });
 
   app.get(EVENTS_STREAM_PATH, async (request, reply) => {

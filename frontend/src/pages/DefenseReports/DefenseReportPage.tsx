@@ -133,21 +133,17 @@ export function DefenseReportPage({
         <div className="section-header compact">
           <h2>残余风险与导出</h2>
           <div className="button-row">
-            {artifacts.map((artifact) =>
-              artifact.path.startsWith("mock://") ? (
-                <Badge key={artifact.artifactId}>mock artifact</Badge>
-              ) : (
-                <a
-                  className="secondary-link"
-                  href={agentGuardApi.artifactUrl(artifact.artifactId)}
-                  key={artifact.artifactId}
-                  rel="noreferrer"
-                  target="_blank"
-                >
-                  打开 {artifact.format}
-                </a>
-              ),
-            )}
+            {artifacts.map((artifact) => (
+              <a
+                className="secondary-link"
+                href={artifact.url ?? agentGuardApi.artifactUrl(artifact.artifactId)}
+                key={artifact.artifactId}
+                rel="noreferrer"
+                target="_blank"
+              >
+                打开 {artifact.format}
+              </a>
+            ))}
           </div>
         </div>
         {defenseReport.residualRisk.length ? (

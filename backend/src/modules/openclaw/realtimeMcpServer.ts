@@ -3,8 +3,12 @@ import { EventEmitter } from "node:events";
 import path from "node:path";
 import type {
   AgentUnderTest,
+  AgentRiskProfile,
+  DetectionReport,
   JsonObject,
   JsonValue,
+  ReportArtifact,
+  RiskCategory,
   RuntimeSupervisionRecord,
   SupervisionPolicyPack,
   ToolDefinition,
@@ -18,8 +22,18 @@ import { TraceRecorder } from "../monitor/traceRecorder";
 import { createMCPMonitor } from "../monitor/mcpMonitor";
 import { createAgentSupervisor } from "../supervisor/agentSupervisor";
 import { createSupervisionBridge } from "../supervisor/supervisionBridge";
-import { getReportEntry } from "../../storage/fileReportStore";
-import { listRunGroups, saveSessionRecords } from "../../storage/fileRunStore";
+import { buildDefenseReport } from "../defense/defenseReportBuilder";
+import {
+  exportDefenseHtmlReport,
+  exportDefenseJsonReport,
+} from "../defense/defenseReportExporter";
+import { getReportEntry, indexArtifact, indexReport } from "../../storage/fileReportStore";
+import {
+  getSessionRecords,
+  listRunGroups,
+  saveRunGroup,
+  saveSessionRecords,
+} from "../../storage/fileRunStore";
 
 const CONFIGS_DIR = path.resolve(process.cwd(), "configs");
 const REPORTS_DIR = path.resolve(process.cwd(), "outputs", "reports");
@@ -65,6 +79,7 @@ type JsonRpcResponse =
 type RealtimeSession = {
   runtimeSessionId: string;
   runGroupId: string;
+  sourceRunGroupId: string;
   agentId: string;
   policyPack: SupervisionPolicyPack;
   traceId: string;
@@ -84,7 +99,8 @@ export type RealtimeEvent = {
     | "session_created"
     | "tool_call_started"
     | "supervision_decision"
-    | "tool_call_result";
+    | "tool_call_result"
+    | "defense_report_generated";
   timestamp: string;
   runtimeSessionId?: string;
   policyPackId?: string;
@@ -114,8 +130,161 @@ let activePolicyPackId: string | undefined;
 let activePolicyUpdatedAt: string | undefined;
 const MAX_EVENT_HISTORY = 200;
 
+export type FinalizeRealtimeDefenseResult = {
+  runGroup: {
+    runGroupId: string;
+    runtimeSessionId: string;
+    traceId?: string;
+    policyPackId: string;
+    defenseReportId: string;
+    artifactIds: string[];
+  };
+  detectionReport: DetectionReport;
+  riskProfile: AgentRiskProfile;
+  policyPack: SupervisionPolicyPack;
+  defenseReport: ReturnType<typeof buildDefenseReport>;
+  supervisionRecords: RuntimeSupervisionRecord[];
+  artifacts: ReportArtifact[];
+};
+
 export function getRealtimeMcpTools(): ReturnType<typeof toolToMcpTool>[] {
   return getRealtimeToolDefinitions().map(toolToMcpTool);
+}
+
+export async function finalizeRealtimeDefenseReport(
+  runtimeSessionId = "session.openclaw.realtime",
+): Promise<FinalizeRealtimeDefenseResult> {
+  const persistedSession = await getSessionRecords(runtimeSessionId);
+  if (!persistedSession) {
+    throw new Error(`Realtime session ${runtimeSessionId} has no persisted records.`);
+  }
+
+  const liveSession = sessions.get(runtimeSessionId);
+  const policyContext = await loadPolicyContext(
+    persistedSession.policyPackId,
+    runtimeSessionId,
+  );
+  const runGroupId = persistedSession.runGroupId || liveSession?.runGroupId || createId("run_group");
+  const traceId = persistedSession.traceId ?? liveSession?.traceId;
+  const records = persistedSession.records;
+
+  const defenseReport = buildDefenseReport({
+    detectionReport: policyContext.detectionReport,
+    riskProfile: policyContext.riskProfile,
+    policyPack: policyContext.policyPack,
+    runtimeRecords: records,
+  });
+
+  const runOutputDir = path.join(REPORTS_DIR, runGroupId);
+  await fs.mkdir(runOutputDir, { recursive: true });
+  await fs.writeFile(
+    path.join(runOutputDir, "detection-report.json"),
+    JSON.stringify(policyContext.detectionReport, null, 2),
+    "utf-8",
+  );
+  await fs.writeFile(
+    path.join(runOutputDir, "agent-risk-profile.json"),
+    JSON.stringify(policyContext.riskProfile, null, 2),
+    "utf-8",
+  );
+  await fs.writeFile(
+    path.join(runOutputDir, "supervision-policy-pack.json"),
+    JSON.stringify(policyContext.policyPack, null, 2),
+    "utf-8",
+  );
+
+  const jsonArtifact = await exportDefenseJsonReport(
+    defenseReport,
+    path.join(runOutputDir, "defense-report.json"),
+  );
+  const htmlArtifact = await exportDefenseHtmlReport(
+    defenseReport,
+    path.join(runOutputDir, "defense-report.html"),
+  );
+  const artifacts = [jsonArtifact, htmlArtifact];
+
+  await Promise.all([
+    indexArtifact(jsonArtifact, "Realtime Defense Report (JSON)"),
+    indexArtifact(htmlArtifact, "Realtime Defense Report (HTML)"),
+  ]);
+  await indexReport({
+    reportId: policyContext.detectionReport.reportId,
+    reportType: "detection_report",
+    runGroupId,
+    artifactIds: [],
+    generatedAt: policyContext.detectionReport.generatedAt,
+  });
+  await indexReport({
+    reportId: policyContext.riskProfile.profileId,
+    reportType: "risk_profile",
+    runGroupId,
+    artifactIds: [],
+    generatedAt: policyContext.riskProfile.generatedAt,
+  });
+  await indexReport({
+    reportId: policyContext.policyPack.policyPackId,
+    reportType: "policy_pack",
+    runGroupId,
+    artifactIds: [],
+    generatedAt: policyContext.policyPack.createdAt,
+  });
+  await indexReport({
+    reportId: defenseReport.defenseReportId,
+    reportType: "defense_report",
+    runGroupId,
+    artifactIds: artifacts.map((artifact) => artifact.artifactId),
+    generatedAt: defenseReport.generatedAt,
+  });
+
+  await saveRunGroup({
+    runGroupId,
+    agentId: persistedSession.agentId,
+    agentName: "OpenClaw Realtime MCP Agent",
+    adapterKind: "openclaw",
+    status: "completed",
+    startedAt: persistedSession.startedAt ?? liveSession?.startedAt ?? defenseReport.generatedAt,
+    endedAt: defenseReport.generatedAt,
+    caseCount: 1,
+    highestRiskLevel: policyContext.detectionReport.riskSummary.highestRiskLevel,
+    testRunIds: [],
+    traceIds: traceId ? [traceId] : [],
+    riskReportIds: policyContext.detectionReport.sourceRiskReportIds,
+    detectionReportId: policyContext.detectionReport.reportId,
+    riskProfileId: policyContext.riskProfile.profileId,
+    policyPackId: policyContext.policyPack.policyPackId,
+    runtimeSessionIds: [runtimeSessionId],
+    defenseReportId: defenseReport.defenseReportId,
+    artifactIds: artifacts.map((artifact) => artifact.artifactId),
+  });
+
+  emitRealtimeEvent({
+    type: "defense_report_generated",
+    runtimeSessionId,
+    policyPackId: policyContext.policyPack.policyPackId,
+    traceId,
+    message: `Realtime defense report generated: ${defenseReport.defenseReportId}.`,
+    detail: {
+      defenseReportId: defenseReport.defenseReportId,
+      artifactIds: artifacts.map((artifact) => artifact.artifactId),
+    },
+  });
+
+  return {
+    runGroup: {
+      runGroupId,
+      runtimeSessionId,
+      traceId,
+      policyPackId: policyContext.policyPack.policyPackId,
+      defenseReportId: defenseReport.defenseReportId,
+      artifactIds: artifacts.map((artifact) => artifact.artifactId),
+    },
+    detectionReport: policyContext.detectionReport,
+    riskProfile: policyContext.riskProfile,
+    policyPack: policyContext.policyPack,
+    defenseReport,
+    supervisionRecords: records,
+    artifacts,
+  };
 }
 
 export async function getRealtimeActivePolicyState(
@@ -378,7 +547,11 @@ async function getOrCreateSession(
 
   const repository = await loadConfigRepository(CONFIGS_DIR);
   const sandboxProfile = buildSandboxProfile(repository);
-  const { policyPack, runGroupId } = await resolvePolicyPack(policyPackId);
+  const {
+    policyPack,
+    runGroupId: sourceRunGroupId,
+  } = await resolvePolicyPack(policyPackId);
+  const runGroupId = createId("run_group");
   const agent: AgentUnderTest = {
     schemaVersion: "mvp-1",
     agentId: policyPack.agentId || "agent.openclaw.realtime",
@@ -410,6 +583,7 @@ async function getOrCreateSession(
   const session: RealtimeSession = {
     runtimeSessionId,
     runGroupId,
+    sourceRunGroupId,
     agentId: agent.agentId,
     policyPack,
     traceId,
@@ -430,6 +604,7 @@ async function getOrCreateSession(
     message: `Realtime session ${runtimeSessionId} created with ${policyPack.policyPackId}.`,
     detail: {
       runGroupId,
+      sourceRunGroupId,
       policyCount: policyPack.policies.length,
     },
   });
@@ -513,6 +688,194 @@ async function loadPolicyPackById(
   return { policyPack, runGroupId: entry.runGroupId };
 }
 
+async function loadPolicyContext(
+  policyPackId: string,
+  runtimeSessionId?: string,
+): Promise<{
+  detectionReport: DetectionReport;
+  riskProfile: AgentRiskProfile;
+  policyPack: SupervisionPolicyPack;
+}> {
+  const livePolicyPack = runtimeSessionId
+    ? sessions.get(runtimeSessionId)?.policyPack
+    : undefined;
+
+  if (
+    policyPackId === "policy_pack.openclaw.realtime.fallback" ||
+    policyPackId === "fallback"
+  ) {
+    const policyPack = livePolicyPack ?? buildFallbackRealtimePolicyPack();
+    return buildSyntheticPolicyContext(policyPack);
+  }
+
+  const entry = await getReportEntry(policyPackId);
+  if (entry?.reportType === "policy_pack") {
+    const runDir = path.join(REPORTS_DIR, entry.runGroupId);
+    const policyPack = await readJsonFile<SupervisionPolicyPack>(
+      path.join(runDir, "supervision-policy-pack.json"),
+    ) ?? livePolicyPack;
+    if (policyPack) {
+      const detectionReport = await readJsonFile<DetectionReport>(
+        path.join(runDir, "detection-report.json"),
+      );
+      const riskProfile = await readJsonFile<AgentRiskProfile>(
+        path.join(runDir, "agent-risk-profile.json"),
+      );
+      if (detectionReport && riskProfile) {
+        return { detectionReport, riskProfile, policyPack };
+      }
+      return buildSyntheticPolicyContext(policyPack);
+    }
+  }
+
+  if (livePolicyPack) {
+    return buildSyntheticPolicyContext(livePolicyPack);
+  }
+
+  throw new Error(`Policy pack ${policyPackId} not found for realtime defense report.`);
+}
+
+async function readJsonFile<T>(filePath: string): Promise<T | undefined> {
+  try {
+    return JSON.parse(await fs.readFile(filePath, "utf-8")) as T;
+  } catch {
+    return undefined;
+  }
+}
+
+function buildSyntheticPolicyContext(policyPack: SupervisionPolicyPack): {
+  detectionReport: DetectionReport;
+  riskProfile: AgentRiskProfile;
+  policyPack: SupervisionPolicyPack;
+} {
+  const generatedAt = nowIso();
+  const weaknesses = new Map<string, AgentRiskProfile["weaknesses"][number]>();
+
+  for (const policy of policyPack.policies) {
+    const weaknessIds = policy.sourceWeaknessIds.length
+      ? policy.sourceWeaknessIds
+      : [`weakness.realtime.${categoryForPolicy(policy.targetType)}`];
+    for (const weaknessId of weaknessIds) {
+      if (weaknesses.has(weaknessId)) continue;
+      const category = categoryForWeaknessOrPolicy(weaknessId, policy.targetType);
+      weaknesses.set(weaknessId, {
+        weaknessId,
+        category,
+        title: `Realtime ${category.replaceAll("_", " ")} weakness`,
+        description:
+          `Realtime supervision policy ${policy.policyId} covers ${category} behavior.`,
+        sourceFindingIds: [`finding.realtime.${category}`],
+        recommendedPolicyTemplateIds: [`policy_template.${category}`],
+      });
+    }
+  }
+
+  const weaknessList = [...weaknesses.values()];
+  const countsByCategory: Record<RiskCategory, number> = {
+    tool_misuse: 0,
+    unauthorized_access: 0,
+    data_leakage: 0,
+    dangerous_action: 0,
+    instruction_injection_following: 0,
+  };
+  for (const weakness of weaknessList) {
+    countsByCategory[weakness.category] += 1;
+  }
+
+  const highestRiskLevel = policyPack.policies.reduce(
+    (highest, policy) =>
+      riskRankForPolicy(policy.riskLevel) > riskRankForPolicy(highest)
+        ? policy.riskLevel
+        : highest,
+    "low" as DetectionReport["riskSummary"]["highestRiskLevel"],
+  );
+
+  const detectionReport: DetectionReport = {
+    schemaVersion: "mvp-1",
+    reportId: policyPack.sourceDetectionReportId,
+    agentId: policyPack.agentId,
+    sourceRiskReportIds: [],
+    scenarioSummary: weaknessList.map((weakness) => ({
+      scenarioId: `realtime.${weakness.category}`,
+      caseIds: ["case.openclaw_realtime_mcp"],
+      status: "failed",
+      triggeredFindingIds: weakness.sourceFindingIds,
+    })),
+    riskSummary: {
+      totalScenarios: weaknessList.length,
+      failedScenarioCount: weaknessList.length,
+      totalFindings: weaknessList.length,
+      highestRiskLevel,
+      countsByCategory,
+    },
+    failedScenarios: weaknessList.map((weakness) => ({
+      scenarioId: `realtime.${weakness.category}`,
+      caseId: "case.openclaw_realtime_mcp",
+      findingIds: weakness.sourceFindingIds,
+      weaknessCategory: weakness.category,
+      evidenceEventIds: [],
+    })),
+    findingIds: weaknessList.flatMap((weakness) => weakness.sourceFindingIds),
+    evidenceChainIds: weaknessList.map((weakness) => `evidence.${weakness.weaknessId}`),
+    recommendedPolicyTemplateIds: [
+      ...new Set(weaknessList.flatMap((weakness) => weakness.recommendedPolicyTemplateIds)),
+    ],
+    generatedAt,
+  };
+
+  const riskProfile: AgentRiskProfile = {
+    schemaVersion: "mvp-1",
+    profileId: policyPack.sourceRiskProfileId,
+    agentId: policyPack.agentId,
+    sourceDetectionReportId: detectionReport.reportId,
+    weaknesses: weaknessList,
+    highRiskTools: ["tool.read_file", "tool.execute_code", "tool.call_api"],
+    sensitiveResourcePatterns: ["/secret/*"],
+    exfiltrationPatterns: ["token", "secret", "password", "credential"],
+    recommendedControls: detectionReport.recommendedPolicyTemplateIds,
+    confidence: weaknessList.length >= 3 ? "high" : "medium",
+    generatedAt,
+  };
+
+  return { detectionReport, riskProfile, policyPack };
+}
+
+function categoryForWeaknessOrPolicy(
+  weaknessId: string,
+  targetType: SupervisionPolicyPack["policies"][number]["targetType"],
+): RiskCategory {
+  if (weaknessId.includes("data_leakage")) return "data_leakage";
+  if (weaknessId.includes("dangerous_action")) return "dangerous_action";
+  if (weaknessId.includes("unauthorized_access")) return "unauthorized_access";
+  if (weaknessId.includes("instruction_injection")) return "instruction_injection_following";
+  if (weaknessId.includes("tool_misuse")) return "tool_misuse";
+  return categoryForPolicy(targetType);
+}
+
+function categoryForPolicy(
+  targetType: SupervisionPolicyPack["policies"][number]["targetType"],
+): RiskCategory {
+  switch (targetType) {
+    case "api_call":
+    case "email_send":
+      return "data_leakage";
+    case "code_execution":
+    case "file_write":
+      return "dangerous_action";
+    case "agent_message":
+      return "instruction_injection_following";
+    case "resource_access":
+      return "unauthorized_access";
+    default:
+      return "tool_misuse";
+  }
+}
+
+function riskRankForPolicy(riskLevel: DetectionReport["riskSummary"]["highestRiskLevel"]): number {
+  const rank = { low: 1, medium: 2, high: 3, critical: 4 } as const;
+  return rank[riskLevel];
+}
+
 async function persistRealtimeSession(session: RealtimeSession): Promise<void> {
   const records = session.bridge.getRecords();
   const actionCounts: Record<string, number> = {};
@@ -524,8 +887,11 @@ async function persistRealtimeSession(session: RealtimeSession): Promise<void> {
     {
       runtimeSessionId: session.runtimeSessionId,
       runGroupId: session.runGroupId,
+      sourceRunGroupId: session.sourceRunGroupId,
       agentId: session.agentId,
       policyPackId: session.policyPack.policyPackId,
+      traceId: session.traceId,
+      startedAt: session.startedAt,
       recordCount: records.length,
       blockedCount: records.filter((record) => record.action === "deny").length,
       redactedCount: records.filter((record) => record.action === "redact").length,

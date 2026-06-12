@@ -2,44 +2,74 @@ import { useEffect, useRef, useState } from "react";
 import { Badge } from "../../components/ui/Badge";
 import { ErrorBlock, LoadingBlock } from "../../components/ui/StateBlock";
 import { agentGuardApi } from "../../lib/api/client";
-import type { LiveSupervisionEvent, SampleAgentStatus } from "../../lib/api/types";
+import type {
+  DefenseDetailView,
+  LiveSupervisionEvent,
+  RealtimeActivePolicyState,
+} from "../../lib/api/types";
 import { actionTone } from "../../lib/formatters/risk";
 import { formatDateTime } from "../../lib/formatters/time";
 
 type LiveSupervisionPageProps = {
   onGoRuns: () => void;
   onGoDefense: () => void;
+  onReportGenerated: (detail: DefenseDetailView) => void;
 };
+
+const REALTIME_EVENT_TYPES: LiveSupervisionEvent["type"][] = [
+  "active_policy_updated",
+  "session_reset",
+  "session_created",
+  "tool_call_started",
+  "supervision_decision",
+  "tool_call_result",
+  "defense_report_generated",
+];
+
+const DEFAULT_RUNTIME_SESSION_ID = "session.openclaw.realtime";
 
 export function LiveSupervisionPage({
   onGoRuns,
   onGoDefense,
+  onReportGenerated,
 }: LiveSupervisionPageProps) {
-  const [status, setStatus] = useState<SampleAgentStatus | undefined>();
+  const [activePolicy, setActivePolicy] = useState<RealtimeActivePolicyState | undefined>();
   const [statusError, setStatusError] = useState<string | undefined>();
   const [events, setEvents] = useState<LiveSupervisionEvent[]>([]);
   const [streaming, setStreaming] = useState(false);
+  const [finalizing, setFinalizing] = useState(false);
+  const [latestDefenseReportId, setLatestDefenseReportId] = useState<string | undefined>();
   const sourceRef = useRef<EventSource | undefined>(undefined);
-  const completedRef = useRef(false);
 
   useEffect(() => {
-    void refreshStatus();
+    void refreshActivePolicy();
     return () => sourceRef.current?.close();
   }, []);
 
-  async function refreshStatus() {
+  async function refreshActivePolicy() {
     setStatusError(undefined);
     try {
-      setStatus(await agentGuardApi.sampleAgentStatus());
+      setActivePolicy(await agentGuardApi.activeRealtimePolicy());
     } catch (error) {
       setStatusError(error instanceof Error ? error.message : String(error));
     }
   }
 
-  async function startAgent() {
+  async function useFallbackPolicy() {
     setStatusError(undefined);
     try {
-      setStatus(await agentGuardApi.startSampleAgent());
+      setActivePolicy(await agentGuardApi.setRealtimeActivePolicy("fallback", true));
+    } catch (error) {
+      setStatusError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function resetSession() {
+    setStatusError(undefined);
+    try {
+      await agentGuardApi.resetRealtimeSessions(DEFAULT_RUNTIME_SESSION_ID);
+      setEvents([]);
+      await refreshActivePolicy();
     } catch (error) {
       setStatusError(error instanceof Error ? error.message : String(error));
     }
@@ -48,27 +78,25 @@ export function LiveSupervisionPage({
   function startStream() {
     sourceRef.current?.close();
     setEvents([]);
-    completedRef.current = false;
     setStreaming(true);
     const source = new EventSource(agentGuardApi.liveSupervisionUrl());
     sourceRef.current = source;
-    source.onmessage = (message) => {
-      const event = JSON.parse(message.data) as LiveSupervisionEvent;
-      setEvents((current) => [...current, event]);
-      if (event.type === "agent_status" && event.status) {
-        setStatus(event.status);
-      }
-      if (event.type === "live_complete" || event.type === "live_error") {
-        completedRef.current = true;
-        setStreaming(false);
-        source.close();
-      }
-    };
+
+    for (const eventType of REALTIME_EVENT_TYPES) {
+      source.addEventListener(eventType, (message) => {
+        const event = JSON.parse((message as MessageEvent).data) as LiveSupervisionEvent;
+        setEvents((current) => [...current, event]);
+        if (event.type === "active_policy_updated") {
+          void refreshActivePolicy();
+        }
+        if (event.type === "defense_report_generated") {
+          const id = event.detail?.defenseReportId;
+          if (typeof id === "string") setLatestDefenseReportId(id);
+        }
+      });
+    }
+
     source.onerror = () => {
-      if (completedRef.current) {
-        source.close();
-        return;
-      }
       setEvents((current) => [
         ...current,
         {
@@ -82,8 +110,28 @@ export function LiveSupervisionPage({
     };
   }
 
-  if (!status && !statusError) {
-    return <LoadingBlock message="正在检查本地 sample agent 连接状态..." />;
+  function stopStream() {
+    sourceRef.current?.close();
+    setStreaming(false);
+  }
+
+  async function finalizeReport() {
+    setFinalizing(true);
+    setStatusError(undefined);
+    try {
+      const detail = await agentGuardApi.finalizeRealtimeDefenseReport(DEFAULT_RUNTIME_SESSION_ID);
+      setLatestDefenseReportId(detail.defenseReport.defenseReportId);
+      onReportGenerated(detail);
+      onGoDefense();
+    } catch (error) {
+      setStatusError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setFinalizing(false);
+    }
+  }
+
+  if (!activePolicy && !statusError) {
+    return <LoadingBlock message="正在读取 OpenClaw realtime MCP 监督状态..." />;
   }
 
   return (
@@ -91,43 +139,49 @@ export function LiveSupervisionPage({
       <section className="panel">
         <div className="section-header">
           <div>
-            <p className="eyebrow">Project Console</p>
-            <h1>Live Supervision</h1>
+            <p className="eyebrow">OpenClaw Realtime MCP</p>
+            <h1>实时监督</h1>
           </div>
           <div className="button-row">
-            <button className="secondary-button" onClick={refreshStatus}>
-              刷新状态
+            <button className="secondary-button" onClick={refreshActivePolicy}>
+              刷新策略
             </button>
-            <button className="secondary-button" onClick={startAgent}>
-              启动 sample agent
+            <button className="secondary-button" onClick={useFallbackPolicy}>
+              使用兜底策略
             </button>
-            <button className="primary-button" disabled={streaming} onClick={startStream}>
-              {streaming ? "监督中..." : "开始实时监督"}
+            <button className="secondary-button" onClick={resetSession}>
+              重置会话
+            </button>
+            <button className="primary-button" onClick={streaming ? stopStream : startStream}>
+              {streaming ? "停止监听" : "监听实时事件"}
+            </button>
+            <button className="primary-button" disabled={finalizing} onClick={finalizeReport}>
+              {finalizing ? "生成中..." : "生成防御报告"}
             </button>
           </div>
         </div>
 
         {statusError ? (
-          <ErrorBlock title="Agent 状态读取失败" message={statusError} />
+          <ErrorBlock title="实时监督状态读取失败" message={statusError} />
         ) : (
           <div className="id-grid">
             <div>
-              <span>Sample Agent</span>
-              <Badge tone={status?.running ? "tone-low" : "tone-high"}>
-                {status?.running ? "running" : "stopped"}
+              <span>MCP URL</span>
+              <code>http://127.0.0.1:3100/api/v1/openclaw/realtime/mcp</code>
+            </div>
+            <div>
+              <span>Active Policy</span>
+              <code>{activePolicy?.resolvedPolicyPackId ?? "-"}</code>
+            </div>
+            <div>
+              <span>Source</span>
+              <Badge tone={activePolicy?.source === "fallback" ? "tone-medium" : "tone-low"}>
+                {activePolicy?.source ?? "-"}
               </Badge>
             </div>
             <div>
-              <span>Endpoint</span>
-              <code>{status?.endpoint ?? "-"}</code>
-            </div>
-            <div>
-              <span>Health</span>
-              <code>{status?.healthEndpoint ?? "-"}</code>
-            </div>
-            <div>
-              <span>PID</span>
-              <code>{status?.pid ?? "-"}</code>
+              <span>Runtime Session</span>
+              <code>{DEFAULT_RUNTIME_SESSION_ID}</code>
             </div>
           </div>
         )}
@@ -144,7 +198,7 @@ export function LiveSupervisionPage({
           <div className="event-list">
             {events.length ? (
               events.map((event, index) => (
-                <article className="event-row" key={`${event.timestamp}-${index}`}>
+                <article className="event-row" key={`${event.eventId ?? event.timestamp}-${index}`}>
                   <div className="event-index">{index + 1}</div>
                   <div>
                     <div className="event-title">
@@ -156,14 +210,16 @@ export function LiveSupervisionPage({
                 </article>
               ))
             ) : (
-              <p className="muted">点击“开始实时监督”后，这里会显示 API adapter、trace、监督记录和防御报告事件。</p>
+              <p className="muted">
+                先点击“监听实时事件”，再在 OpenClaw 中调用 agent_guard_* 工具，这里会显示监督判定。
+              </p>
             )}
           </div>
         </div>
 
         <div className="panel">
           <div className="section-header compact">
-            <h2>监督防护记录</h2>
+            <h2>监督判定</h2>
             <div className="button-row">
               <button className="secondary-button" onClick={onGoRuns}>
                 Test Runs
@@ -175,22 +231,26 @@ export function LiveSupervisionPage({
           </div>
           <div className="timeline-list">
             {events
-              .filter((event) => event.type === "supervision_record" && event.record)
-              .map((event) => event.record!)
-              .map((record) => (
-                <article className="list-item" key={record.recordId}>
+              .filter((event) => event.type === "supervision_decision")
+              .map((event) => (
+                <article className="list-item" key={event.eventId ?? `${event.timestamp}-${event.action}`}>
                   <div>
-                    <strong>{record.targetType}</strong>
-                    <p>{record.decisionReason}</p>
-                    <code>{record.runtimeSessionId}</code>
+                    <strong>{event.targetType ?? event.toolId}</strong>
+                    <p>{event.message}</p>
+                    <code>{event.runtimeSessionId}</code>
                   </div>
-                  <Badge tone={actionTone(record.action)}>{record.action}</Badge>
+                  <Badge tone={event.action ? actionTone(event.action) : "tone-neutral"}>
+                    {event.action ?? "decision"}
+                  </Badge>
                 </article>
               ))}
-            {!events.some((event) => event.type === "supervision_record") ? (
-              <p className="muted">还没有监督记录。实时流完成后会展示 deny、redact、ask 等动作。</p>
+            {!events.some((event) => event.type === "supervision_decision") ? (
+              <p className="muted">还没有监督判定。OpenClaw 工具调用进入 MCP 后会出现 deny、ask、redact 等记录。</p>
             ) : null}
           </div>
+          {latestDefenseReportId ? (
+            <p className="muted">最新实时防御报告: {latestDefenseReportId}</p>
+          ) : null}
         </div>
       </section>
     </div>
@@ -198,17 +258,17 @@ export function LiveSupervisionPage({
 }
 
 function summarizeEvent(event: LiveSupervisionEvent): string {
-  if (event.type === "run_group") {
-    return `runGroup=${event.runGroup?.runGroupId}, reports=${event.riskReportCount}, traces=${event.traceCount}`;
+  if (event.type === "tool_call_started") {
+    return `${event.toolId} started in ${event.runtimeSessionId}`;
   }
-  if (event.type === "trace_summary") {
-    return `${event.caseId}: ${event.eventCount} events, trace=${event.traceId}`;
+  if (event.type === "tool_call_result") {
+    return `${event.toolId} ${event.blocked ? "blocked" : "completed"}`;
   }
-  if (event.type === "defense_report") {
-    return `defense=${event.defenseReportId}, blocked=${event.blockedActions}, redacted=${event.redactions}, ask=${event.askDecisions}`;
+  if (event.type === "active_policy_updated") {
+    return `active policy=${event.policyPackId}`;
   }
-  if (event.type === "agent_status") {
-    return event.status?.message ?? `sample agent ${event.status?.running ? "running" : "stopped"}`;
+  if (event.type === "defense_report_generated") {
+    return `defense=${String(event.detail?.defenseReportId ?? "-")}`;
   }
   return "";
 }

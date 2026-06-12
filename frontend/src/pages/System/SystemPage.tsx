@@ -36,13 +36,25 @@ export function SystemPage({ state }: SystemPageProps) {
         </div>
         <div>
           <span>Output store</span>
-          <code>{state.data.outputDir}</code>
+          <code>{state.data.outputDir ?? "outputs"}</code>
         </div>
         <div>
           <span>Updated</span>
-          <code>{formatDateTime(state.data.generatedAt)}</code>
+          <code>{state.data.generatedAt ? formatDateTime(state.data.generatedAt) : "-"}</code>
         </div>
       </div>
+      {state.data.features ? (
+        <div className="category-list">
+          {Object.entries(state.data.features).map(([key, enabled]) => (
+            <div className="category-row" key={key}>
+              <span>{key}</span>
+              <Badge tone={enabled ? "tone-low" : "tone-high"}>
+                {enabled ? "enabled" : "disabled"}
+              </Badge>
+            </div>
+          ))}
+        </div>
+      ) : null}
     </section>
   );
 }

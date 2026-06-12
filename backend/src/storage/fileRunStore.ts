@@ -109,8 +109,11 @@ export async function listRunGroups(opts?: {
 export type SupervisionSessionSummary = {
   runtimeSessionId: string;
   runGroupId: string;
+  sourceRunGroupId?: string;
   agentId: string;
   policyPackId: string;
+  traceId?: string;
+  startedAt?: string;
   recordCount: number;
   blockedCount: number;
   redactedCount: number;

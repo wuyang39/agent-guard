@@ -297,6 +297,7 @@ OpenClaw CLI adapter:
 OpenClaw Realtime MCP supervision:
   用 OpenClaw MCP server/proxy 配置指向 Agent Guard。
   工具调用实时进入 /api/v1/openclaw/realtime/mcp，在 sandbox 执行前完成 deny/ask/redact。
+  OpenClaw 保持固定 MCP URL，监督策略由 Agent Guard active-policy API 热切换。
   适合作为答辩现场“外部测试用例 -> OpenClaw -> Agent Guard 监督台”的实时演示链路。
 ```
 
@@ -352,6 +353,8 @@ OpenClaw 接入原则:
 - 不让 OpenClaw 直接执行危险文件、网络或代码动作；动作必须经 sandbox / supervision bridge。
 - Realtime MCP 端点返回 raw JSON-RPC，不使用普通 `ApiResponse<T>` envelope。
 - `agent_guard_*` 工具名必须归一到 `tool.*`，确保 trace、风险识别和策略命中使用同一套语义。
+- 策略切换通过 `POST /api/v1/openclaw/realtime/active-policy` 完成，不要求修改 OpenClaw MCP URL。
+- 终端/前端可通过 `GET /api/v1/openclaw/realtime/events/stream` 订阅实时监督事件。
 - `authRef` 只能是引用，不允许在配置中保存明文密钥。
 - 如果 OpenClaw 协议变化，B 线只调整 adapter shim，不反向修改 A/C 数据契约。
 - P2 实现前需要确认 OpenClaw 的启动方式、任务输入方式、工具调用表示和运行输出格式。

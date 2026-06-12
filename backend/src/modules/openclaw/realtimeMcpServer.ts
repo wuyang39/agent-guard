@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { EventEmitter } from "node:events";
 import path from "node:path";
 import type {
   AgentUnderTest,
@@ -75,10 +76,139 @@ type RealtimeSession = {
   bridge: ReturnType<typeof createSupervisionBridge>;
 };
 
+export type RealtimeEvent = {
+  eventId: string;
+  type:
+    | "active_policy_updated"
+    | "session_reset"
+    | "session_created"
+    | "tool_call_started"
+    | "supervision_decision"
+    | "tool_call_result";
+  timestamp: string;
+  runtimeSessionId?: string;
+  policyPackId?: string;
+  traceId?: string;
+  toolId?: string;
+  toolName?: string;
+  action?: RuntimeSupervisionRecord["action"];
+  targetType?: RuntimeSupervisionRecord["targetType"];
+  blocked?: boolean;
+  message?: string;
+  detail?: JsonObject;
+};
+
+export type RealtimeActivePolicyState = {
+  requestedPolicyPackId?: string;
+  resolvedPolicyPackId: string;
+  runGroupId: string;
+  source: "request" | "active" | "env" | "latest" | "fallback";
+  policyCount: number;
+  updatedAt?: string;
+};
+
 const sessions = new Map<string, RealtimeSession>();
+const realtimeEvents = new EventEmitter();
+const eventHistory: RealtimeEvent[] = [];
+let activePolicyPackId: string | undefined;
+let activePolicyUpdatedAt: string | undefined;
+const MAX_EVENT_HISTORY = 200;
 
 export function getRealtimeMcpTools(): ReturnType<typeof toolToMcpTool>[] {
   return getRealtimeToolDefinitions().map(toolToMcpTool);
+}
+
+export async function getRealtimeActivePolicyState(
+  requestedPolicyPackId?: string,
+): Promise<RealtimeActivePolicyState> {
+  const resolved = await resolvePolicyPack(requestedPolicyPackId);
+  return {
+    requestedPolicyPackId: requestedPolicyPackId ?? activePolicyPackId,
+    resolvedPolicyPackId: resolved.policyPack.policyPackId,
+    runGroupId: resolved.runGroupId,
+    source: resolved.source,
+    policyCount: resolved.policyPack.policies.length,
+    updatedAt: activePolicyUpdatedAt,
+  };
+}
+
+export async function setRealtimeActivePolicy(
+  policyPackId: string,
+  opts: { resetSessions?: boolean; runtimeSessionId?: string } = {},
+): Promise<RealtimeActivePolicyState> {
+  const resolved = await resolvePolicyPack(policyPackId);
+  if (
+    policyPackId !== "fallback" &&
+    policyPackId !== "policy_pack.openclaw.realtime.fallback" &&
+    resolved.policyPack.policyPackId !== policyPackId
+  ) {
+    throw new Error(`Policy pack ${policyPackId} not found.`);
+  }
+  activePolicyPackId = policyPackId;
+  activePolicyUpdatedAt = nowIso();
+
+  let resetCount = 0;
+  if (opts.resetSessions) {
+    resetCount = resetRealtimeSessions(opts.runtimeSessionId);
+  }
+
+  const state: RealtimeActivePolicyState = {
+    requestedPolicyPackId: policyPackId,
+    resolvedPolicyPackId: resolved.policyPack.policyPackId,
+    runGroupId: resolved.runGroupId,
+    source: "active",
+    policyCount: resolved.policyPack.policies.length,
+    updatedAt: activePolicyUpdatedAt,
+  };
+
+  emitRealtimeEvent({
+    type: "active_policy_updated",
+    policyPackId: resolved.policyPack.policyPackId,
+    message: `Active realtime policy set to ${resolved.policyPack.policyPackId}.`,
+    detail: {
+      requestedPolicyPackId: policyPackId,
+      runGroupId: resolved.runGroupId,
+      resetSessions: Boolean(opts.resetSessions),
+      resetCount,
+    },
+  });
+
+  return state;
+}
+
+export function resetRealtimeSessions(runtimeSessionId?: string): number {
+  let resetCount = 0;
+  if (runtimeSessionId) {
+    resetCount = sessions.delete(runtimeSessionId) ? 1 : 0;
+  } else {
+    resetCount = sessions.size;
+    sessions.clear();
+  }
+
+  emitRealtimeEvent({
+    type: "session_reset",
+    runtimeSessionId,
+    message: runtimeSessionId
+      ? `Realtime session ${runtimeSessionId} reset.`
+      : "All realtime sessions reset.",
+    detail: { resetCount },
+  });
+
+  return resetCount;
+}
+
+export function subscribeRealtimeEvents(
+  listener: (event: RealtimeEvent) => void,
+  opts: { replay?: boolean } = {},
+): () => void {
+  if (opts.replay) {
+    for (const event of eventHistory) {
+      listener(event);
+    }
+  }
+
+  realtimeEvents.on("event", listener);
+  return () => realtimeEvents.off("event", listener);
 }
 
 export async function handleRealtimeMcpJsonRpc(
@@ -155,13 +285,62 @@ async function handleToolCall(
   delete args._agentGuardSessionId;
 
   const session = await getOrCreateSession(sessionId, opts.policyPackId);
+  const beforeRecords = session.bridge.getRecords();
+  emitRealtimeEvent({
+    type: "tool_call_started",
+    runtimeSessionId: session.runtimeSessionId,
+    policyPackId: session.policyPack.policyPackId,
+    traceId: session.traceId,
+    toolId,
+    toolName: rawName || TOOL_NAME_BY_ID[toolId],
+    message: `Tool call started: ${toolId}.`,
+    detail: { parameters: args },
+  });
+
   const result = await session.bridge.handleToolCall({
     toolId,
     toolName: rawName || TOOL_NAME_BY_ID[toolId],
     parameters: args,
   });
+  const afterRecords = session.bridge.getRecords();
+  const newRecords = afterRecords.slice(beforeRecords.length);
 
   await persistRealtimeSession(session);
+
+  for (const record of newRecords) {
+    emitRealtimeEvent({
+      type: "supervision_decision",
+      runtimeSessionId: session.runtimeSessionId,
+      policyPackId: record.policyPackId,
+      traceId: session.traceId,
+      toolId,
+      toolName: rawName || TOOL_NAME_BY_ID[toolId],
+      action: record.action,
+      targetType: record.targetType,
+      message: `[${record.action.toUpperCase()}] ${record.targetType}/${record.targetId}: ${record.decisionReason}`,
+      detail: compactJsonObject({
+        recordId: record.recordId,
+        policyId: record.policyId,
+        targetId: record.targetId,
+        decisionReason: record.decisionReason,
+      }),
+    });
+  }
+
+  emitRealtimeEvent({
+    type: "tool_call_result",
+    runtimeSessionId: session.runtimeSessionId,
+    policyPackId: session.policyPack.policyPackId,
+    traceId: session.traceId,
+    toolId,
+    toolName: rawName || TOOL_NAME_BY_ID[toolId],
+    blocked: isBlockedToolResult(result),
+    message: `Tool call ${isBlockedToolResult(result) ? "blocked" : "completed"}: ${toolId}.`,
+    detail: {
+      callId: result.callId,
+      newRecordCount: newRecords.length,
+    },
+  });
 
   return {
     content: [
@@ -179,7 +358,23 @@ async function getOrCreateSession(
   policyPackId?: string,
 ): Promise<RealtimeSession> {
   const existing = sessions.get(runtimeSessionId);
-  if (existing) return existing;
+  const requestedPolicyPackId = getRequestedPolicyPackId(policyPackId);
+  if (existing && policyRequestMatches(existing.policyPack.policyPackId, requestedPolicyPackId)) {
+    return existing;
+  }
+  if (existing) {
+    sessions.delete(runtimeSessionId);
+    emitRealtimeEvent({
+      type: "session_reset",
+      runtimeSessionId,
+      policyPackId: existing.policyPack.policyPackId,
+      message: `Realtime session ${runtimeSessionId} reset for policy hot-swap.`,
+      detail: compactJsonObject({
+        previousPolicyPackId: existing.policyPack.policyPackId,
+        requestedPolicyPackId,
+      }),
+    });
+  }
 
   const repository = await loadConfigRepository(CONFIGS_DIR);
   const sandboxProfile = buildSandboxProfile(repository);
@@ -227,13 +422,43 @@ async function getOrCreateSession(
   };
   sessions.set(runtimeSessionId, session);
   await persistRealtimeSession(session);
+  emitRealtimeEvent({
+    type: "session_created",
+    runtimeSessionId,
+    policyPackId: policyPack.policyPackId,
+    traceId,
+    message: `Realtime session ${runtimeSessionId} created with ${policyPack.policyPackId}.`,
+    detail: {
+      runGroupId,
+      policyCount: policyPack.policies.length,
+    },
+  });
   return session;
+}
+
+function getRequestedPolicyPackId(policyPackId?: string): string | undefined {
+  return policyPackId ?? activePolicyPackId ?? process.env.AGENT_GUARD_REALTIME_POLICY_PACK_ID;
+}
+
+function policyRequestMatches(
+  currentPolicyPackId: string,
+  requestedPolicyPackId?: string,
+): boolean {
+  if (!requestedPolicyPackId) return true;
+  if (requestedPolicyPackId === "fallback") {
+    return currentPolicyPackId === "policy_pack.openclaw.realtime.fallback";
+  }
+  return currentPolicyPackId === requestedPolicyPackId;
 }
 
 async function resolvePolicyPack(
   requestedPolicyPackId?: string,
-): Promise<{ policyPack: SupervisionPolicyPack; runGroupId: string }> {
-  const explicit = requestedPolicyPackId ?? process.env.AGENT_GUARD_REALTIME_POLICY_PACK_ID;
+): Promise<{
+  policyPack: SupervisionPolicyPack;
+  runGroupId: string;
+  source: RealtimeActivePolicyState["source"];
+}> {
+  const explicit = getRequestedPolicyPackId(requestedPolicyPackId);
   if (
     explicit === "fallback" ||
     explicit === "policy_pack.openclaw.realtime.fallback"
@@ -241,23 +466,40 @@ async function resolvePolicyPack(
     return {
       runGroupId: "run_group.openclaw.realtime.fallback",
       policyPack: buildFallbackRealtimePolicyPack(),
+      source: requestedPolicyPackId
+        ? "request"
+        : activePolicyPackId
+          ? "active"
+          : process.env.AGENT_GUARD_REALTIME_POLICY_PACK_ID
+            ? "env"
+            : "fallback",
     };
   }
   if (explicit) {
     const loaded = await loadPolicyPackById(explicit);
-    if (loaded) return loaded;
+    if (loaded) {
+      return {
+        ...loaded,
+        source: requestedPolicyPackId
+          ? "request"
+          : activePolicyPackId
+            ? "active"
+            : "env",
+      };
+    }
   }
 
   const runs = await listRunGroups({ status: "completed", limit: 50 });
   for (const run of runs) {
     if (!run.policyPackId) continue;
     const loaded = await loadPolicyPackById(run.policyPackId);
-    if (loaded) return loaded;
+    if (loaded) return { ...loaded, source: "latest" };
   }
 
   return {
     runGroupId: "run_group.openclaw.realtime.fallback",
     policyPack: buildFallbackRealtimePolicyPack(),
+    source: "fallback",
   };
 }
 
@@ -479,6 +721,32 @@ function rpcError(
 
 function isJsonObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function compactJsonObject(input: Record<string, JsonValue | undefined>): JsonObject {
+  const output: Record<string, JsonValue> = {};
+  for (const [key, value] of Object.entries(input)) {
+    if (value !== undefined) {
+      output[key] = value;
+    }
+  }
+  return output;
+}
+
+function emitRealtimeEvent(
+  input: Omit<RealtimeEvent, "eventId" | "timestamp">,
+): RealtimeEvent {
+  const event: RealtimeEvent = {
+    ...input,
+    eventId: createId("evt"),
+    timestamp: nowIso(),
+  };
+  eventHistory.push(event);
+  if (eventHistory.length > MAX_EVENT_HISTORY) {
+    eventHistory.splice(0, eventHistory.length - MAX_EVENT_HISTORY);
+  }
+  realtimeEvents.emit("event", event);
+  return event;
 }
 
 function buildFallbackRealtimePolicyPack(): SupervisionPolicyPack {

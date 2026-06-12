@@ -580,6 +580,10 @@ JSON artifact: application/json
 GET  /api/v1/openclaw/realtime/mcp
 POST /api/v1/openclaw/realtime/mcp
 POST /mcp/openclaw/realtime
+GET  /api/v1/openclaw/realtime/active-policy
+POST /api/v1/openclaw/realtime/active-policy
+POST /api/v1/openclaw/realtime/sessions/reset
+GET  /api/v1/openclaw/realtime/events/stream
 ```
 
 用途:
@@ -629,6 +633,38 @@ type JsonRpcResponse = {
 - Query `policyPackId=fallback` 可强制使用内置实时兜底策略；未传时优先使用最近一次 completed run 的策略包。
 - `ask` 动作通过已有 SSE/API ask 通道解决，超时策略由 `AGENT_GUARD_ASK_TIMEOUT` 控制。
 - 该端点可由 OpenClaw MCP 配置消费，前端一般只需要展示 metadata 和实时监督记录。
+
+策略热切换:
+
+```ts
+POST /api/v1/openclaw/realtime/active-policy
+{
+  policyPackId: "policy_pack.xxx" | "fallback";
+  resetSessions?: boolean;
+  runtimeSessionId?: string;
+}
+```
+
+OpenClaw MCP 配置保持固定 URL；Agent Guard 后端通过 active policy 决定当前监督策略。`resetSessions` 默认为 `true`，用于避免旧 runtime session 继续持有旧策略。
+
+实时事件流:
+
+```txt
+GET /api/v1/openclaw/realtime/events/stream?replay=1
+```
+
+SSE 事件包括:
+
+```txt
+active_policy_updated
+session_reset
+session_created
+tool_call_started
+supervision_decision
+tool_call_result
+```
+
+终端可以用 `curl.exe -N` 订阅，用于答辩时展示实时 `deny` / `ask` / `redact` 过程。
 
 ## 6. P2 可选接口
 

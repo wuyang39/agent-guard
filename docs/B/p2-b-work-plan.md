@@ -491,6 +491,15 @@ POST /api/v1/openclaw/realtime/mcp
 
 POST /mcp/openclaw/realtime
   → root-level 兼容别名
+
+POST /api/v1/openclaw/realtime/active-policy
+  → 设置当前激活策略包，支持 resetSessions 热切换
+
+POST /api/v1/openclaw/realtime/sessions/reset
+  → 重置单个或全部 realtime session
+
+GET /api/v1/openclaw/realtime/events/stream
+  → SSE 事件流，终端/前端实时展示 deny/ask/redact
 ```
 
 `POST` 端点支持 query:
@@ -501,6 +510,20 @@ policyPackId?: string   # 指定策略包；fallback 表示使用内置实时兜
 ```
 
 如果不传 `policyPackId`，默认选择最近一次 completed run 的 `SupervisionPolicyPack`；若不存在，则使用 `policy_pack.openclaw.realtime.fallback`。
+
+推荐产品形态:
+
+```txt
+OpenClaw MCP URL 固定为 /api/v1/openclaw/realtime/mcp
+策略包通过 active-policy API 在 Agent Guard 后端切换
+切换策略时 resetSessions=true，避免旧 session 继续持有旧策略
+```
+
+终端实时查看:
+
+```powershell
+curl.exe -N http://127.0.0.1:3100/api/v1/openclaw/realtime/events/stream
+```
 
 ### 8.5.5 OpenClaw 配置示例
 

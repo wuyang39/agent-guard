@@ -67,7 +67,7 @@ async function rpc<T>(
   return httpJson<JsonRpcResponse<T>>(
     "POST",
     baseUrl,
-    "/api/v1/openclaw/realtime/mcp?policyPackId=fallback",
+    "/api/v1/openclaw/realtime/mcp",
     { jsonrpc: "2.0", id, method, params },
   );
 }
@@ -88,6 +88,44 @@ async function callTool(
     rpc: response,
     envelope: JSON.parse(response.result.content[0].text) as AgentGuardToolEnvelope,
   };
+}
+
+async function readEventStreamUntil(
+  baseUrl: string,
+  pattern: RegExp,
+): Promise<string> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5_000);
+  let body = "";
+
+  try {
+    const response = await fetch(
+      `${baseUrl}/api/v1/openclaw/realtime/events/stream?replay=1`,
+      { signal: controller.signal },
+    );
+    assert(response.ok, `events stream returned ${response.status}`);
+    assert(response.body, "events stream missing body");
+    const reader = response.body.getReader();
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        body += new TextDecoder().decode(value);
+        if (pattern.test(body)) {
+          controller.abort();
+          break;
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  } catch {
+    // Abort after matching is expected.
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  return body;
 }
 
 async function main(): Promise<void> {
@@ -112,6 +150,20 @@ async function main(): Promise<void> {
       "agent_guard_read_file not exposed",
     );
     console.log(`1. endpoint ok, tools=${info.data.tools.length}`);
+
+    const active = await httpJson<
+      ApiResponse<{ resolvedPolicyPackId: string; policyCount: number }>
+    >("POST", baseUrl, "/api/v1/openclaw/realtime/active-policy", {
+      policyPackId: "fallback",
+      resetSessions: true,
+    });
+    assert(active.ok === true, "active policy endpoint is not ok");
+    assert(
+      active.data?.resolvedPolicyPackId === "policy_pack.openclaw.realtime.fallback",
+      "fallback active policy not set",
+    );
+    assert((active.data?.policyCount ?? 0) > 0, "active policy has no policies");
+    console.log(`1b. active policy ok (${active.data.resolvedPolicyPackId})`);
 
     const init = await rpc<{ capabilities: { tools: unknown }; serverInfo: { name: string } }>(
       baseUrl,
@@ -185,6 +237,14 @@ async function main(): Promise<void> {
     assert(trace.data?.trace.traceId === redacted.envelope.traceId, "traceId mismatch");
     assert((trace.data?.trace.events.length ?? 0) > 0, "trace events missing");
     console.log(`8. trace query ok (events=${trace.data?.trace.events.length})`);
+
+    const streamBody = await readEventStreamUntil(baseUrl, /event: supervision_decision/);
+    assert(
+      streamBody.includes("event: supervision_decision"),
+      "events stream did not replay supervision_decision",
+    );
+    assert(streamBody.includes("policy.openclaw.realtime.deny_secret_read"), "events stream missing deny policy");
+    console.log("9. realtime events stream ok");
 
     console.log("OpenClaw realtime MCP supervision verified.");
   } finally {

@@ -16,6 +16,7 @@
     "verify:p1:detection-policy": "node --import tsx scripts/verify-p1-detection-policy.ts",
     "verify:p1:supervision-defense": "node --import tsx scripts/verify-p1-supervision-defense.ts",
     "verify:p2:api-e2e": "node --import tsx scripts/verify-p2-api-e2e.ts",
+    "verify:openclaw:realtime": "node --import tsx scripts/verify-openclaw-realtime-mcp.ts",
     "api:start": "node --import tsx backend/src/server.ts",
     "api:dev": "node --watch --import tsx backend/src/server.ts"
   },

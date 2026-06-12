@@ -23,10 +23,11 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
       schemaVersion: "mvp-1",
       apiVersion: "p2-api-freeze-1",
       status: "ok",
-      defaultAdapterKind: "http_sample",
-      fallbackAdapterKinds: ["mock"] as const,
+      defaultAdapterKind: "openclaw",
+      fallbackAdapterKinds: ["http_sample", "mock"] as const,
       features: {
         openclawAdapter: cachedOpenClawAvailable,
+        openclawRealtimeMcp: true,
         httpSampleAdapter: true,
         mockAdapter: true,
         e2eRun: true,

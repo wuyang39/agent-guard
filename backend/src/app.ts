@@ -13,6 +13,7 @@ import { supervisionRoutes } from "./api/v1/supervision/handlers";
 import { askRoutes } from "./api/v1/supervision/ask-handlers";
 import { traceRoutes } from "./api/v1/traces/handlers";
 import { reportRoutes, artifactRoutes, policyRoutes } from "./api/v1/reports/handlers";
+import { openClawRealtimeMcpRoutes } from "./api/v1/openclaw/realtime-mcp-handlers";
 import { failure } from "./api/response";
 
 export async function buildApp(opts?: {
@@ -60,6 +61,7 @@ export async function buildApp(opts?: {
   await app.register(reportRoutes);
   await app.register(artifactRoutes);
   await app.register(policyRoutes);
+  await app.register(openClawRealtimeMcpRoutes);
 
   return app;
 }

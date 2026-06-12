@@ -16,6 +16,7 @@ import type {
   RuntimeEmailSendPayload,
   RuntimeApiCallPayload,
   RuntimeResourceAccessPayload,
+  RuntimeCodeExecutionPayload,
 } from "@agent-guard/contracts";
 import type { TraceRecorder } from "../monitor/traceRecorder";
 import type { AgentSupervisor } from "./agentSupervisor";
@@ -53,6 +54,8 @@ function mapTargetTypeForToolCall(toolId: string): SupervisionTargetType {
       return "file_write";
     case "tool.send_email":
       return "email_send";
+    case "tool.execute_code":
+      return "code_execution";
     case "tool.send_request":
     case "tool.call_api":
       return "api_call";
@@ -78,6 +81,10 @@ function buildRuntimePayload(
     case "file_write":
       return {
         path: typeof params.path === "string" ? params.path : "",
+        contentPreview:
+          typeof params.content === "string"
+            ? params.content.slice(0, 200)
+            : undefined,
       } satisfies RuntimeFileWritePayload;
 
     case "email_send":
@@ -87,17 +94,35 @@ function buildRuntimePayload(
         bodyPreview:
           typeof params.bodyPreview === "string"
             ? params.bodyPreview
-            : undefined,
+            : typeof params.body === "string"
+              ? params.body.slice(0, 200)
+              : undefined,
       } satisfies RuntimeEmailSendPayload;
 
     case "api_call":
       return {
         method: typeof params.method === "string" ? params.method : "GET",
         url: typeof params.url === "string" ? params.url : "",
-        data: typeof params.data === "string" ? params.data : undefined,
+        data:
+          typeof params.data === "string"
+            ? params.data
+            : typeof params.body === "string"
+              ? params.body
+              : undefined,
         headers:
           isJsonObject(params.headers) ? params.headers : undefined,
       } satisfies RuntimeApiCallPayload;
+
+    case "code_execution":
+      return {
+        language: typeof params.language === "string" ? params.language : "shell",
+        codePreview:
+          typeof params.code === "string"
+            ? params.code.slice(0, 200)
+            : typeof params.command === "string"
+              ? params.command.slice(0, 200)
+              : JSON.stringify(params).slice(0, 200),
+      } satisfies RuntimeCodeExecutionPayload;
 
     default:
       return {
@@ -137,6 +162,15 @@ function redactRequestParameters(
       const paramKey = resolveRequestParameterKey(matcher.fieldPath, targetType);
       if (paramKey && typeof params[paramKey] === "string") {
         params[paramKey] = "[REDACTED]";
+      }
+      if (targetType === "email_send" && paramKey === "bodyPreview" && typeof params.body === "string") {
+        params.body = "[REDACTED]";
+      }
+      if (targetType === "api_call" && paramKey === "data" && typeof params.body === "string") {
+        params.body = "[REDACTED]";
+      }
+      if (targetType === "file_write" && paramKey === "contentPreview" && typeof params.content === "string") {
+        params.content = "[REDACTED]";
       }
     }
   }

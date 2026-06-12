@@ -2,11 +2,11 @@
 
 文档版本: p2-b-plan-1
 基线日期: 2026-06-08
-状态: 已确认，进入实现
+状态: B-1 至 B-6 已完成，进入审核
 
 ## 1. 目标一句话
 
-**先用 Fastify + HTTP adapter 把真实 API 运行链路打通，再接 OpenClaw adapter，最后补 ask 通道和验证脚本。**
+**先用 Fastify + HTTP adapter 把真实 API 运行链路打通，再接 OpenClaw adapter，补 ask 通道和验证脚本，最后通过 OpenClaw MCP 配置实现实时监督入口。**
 
 ## 2. 当前基线
 
@@ -38,6 +38,7 @@ B 线已完成 P1：
 | B-3 | OpenClaw CLI Adapter + JSONL Shadow Supervision | `openclawAdapter.ts`, `openclawSession.ts`, `openclawTypes.ts` | OpenClaw CLI → JSONL 解析 → 影子 sandbox + supervision → DefenseReport (post-hoc, 非实时阻断) |
 | B-4 | 半真实 HITL (ask) | `askChannel.ts`, SSE handler, PendingAskDecision 类型 | 高危动作触发 ask → 前端 Approve/Reject → 超时兜底 |
 | B-5 | 验证脚本 | `verify-p2-api-e2e.ts` | mock / http / openclaw 三条 adapter 链路全绿 |
+| B-6 | OpenClaw Realtime MCP Supervision | `realtimeMcpServer.ts`, `realtime-mcp-handlers.ts`, `verify-openclaw-realtime-mcp.ts` | OpenClaw 可通过 MCP server/proxy 把工具调用实时送入 Agent Guard，产生 deny/ask/redact 监督记录 |
 
 ### 3.2 不做
 
@@ -267,7 +268,9 @@ curl -X POST http://localhost:3100/api/v1/test-runs/e2e \
 
 接入 OpenClaw (github.com/openclaw/openclaw, 343k stars) 作为核心演示 Agent。
 
-**B-3 定位修订 (2026-06-09 实测后):** B-3 是**真实 OpenClaw 行为采集 + 事后影子监督**，不是实时阻断型 Adapter。使用 `openclaw agent --json` CLI 执行任务，解析 session JSONL 提取 tool_call 事件，通过影子 sandbox + supervision 做 post-hoc 判定。监督结果标注 `shadow`/`post_hoc`，deny/ask 语义为 `would_deny`/`would_ask`。P3 再做 MCP Proxy 实现实时拦截。
+**B-3 定位修订 (2026-06-09 实测后):** B-3 是**真实 OpenClaw 行为采集 + 事后影子监督**，不是实时阻断型 Adapter。使用 `openclaw agent --json` CLI 执行任务，解析 session JSONL 提取 tool_call 事件，通过影子 sandbox + supervision 做 post-hoc 判定。监督结果标注 `shadow`/`post_hoc`，deny/ask 语义为 `would_deny`/`would_ask`。
+
+**B-6 补充 (2026-06-12):** OpenClaw 实测支持将 MCP 配置指向自定义 server/proxy，因此新增 Agent Guard Realtime MCP 入口。OpenClaw 工具调用可以经 `streamable-http` MCP 进入 Agent Guard，在调用 sandbox 前完成策略匹配、deny/ask/redact 处理和监督记录落盘。P3 可继续做更强的 Gateway/Interceptor 集成，但 P2 已具备不改 OpenClaw 源码的实时监督路径。
 
 详见 [openclaw-connection-notes.md](openclaw-connection-notes.md)。
 
@@ -441,10 +444,107 @@ backend/src/api/v1/supervision/ask-handlers.ts   GET /stream, POST /:id/respond
 10. (如有 HTTP agent) POST /api/v1/test-runs/e2e (http_sample) → 200
 ```
 
+## 8.5 阶段 B-6: OpenClaw Realtime MCP Supervision
+
+### 8.5.1 目标
+
+在不修改 OpenClaw 源码、不安装 OpenClaw 插件的前提下，利用 OpenClaw MCP 配置能力，把 OpenClaw 的工具调用实时路由到 Agent Guard。Agent Guard 在工具执行前完成监督策略判定，再进入 sandbox 模拟执行。
+
+### 8.5.2 架构
+
+```txt
+OpenClaw MCP client
+  → POST /api/v1/openclaw/realtime/mcp     (JSON-RPC / streamable-http)
+  → tools/call(agent_guard_*)
+  → normalize to canonical toolId
+  → SupervisionBridge.preCheck()
+      - deny   → 直接阻断并记录 RuntimeSupervisionRecord
+      - ask    → 进入 askChannel，等待 SSE/API 确认或超时兜底
+      - redact → 脱敏参数后继续执行
+      - allow  → 继续执行
+  → McpSandbox simulated execution
+  → persist RuntimeSupervisionRecord[] + InteractionTrace
+```
+
+### 8.5.3 MCP 工具映射
+
+```txt
+OpenClaw tool name              Agent Guard canonical toolId
+agent_guard_read_file       →   tool.read_file
+agent_guard_write_file      →   tool.write_file
+agent_guard_execute_code    →   tool.execute_code
+agent_guard_send_email      →   tool.send_email
+agent_guard_call_api        →   tool.call_api
+agent_guard_send_request    →   tool.send_request
+```
+
+入口同时兼容 `tool.read_file`、`read_file`、`exec`、`bash`、`fetch` 等常见别名，内部统一归一到 `tool.*`，避免 trace 识别和策略命中错位。
+
+### 8.5.4 API / MCP 端点
+
+```txt
+GET  /api/v1/openclaw/realtime/mcp
+  → 返回工具列表、transport、OpenClaw 配置示例
+
+POST /api/v1/openclaw/realtime/mcp
+  → raw JSON-RPC MCP endpoint，不使用 ApiResponse envelope
+
+POST /mcp/openclaw/realtime
+  → root-level 兼容别名
+```
+
+`POST` 端点支持 query:
+
+```txt
+sessionId?: string       # 指定 runtimeSessionId
+policyPackId?: string   # 指定策略包；fallback 表示使用内置实时兜底策略
+```
+
+如果不传 `policyPackId`，默认选择最近一次 completed run 的 `SupervisionPolicyPack`；若不存在，则使用 `policy_pack.openclaw.realtime.fallback`。
+
+### 8.5.5 OpenClaw 配置示例
+
+OpenClaw 配置中的 MCP server 可以指向 Agent Guard:
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "agent_guard": {
+        "transport": "streamable-http",
+        "url": "http://127.0.0.1:3100/api/v1/openclaw/realtime/mcp",
+        "timeout": 20,
+        "connectTimeout": 5
+      }
+    }
+  }
+}
+```
+
+如果使用 OpenClaw CLI 的 `/mcp set` 能力，按本机 OpenClaw 版本要求写入等价配置即可。
+
+### 8.5.6 验收
+
+```bash
+npm run verify:openclaw:realtime
+```
+
+验证脚本覆盖:
+
+- MCP endpoint metadata 可查询。
+- `initialize` / `tools/list` 返回正确 JSON-RPC。
+- `agent_guard_read_file` 读取 `/secret/.env` 被实时 deny。
+- `agent_guard_execute_code` 触发 ask，`demo_approve` 超时兜底后放行。
+- `agent_guard_call_api` 的敏感 body 被实时 redact。
+- `GET /api/v1/supervision/sessions/:id` 可反查 deny/ask/redact 记录。
+- `GET /api/v1/traces/:traceId` 可反查实时 MCP trace。
+
 ## 9. 降级策略
 
 ```
-优先: OpenClaw adapter (核心演示)
+优先: OpenClaw Realtime MCP supervision (核心实时监督演示)
+  ↓ MCP 配置不可用
+降级: OpenClaw CLI adapter (真实行为采集 + post-hoc shadow supervision)
   ↓ OpenClaw 不可用
 降级: HTTP sample agent adapter (半真实兜底)
   ↓ HTTP agent 不可用
@@ -483,6 +583,11 @@ backend/src/api/v1/supervision/ask-handlers.ts   GET /stream, POST /:id/respond
 
 新增 (B-5):
   scripts/verify-p2-api-e2e.ts
+
+新增 (B-6):
+  backend/src/modules/openclaw/realtimeMcpServer.ts
+  backend/src/api/v1/openclaw/realtime-mcp-handlers.ts
+  scripts/verify-openclaw-realtime-mcp.ts
 
 修改:
   package.json                     ← fastify, @fastify/cors 依赖 + scripts
@@ -524,6 +629,8 @@ P2 B 线完成时：
 - [ ] `GET /test-runs` 和 `GET /test-runs/:id` 返回正确数据
 - [ ] `GET /supervision/sessions/:id` 返回真实监督记录
 - [ ] ask 动作触发 SSE 推送，超时有兜底
+- [ ] `POST /api/v1/openclaw/realtime/mcp` 支持 OpenClaw MCP 实时监督
+- [ ] `npm run verify:openclaw:realtime` 通过，覆盖 deny/ask/redact 实时记录
 - [ ] defense report 可经 API 查询，blockedActions 可追溯
 - [ ] `npm run verify:p2:api-e2e` 全部通过
 - [ ] OpenClaw 不可用时自动降级到 http_sample，再降级到 mock

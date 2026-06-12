@@ -62,6 +62,7 @@ type ApiError = {
 - 失败时 `ok: false` 且必须有 `error`。
 - `requestId` 用于前端报错、后端日志和答辩现场排障。
 - API 不返回后端私有 class 实例，只返回 JSON 可序列化对象。
+- 例外: `POST /api/v1/openclaw/realtime/mcp` 是给 OpenClaw MCP 客户端消费的 raw JSON-RPC 端点，不使用 `ApiResponse<T>` envelope。
 
 ### 2.3 ID 与时间
 
@@ -219,6 +220,8 @@ type SystemStatusResponse = {
     e2eRun: boolean;
     reportIndex: boolean;
     frontendReady: boolean;
+    openclawRealtimeMcp: boolean;
+    askChannel: boolean;
   };
 };
 ```
@@ -571,6 +574,62 @@ JSON artifact: application/json
 
 - 后端必须通过 artifact index 查找文件，不允许前端传任意文件路径。
 
+### 5.13 OpenClaw Realtime MCP Endpoint
+
+```txt
+GET  /api/v1/openclaw/realtime/mcp
+POST /api/v1/openclaw/realtime/mcp
+POST /mcp/openclaw/realtime
+```
+
+用途:
+
+- 让 OpenClaw 通过 MCP server/proxy 配置把工具调用实时送入 Agent Guard。
+- 在 sandbox 执行前复用 `SupervisionBridge` 完成 `deny` / `ask` / `redact` / `allow` 判定。
+- 为监督台提供可查询的 `RuntimeSupervisionRecord[]` 和 `InteractionTrace`。
+
+`GET /api/v1/openclaw/realtime/mcp` 使用普通 `ApiResponse<T>` envelope:
+
+```ts
+type OpenClawRealtimeMcpInfo = {
+  endpoint: "/api/v1/openclaw/realtime/mcp";
+  transport: "streamable-http";
+  mode: "realtime_mcp_supervision";
+  tools: {
+    name: string;
+    description: string;
+    inputSchema: Record<string, unknown>;
+  }[];
+  openclawConfigExample: Record<string, unknown>;
+};
+```
+
+`POST /api/v1/openclaw/realtime/mcp` 是 MCP JSON-RPC 端点，**不使用** `ApiResponse<T>` envelope。请求和响应保持 MCP 客户端期望的 raw JSON-RPC:
+
+```ts
+type JsonRpcRequest = {
+  jsonrpc: "2.0";
+  id?: string | number | null;
+  method: "initialize" | "ping" | "tools/list" | "tools/call" | string;
+  params?: Record<string, unknown>;
+};
+
+type JsonRpcResponse = {
+  jsonrpc: "2.0";
+  id: string | number | null;
+  result?: unknown;
+  error?: { code: number; message: string; data?: unknown };
+};
+```
+
+约束:
+
+- `tools/call` 的 `name` 支持 `agent_guard_*` 工具名，后端统一归一到 `tool.*` canonical toolId。
+- `arguments._agentGuardSessionId` 可指定 runtime session；未传时使用默认 realtime session。
+- Query `policyPackId=fallback` 可强制使用内置实时兜底策略；未传时优先使用最近一次 completed run 的策略包。
+- `ask` 动作通过已有 SSE/API ask 通道解决，超时策略由 `AGENT_GUARD_ASK_TIMEOUT` 控制。
+- 该端点可由 OpenClaw MCP 配置消费，前端一般只需要展示 metadata 和实时监督记录。
+
 ## 6. P2 可选接口
 
 以下接口不阻塞首轮并行开发:
@@ -676,6 +735,7 @@ P2 必须新增:
 
 ```txt
 npm run verify:p2:api-e2e
+npm run verify:openclaw:realtime
 ```
 
 脚本至少验证:
@@ -684,6 +744,7 @@ npm run verify:p2:api-e2e
 - `GET /api/v1/system/status` 返回 `ok: true`。
 - `POST /api/v1/test-runs/e2e` 可用 `adapterKind: "mock"` 跑通兜底链路。
 - 如果 OpenClaw 测试环境可用，再验证 `adapterKind: "openclaw"`。
+- `verify:openclaw:realtime` 必须验证 MCP `initialize`、`tools/list`、`tools/call`、实时 deny/ask/redact 记录、trace/session 可反查。
 - `GET /api/v1/test-runs/:runGroupId` 能查到本次运行。
 - `GET /api/v1/traces/:traceId` 能查到 trace。
 - `GET /api/v1/reports/defense/:reportId` 能查到 defense report 和 artifact。

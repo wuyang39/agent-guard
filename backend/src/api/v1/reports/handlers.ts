@@ -53,6 +53,73 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
       return failure("INTERNAL_ERROR", err instanceof Error ? err.message : String(err));
     }
   });
+
+  // GET /api/v1/reports/detection/:reportId
+  app.get("/api/v1/reports/detection/:reportId", async (request, reply) => {
+    const { reportId } = request.params as { reportId: string };
+    try {
+      const entry = await getReportEntry(reportId);
+      if (!entry || entry.reportType !== "detection_report") {
+        reply.code(404);
+        return failure("NOT_FOUND", `Detection report ${reportId} not found`);
+      }
+      const runDir = path.join(REPORTS_BASE, entry.runGroupId);
+      const raw = await fs.readFile(path.join(runDir, "detection-report.json"), "utf-8");
+      const detectionReport = JSON.parse(raw);
+
+      // 尝试读取 risk profile
+      let riskProfile = null;
+      try {
+        const pr = await fs.readFile(path.join(runDir, "supervision-policy-pack.json"), "utf-8");
+        const pp = JSON.parse(pr);
+        riskProfile = { profileId: pp.sourceRiskProfileId, sourceDetectionReportId: pp.sourceDetectionReportId };
+      } catch { /* optional */ }
+
+      return success({
+        detectionReport,
+        riskProfile,
+        sourceRiskReports: [] as unknown[],
+        links: [
+          { kind: "detection_report" as const, id: reportId, label: `Detection Report ${reportId}` },
+          { kind: "test_run" as const, id: entry.runGroupId, label: `Run ${entry.runGroupId}` },
+        ],
+      });
+    } catch (err) {
+      reply.code(500);
+      return failure("INTERNAL_ERROR", err instanceof Error ? err.message : String(err));
+    }
+  });
+}
+
+/** 策略查询 + artifact 访问 */
+export async function policyRoutes(app: FastifyInstance): Promise<void> {
+  // GET /api/v1/policies/:policyPackId
+  app.get("/api/v1/policies/:policyPackId", async (request, reply) => {
+    const { policyPackId } = request.params as { policyPackId: string };
+    try {
+      const entry = await getReportEntry(policyPackId);
+      if (!entry || entry.reportType !== "policy_pack") {
+        reply.code(404);
+        return failure("NOT_FOUND", `Policy pack ${policyPackId} not found`);
+      }
+      const runDir = path.join(REPORTS_BASE, entry.runGroupId);
+      const raw = await fs.readFile(path.join(runDir, "supervision-policy-pack.json"), "utf-8");
+      const policyPack = JSON.parse(raw);
+      return success({
+        policyPack,
+        sourceDetectionReportId: policyPack.sourceDetectionReportId,
+        sourceRiskProfileId: policyPack.sourceRiskProfileId,
+        sourceWeaknessTitles: {} as Record<string, string>,
+        links: [
+          { kind: "policy_pack" as const, id: policyPackId, label: `Policy Pack ${policyPackId}` },
+          { kind: "test_run" as const, id: entry.runGroupId, label: `Run ${entry.runGroupId}` },
+        ],
+      });
+    } catch (err) {
+      reply.code(500);
+      return failure("INTERNAL_ERROR", err instanceof Error ? err.message : String(err));
+    }
+  });
 }
 
 /** Artifact 访问（独立于 defense report） */

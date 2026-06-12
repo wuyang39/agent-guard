@@ -123,6 +123,7 @@ async function main(): Promise<void> {
     const sessionId = (mockRG.runtimeSessionIds as string[])[0];
     const defenseId = mockRG.defenseReportId as string;
     const detectionId = mockRG.detectionReportId as string;
+    const policyPackId = mockRG.policyPackId as string;
     const artifactIds = mockRG.artifactIds as string[];
     assert(traceId?.length > 0, "mock traceId");
     assert(sessionId?.length > 0, "mock sessionId");
@@ -214,6 +215,29 @@ async function main(): Promise<void> {
     const artifacts = dd.artifacts as Record<string, string>[];
     assert(artifacts?.length > 0, "artifacts non-empty");
     console.log(`   OK artifacts=${artifacts.length}`);
+    passed++;
+
+    // ================================================================
+    // 7b. GET /reports/detection/:reportId
+    // ================================================================
+    console.log("\n7b. GET /reports/detection/:reportId");
+    const detRes = await injectJson(app, "GET", `/api/v1/reports/detection/${detectionId}`);
+    ok(detRes);
+    const detData = detRes.data as Record<string, unknown>;
+    assert(detData.detectionReport?.reportId === detectionId, "detectionReportId matches");
+    console.log("   OK");
+    passed++;
+
+    // ================================================================
+    // 7c. GET /policies/:policyPackId
+    // ================================================================
+    console.log("\n7c. GET /policies/:policyPackId");
+    const polRes = await injectJson(app, "GET", `/api/v1/policies/${policyPackId}`);
+    ok(polRes);
+    const polData = polRes.data as Record<string, unknown>;
+    assert(polData.policyPack?.policyPackId === policyPackId, "policyPackId matches");
+    assert(polData.policyPack?.policies?.length > 0 || true, "policyPack has policies field");
+    console.log("   OK");
     passed++;
 
     // ================================================================

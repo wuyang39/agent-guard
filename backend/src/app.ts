@@ -12,7 +12,7 @@ import { testRunRoutes } from "./api/v1/test-runs/handlers";
 import { supervisionRoutes } from "./api/v1/supervision/handlers";
 import { askRoutes } from "./api/v1/supervision/ask-handlers";
 import { traceRoutes } from "./api/v1/traces/handlers";
-import { reportRoutes, artifactRoutes } from "./api/v1/reports/handlers";
+import { reportRoutes, artifactRoutes, policyRoutes } from "./api/v1/reports/handlers";
 import { failure } from "./api/response";
 
 export async function buildApp(opts?: {
@@ -59,6 +59,7 @@ export async function buildApp(opts?: {
   await app.register(traceRoutes);
   await app.register(reportRoutes);
   await app.register(artifactRoutes);
+  await app.register(policyRoutes);
 
   return app;
 }

@@ -376,6 +376,14 @@ export async function runE2E(request: RunE2ERequest): Promise<RunE2EResult> {
         artifactIds: [jsonArtifact.artifactId, htmlArtifact.artifactId],
         generatedAt: defenseReport.generatedAt,
       });
+      // 落盘 detection + policy 文件供 API 查询
+      await fs.writeFile(
+        path.join(runOutputDir, "detection-report.json"),
+        JSON.stringify(detectionReport, null, 2), "utf-8");
+      await fs.writeFile(
+        path.join(runOutputDir, "supervision-policy-pack.json"),
+        JSON.stringify(policyPack, null, 2), "utf-8");
+
       await indexReport({
         reportId: detectionReport.reportId,
         reportType: "detection_report",

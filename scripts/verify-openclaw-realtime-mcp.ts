@@ -134,7 +134,6 @@ async function main(): Promise<void> {
 
   const app = await buildApp({ logger: false });
   const baseUrl = await app.listen({ port: 0, host: "127.0.0.1" });
-  const runtimeSessionId = `session.verify.openclaw.realtime.${Date.now()}`;
 
   try {
     console.log("OpenClaw Realtime MCP Verification");
@@ -164,6 +163,16 @@ async function main(): Promise<void> {
     );
     assert((active.data?.policyCount ?? 0) > 0, "active policy has no policies");
     console.log(`1b. active policy ok (${active.data.resolvedPolicyPackId})`);
+
+    const prepared = await httpJson<
+      ApiResponse<{ runtimeSessionId: string; policyPackId: string; traceId: string }>
+    >("POST", baseUrl, "/api/v1/openclaw/realtime/sessions", {
+      policyPackId: active.data.resolvedPolicyPackId,
+    });
+    assert(prepared.ok === true, "realtime session prepare failed");
+    assert(prepared.data?.runtimeSessionId?.startsWith("session."), "backend did not generate session id");
+    const runtimeSessionId = prepared.data.runtimeSessionId;
+    console.log(`1c. prepared session ok (${runtimeSessionId})`);
 
     const init = await rpc<{ capabilities: { tools: unknown }; serverInfo: { name: string } }>(
       baseUrl,

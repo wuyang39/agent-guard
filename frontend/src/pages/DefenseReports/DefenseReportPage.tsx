@@ -28,7 +28,7 @@ export function DefenseReportPage({
     return <ErrorBlock title="防御报告加载失败" message={state.message} />;
   }
 
-  const { defenseReport, supervisionRecords, artifacts } = state.data;
+  const { defenseReport, policyContextSource, supervisionRecords, artifacts } = state.data;
   const effectiveness = defenseReport.defenseEffectiveness;
   const hasResidualRisk = defenseReport.residualRisk.length > 0;
 
@@ -46,6 +46,11 @@ export function DefenseReportPage({
           <Badge tone={hasResidualRisk ? "tone-high" : "tone-low"}>
             {hasResidualRisk ? "Residual risk" : "No residual risk"}
           </Badge>
+          {policyContextSource ? (
+            <Badge tone={policyContextSource === "synthetic_fallback" ? "tone-high" : "tone-low"}>
+              {policyContextSource}
+            </Badge>
+          ) : null}
           <button className="secondary-button" onClick={onGoDetection}>
             Detection
           </button>

@@ -35,6 +35,7 @@ import {
   saveRunGroup,
   saveSessionRecords,
 } from "../../storage/fileRunStore";
+import { resolveInsideDirectory } from "../../storage/pathSafety";
 
 const CONFIGS_DIR = path.resolve(process.cwd(), "configs");
 const REPORTS_DIR = path.resolve(process.cwd(), "outputs", "reports");
@@ -149,13 +150,27 @@ export type FinalizeRealtimeDefenseResult = {
   artifacts: ReportArtifact[];
 };
 
+export type PreparedRealtimeSession = {
+  runtimeSessionId: string;
+  runGroupId: string;
+  sourceRunGroupId: string;
+  traceId: string;
+  policyPackId: string;
+  agentId: string;
+  startedAt: string;
+};
+
 export function getRealtimeMcpTools(): ReturnType<typeof toolToMcpTool>[] {
   return getRealtimeToolDefinitions().map(toolToMcpTool);
 }
 
 export async function finalizeRealtimeDefenseReport(
-  runtimeSessionId = "session.openclaw.realtime",
+  runtimeSessionId?: string,
 ): Promise<FinalizeRealtimeDefenseResult> {
+  if (!runtimeSessionId) {
+    throw new Error("runtimeSessionId is required to finalize a realtime defense report.");
+  }
+
   const persistedSession = await getSessionRecords(runtimeSessionId);
   if (!persistedSession) {
     throw new Error(`Realtime session ${runtimeSessionId} has no persisted records.`);
@@ -177,7 +192,7 @@ export async function finalizeRealtimeDefenseReport(
     runtimeRecords: records,
   });
 
-  const runOutputDir = path.join(REPORTS_DIR, runGroupId);
+  const runOutputDir = resolveInsideDirectory(REPORTS_DIR, runGroupId);
   await fs.mkdir(runOutputDir, { recursive: true });
   await fs.writeFile(
     path.join(runOutputDir, "detection-report.json"),
@@ -249,6 +264,8 @@ export async function finalizeRealtimeDefenseReport(
     agentName: "OpenClaw Realtime MCP Agent",
     adapterKind: "openclaw",
     status: "completed",
+    phase: "defense_report_ready",
+    policyContextSource: policyContext.source,
     startedAt: persistedSession.startedAt ?? liveSession?.startedAt ?? defenseReport.generatedAt,
     endedAt: defenseReport.generatedAt,
     caseCount: 1,
@@ -296,6 +313,22 @@ export async function finalizeRealtimeDefenseReport(
     defenseReport,
     supervisionRecords: records,
     artifacts,
+  };
+}
+
+export async function prepareRealtimeSession(
+  opts: { runtimeSessionId?: string; policyPackId?: string } = {},
+): Promise<PreparedRealtimeSession> {
+  const runtimeSessionId = opts.runtimeSessionId ?? createId("session");
+  const session = await getOrCreateSession(runtimeSessionId, opts.policyPackId);
+  return {
+    runtimeSessionId: session.runtimeSessionId,
+    runGroupId: session.runGroupId,
+    sourceRunGroupId: session.sourceRunGroupId,
+    traceId: session.traceId,
+    policyPackId: session.policyPack.policyPackId,
+    agentId: session.agentId,
+    startedAt: session.startedAt,
   };
 }
 
@@ -462,7 +495,7 @@ async function handleToolCall(
   const sessionId =
     typeof args._agentGuardSessionId === "string"
       ? args._agentGuardSessionId
-      : opts.sessionId ?? "session.openclaw.realtime";
+      : opts.sessionId ?? createId("session");
   delete args._agentGuardSessionId;
 
   const session = await getOrCreateSession(sessionId, opts.policyPackId);
@@ -638,6 +671,10 @@ function policyRequestMatches(
   return currentPolicyPackId === requestedPolicyPackId;
 }
 
+function isFallbackPolicyPack(policyPackId: string): boolean {
+  return policyPackId === "fallback" || policyPackId === "policy_pack.openclaw.realtime.fallback";
+}
+
 async function resolvePolicyPack(
   requestedPolicyPackId?: string,
 ): Promise<{
@@ -695,7 +732,7 @@ async function loadPolicyPackById(
 ): Promise<{ policyPack: SupervisionPolicyPack; runGroupId: string } | undefined> {
   const entry = await getReportEntry(policyPackId);
   if (!entry || entry.reportType !== "policy_pack") return undefined;
-  const filePath = path.join(REPORTS_DIR, entry.runGroupId, "supervision-policy-pack.json");
+  const filePath = path.join(resolveInsideDirectory(REPORTS_DIR, entry.runGroupId), "supervision-policy-pack.json");
   const policyPack = JSON.parse(await fs.readFile(filePath, "utf-8")) as SupervisionPolicyPack;
   return { policyPack, runGroupId: entry.runGroupId };
 }
@@ -724,7 +761,7 @@ async function loadPolicyContext(
 
   const entry = await getReportEntry(policyPackId);
   if (entry?.reportType === "policy_pack") {
-    const runDir = path.join(REPORTS_DIR, entry.runGroupId);
+    const runDir = resolveInsideDirectory(REPORTS_DIR, entry.runGroupId);
     const policyPack = await readJsonFile<SupervisionPolicyPack>(
       path.join(runDir, "supervision-policy-pack.json"),
     ) ?? livePolicyPack;
@@ -908,6 +945,9 @@ async function persistRealtimeSession(session: RealtimeSession): Promise<void> {
       sourceRunGroupId: session.sourceRunGroupId,
       agentId: session.agentId,
       policyPackId: session.policyPack.policyPackId,
+      policyContextSource: isFallbackPolicyPack(session.policyPack.policyPackId)
+        ? "synthetic_fallback"
+        : "stored_detection",
       traceId: session.traceId,
       startedAt: session.startedAt,
       recordCount: records.length,

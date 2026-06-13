@@ -4,6 +4,7 @@ import path from "node:path";
 import type { RiskReport, RuntimeSupervisionRecord } from "@agent-guard/contracts";
 import { success, failure } from "../../response";
 import { getSessionRecords, listRunGroups } from "../../../storage/fileRunStore";
+import { resolveInsideDirectory } from "../../../storage/pathSafety";
 
 const TRACES_DIR = path.resolve(process.cwd(), "outputs", "traces");
 const REPORTS_BASE = path.resolve(process.cwd(), "outputs", "reports");
@@ -69,7 +70,7 @@ async function readRiskReports(
 ): Promise<RiskReport[]> {
   try {
     const raw = await fs.readFile(
-      path.join(REPORTS_BASE, runGroupId, "risk-reports.json"),
+      path.join(resolveInsideDirectory(REPORTS_BASE, runGroupId), "risk-reports.json"),
       "utf-8",
     );
     const reports = JSON.parse(raw) as RiskReport[];

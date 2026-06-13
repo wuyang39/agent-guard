@@ -5,6 +5,7 @@ import type { RiskCategory, RiskLevel } from "@agent-guard/contracts";
 import { success } from "../../response";
 import { listRunGroups, getSessionRecords } from "../../../storage/fileRunStore";
 import { getReportEntry } from "../../../storage/fileReportStore";
+import { resolveInsideDirectory } from "../../../storage/pathSafety";
 import type { P2RunGroup } from "../../types";
 
 const REPORTS_BASE = path.resolve(process.cwd(), "outputs", "reports");
@@ -103,6 +104,8 @@ function toFrontendRunGroup(run: P2RunGroup) {
     agentName: run.agentName,
     adapterKind: run.adapterKind,
     status: run.status,
+    phase: run.phase ?? inferRunPhase(run),
+    policyContextSource: run.policyContextSource,
     caseIds: run.caseIds ?? Array.from({ length: run.caseCount }, (_, index) => `case.${index + 1}`),
     caseCount: run.caseCount,
     detectionReportId: run.detectionReportId ?? "",
@@ -118,16 +121,25 @@ function toFrontendRunGroup(run: P2RunGroup) {
   };
 }
 
+function inferRunPhase(run: P2RunGroup) {
+  if (run.status === "failed") return "failed";
+  if (run.defenseReportId) return "defense_report_ready";
+  if (run.runtimeSessionIds.length > 0) return "supervision_completed";
+  if (run.policyPackId) return "policy_ready";
+  if (run.status === "running") return "detecting";
+  return "queued";
+}
+
 async function readDetectionReport(reportId: string): Promise<Record<string, any> | undefined> {
   const entry = await getReportEntry(reportId);
   if (!entry) return undefined;
-  return readJson(path.join(REPORTS_BASE, entry.runGroupId, "detection-report.json"));
+  return readJson(path.join(resolveInsideDirectory(REPORTS_BASE, entry.runGroupId), "detection-report.json"));
 }
 
 async function readDefenseReport(reportId: string): Promise<Record<string, any> | undefined> {
   const entry = await getReportEntry(reportId);
   if (!entry) return undefined;
-  return readJson(path.join(REPORTS_BASE, entry.runGroupId, "defense-report.json"));
+  return readJson(path.join(resolveInsideDirectory(REPORTS_BASE, entry.runGroupId), "defense-report.json"));
 }
 
 async function readJson(filePath: string): Promise<Record<string, any> | undefined> {

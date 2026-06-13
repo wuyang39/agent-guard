@@ -43,6 +43,7 @@ import { HttpAgentAdapter } from "../modules/agent/httpAgentAdapter";
 import { OpenClawAdapter } from "../modules/agent/openclawAdapter";
 
 const CONFIGS_DIR = path.resolve(process.cwd(), "configs");
+const P2_DEMO_CASES_FILE = path.join(CONFIGS_DIR, "p2_demo_cases.json");
 const OUTPUT_DIR = path.resolve(process.cwd(), "outputs", "reports");
 const TRACES_DIR = path.resolve(process.cwd(), "outputs", "traces");
 
@@ -134,12 +135,19 @@ export async function runE2E(
 
   try {
     // ====== 阶段 1: 监督前检测 ======
+    runGroup.status = "running";
+    runGroup.phase = "detecting";
+    await saveRunGroup(runGroup);
+
     const { contexts } = await loadTestContexts(CONFIGS_DIR, agent);
+    const selectedCaseIds = request.caseIds?.length
+      ? request.caseIds
+      : await getDefaultP2CaseIds(request.adapterKind);
 
     // caseIds 有效性校验：传入不存在的 caseId 时返回 400 级别错误
-    if (request.caseIds && request.caseIds.length > 0) {
+    if (selectedCaseIds.length > 0) {
       const validIds = new Set(contexts.map((ctx) => ctx.caseId));
-      const invalid = request.caseIds.filter((id) => !validIds.has(id));
+      const invalid = selectedCaseIds.filter((id) => !validIds.has(id));
       if (invalid.length > 0) {
         throw new CaseIdValidationError(
           `Unknown caseIds: ${invalid.join(", ")}. ` +
@@ -148,8 +156,8 @@ export async function runE2E(
       }
     }
 
-    const targetCases = request.caseIds
-      ? contexts.filter((ctx: (typeof contexts)[number]) => request.caseIds!.includes(ctx.caseId))
+    const targetCases = selectedCaseIds.length
+      ? contexts.filter((ctx: (typeof contexts)[number]) => selectedCaseIds.includes(ctx.caseId))
       : contexts;
 
     if (targetCases.length === 0) {
@@ -209,6 +217,7 @@ export async function runE2E(
     const policyPack = buildSupervisionPolicyPack(riskProfile);
     runGroup.policyPackId = policyPack.policyPackId;
     runGroup.highestRiskLevel = getHighestRiskLevel(riskReports);
+    runGroup.policyContextSource = "stored_detection";
     await persistDetectionArtifacts({
       runGroup,
       riskReports,
@@ -216,6 +225,8 @@ export async function runE2E(
       riskProfile,
       policyPack,
     });
+    runGroup.phase = "policy_ready";
+    await saveRunGroup(runGroup);
 
     // mock/http_sample 仍可在同一次回归链路中带 PolicyPack 再跑一轮。
     // OpenClaw CLI 检测阶段只产出策略包；实时监督由 OpenClaw MCP 路径承接。
@@ -226,6 +237,9 @@ export async function runE2E(
     const isOpenClaw = request.adapterKind === "openclaw";
 
     if (!isOpenClaw) {
+      runGroup.phase = "supervising";
+      await saveRunGroup(runGroup);
+
       for (const context of targetCases) {
         const runtimeSessionId = createId("session");
         const { testRun, supervisionRecords } = await runTestCase(
@@ -267,6 +281,7 @@ export async function runE2E(
           runGroupId: runGroup.runGroupId,
           agentId: agent.agentId,
           policyPackId: policyPack.policyPackId,
+          policyContextSource: "stored_detection",
           recordCount: supervisionRecords.length,
           blockedCount,
           redactedCount,
@@ -275,6 +290,8 @@ export async function runE2E(
         };
         await saveSessionRecords(sessionSummary, supervisionRecords);
       }
+      runGroup.phase = "supervision_completed";
+      await saveRunGroup(runGroup);
     }
 
     // 监督 pass 失败 → 不生成 DefenseReport，直接终止
@@ -315,10 +332,14 @@ export async function runE2E(
         artifactIds: [jsonArtifact.artifactId, htmlArtifact.artifactId],
         generatedAt: defenseReport.generatedAt,
       });
+      runGroup.phase = "defense_report_ready";
     }
 
     // ====== Complete ======
     runGroup.status = "completed";
+    if (!runGroup.defenseReportId && runGroup.phase !== "policy_ready") {
+      runGroup.phase = "supervision_completed";
+    }
     runGroup.endedAt = nowIso();
 
     const links = buildLinks(runGroup);
@@ -328,6 +349,7 @@ export async function runE2E(
     return { runGroup, links };
   } catch (err) {
     runGroup.status = "failed";
+    runGroup.phase = "failed";
     runGroup.endedAt = nowIso();
     runGroup.error = err instanceof Error ? err.message : String(err);
     await saveRunGroup(runGroup);
@@ -485,4 +507,28 @@ function getHighestRiskLevel(
       rank[report.riskLevel] > rank[highest] ? report.riskLevel : highest,
     "low",
   );
+}
+
+type P2DemoCasesConfig = {
+  defaultOpenClawCaseIds?: string[];
+  fallbackAdapterCaseIds?: string[];
+};
+
+async function getDefaultP2CaseIds(adapterKind: RunE2ERequest["adapterKind"]): Promise<string[]> {
+  const config = await readP2DemoCasesConfig();
+  const configured =
+    adapterKind === "openclaw"
+      ? config.defaultOpenClawCaseIds
+      : config.fallbackAdapterCaseIds;
+  return Array.isArray(configured)
+    ? configured.filter((caseId): caseId is string => typeof caseId === "string" && caseId.length > 0)
+    : [];
+}
+
+async function readP2DemoCasesConfig(): Promise<P2DemoCasesConfig> {
+  try {
+    return JSON.parse(await fs.readFile(P2_DEMO_CASES_FILE, "utf-8")) as P2DemoCasesConfig;
+  } catch {
+    return {};
+  }
 }

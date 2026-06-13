@@ -6,6 +6,7 @@ import type {
   DefenseDetailView,
   LiveSupervisionEvent,
   RealtimeActivePolicyState,
+  RealtimePreparedSession,
 } from "../../lib/api/types";
 import { actionTone } from "../../lib/formatters/risk";
 import { formatDateTime } from "../../lib/formatters/time";
@@ -26,14 +27,13 @@ const REALTIME_EVENT_TYPES: LiveSupervisionEvent["type"][] = [
   "defense_report_generated",
 ];
 
-const DEFAULT_RUNTIME_SESSION_ID = "session.openclaw.realtime";
-
 export function LiveSupervisionPage({
   onGoRuns,
   onGoDefense,
   onReportGenerated,
 }: LiveSupervisionPageProps) {
   const [activePolicy, setActivePolicy] = useState<RealtimeActivePolicyState | undefined>();
+  const [preparedSession, setPreparedSession] = useState<RealtimePreparedSession | undefined>();
   const [statusError, setStatusError] = useState<string | undefined>();
   const [events, setEvents] = useState<LiveSupervisionEvent[]>([]);
   const [streaming, setStreaming] = useState(false);
@@ -43,6 +43,7 @@ export function LiveSupervisionPage({
 
   useEffect(() => {
     void refreshActivePolicy();
+    void prepareSession();
     return () => sourceRef.current?.close();
   }, []);
 
@@ -58,7 +59,18 @@ export function LiveSupervisionPage({
   async function useFallbackPolicy() {
     setStatusError(undefined);
     try {
-      setActivePolicy(await agentGuardApi.setRealtimeActivePolicy("fallback", true));
+      const policy = await agentGuardApi.setRealtimeActivePolicy("fallback", true);
+      setActivePolicy(policy);
+      setPreparedSession(await agentGuardApi.createRealtimeSession(policy.resolvedPolicyPackId));
+    } catch (error) {
+      setStatusError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function prepareSession(policyPackId?: string) {
+    setStatusError(undefined);
+    try {
+      setPreparedSession(await agentGuardApi.createRealtimeSession(policyPackId));
     } catch (error) {
       setStatusError(error instanceof Error ? error.message : String(error));
     }
@@ -67,7 +79,12 @@ export function LiveSupervisionPage({
   async function resetSession() {
     setStatusError(undefined);
     try {
-      await agentGuardApi.resetRealtimeSessions(DEFAULT_RUNTIME_SESSION_ID);
+      if (preparedSession) {
+        await agentGuardApi.resetRealtimeSessions(preparedSession.runtimeSessionId);
+      }
+      setPreparedSession(
+        await agentGuardApi.createRealtimeSession(activePolicy?.resolvedPolicyPackId),
+      );
       setEvents([]);
       await refreshActivePolicy();
     } catch (error) {
@@ -119,7 +136,9 @@ export function LiveSupervisionPage({
     setFinalizing(true);
     setStatusError(undefined);
     try {
-      const detail = await agentGuardApi.finalizeRealtimeDefenseReport(DEFAULT_RUNTIME_SESSION_ID);
+      const session = preparedSession ?? await agentGuardApi.createRealtimeSession(activePolicy?.resolvedPolicyPackId);
+      setPreparedSession(session);
+      const detail = await agentGuardApi.finalizeRealtimeDefenseReport(session.runtimeSessionId);
       setLatestDefenseReportId(detail.defenseReport.defenseReportId);
       onReportGenerated(detail);
       onGoDefense();
@@ -217,7 +236,7 @@ export function LiveSupervisionPage({
               </div>
               <div>
                 <span>Runtime Session</span>
-                <code>{DEFAULT_RUNTIME_SESSION_ID}</code>
+                <code>{preparedSession?.runtimeSessionId ?? "preparing"}</code>
               </div>
             </div>
             <div className="button-row rail-actions">

@@ -3,7 +3,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { success, failure } from "../../response";
 import { getReportEntry, getArtifactEntry } from "../../../storage/fileReportStore";
-import { getSessionRecords } from "../../../storage/fileRunStore";
+import { getRunGroup, getSessionRecords } from "../../../storage/fileRunStore";
+import { isPathInsideDirectory, resolveInsideDirectory } from "../../../storage/pathSafety";
 
 const REPORTS_BASE = path.resolve(process.cwd(), "outputs", "reports");
 
@@ -20,7 +21,7 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
       }
 
       // 从文件系统读 defense report
-      const runDir = path.join(REPORTS_BASE, entry.runGroupId);
+      const runDir = resolveInsideDirectory(REPORTS_BASE, entry.runGroupId);
       const reportFile = path.join(runDir, "defense-report.json");
       const raw = await fs.readFile(reportFile, "utf-8");
       const defenseReport = JSON.parse(raw);
@@ -33,6 +34,10 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
         ),
       );
       const sessionRecords = runtimeSessions.flatMap((session) => session?.records ?? []);
+      const runGroup = await getRunGroup(entry.runGroupId);
+      const policyContextSource = runGroup?.policyContextSource ?? runtimeSessions.find(
+        (session) => session?.policyContextSource,
+      )?.policyContextSource;
 
       const artifacts = await Promise.all(
         entry.artifactIds.map(async (artifactId: string) => {
@@ -55,9 +60,11 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
         detectionReport,
         riskProfile,
         policyPack,
+        policyContextSource,
         supervisionRecords: sessionRecords,
         runtimeSessionSummaries: runtimeSessions.filter(Boolean).map((session) => ({
           runtimeSessionId: session!.runtimeSessionId,
+          policyContextSource: session!.policyContextSource,
           recordCount: session!.recordCount,
           blockedCount: session!.blockedCount,
           redactedCount: session!.redactedCount,
@@ -84,7 +91,7 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
         reply.code(404);
         return failure("NOT_FOUND", `Detection report ${reportId} not found`);
       }
-      const runDir = path.join(REPORTS_BASE, entry.runGroupId);
+      const runDir = resolveInsideDirectory(REPORTS_BASE, entry.runGroupId);
       const detectionReport = JSON.parse(
         await fs.readFile(path.join(runDir, "detection-report.json"), "utf-8"),
       );
@@ -145,7 +152,7 @@ export async function policyRoutes(app: FastifyInstance): Promise<void> {
         reply.code(404);
         return failure("NOT_FOUND", `Policy pack ${policyPackId} not found`);
       }
-      const runDir = path.join(REPORTS_BASE, entry.runGroupId);
+      const runDir = resolveInsideDirectory(REPORTS_BASE, entry.runGroupId);
       const raw = await fs.readFile(path.join(runDir, "supervision-policy-pack.json"), "utf-8");
       const policyPack = JSON.parse(raw);
       return success({
@@ -200,9 +207,4 @@ export async function artifactRoutes(app: FastifyInstance): Promise<void> {
       );
     }
   });
-}
-
-function isPathInsideDirectory(targetPath: string, baseDir: string): boolean {
-  const relative = path.relative(baseDir, targetPath);
-  return Boolean(relative) && !relative.startsWith("..") && !path.isAbsolute(relative);
 }

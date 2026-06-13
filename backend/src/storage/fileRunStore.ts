@@ -9,6 +9,7 @@ import path from "node:path";
 import { createId, nowIso } from "../shared";
 import type { RunE2ERequest, P2RunGroup, P2AdapterKind } from "../api/types";
 import type { RunStatus, RuntimeSupervisionRecord } from "@agent-guard/contracts";
+import { resolveInsideDirectory } from "./pathSafety";
 
 const ROOT = path.resolve(process.cwd(), "outputs", "run-index");
 const RUN_GROUPS_FILE = path.join(ROOT, "run-groups.json");
@@ -46,6 +47,7 @@ export function buildInitialRunGroup(
     agentName: request.agent.name,
     adapterKind: request.adapterKind,
     status: "running",
+    phase: "queued",
     startedAt: nowIso(),
     caseIds: request.caseIds ?? [],
     caseCount: request.caseIds?.length ?? 0,
@@ -113,6 +115,7 @@ export type SupervisionSessionSummary = {
   sourceRunGroupId?: string;
   agentId: string;
   policyPackId: string;
+  policyContextSource?: "stored_detection" | "synthetic_fallback";
   traceId?: string;
   startedAt?: string;
   recordCount: number;
@@ -132,7 +135,7 @@ export async function saveSessionRecords(
 ): Promise<void> {
   await ensureDir(SESSIONS_DIR);
   await writeJson(
-    path.join(SESSIONS_DIR, `${summary.runtimeSessionId}.json`),
+    sessionFilePath(summary.runtimeSessionId),
     { ...summary, records } satisfies SupervisionSessionFull,
   );
 }
@@ -141,10 +144,7 @@ export async function getSessionRecords(
   runtimeSessionId: string,
 ): Promise<SupervisionSessionFull | undefined> {
   try {
-    const raw = await fs.readFile(
-      path.join(SESSIONS_DIR, `${runtimeSessionId}.json`),
-      "utf-8",
-    );
+    const raw = await fs.readFile(sessionFilePath(runtimeSessionId), "utf-8");
     const parsed = JSON.parse(raw);
     // 兼容旧格式（无 records 字段）
     if (!Array.isArray(parsed.records)) {
@@ -159,3 +159,7 @@ export async function getSessionRecords(
 // 保留兼容别名
 export const saveSessionSummary = saveSessionRecords;
 export const getSessionSummary = getSessionRecords;
+
+function sessionFilePath(runtimeSessionId: string): string {
+  return resolveInsideDirectory(SESSIONS_DIR, `${runtimeSessionId}.json`);
+}

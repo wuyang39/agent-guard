@@ -366,6 +366,8 @@ const runGroup: CLineRunGroup = {
   runGroupId: "run_group.mock.c-line",
   agentId: "agent.c-line.mock",
   status: "completed",
+  phase: "defense_report_ready",
+  policyContextSource: "stored_detection",
   caseIds: [riskReport.caseId],
   detectionReportId: detectionReport.reportId,
   riskProfileId: riskProfile.profileId,
@@ -435,6 +437,7 @@ export const mockDefenseDetail: DefenseDetailView = {
   detectionReport,
   riskProfile,
   policyPack,
+  policyContextSource: "stored_detection",
   supervisionRecords,
   artifacts,
 };

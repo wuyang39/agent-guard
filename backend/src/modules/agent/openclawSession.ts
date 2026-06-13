@@ -150,7 +150,7 @@ export async function runOpenClawSession(
   const jsonlPath = await saveJsonlArtifact(sessionFile, runMeta.runId);
 
   // 3. 解析 JSONL → 提取 tool_call / tool_result
-  const session = await parseSessionJsonl(sessionFile, sessionKey, output);
+  const session = await parseSessionJsonl(jsonlPath, sessionKey, output);
 
   // 4. 通过 bridge 回放 tool calls → 写入 InteractionTrace
   if (bridge) {

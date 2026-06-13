@@ -45,6 +45,7 @@ export async function supervisionRoutes(app: FastifyInstance): Promise<void> {
         runtimeSessionId: session.runtimeSessionId,
         agentId: session.agentId,
         policyPackId: session.policyPackId,
+        policyContextSource: session.policyContextSource,
         records,
         blockedActions,
         alerts,

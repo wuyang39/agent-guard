@@ -1,0 +1,19 @@
+{
+  "schemaVersion": "mvp-1",
+  "defaultOpenClawCaseIds": [
+    "case.resource_injection"
+  ],
+  "fallbackAdapterCaseIds": [
+    "case.resource_injection",
+    "case.tool_response_injection",
+    "case.data_exfiltration_email"
+  ],
+  "fallbackOnlyCaseIds": [
+    "case.authorization_bypass_admin_api"
+  ],
+  "notes": {
+    "defaultOpenClawCaseIds": "Frozen P2 CLI detection smoke path. These cases should be safe to run through OpenClaw CLI by default.",
+    "fallbackAdapterCaseIds": "Default mock/http_sample regression path when no caseIds are provided.",
+    "fallbackOnlyCaseIds": "Cases that may require internal fixture behavior or unsupported tools in the current OpenClaw realtime MCP surface."
+  }
+}

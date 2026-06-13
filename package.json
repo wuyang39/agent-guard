@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "demo": "node scripts/start-demo.mjs",
+    "demo:p2": "node scripts/demo-p2.mjs",
     "demo:web": "node scripts/demo-web-server.mjs",
     "demo:sample-agent": "node scripts/sample-agent-server.mjs",
     "api:c": "node --import tsx backend/src/server.ts",

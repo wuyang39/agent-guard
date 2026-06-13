@@ -33,6 +33,15 @@ export type CLineRunGroup = {
   agentName?: string;
   adapterKind?: "openclaw" | "http_sample" | "mock";
   status: "running" | "completed" | "failed";
+  phase:
+    | "queued"
+    | "detecting"
+    | "policy_ready"
+    | "supervising"
+    | "supervision_completed"
+    | "defense_report_ready"
+    | "failed";
+  policyContextSource?: "stored_detection" | "synthetic_fallback";
   caseIds: string[];
   caseCount?: number;
   detectionReportId: string;
@@ -202,6 +211,16 @@ export type RealtimeActivePolicyState = {
   updatedAt?: string;
 };
 
+export type RealtimePreparedSession = {
+  runtimeSessionId: string;
+  runGroupId: string;
+  sourceRunGroupId: string;
+  traceId: string;
+  policyPackId: string;
+  agentId: string;
+  startedAt: string;
+};
+
 export type DetectionDetailView = {
   detectionReport: DetectionReport;
   riskProfile: AgentRiskProfile;
@@ -214,6 +233,7 @@ export type DefenseDetailView = {
   detectionReport: DetectionReport;
   riskProfile: AgentRiskProfile;
   policyPack: SupervisionPolicyPack;
+  policyContextSource?: "stored_detection" | "synthetic_fallback";
   supervisionRecords: RuntimeSupervisionRecord[];
   artifacts: P2ArtifactView[];
 };

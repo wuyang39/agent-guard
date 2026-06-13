@@ -1,6 +1,6 @@
 # P2 前后端 API 冻结草案
 
-文档版本: p2-api-freeze-1
+文档版本: p2-api-freeze-2
 基线日期: 2026-06-07
 状态: 并行开发前冻结草案
 
@@ -158,6 +158,15 @@ type P2RunGroup = {
   agentName: string;
   adapterKind: P2AdapterKind;
   status: "running" | "completed" | "failed";
+  phase:
+    | "queued"
+    | "detecting"
+    | "policy_ready"
+    | "supervising"
+    | "supervision_completed"
+    | "defense_report_ready"
+    | "failed";
+  policyContextSource?: "stored_detection" | "synthetic_fallback";
   startedAt: string;
   endedAt?: string;
   caseCount: number;
@@ -209,7 +218,7 @@ Response:
 type SystemStatusResponse = {
   service: "agent-guard-api";
   schemaVersion: "mvp-1";
-  apiVersion: "p2-api-freeze-1";
+  apiVersion: "p2-api-freeze-2";
   status: "ok";
   defaultAdapterKind: "openclaw";
   fallbackAdapterKinds: ("http_sample" | "mock")[];
@@ -332,7 +341,6 @@ type RunE2ERequest = {
     endpointUrl?: string;
     workspacePath?: string;
     launchMode?: "external_running" | "spawn_local";
-    authRef?: string;
     timeoutMs?: number;
   };
   caseIds?: string[];
@@ -344,9 +352,9 @@ type RunE2ERequest = {
 
 ```txt
 adapterKind: "openclaw"
-generateDefenseReport: true
+generateDefenseReport: false for openclaw, true for mock/http_sample
 timeoutMs: 30000
-caseIds: omitted means all enabled P2 demo cases
+caseIds: omitted means backend uses configs/p2_demo_cases.json
 ```
 
 Response:
@@ -361,18 +369,34 @@ type RunE2EResponse = {
 后端行为:
 
 ```txt
-loadTestContexts()
-run detection pass
-build RiskReport[]
-build DetectionReport
-build AgentRiskProfile
-build SupervisionPolicyPack
-run supervised pass
-collect RuntimeSupervisionRecord[]
-build DefenseReport
-export JSON / HTML artifacts
-save RunIndex / ReportIndex
+adapterKind=openclaw:
+  load configured P2 OpenClaw demo cases
+  run OpenClaw CLI detection pass
+  build RiskReport[]
+  build DetectionReport
+  build AgentRiskProfile
+  build SupervisionPolicyPack
+  save RunIndex / ReportIndex
+  return phase="policy_ready"
+
+adapterKind=mock/http_sample:
+  run detection pass
+  build RiskReport[]
+  build DetectionReport
+  build AgentRiskProfile
+  build SupervisionPolicyPack
+  run supervised pass
+  collect RuntimeSupervisionRecord[]
+  build DefenseReport when generateDefenseReport=true
+  export JSON / HTML artifacts
+  save RunIndex / ReportIndex
 ```
+
+冻结约束:
+
+- OpenClaw CLI pass 不生成 `DefenseReport`，也不声明防御效果。
+- OpenClaw 的防御效果只能来自 realtime MCP 监督阶段产生的 `RuntimeSupervisionRecord[]`。
+- 前端必须使用 `phase` 区分“策略包已生成”和“防御报告已生成”。
 
 验收断言:
 
@@ -536,8 +560,10 @@ type DefenseReportDetailResponse = {
   detectionReport?: DetectionReport;
   riskProfile?: AgentRiskProfile;
   policyPack?: SupervisionPolicyPack;
+  policyContextSource?: "stored_detection" | "synthetic_fallback";
   runtimeSessionSummaries: {
     runtimeSessionId: string;
+    policyContextSource?: "stored_detection" | "synthetic_fallback";
     recordCount: number;
     blockedCount: number;
     redactedCount: number;
@@ -582,6 +608,7 @@ POST /api/v1/openclaw/realtime/mcp
 POST /mcp/openclaw/realtime
 GET  /api/v1/openclaw/realtime/active-policy
 POST /api/v1/openclaw/realtime/active-policy
+POST /api/v1/openclaw/realtime/sessions
 POST /api/v1/openclaw/realtime/sessions/reset
 GET  /api/v1/openclaw/realtime/events/stream
 ```
@@ -629,10 +656,36 @@ type JsonRpcResponse = {
 约束:
 
 - `tools/call` 的 `name` 支持 `agent_guard_*` 工具名，后端统一归一到 `tool.*` canonical toolId。
-- `arguments._agentGuardSessionId` 可指定 runtime session；未传时使用默认 realtime session。
+- `arguments._agentGuardSessionId` 可指定 runtime session；未传时后端生成新的 session，不得落到固定全局 session。
 - Query `policyPackId=fallback` 可强制使用内置实时兜底策略；未传时优先使用最近一次 completed run 的策略包。
 - `ask` 动作通过已有 SSE/API ask 通道解决，超时策略由 `AGENT_GUARD_ASK_TIMEOUT` 控制。
 - 该端点可由 OpenClaw MCP 配置消费，前端一般只需要展示 metadata 和实时监督记录。
+
+实时 session 准备:
+
+```ts
+POST /api/v1/openclaw/realtime/sessions
+{
+  policyPackId?: "policy_pack.xxx" | "fallback";
+  runtimeSessionId?: string;
+}
+```
+
+Response:
+
+```ts
+type PreparedRealtimeSession = {
+  runtimeSessionId: string;
+  runGroupId: string;
+  sourceRunGroupId: string;
+  traceId: string;
+  policyPackId: string;
+  agentId: string;
+  startedAt: string;
+};
+```
+
+前端必须先调用该接口获得 `runtimeSessionId`，再用于 reset、OpenClaw tool arguments 或最终报告生成。
 
 策略热切换:
 
@@ -772,6 +825,7 @@ P2 必须新增:
 ```txt
 npm run verify:p2:api-e2e
 npm run verify:openclaw:realtime
+VERIFY_OPENCLAW_REQUIRED=1 npm run verify:p2:api-e2e
 ```
 
 脚本至少验证:
@@ -779,7 +833,8 @@ npm run verify:openclaw:realtime
 - Fastify API 可以启动。
 - `GET /api/v1/system/status` 返回 `ok: true`。
 - `POST /api/v1/test-runs/e2e` 可用 `adapterKind: "mock"` 跑通兜底链路。
-- 如果 OpenClaw 测试环境可用，再验证 `adapterKind: "openclaw"`。
+- 默认环境允许 OpenClaw unavailable 时 optional skip；P2 sign-off 必须在 OpenClaw 环境执行 `VERIFY_OPENCLAW_REQUIRED=1 npm run verify:p2:api-e2e`。
+- `adapterKind: "openclaw"` 只验证 CLI 检测与策略包产出，断言 `phase="policy_ready"` 且不生成 `DefenseReport`。
 - `verify:openclaw:realtime` 必须验证 MCP `initialize`、`tools/list`、`tools/call`、实时 deny/ask/redact 记录、trace/session 可反查。
 - `GET /api/v1/test-runs/:runGroupId` 能查到本次运行。
 - `GET /api/v1/traces/:traceId` 能查到 trace。

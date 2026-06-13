@@ -6,6 +6,19 @@ import type { RiskLevel, RunStatus } from "@agent-guard/contracts";
 
 export type P2AdapterKind = "openclaw" | "http_sample" | "mock";
 
+export type P2RunPhase =
+  | "queued"
+  | "detecting"
+  | "policy_ready"
+  | "supervising"
+  | "supervision_completed"
+  | "defense_report_ready"
+  | "failed";
+
+export type P2PolicyContextSource =
+  | "stored_detection"
+  | "synthetic_fallback";
+
 export type EntityLink = {
   kind:
     | "test_context"
@@ -28,6 +41,8 @@ export type P2RunGroup = {
   agentName: string;
   adapterKind: P2AdapterKind;
   status: RunStatus;
+  phase: P2RunPhase;
+  policyContextSource?: P2PolicyContextSource;
   startedAt: string;
   endedAt?: string;
   caseIds?: string[];

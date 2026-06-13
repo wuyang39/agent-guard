@@ -5,6 +5,7 @@ import {
   getRealtimeMcpTools,
   finalizeRealtimeDefenseReport,
   handleRealtimeMcpJsonRpc,
+  prepareRealtimeSession,
   resetRealtimeSessions,
   setRealtimeActivePolicy,
   subscribeRealtimeEvents,
@@ -17,6 +18,7 @@ type RealtimeMcpQuery = {
 
 const MCP_PATH = "/api/v1/openclaw/realtime/mcp";
 const ACTIVE_POLICY_PATH = "/api/v1/openclaw/realtime/active-policy";
+const SESSION_PREPARE_PATH = "/api/v1/openclaw/realtime/sessions";
 const SESSION_RESET_PATH = "/api/v1/openclaw/realtime/sessions/reset";
 const EVENTS_STREAM_PATH = "/api/v1/openclaw/realtime/events/stream";
 const DEFENSE_REPORT_PATH = "/api/v1/openclaw/realtime/reports/defense";
@@ -99,6 +101,24 @@ export async function openClawRealtimeMcpRoutes(
       typeof body.runtimeSessionId === "string" ? body.runtimeSessionId : undefined;
     const resetCount = resetRealtimeSessions(runtimeSessionId);
     return success({ resetCount, runtimeSessionId });
+  });
+
+  app.post(SESSION_PREPARE_PATH, async (request, reply) => {
+    const body = isObject(request.body) ? request.body : {};
+    const runtimeSessionId =
+      typeof body.runtimeSessionId === "string" ? body.runtimeSessionId : undefined;
+    const policyPackId =
+      typeof body.policyPackId === "string" ? body.policyPackId : undefined;
+
+    try {
+      return success(await prepareRealtimeSession({ runtimeSessionId, policyPackId }));
+    } catch (error) {
+      reply.code(404);
+      return failure(
+        "REALTIME_SESSION_PREPARE_FAILED",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
   });
 
   app.post(DEFENSE_REPORT_PATH, async (request, reply) => {

@@ -5,7 +5,7 @@
  *   1. GET /system/status
  *   2. POST /test-runs/e2e (mock) — 硬通过
  *   3. POST /test-runs/e2e (http_sample) — 硬通过
- *   4. POST /test-runs/e2e (openclaw) — CLI 可用则跑，否则 skip（带短超时）
+ *   4. POST /test-runs/e2e (openclaw) — CLI 可用则跑检测+策略包，否则 skip（带短超时）
  *   5. GET /test-runs, GET /test-runs/:id
  *   6. GET /traces/:traceId
  *   7. GET /reports/defense/:reportId
@@ -136,6 +136,8 @@ async function main(): Promise<void> {
     assert(defenseId?.length > 0, "mock defenseReportId");
     assert(detectionId?.length > 0, "mock detectionReportId");
     assert(artifactIds.length > 0, "mock artifactIds");
+    assert(mockRG.phase === "defense_report_ready", `mock phase is defense_report_ready (got ${mockRG.phase})`);
+    assert(mockRG.policyContextSource === "stored_detection", "mock policyContextSource stored_detection");
     console.log(`   OK traces=${(mockRG.traceIds as string[]).length} sessions=${(mockRG.runtimeSessionIds as string[]).length} artifacts=${artifactIds.length}`);
     passed++;
 
@@ -162,9 +164,14 @@ async function main(): Promise<void> {
         const ocRun = await injectJson(app, "POST", "/api/v1/test-runs/e2e", {
           adapterKind: "openclaw", agent: { name: "B5 OC" },
           connection: { endpointUrl: "http://localhost:18789", timeoutMs: 15_000 },
-          caseIds: ["case.resource_injection"], generateDefenseReport: true,
+          caseIds: ["case.resource_injection"], generateDefenseReport: false,
         });
         ok(ocRun);
+        const ocRG = (ocRun.data as Record<string, unknown>).runGroup as Record<string, unknown>;
+        assert(ocRG.phase === "policy_ready", `openclaw phase is policy_ready (got ${ocRG.phase})`);
+        assert(typeof ocRG.policyPackId === "string" && ocRG.policyPackId.length > 0, "openclaw policyPackId");
+        assert(!ocRG.defenseReportId, "openclaw CLI pass must not generate defenseReportId");
+        assert(Array.isArray(ocRG.runtimeSessionIds) && ocRG.runtimeSessionIds.length === 0, "openclaw CLI pass has no runtime sessions");
         console.log("   OK");
         passed++;
       } catch (err) {

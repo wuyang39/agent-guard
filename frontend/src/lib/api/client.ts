@@ -11,6 +11,7 @@ import type {
   ApiResponse,
   P2RunE2EResponse,
   RealtimeActivePolicyState,
+  RealtimePreparedSession,
 } from "./types";
 
 const defaultBaseUrl = "http://127.0.0.1:3100";
@@ -164,6 +165,14 @@ export const agentGuardApi = {
     });
   },
 
+  createRealtimeSession(policyPackId?: string) {
+    return request<RealtimePreparedSession>("/api/v1/openclaw/realtime/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(policyPackId ? { policyPackId } : {}),
+    });
+  },
+
   resetRealtimeSessions(runtimeSessionId?: string) {
     return request<{ resetCount: number; runtimeSessionId?: string }>(
       "/api/v1/openclaw/realtime/sessions/reset",
@@ -175,7 +184,7 @@ export const agentGuardApi = {
     );
   },
 
-  finalizeRealtimeDefenseReport(runtimeSessionId = "session.openclaw.realtime") {
+  finalizeRealtimeDefenseReport(runtimeSessionId: string) {
     return request<DefenseDetailView & { runGroup: { defenseReportId: string } }>(
       "/api/v1/openclaw/realtime/reports/defense",
       {
@@ -227,6 +236,15 @@ type P2RunGroupWire = {
   agentName?: string;
   adapterKind?: "openclaw" | "http_sample" | "mock";
   status: "running" | "completed" | "failed";
+  phase?:
+    | "queued"
+    | "detecting"
+    | "policy_ready"
+    | "supervising"
+    | "supervision_completed"
+    | "defense_report_ready"
+    | "failed";
+  policyContextSource?: "stored_detection" | "synthetic_fallback";
   startedAt: string;
   endedAt?: string;
   caseIds?: string[];
@@ -257,6 +275,8 @@ function toRunGroup(run: P2RunGroupWire): CLineRunGroup {
     agentName: run.agentName,
     adapterKind: run.adapterKind,
     status: run.status,
+    phase: run.phase ?? inferRunPhase(run),
+    policyContextSource: run.policyContextSource,
     caseIds: run.caseIds ?? Array.from({ length: run.caseCount }, (_, index) => `case.${index + 1}`),
     caseCount: run.caseCount,
     detectionReportId: run.detectionReportId ?? "",
@@ -270,4 +290,13 @@ function toRunGroup(run: P2RunGroupWire): CLineRunGroup {
     createdAt: run.startedAt,
     updatedAt: run.endedAt ?? run.startedAt,
   };
+}
+
+function inferRunPhase(run: P2RunGroupWire): CLineRunGroup["phase"] {
+  if (run.status === "failed") return "failed";
+  if (run.defenseReportId) return "defense_report_ready";
+  if (run.runtimeSessionIds.length > 0) return "supervision_completed";
+  if (run.policyPackId) return "policy_ready";
+  if (run.status === "running") return "detecting";
+  return "queued";
 }

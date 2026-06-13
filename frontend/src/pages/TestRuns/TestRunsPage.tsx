@@ -51,6 +51,8 @@ export function TestRunsPage({ state, onRun, running }: TestRunsPageProps) {
                 <th>Run Group</th>
                 <th>Agent</th>
                 <th>Status</th>
+                <th>Phase</th>
+                <th>Source</th>
                 <th>Cases</th>
                 <th>Risk Reports</th>
                 <th>Traces</th>
@@ -69,6 +71,10 @@ export function TestRunsPage({ state, onRun, running }: TestRunsPageProps) {
                       {runGroup.status}
                     </Badge>
                   </td>
+                  <td>
+                    <Badge>{runGroup.phase}</Badge>
+                  </td>
+                  <td>{runGroup.policyContextSource ?? "-"}</td>
                   <td>{runGroup.caseIds.length}</td>
                   <td>{runGroup.riskReportIds.length}</td>
                   <td>{runGroup.traceIds.length}</td>

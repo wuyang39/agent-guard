@@ -84,7 +84,7 @@ export function DashboardPage({
           <span>最高风险</span>
           <strong>{riskLabel(summary.highestRiskLevel)}</strong>
           <Badge tone={riskTone(summary.highestRiskLevel)}>
-            {latest?.status ?? "no run"}
+            {latest?.phase ?? latest?.status ?? "no run"}
           </Badge>
         </div>
       </section>
@@ -116,6 +116,10 @@ export function DashboardPage({
                   <div>
                     <dt>Agent</dt>
                     <dd>{latest.agentName ?? latest.agentId}</dd>
+                  </div>
+                  <div>
+                    <dt>Phase</dt>
+                    <dd>{latest.phase}</dd>
                   </div>
                   <div>
                     <dt>Cases</dt>

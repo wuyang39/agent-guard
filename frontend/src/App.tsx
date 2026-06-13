@@ -7,6 +7,7 @@ import {
   mockTraceDetail,
 } from "./lib/api/mockData";
 import type {
+  AgentConnectionConfig,
   CLineDashboardSummary,
   CLineRunGroup,
   DefenseDetailView,
@@ -15,29 +16,43 @@ import type {
   SystemStatus,
   TraceDetailView,
 } from "./lib/api/types";
+import { AgentConnectPage } from "./pages/AgentConnect/AgentConnectPage";
 import { DashboardPage } from "./pages/Dashboard/DashboardPage";
 import { DefenseReportPage } from "./pages/DefenseReports/DefenseReportPage";
-import { DetectionPage } from "./pages/Detection/DetectionPage";
-import { ProjectOverviewPage } from "./pages/ProjectOverview/ProjectOverviewPage";
+import {
+  EvidenceCenterPage,
+  type EvidenceTabKey,
+} from "./pages/EvidenceCenter/EvidenceCenterPage";
 import { LiveSupervisionPage } from "./pages/Supervision/LiveSupervisionPage";
-import { SystemPage } from "./pages/System/SystemPage";
-import { TestRunsPage } from "./pages/TestRuns/TestRunsPage";
-import { TraceDetailPage } from "./pages/TraceDetail/TraceDetailPage";
 
 type ViewKey =
-  | "dashboard"
   | "agent"
-  | "runs"
-  | "cases"
-  | "configs"
-  | "detection"
+  | "dashboard"
   | "supervision"
   | "defense"
-  | "trace"
-  | "system";
+  | "evidence";
+
+const AGENT_CONFIG_STORAGE_KEY = "agent-guard.agent-config";
+
+const defaultAgentConfig: AgentConnectionConfig = {
+  adapterKind: "openclaw",
+  agentId: "agent.openclaw.demo",
+  name: "OpenClaw CLI Agent",
+  description: "OpenClaw local agent used by Agent Guard E2E detection.",
+  openclawCliPath: "F:\\OpenClaw\\openclaw-local.cmd",
+  gatewayUrl: "http://127.0.0.1:18789",
+  endpointUrl: "http://127.0.0.1:7001/agent/run?mode=vulnerable",
+  authToken: "",
+  timeoutMs: 120000,
+  caseIds: ["case.resource_injection"],
+};
 
 export function App() {
   const [view, setView] = useState<ViewKey>("dashboard");
+  const [evidenceTab, setEvidenceTab] = useState<EvidenceTabKey>("runs");
+  const [agentConfig, setAgentConfig] = useState<AgentConnectionConfig>(() =>
+    loadStoredAgentConfig(),
+  );
   const [running, setRunning] = useState(false);
   const [summaryState, setSummaryState] = useState<LoadState<CLineDashboardSummary>>({
     status: "idle",
@@ -70,6 +85,15 @@ export function App() {
     });
   }, []);
 
+  function hasCompleteDetails(runGroup: CLineRunGroup | undefined): boolean {
+    return Boolean(
+      runGroup &&
+      runGroup.detectionReportId &&
+      runGroup.defenseReportId &&
+      runGroup.traceIds.length > 0,
+    );
+  }
+
   const loadDetails = useCallback(async (summary: CLineDashboardSummary) => {
     const latest = summary.latestRunGroup;
     if (!latest) {
@@ -85,6 +109,59 @@ export function App() {
         status: "empty",
         message: "尚无 trace。请先运行一次 E2E 检测。",
       });
+      return;
+    }
+
+    if (!hasCompleteDetails(latest)) {
+      const fallbackRunGroup = summary.recentRunGroups.find((runGroup) =>
+        hasCompleteDetails(runGroup),
+      );
+      if (!fallbackRunGroup) {
+        const runStatus = latest.status === "failed" ? "failed" : "incomplete";
+        const latestTraceId = latest.traceIds[0];
+        setDetectionState({
+          status: "empty",
+          message: `Latest run group is ${runStatus} and has no DetectionReport yet. Run E2E again after fixing OpenClaw, or use Realtime Supervision for live interception.`,
+        });
+        setDefenseState({
+          status: "empty",
+          message: `Latest run group is ${runStatus} and has no DefenseReport yet.`,
+        });
+        setTraceState({
+          status: "empty",
+          message: latestTraceId
+            ? `Latest run has a trace (${latestTraceId}), but no linked reports were generated.`
+            : `Latest run group has no trace yet.`,
+        });
+        return;
+      }
+
+      setDetectionState({
+        status: "empty",
+        message: `Latest run group failed before reports were generated. Showing the most recent completed reports instead.`,
+      });
+      setDefenseState({
+        status: "empty",
+        message: `Latest run group failed before reports were generated. Showing the most recent completed reports instead.`,
+      });
+      setTraceState({
+        status: "empty",
+        message: `Latest run group failed before reports were generated. Showing the most recent completed trace instead.`,
+      });
+
+      setDetectionState({ status: "loading" });
+      setDefenseState({ status: "loading" });
+      setTraceState({ status: "loading" });
+
+      const [detection, defense, trace] = await Promise.all([
+        agentGuardApi.detectionDetail(fallbackRunGroup.detectionReportId),
+        agentGuardApi.defenseDetail(fallbackRunGroup.defenseReportId),
+        agentGuardApi.traceDetail(fallbackRunGroup.traceIds[0]),
+      ]);
+
+      setDetectionState({ status: "ready", data: detection, source: "api" });
+      setDefenseState({ status: "ready", data: defense, source: "api" });
+      setTraceState({ status: "ready", data: trace, source: "api" });
       return;
     }
 
@@ -108,11 +185,15 @@ export function App() {
     setRunGroupsState({ status: "loading" });
     setSystemState({ status: "loading" });
     try {
-      const [summary, runGroups, system] = await Promise.all([
+      const [summary, runGroups, system, agents] = await Promise.all([
         agentGuardApi.dashboardSummary(),
         agentGuardApi.runGroups(),
         agentGuardApi.systemStatus(),
+        agentGuardApi.agents(),
       ]);
+      if (!hasStoredAgentConfig()) {
+        persistAgentConfig(agents.activeAgent);
+      }
       setRunGroupsState({ status: "ready", data: runGroups, source: "api" });
       setSystemState({ status: "ready", data: system, source: "api" });
       if (!summary.latestRunGroup) {
@@ -154,7 +235,13 @@ export function App() {
     setRunning(true);
     setSummaryState({ status: "loading" });
     try {
-      await agentGuardApi.runE2E();
+      const saved = await agentGuardApi.saveAgent(agentConfig);
+      const nextConfig = { ...agentConfig, ...saved.agent, authToken: agentConfig.authToken };
+      persistAgentConfig(nextConfig);
+      const started = await agentGuardApi.runE2E(nextConfig);
+      if (started.runGroup?.runGroupId) {
+        await waitForRunGroup(started.runGroup.runGroupId);
+      }
       const [summary, runGroups, system] = await Promise.all([
         agentGuardApi.dashboardSummary(),
         agentGuardApi.runGroups(),
@@ -192,6 +279,34 @@ export function App() {
     setDefenseState({ status: "ready", data: detail, source: "api" });
   }
 
+  async function saveAgentConfig(next: AgentConnectionConfig) {
+    persistAgentConfig(next);
+    try {
+      const saved = await agentGuardApi.saveAgent(next);
+      persistAgentConfig({ ...next, ...saved.agent, authToken: next.authToken });
+    } catch (error) {
+      console.error("Failed to persist agent config to API", error);
+    }
+  }
+
+  function persistAgentConfig(next: AgentConnectionConfig) {
+    setAgentConfig(next);
+    localStorage.setItem(AGENT_CONFIG_STORAGE_KEY, JSON.stringify(next));
+  }
+
+  function openEvidence(tab: EvidenceTabKey) {
+    setEvidenceTab(tab);
+    setView("evidence");
+  }
+
+  function selectDashboardTarget(target: "detection" | "defense" | "trace") {
+    if (target === "defense") {
+      setView("defense");
+      return;
+    }
+    openEvidence(target);
+  }
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -200,108 +315,113 @@ export function App() {
           <span>项目控制台</span>
         </div>
         <nav>
-          <button className={view === "dashboard" ? "active" : ""} onClick={() => setView("dashboard")}>
-            总览
-          </button>
           <button className={view === "agent" ? "active" : ""} onClick={() => setView("agent")}>
             智能体接入
           </button>
-          <button className={view === "runs" ? "active" : ""} onClick={() => setView("runs")}>
-            测试运行
-          </button>
-          <button className={view === "cases" ? "active" : ""} onClick={() => setView("cases")}>
-            测试用例
-          </button>
-          <button className={view === "configs" ? "active" : ""} onClick={() => setView("configs")}>
-            配置中心
-          </button>
-          <button className={view === "detection" ? "active" : ""} onClick={() => setView("detection")}>
-            检测与策略
+          <button className={view === "dashboard" ? "active" : ""} onClick={() => setView("dashboard")}>
+            总览
           </button>
           <button className={view === "supervision" ? "active" : ""} onClick={() => setView("supervision")}>
-            实时监督
+            实施监督
           </button>
           <button className={view === "defense" ? "active" : ""} onClick={() => setView("defense")}>
             防御报告
           </button>
-          <button className={view === "trace" ? "active" : ""} onClick={() => setView("trace")}>
-            调用轨迹
-          </button>
-          <button className={view === "system" ? "active" : ""} onClick={() => setView("system")}>
-            系统状态
+          <button className={view === "evidence" ? "active" : ""} onClick={() => setView("evidence")}>
+            证据中心
           </button>
         </nav>
       </aside>
 
       <main className="main-surface">
+        {view === "agent" ? (
+          <AgentConnectPage
+            config={agentConfig}
+            onSave={saveAgentConfig}
+            summaryState={summaryState}
+            systemState={systemState}
+          />
+        ) : null}
         {view === "dashboard" ? (
           <DashboardPage
             onRun={() => void runE2E()}
-            onSelectView={setView}
+            onSelectView={selectDashboardTarget}
             onUseMock={useMock}
             running={running}
             state={summaryState}
           />
         ) : null}
-        {view === "detection" ? (
-          <DetectionPage
-            onActivateRealtime={() => void activateRealtimePolicy()}
-            onGoDefense={() => setView("defense")}
-            onGoTrace={() => setView("trace")}
-            state={detectionState}
-          />
-        ) : null}
-        {view === "agent" ? (
-          <ProjectOverviewPage
-            detectionState={detectionState}
-            kind="agent"
-            summaryState={summaryState}
-          />
-        ) : null}
         {view === "supervision" ? (
           <LiveSupervisionPage
             onGoDefense={() => setView("defense")}
-            onGoRuns={() => setView("runs")}
+            onGoRuns={() => openEvidence("runs")}
             onReportGenerated={acceptRealtimeDefenseReport}
-          />
-        ) : null}
-        {view === "runs" ? (
-          <TestRunsPage
-            onRun={() => void runE2E()}
-            running={running}
-            state={runGroupsState}
-          />
-        ) : null}
-        {view === "cases" ? (
-          <ProjectOverviewPage
-            detectionState={detectionState}
-            kind="cases"
-            summaryState={summaryState}
-          />
-        ) : null}
-        {view === "configs" ? (
-          <ProjectOverviewPage
-            detectionState={detectionState}
-            kind="configs"
-            summaryState={summaryState}
           />
         ) : null}
         {view === "defense" ? (
           <DefenseReportPage
-            onGoDetection={() => setView("detection")}
-            onGoTrace={() => setView("trace")}
+            onGoDetection={() => openEvidence("detection")}
+            onGoTrace={() => openEvidence("trace")}
             state={defenseState}
           />
         ) : null}
-        {view === "trace" ? (
-          <TraceDetailPage
+        {view === "evidence" ? (
+          <EvidenceCenterPage
+            activeTab={evidenceTab}
+            detectionState={detectionState}
+            onActivateRealtime={() => void activateRealtimePolicy()}
             onGoDefense={() => setView("defense")}
-            onGoDetection={() => setView("detection")}
-            state={traceState}
+            onRun={() => void runE2E()}
+            onTabChange={setEvidenceTab}
+            runGroupsState={runGroupsState}
+            running={running}
+            summaryState={summaryState}
+            systemState={systemState}
+            traceState={traceState}
           />
         ) : null}
-        {view === "system" ? <SystemPage state={systemState} /> : null}
       </main>
     </div>
   );
+}
+
+function loadStoredAgentConfig(): AgentConnectionConfig {
+  try {
+    const raw = localStorage.getItem(AGENT_CONFIG_STORAGE_KEY);
+    if (!raw) return defaultAgentConfig;
+    const parsed = JSON.parse(raw) as Partial<AgentConnectionConfig>;
+    return {
+      ...defaultAgentConfig,
+      ...parsed,
+      caseIds: Array.isArray(parsed.caseIds) && parsed.caseIds.length
+        ? parsed.caseIds.filter((item): item is string => typeof item === "string")
+        : defaultAgentConfig.caseIds,
+      timeoutMs: Number(parsed.timeoutMs) || defaultAgentConfig.timeoutMs,
+    };
+  } catch {
+    return defaultAgentConfig;
+  }
+}
+
+function hasStoredAgentConfig(): boolean {
+  return Boolean(localStorage.getItem(AGENT_CONFIG_STORAGE_KEY));
+}
+
+async function waitForRunGroup(
+  runGroupId: string,
+  timeoutMs = 180000,
+): Promise<CLineRunGroup | undefined> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const result = await agentGuardApi.runGroup(runGroupId);
+    if (result.runGroup.status !== "running") {
+      return result.runGroup;
+    }
+    await sleep(2000);
+  }
+  return undefined;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }

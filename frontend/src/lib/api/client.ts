@@ -1,4 +1,7 @@
 import type {
+  AgentCheckResult,
+  AgentConnectionConfig,
+  AgentListResponse,
   CLineDashboardSummary,
   CLineRunGroup,
   DefenseDetailView,
@@ -18,25 +21,77 @@ export const agentGuardApi = {
     return request<SystemStatus>("/api/v1/system/status");
   },
 
+  async agents(): Promise<AgentListResponse> {
+    const result = await request<{
+      agents: Partial<AgentConnectionConfig>[];
+      activeAgent: Partial<AgentConnectionConfig>;
+    }>("/api/v1/agents");
+    return {
+      agents: result.agents.map(toAgentConfig),
+      activeAgent: toAgentConfig(result.activeAgent),
+    };
+  },
+
+  async saveAgent(config: AgentConnectionConfig) {
+    const result = await request<{ agent: Partial<AgentConnectionConfig> }>("/api/v1/agents", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(config),
+    });
+    return { agent: toAgentConfig(result.agent) };
+  },
+
   dashboardSummary() {
     return request<CLineDashboardSummary>("/api/v1/dashboard/summary");
   },
 
-  runE2E() {
-    return request<P2RunE2EResponse>("/api/v1/test-runs/e2e", {
+  runE2E(config?: AgentConnectionConfig) {
+    const adapterKind = config?.adapterKind ?? "openclaw";
+    const endpointUrl =
+      adapterKind === "openclaw"
+        ? config?.gatewayUrl
+        : adapterKind === "http_sample"
+          ? config?.endpointUrl
+          : undefined;
+
+    return request<P2RunE2EResponse>("/api/v1/test-runs/e2e?async=1", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        adapterKind: "openclaw",
+        adapterKind,
         agent: {
-          name: "OpenClaw CLI Agent",
-          description: "Frontend-triggered OpenClaw CLI JSONL detection run.",
+          agentId: config?.agentId || undefined,
+          name: config?.name || defaultAgentName(adapterKind),
+          description:
+            config?.description ||
+            "Frontend-triggered Agent Guard detection run.",
         },
         connection: {
+          endpointUrl,
+          cliPath:
+            adapterKind === "openclaw" && config?.openclawCliPath
+              ? config.openclawCliPath
+              : undefined,
           launchMode: "external_running",
-          timeoutMs: 120000,
+          timeoutMs: config?.timeoutMs ?? 120000,
         },
+        // Default to one real case so the frontend can complete a full end-to-end
+        // loop quickly during product testing. Remove this to run the whole suite.
+        caseIds: config?.caseIds.length ? config.caseIds : ["case.resource_injection"],
         generateDefenseReport: true,
+      }),
+    });
+  },
+
+  checkAgent(config: AgentConnectionConfig) {
+    return request<AgentCheckResult>("/api/v1/agents/check", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        adapterKind: config.adapterKind,
+        endpointUrl:
+          config.adapterKind === "openclaw" ? config.gatewayUrl : config.endpointUrl,
+        cliPath: config.openclawCliPath,
       }),
     });
   },
@@ -76,9 +131,9 @@ export const agentGuardApi = {
     );
     return {
       trace: result.trace,
-      relatedRiskReports: [],
-      relatedFindings: [],
-      supervisionRecords: [],
+      relatedRiskReports: result.relatedRiskReports ?? [],
+      relatedFindings: result.relatedFindings ?? [],
+      supervisionRecords: result.supervisionRecords ?? [],
     } satisfies TraceDetailView;
   },
 
@@ -131,6 +186,30 @@ export const agentGuardApi = {
   },
 };
 
+function defaultAgentName(adapterKind: AgentConnectionConfig["adapterKind"]): string {
+  if (adapterKind === "http_sample") return "HTTP Sample Agent";
+  if (adapterKind === "mock") return "Mock Agent";
+  return "OpenClaw CLI Agent";
+}
+
+function toAgentConfig(config: Partial<AgentConnectionConfig>): AgentConnectionConfig {
+  const adapterKind = config.adapterKind ?? "openclaw";
+  return {
+    adapterKind,
+    agentId: config.agentId || "agent.openclaw.demo",
+    name: config.name || defaultAgentName(adapterKind),
+    description: config.description || "Agent configured from Agent Guard Console.",
+    openclawCliPath: config.openclawCliPath || "F:\\OpenClaw\\openclaw-local.cmd",
+    gatewayUrl: config.gatewayUrl || "http://127.0.0.1:18789",
+    endpointUrl: config.endpointUrl || "http://127.0.0.1:7001/agent/run?mode=vulnerable",
+    authToken: config.authToken || "",
+    timeoutMs: Number(config.timeoutMs) || 120000,
+    caseIds: config.caseIds?.length ? config.caseIds : ["case.resource_injection"],
+    createdAt: config.createdAt,
+    updatedAt: config.updatedAt,
+  };
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${apiBaseUrl}${path}`, init);
   const payload = (await response.json()) as ApiResponse<T>;
@@ -150,6 +229,7 @@ type P2RunGroupWire = {
   status: "running" | "completed" | "failed";
   startedAt: string;
   endedAt?: string;
+  caseIds?: string[];
   caseCount: number;
   testRunIds: string[];
   traceIds: string[];
@@ -164,6 +244,9 @@ type P2RunGroupWire = {
 
 type P2TraceDetailWire = {
   trace: TraceDetailView["trace"];
+  relatedRiskReports?: TraceDetailView["relatedRiskReports"];
+  relatedFindings?: TraceDetailView["relatedFindings"];
+  supervisionRecords?: TraceDetailView["supervisionRecords"];
 };
 
 function toRunGroup(run: P2RunGroupWire): CLineRunGroup {
@@ -174,7 +257,7 @@ function toRunGroup(run: P2RunGroupWire): CLineRunGroup {
     agentName: run.agentName,
     adapterKind: run.adapterKind,
     status: run.status,
-    caseIds: Array.from({ length: run.caseCount }, (_, index) => `case.${index + 1}`),
+    caseIds: run.caseIds ?? Array.from({ length: run.caseCount }, (_, index) => `case.${index + 1}`),
     caseCount: run.caseCount,
     detectionReportId: run.detectionReportId ?? "",
     riskProfileId: run.riskProfileId ?? "",

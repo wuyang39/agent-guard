@@ -59,6 +59,8 @@ export type P2ArtifactView = {
 export type P2RunE2EResponse = {
   runGroup: CLineRunGroup;
   links: unknown[];
+  async?: boolean;
+  statusUrl?: string;
 };
 
 export type CLineRunBundle = {
@@ -93,6 +95,40 @@ export type CLineDashboardSummary = {
   countsByCategory: RiskReport["summary"]["countsByCategory"];
 };
 
+export type AgentAdapterKind = "openclaw" | "http_sample" | "mock";
+
+export type AgentConnectionConfig = {
+  adapterKind: AgentAdapterKind;
+  agentId: string;
+  name: string;
+  description: string;
+  openclawCliPath: string;
+  gatewayUrl: string;
+  endpointUrl: string;
+  authToken: string;
+  timeoutMs: number;
+  caseIds: string[];
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+export type AgentListResponse = {
+  agents: AgentConnectionConfig[];
+  activeAgent: AgentConnectionConfig;
+};
+
+export type AgentCheckResult = {
+  adapterKind: AgentAdapterKind;
+  available: boolean;
+  displayName: string;
+  detail: string;
+  normalizedAgent?: {
+    agentId: string;
+    name: string;
+    adapterKind: AgentAdapterKind;
+  };
+};
+
 export type SystemStatus = {
   schemaVersion: "mvp-1";
   service: string;
@@ -102,6 +138,15 @@ export type SystemStatus = {
   generatedAt?: string;
   defaultAdapterKind?: "openclaw" | "http_sample" | "mock";
   fallbackAdapterKinds?: ("http_sample" | "mock")[];
+  activeAgent?: AgentConnectionConfig;
+  latestRunGroup?: CLineRunGroup;
+  health?: {
+    api: boolean;
+    openclawCli: boolean;
+    outputStore: boolean;
+    realtimeMcp: boolean;
+    configuredAgents: number;
+  };
   features?: Record<string, boolean>;
 };
 

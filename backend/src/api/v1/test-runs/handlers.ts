@@ -1,16 +1,22 @@
 import type { FastifyInstance } from "fastify";
 import { success, failure } from "../../response";
 import type { RunE2ERequest } from "../../types";
-import { runE2E, CaseIdValidationError } from "../../../services/e2eRunService";
+import {
+  runE2E,
+  CaseIdValidationError,
+  createInitialE2ERunGroup,
+} from "../../../services/e2eRunService";
 import {
   getRunGroup,
   listRunGroups,
+  saveRunGroup,
 } from "../../../storage/fileRunStore";
 
 export async function testRunRoutes(app: FastifyInstance): Promise<void> {
   // POST /api/v1/test-runs/e2e
   app.post("/api/v1/test-runs/e2e", async (request, reply) => {
     const body = request.body as RunE2ERequest;
+    const query = request.query as { async?: string };
 
     if (!body.adapterKind) {
       reply.code(400);
@@ -31,6 +37,21 @@ export async function testRunRoutes(app: FastifyInstance): Promise<void> {
     }
 
     // P2-B-3: 支持 mock + http_sample + openclaw
+
+    if (query.async === "1" || query.async === "true") {
+      const runGroup = createInitialE2ERunGroup(body);
+      await saveRunGroup(runGroup);
+      void runE2E(body, runGroup).catch((err) => {
+        request.log.error({ err, runGroupId: runGroup.runGroupId }, "Async E2E run failed");
+      });
+      reply.code(202);
+      return success({
+        runGroup,
+        links: [],
+        async: true,
+        statusUrl: `/api/v1/test-runs/${runGroup.runGroupId}`,
+      });
+    }
 
     try {
       const result = await runE2E(body);

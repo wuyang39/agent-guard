@@ -23,8 +23,8 @@ import type {
   ParsedToolCall,
   ParsedToolResult,
 } from "./openclawTypes";
+import { resolveOpenClawCliPath } from "./openclawAdapter";
 
-const DEFAULT_CLI = process.env.OPENCLAW_CLI ?? "openclaw";
 const DEFAULT_TIMEOUT_MS = Number(process.env.OPENCLAW_TIMEOUT_MS ?? 120_000);
 const JSONL_OUTPUT_DIR = path.resolve(
   process.cwd(),
@@ -37,6 +37,36 @@ export type OpenClawRunResult = {
   output: OpenClawAgentOutput;
   jsonlPath: string;
 };
+
+export type OpenClawRunOptions = {
+  cliPath?: string;
+  timeoutMs?: number;
+};
+
+function getOutputMeta(output: OpenClawAgentOutput) {
+  return output.result?.meta ?? output.meta;
+}
+
+function getOutputPayloads(output: OpenClawAgentOutput) {
+  return output.result?.payloads ?? output.payloads ?? [];
+}
+
+function getOutputSessionFile(output: OpenClawAgentOutput): string | undefined {
+  return getOutputMeta(output)?.agentMeta?.sessionFile;
+}
+
+function getOutputSessionId(output: OpenClawAgentOutput): string {
+  return getOutputMeta(output)?.agentMeta?.sessionId ?? "";
+}
+
+function getOutputFinalText(output: OpenClawAgentOutput): string {
+  return (
+    output.finalAssistantVisibleText ??
+    output.finalAssistantRawText ??
+    getOutputPayloads(output)[0]?.text ??
+    ""
+  );
+}
 
 /**
  * 执行一次 OpenClaw agent run，解析 JSONL。不做监督判定。
@@ -101,20 +131,20 @@ export async function runOpenClawSession(
     tools: { toolId: string; toolName?: string; description?: string }[];
     resources: { resourceId: string; path?: string; sensitivity?: string; description?: string }[];
   },
+  options: OpenClawRunOptions = {},
 ): Promise<OpenClawRunResult> {
   const sessionKey = runMeta.runId;
   const messageText = buildOpenClawMessage(task, sandboxInfo);
 
   // 1. 执行 openclaw agent --json
-  const output = await spawnOpenClawAgent(sessionKey, messageText);
+  const output = await spawnOpenClawAgent(sessionKey, messageText, options);
 
-  if (output.status === "error" || !output.result?.meta?.agentMeta?.sessionFile) {
+  const sessionFile = getOutputSessionFile(output);
+  if (output.status === "error" || !sessionFile) {
     throw new Error(
       `OpenClaw agent failed: ${output.error ?? output.summary ?? "unknown error"}`,
     );
   }
-
-  const sessionFile = output.result.meta.agentMeta.sessionFile;
 
   // 2. 落盘原始 JSONL（证据链 artifact）
   const jsonlPath = await saveJsonlArtifact(sessionFile, runMeta.runId);
@@ -150,7 +180,10 @@ export async function runOpenClawSession(
 async function spawnOpenClawAgent(
   sessionKey: string,
   message: string,
+  options: OpenClawRunOptions,
 ): Promise<OpenClawAgentOutput> {
+  const cliPath = resolveOpenClawCliPath(options.cliPath);
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   // 转义 message: shell 双引号内仍需处理的特殊字符
   const escaped = message
     .replace(/"/g, '\\"')
@@ -159,15 +192,15 @@ async function spawnOpenClawAgent(
     .replace(/</g, "^<")
     .replace(/>/g, "^>")
     .replace(/\|/g, "^|");
-  const timeoutSec = String(Math.floor(DEFAULT_TIMEOUT_MS / 1000));
-  const cmd = `"${DEFAULT_CLI}" agent --session-key "${sessionKey}" --message "${escaped}" --json --timeout ${timeoutSec}`;
+  const timeoutSec = String(Math.floor(timeoutMs / 1000));
+  const cmd = `"${cliPath}" agent --session-key "${sessionKey}" --message "${escaped}" --json --timeout ${timeoutSec}`;
 
   return new Promise((resolve, reject) => {
-    exec(cmd, { env: { ...process.env }, timeout: DEFAULT_TIMEOUT_MS + 10_000 },
+    exec(cmd, { env: { ...process.env }, timeout: timeoutMs + 10_000 },
       (error, stdout, stderr) => {
         if (error && stdout.trim().length === 0) {
           reject(new Error(
-            `Cannot execute OpenClaw CLI "${DEFAULT_CLI}": ${error.message}. ` +
+            `Cannot execute OpenClaw CLI "${cliPath}": ${error.message}. ` +
             `Check OPENCLAW_CLI env. stderr: ${stderr.slice(0, 300)}`,
           ));
           return;
@@ -239,13 +272,13 @@ async function parseSessionJsonl(
   }
 
   return {
-    sessionId: output.result?.meta?.agentMeta?.sessionId ?? "",
+    sessionId: getOutputSessionId(output),
     sessionKey,
     toolCalls,
     toolResults,
     assistantMessages,
-    finalAnswer: output.result?.payloads?.[0]?.text ??
-      assistantMessages[assistantMessages.length - 1] ?? "",
+    finalAnswer: getOutputFinalText(output) ||
+      (assistantMessages[assistantMessages.length - 1] ?? ""),
   };
 }
 

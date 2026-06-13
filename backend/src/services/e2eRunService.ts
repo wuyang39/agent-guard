@@ -91,6 +91,7 @@ function buildCustomAdapter(request: RunE2ERequest): AgentAdapter | undefined {
           request.connection?.endpointUrl ??
           process.env.OPENCLAW_GATEWAY_URL ??
           "http://localhost:18789",
+        cliPath: request.connection?.cliPath,
         timeoutMs: request.connection?.timeoutMs ?? 120_000,
       });
     }
@@ -106,14 +107,24 @@ export type RunE2EResult = {
   links: EntityLink[];
 };
 
-export async function runE2E(request: RunE2ERequest): Promise<RunE2EResult> {
+export function createInitialE2ERunGroup(request: RunE2ERequest): P2RunGroup {
+  return buildInitialRunGroup(
+    request,
+    request.agent.agentId ?? createId("agent"),
+  );
+}
+
+export async function runE2E(
+  request: RunE2ERequest,
+  existingRunGroup?: P2RunGroup,
+): Promise<RunE2EResult> {
   // P2 adapterKind 映射到 contracts adapterType + 自定义 adapter。
   const adapterType = mapAdapterKind(request.adapterKind);
   const customAdapter = buildCustomAdapter(request);
 
   const agent: AgentUnderTest = {
     schemaVersion: "mvp-1",
-    agentId: request.agent.agentId ?? createId("agent"),
+    agentId: existingRunGroup?.agentId ?? request.agent.agentId ?? createId("agent"),
     name: request.agent.name,
     adapterType,
   };
@@ -126,7 +137,7 @@ export async function runE2E(request: RunE2ERequest): Promise<RunE2EResult> {
     timeoutMs: request.connection?.timeoutMs ?? 30000,
   };
 
-  const runGroup = buildInitialRunGroup(request, agent.agentId);
+  const runGroup = existingRunGroup ?? buildInitialRunGroup(request, agent.agentId);
 
   try {
     // ====== 阶段 1: 监督前检测 ======
@@ -155,6 +166,7 @@ export async function runE2E(request: RunE2ERequest): Promise<RunE2EResult> {
     }
 
     runGroup.caseCount = targetCases.length;
+    runGroup.caseIds = targetCases.map((context) => context.caseId);
 
     const riskReports: Awaited<
       ReturnType<typeof buildRiskReport>

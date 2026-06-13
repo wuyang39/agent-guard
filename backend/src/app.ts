@@ -9,6 +9,7 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import { systemRoutes } from "./api/v1/system/handlers";
 import { dashboardRoutes } from "./api/v1/dashboard/handlers";
+import { agentRoutes } from "./api/v1/agents/handlers";
 import { testRunRoutes } from "./api/v1/test-runs/handlers";
 import { supervisionRoutes } from "./api/v1/supervision/handlers";
 import { askRoutes } from "./api/v1/supervision/ask-handlers";
@@ -56,6 +57,7 @@ export async function buildApp(opts?: {
   // ---- 路由 ----
   await app.register(systemRoutes);
   await app.register(dashboardRoutes);
+  await app.register(agentRoutes);
   await app.register(testRunRoutes);
   await app.register(supervisionRoutes);
   await app.register(askRoutes);

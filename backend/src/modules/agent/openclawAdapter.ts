@@ -8,6 +8,7 @@
  *   2. 生成 PolicyPack 后: e2eRunService 用真实策略对 toolCalls 做 post-hoc replay
  */
 
+import fs from "node:fs";
 import { nowIso } from "../../shared";
 import type { AgentAdapter, AgentRunMeta, AgentSession } from "./agentAdapter";
 import type { AgentMcpBridge } from "./agentMcpBridge";
@@ -34,8 +35,31 @@ export function clearParsedRegistry(): void {
 
 export type OpenClawAdapterOptions = {
   gatewayUrl?: string;
+  cliPath?: string;
   timeoutMs?: number;
 };
+
+const CLI_CANDIDATES = [
+  process.env.OPENCLAW_CLI,
+  "F:\\OpenClaw\\openclaw-local.cmd",
+  "F:\\OpenClaw\\cli\\openclaw.cmd",
+  "openclaw",
+].filter((value): value is string => Boolean(value && value.trim()));
+
+export function resolveOpenClawCliPath(preferredCliPath?: string): string {
+  if (preferredCliPath?.trim()) {
+    return preferredCliPath.trim();
+  }
+  for (const candidate of CLI_CANDIDATES) {
+    if (candidate === "openclaw") {
+      return candidate;
+    }
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return process.env.OPENCLAW_CLI ?? "openclaw";
+}
 
 const DEFAULT_GATEWAY =
   process.env.OPENCLAW_GATEWAY_URL ?? "http://localhost:18789";
@@ -57,6 +81,8 @@ export class OpenClawSession implements AgentSession {
   public readonly agent: AgentUnderTest;
   public readonly config: AgentAdapterConfig;
   private readonly gatewayUrl: string;
+  private readonly cliPath?: string;
+  private readonly timeoutMs?: number;
   private sandboxTools: { toolId: string; toolName?: string; description?: string }[] = [];
   private sandboxResources: { resourceId: string; path?: string; sensitivity?: string; description?: string }[] = [];
 
@@ -68,6 +94,8 @@ export class OpenClawSession implements AgentSession {
     this.agent = agent;
     this.config = config;
     this.gatewayUrl = options.gatewayUrl ?? DEFAULT_GATEWAY;
+    this.cliPath = options.cliPath;
+    this.timeoutMs = options.timeoutMs;
   }
 
   setSandboxContext(ctx: {
@@ -95,6 +123,7 @@ export class OpenClawSession implements AgentSession {
           agentId: runMeta?.agentId ?? this.agent.agentId,
         },
         { tools: this.sandboxTools, resources: this.sandboxResources },
+        { cliPath: this.cliPath, timeoutMs: this.timeoutMs },
       );
 
       // 存入 registry 供 e2eRunService 做 post-hoc replay
@@ -135,11 +164,11 @@ export class OpenClawSession implements AgentSession {
 }
 
 /** 检测 OpenClaw CLI 是否可用 */
-export async function checkOpenClawAvailable(): Promise<{
+export async function checkOpenClawAvailable(cliPath?: string): Promise<{
   available: boolean; version?: string; error?: string;
 }> {
   const { exec } = await import("node:child_process");
-  const cli = process.env.OPENCLAW_CLI ?? "openclaw";
+  const cli = resolveOpenClawCliPath(cliPath);
   return new Promise((resolve) => {
     exec(`"${cli}" --version`, { timeout: 10_000 }, (error, stdout) => {
       if (error) {

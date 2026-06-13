@@ -134,63 +134,44 @@ export function LiveSupervisionPage({
     return <LoadingBlock message="正在读取 OpenClaw realtime MCP 监督状态..." />;
   }
 
-  return (
-    <div className="page-stack">
-      <section className="panel">
-        <div className="section-header">
-          <div>
-            <p className="eyebrow">OpenClaw Realtime MCP</p>
-            <h1>实时监督</h1>
-          </div>
-          <div className="button-row">
-            <button className="secondary-button" onClick={refreshActivePolicy}>
-              刷新策略
-            </button>
-            <button className="secondary-button" onClick={useFallbackPolicy}>
-              使用兜底策略
-            </button>
-            <button className="secondary-button" onClick={resetSession}>
-              重置会话
-            </button>
-            <button className="primary-button" onClick={streaming ? stopStream : startStream}>
-              {streaming ? "停止监听" : "监听实时事件"}
-            </button>
-            <button className="primary-button" disabled={finalizing} onClick={finalizeReport}>
-              {finalizing ? "生成中..." : "生成防御报告"}
-            </button>
-          </div>
-        </div>
+  const decisionEvents = events.filter((event) => event.type === "supervision_decision");
+  const denyCount = decisionEvents.filter((event) => event.action === "deny").length;
+  const redactCount = decisionEvents.filter((event) => event.action === "redact").length;
+  const askCount = decisionEvents.filter((event) => event.action === "ask").length;
+  const allowCount = decisionEvents.filter((event) => event.action === "allow").length;
 
-        {statusError ? (
-          <ErrorBlock title="实时监督状态读取失败" message={statusError} />
-        ) : (
-          <div className="id-grid">
-            <div>
-              <span>MCP URL</span>
-              <code>http://127.0.0.1:3100/api/v1/openclaw/realtime/mcp</code>
-            </div>
-            <div>
-              <span>Active Policy</span>
-              <code>{activePolicy?.resolvedPolicyPackId ?? "-"}</code>
-            </div>
-            <div>
-              <span>Source</span>
-              <Badge tone={activePolicy?.source === "fallback" ? "tone-medium" : "tone-low"}>
-                {activePolicy?.source ?? "-"}
-              </Badge>
-            </div>
-            <div>
-              <span>Runtime Session</span>
-              <code>{DEFAULT_RUNTIME_SESSION_ID}</code>
-            </div>
-          </div>
-        )}
+  return (
+    <div className="page-stack fill-page supervision-page">
+      <section className="page-hero supervision-hero">
+        <div className="hero-copy">
+          <p className="eyebrow">OpenClaw Realtime MCP</p>
+          <h1>实施监督</h1>
+          <p className="hero-lead">
+            监听 OpenClaw 工具调用，把策略判定、阻断和报告生成过程实时展示出来。
+          </p>
+        </div>
+        <div className="hero-actions">
+          <Badge tone={streaming ? "tone-medium" : "tone-neutral"}>
+            {streaming ? "streaming" : `${events.length} events`}
+          </Badge>
+          <button className="primary-button hero-button" onClick={streaming ? stopStream : startStream}>
+            {streaming ? "停止监听" : "监听实时事件"}
+          </button>
+          <button className="primary-button" disabled={finalizing} onClick={finalizeReport}>
+            {finalizing ? "生成中..." : "生成防御报告"}
+          </button>
+        </div>
       </section>
 
-      <section className="split-grid">
-        <div className="panel">
+      {statusError ? <ErrorBlock title="实时监督状态读取失败" message={statusError} /> : null}
+
+      <section className="workspace-grid supervision-workspace">
+        <div className="workspace-main panel grow-panel event-console">
           <div className="section-header compact">
-            <h2>实时事件流</h2>
+            <div>
+              <h2>实时事件流</h2>
+              <p className="muted">OpenClaw 调用 agent_guard_* 工具后，监督事件会追加到这里。</p>
+            </div>
             <Badge tone={streaming ? "tone-medium" : "tone-neutral"}>
               {streaming ? "streaming" : `${events.length} events`}
             </Badge>
@@ -217,9 +198,64 @@ export function LiveSupervisionPage({
           </div>
         </div>
 
-        <div className="panel">
-          <div className="section-header compact">
-            <h2>监督判定</h2>
+        <aside className="surface-rail">
+          <div className="rail-section">
+            <div className="section-header compact">
+              <h2>当前策略</h2>
+              <Badge tone={activePolicy?.source === "fallback" ? "tone-medium" : "tone-low"}>
+                {activePolicy?.source ?? "-"}
+              </Badge>
+            </div>
+            <div className="rail-list">
+              <div>
+                <span>MCP URL</span>
+                <code>http://127.0.0.1:3100/api/v1/openclaw/realtime/mcp</code>
+              </div>
+              <div>
+                <span>Active Policy</span>
+                <code>{activePolicy?.resolvedPolicyPackId ?? "-"}</code>
+              </div>
+              <div>
+                <span>Runtime Session</span>
+                <code>{DEFAULT_RUNTIME_SESSION_ID}</code>
+              </div>
+            </div>
+            <div className="button-row rail-actions">
+              <button className="secondary-button" onClick={refreshActivePolicy}>
+                刷新策略
+              </button>
+              <button className="secondary-button" onClick={useFallbackPolicy}>
+                使用兜底策略
+              </button>
+              <button className="secondary-button" onClick={resetSession}>
+                重置会话
+              </button>
+            </div>
+          </div>
+
+          <div className="rail-section">
+            <div className="section-header compact">
+              <h2>监督判定</h2>
+              <Badge>{decisionEvents.length} decisions</Badge>
+            </div>
+            <div className="decision-grid">
+              <div>
+                <span>allow</span>
+                <strong>{allowCount}</strong>
+              </div>
+              <div>
+                <span>deny</span>
+                <strong>{denyCount}</strong>
+              </div>
+              <div>
+                <span>redact</span>
+                <strong>{redactCount}</strong>
+              </div>
+              <div>
+                <span>ask</span>
+                <strong>{askCount}</strong>
+              </div>
+            </div>
             <div className="button-row">
               <button className="secondary-button" onClick={onGoRuns}>
                 Test Runs
@@ -229,7 +265,10 @@ export function LiveSupervisionPage({
               </button>
             </div>
           </div>
-          <div className="timeline-list">
+
+          <div className="rail-section grow-rail-section">
+            <h2>判定明细</h2>
+            <div className="timeline-list compact-timeline">
             {events
               .filter((event) => event.type === "supervision_decision")
               .map((event) => (
@@ -247,11 +286,12 @@ export function LiveSupervisionPage({
             {!events.some((event) => event.type === "supervision_decision") ? (
               <p className="muted">还没有监督判定。OpenClaw 工具调用进入 MCP 后会出现 deny、ask、redact 等记录。</p>
             ) : null}
+            </div>
+            {latestDefenseReportId ? (
+              <p className="muted">最新实时防御报告: {latestDefenseReportId}</p>
+            ) : null}
           </div>
-          {latestDefenseReportId ? (
-            <p className="muted">最新实时防御报告: {latestDefenseReportId}</p>
-          ) : null}
-        </div>
+        </aside>
       </section>
     </div>
   );

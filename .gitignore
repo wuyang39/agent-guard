@@ -22,6 +22,8 @@ outputs/run-index/*
 outputs/openclaw-sessions/*
 outputs/p2/*
 outputs/dev-logs/*
+outputs/agent-configs/*
+outputs/*.log
 !outputs/runs/.gitkeep
 !outputs/traces/.gitkeep
 !outputs/reports/.gitkeep

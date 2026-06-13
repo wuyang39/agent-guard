@@ -6,13 +6,17 @@
 
 /** openclaw agent --json 的 stdout 输出 */
 export type OpenClawAgentOutput = {
-  runId: string;
-  status: "ok" | "error";
-  summary: string;
+  runId?: string;
+  status?: "ok" | "error";
+  summary?: string;
   result?: {
     payloads?: { text: string; mediaUrl: string | null }[];
     meta?: OpenClawRunMeta;
   };
+  payloads?: { text: string; mediaUrl: string | null }[];
+  meta?: OpenClawRunMeta;
+  finalAssistantVisibleText?: string;
+  finalAssistantRawText?: string;
   error?: string;
 };
 

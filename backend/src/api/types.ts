@@ -30,6 +30,7 @@ export type P2RunGroup = {
   status: RunStatus;
   startedAt: string;
   endedAt?: string;
+  caseIds?: string[];
   caseCount: number;
   highestRiskLevel?: RiskLevel;
   testRunIds: string[];
@@ -62,11 +63,38 @@ export type RunE2ERequest = {
   };
   connection?: {
     endpointUrl?: string;
+    cliPath?: string;
     launchMode?: "external_running" | "spawn_local";
     timeoutMs?: number;
   };
   caseIds?: string[];
   generateDefenseReport: boolean;
+};
+
+export type AgentConnectionConfig = {
+  adapterKind: P2AdapterKind;
+  agentId: string;
+  name: string;
+  description?: string;
+  openclawCliPath?: string;
+  gatewayUrl?: string;
+  endpointUrl?: string;
+  timeoutMs?: number;
+  caseIds?: string[];
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+export type AgentCheckResult = {
+  adapterKind: P2AdapterKind;
+  available: boolean;
+  displayName: string;
+  detail: string;
+  normalizedAgent?: {
+    agentId: string;
+    name: string;
+    adapterKind: P2AdapterKind;
+  };
 };
 
 export type SupervisorActionCounts = Record<

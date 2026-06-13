@@ -2,6 +2,8 @@ import path from "node:path";
 import type { FastifyInstance } from "fastify";
 import { success } from "../../response";
 import { checkOpenClawAvailable } from "../../../modules/agent/openclawAdapter";
+import { getActiveAgentConfig, listAgentConfigs } from "../../../storage/agentConfigStore";
+import { listRunGroups } from "../../../storage/fileRunStore";
 
 let cachedOpenClawAvailable = false;
 let lastCheck = 0;
@@ -19,67 +21,54 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
       lastCheck = now;
     }
 
+    const [activeAgent, agents, latestRuns] = await Promise.all([
+      getActiveAgentConfig(),
+      listAgentConfigs(),
+      listRunGroups({ limit: 1 }),
+    ]);
+    const outputDir = path.resolve(process.cwd(), "outputs");
+    const outputStoreAvailable = await directoryAvailable(outputDir);
+
     return success({
       service: "agent-guard-api",
       schemaVersion: "mvp-1",
-      apiVersion: "p2-api-freeze-1",
+      apiVersion: "p2-api-freeze-2",
       status: "ok",
-      outputDir: path.resolve(process.cwd(), "outputs"),
+      outputDir,
       generatedAt: new Date().toISOString(),
       defaultAdapterKind: "openclaw",
       fallbackAdapterKinds: ["http_sample", "mock"] as const,
+      activeAgent,
+      latestRunGroup: latestRuns[0],
+      health: {
+        api: true,
+        openclawCli: cachedOpenClawAvailable,
+        outputStore: outputStoreAvailable,
+        realtimeMcp: true,
+        configuredAgents: agents.length,
+      },
       features: {
         openclawAdapter: cachedOpenClawAvailable,
         openclawRealtimeMcp: true,
         httpSampleAdapter: true,
         mockAdapter: true,
         e2eRun: true,
+        asyncE2eRun: true,
+        agentConfigStore: true,
+        traceEvidenceLinks: true,
         reportIndex: true,
         askChannel: true,
-        frontendReady: false,
+        frontendReady: true,
       },
     });
   });
+}
 
-  app.post("/api/v1/agents/check", async (request) => {
-    const body = (typeof request.body === "object" && request.body !== null)
-      ? request.body as { adapterKind?: string; endpointUrl?: string }
-      : {};
-    const adapterKind = body.adapterKind ?? "openclaw";
-
-    if (adapterKind === "openclaw") {
-      const check = await checkOpenClawAvailable().catch((error) => ({
-        available: false,
-        error: error instanceof Error ? error.message : String(error),
-      }));
-      return success({
-        adapterKind,
-        available: check.available,
-        displayName: "OpenClaw",
-        detail: check.available
-          ? "OpenClaw CLI is available."
-          : check.error ?? "OpenClaw CLI is unavailable.",
-        normalizedAgent: {
-          agentId: "agent.openclaw",
-          name: "OpenClaw",
-          adapterKind,
-        },
-      });
-    }
-
-    return success({
-      adapterKind,
-      available: adapterKind === "mock" || adapterKind === "http_sample",
-      displayName: adapterKind === "http_sample" ? "HTTP Sample Agent" : "Mock Agent",
-      detail:
-        adapterKind === "http_sample"
-          ? "HTTP sample adapter is configured; the target endpoint is checked during run."
-          : "Mock adapter is always available.",
-      normalizedAgent: {
-        agentId: `agent.${adapterKind}`,
-        name: adapterKind === "http_sample" ? "HTTP Sample Agent" : "Mock Agent",
-        adapterKind,
-      },
-    });
-  });
+async function directoryAvailable(dir: string): Promise<boolean> {
+  try {
+    await import("node:fs/promises").then((fs) => fs.mkdir(dir, { recursive: true }));
+    return true;
+  } catch {
+    return false;
+  }
 }

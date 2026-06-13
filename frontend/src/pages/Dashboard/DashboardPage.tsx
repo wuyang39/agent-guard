@@ -60,86 +60,142 @@ export function DashboardPage({
 
   const summary = state.data;
   const latest = summary.latestRunGroup;
+  const cards = buildDashboardCards(summary);
 
   return (
-    <div className="page-stack">
-      <section className="panel">
-        <div className="section-header">
-          <div>
-            <p className="eyebrow">Project Console</p>
-            <h1>Dashboard</h1>
-          </div>
-          <div className="button-row">
-            <Badge tone={state.source === "api" ? "tone-low" : "tone-medium"}>
-              {state.source === "api" ? "Live API" : "Typed mock"}
-            </Badge>
-            <button className="primary-button" disabled={running} onClick={onRun}>
-              {running ? "运行中..." : "运行一次 E2E 检测"}
-            </button>
-          </div>
+    <div className="page-stack fill-page dashboard-page">
+      <section className="page-hero dashboard-hero">
+        <div className="hero-copy">
+          <p className="eyebrow">Project Console</p>
+          <h1>总览</h1>
+          <p className="hero-lead">
+            从接入对象到检测、监督和报告的演示主控台。当前页面只放关键结论和下一步操作。
+          </p>
         </div>
-
-        <div className="stat-grid">
-          {buildDashboardCards(summary).map((card) => (
-            <StatCard key={card.label} {...card} />
-          ))}
+        <div className="hero-actions">
+          <Badge tone={state.source === "api" ? "tone-low" : "tone-medium"}>
+            {state.source === "api" ? "Live API" : "Typed mock"}
+          </Badge>
+          <button className="primary-button hero-button" disabled={running} onClick={onRun}>
+            {running ? "运行中..." : "运行一次 E2E 检测"}
+          </button>
+        </div>
+        <div className="hero-metric">
+          <span>最高风险</span>
+          <strong>{riskLabel(summary.highestRiskLevel)}</strong>
+          <Badge tone={riskTone(summary.highestRiskLevel)}>
+            {latest?.status ?? "no run"}
+          </Badge>
         </div>
       </section>
 
-      <section className="split-grid">
-        <div className="panel">
-          <div className="section-header compact">
-            <h2>最近运行组</h2>
-            {latest ? <Badge tone={riskTone(summary.highestRiskLevel)}>{riskLabel(summary.highestRiskLevel)}</Badge> : null}
-          </div>
-          {latest ? (
-            <div className="run-summary">
-              <dl>
-                <div>
-                  <dt>Run Group</dt>
-                  <dd>{latest.runGroupId}</dd>
-                </div>
-                <div>
-                  <dt>Agent</dt>
-                  <dd>{latest.agentId}</dd>
-                </div>
-                <div>
-                  <dt>Cases</dt>
-                  <dd>{latest.caseIds.length}</dd>
-                </div>
-                <div>
-                  <dt>Updated</dt>
-                  <dd>{formatDateTime(latest.updatedAt)}</dd>
-                </div>
-              </dl>
-              <div className="button-row">
-                <button className="secondary-button" onClick={() => onSelectView("detection")}>
-                  Detection
-                </button>
-                <button className="secondary-button" onClick={() => onSelectView("defense")}>
-                  Defense
-                </button>
-                <button className="secondary-button" onClick={() => onSelectView("trace")}>
-                  Trace
-                </button>
-              </div>
-            </div>
-          ) : (
-            <p className="muted">暂无运行组。点击运行按钮后，这里会显示 API 索引返回的最新 runGroup。</p>
-          )}
-        </div>
-
-        <div className="panel">
-          <h2>风险类别分布</h2>
-          <div className="category-list">
-            {Object.entries(summary.countsByCategory).map(([category, count]) => (
-              <div className="category-row" key={category}>
-                <span>{categoryLabel(category as keyof typeof summary.countsByCategory)}</span>
-                <strong>{count}</strong>
-              </div>
+      <section className="workspace-grid dashboard-workspace">
+        <div className="workspace-main">
+          <div className="metric-grid">
+            {cards.map((card) => (
+              <StatCard key={card.label} {...card} />
             ))}
           </div>
+
+          <div className="panel grow-panel">
+            <div className="section-header compact">
+              <h2>最近运行组</h2>
+              {latest ? (
+                <Badge tone={riskTone(summary.highestRiskLevel)}>
+                  {riskLabel(summary.highestRiskLevel)}
+                </Badge>
+              ) : null}
+            </div>
+            {latest ? (
+              <div className="run-summary">
+                <dl>
+                  <div>
+                    <dt>Run Group</dt>
+                    <dd>{latest.runGroupId}</dd>
+                  </div>
+                  <div>
+                    <dt>Agent</dt>
+                    <dd>{latest.agentName ?? latest.agentId}</dd>
+                  </div>
+                  <div>
+                    <dt>Cases</dt>
+                    <dd>{latest.caseIds.length}</dd>
+                  </div>
+                  <div>
+                    <dt>Updated</dt>
+                    <dd>{formatDateTime(latest.updatedAt)}</dd>
+                  </div>
+                </dl>
+                <div className="button-row">
+                  <button className="secondary-button" onClick={() => onSelectView("detection")}>
+                    Detection
+                  </button>
+                  <button className="secondary-button" onClick={() => onSelectView("defense")}>
+                    Defense
+                  </button>
+                  <button className="secondary-button" onClick={() => onSelectView("trace")}>
+                    Trace
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <p className="muted">
+                暂无运行组。点击运行按钮后，这里会显示 API 索引返回的最新 runGroup。
+              </p>
+            )}
+          </div>
         </div>
+
+        <aside className="surface-rail">
+          <div className="rail-section">
+            <p className="eyebrow">Demo Flow</p>
+            <h2>演示流程</h2>
+            <div className="workflow-list">
+              <div className="workflow-step is-done">
+                <span>1</span>
+                <div>
+                  <strong>智能体接入</strong>
+                  <p>{latest?.agentName ?? latest?.agentId ?? "等待配置检测对象"}</p>
+                </div>
+              </div>
+              <div className={`workflow-step ${latest ? "is-done" : ""}`}>
+                <span>2</span>
+                <div>
+                  <strong>E2E 检测</strong>
+                  <p>{latest ? `${latest.caseIds.length} 个用例已进入检测` : "等待首次运行"}</p>
+                </div>
+              </div>
+              <div className={`workflow-step ${latest?.policyPackId ? "is-done" : ""}`}>
+                <span>3</span>
+                <div>
+                  <strong>生成监督策略</strong>
+                  <p>{latest?.policyPackId || "检测完成后生成策略包"}</p>
+                </div>
+              </div>
+              <div className={`workflow-step ${latest?.defenseReportId ? "is-done" : ""}`}>
+                <span>4</span>
+                <div>
+                  <strong>防御报告</strong>
+                  <p>{latest?.defenseReportId || "监督记录沉淀后生成报告"}</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="rail-section">
+            <div className="section-header compact">
+              <h2>风险类别</h2>
+            </div>
+            <div className="category-list compact-list">
+              {Object.entries(summary.countsByCategory).map(([category, count]) => (
+                <div className="category-row" key={category}>
+                  <span>{categoryLabel(category as keyof typeof summary.countsByCategory)}</span>
+                  <strong>{count}</strong>
+                </div>
+              ))}
+            </div>
+          </div>
+        </aside>
       </section>
     </div>
   );

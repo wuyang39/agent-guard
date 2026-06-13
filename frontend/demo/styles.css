@@ -887,6 +887,13 @@ button:disabled {
   font-weight: 600;
 }
 
+.command-preview {
+  margin: 12px 0;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
 /* ── Picker ──────────────────────────────── */
 
 .picker-block {
@@ -1136,6 +1143,119 @@ button:disabled {
   color: var(--ink);
   font-family: var(--font-mono);
   font-size: 13px;
+}
+
+/* ── External Runner ─────────────────────── */
+
+.runner-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f9fafb;
+  padding: 12px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.runner-status span {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--faint);
+}
+
+.runner-status strong {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.runner-status[data-state="running"] {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+}
+
+.runner-status[data-state="running"] span {
+  background: var(--accent);
+  box-shadow: 0 0 0 4px rgba(37,99,235,0.12);
+}
+
+.runner-status[data-state="complete"] {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+}
+
+.runner-status[data-state="complete"] span {
+  background: var(--green);
+}
+
+.runner-status[data-state="stopped"],
+.runner-status[data-state="error"] {
+  border-color: #fed7aa;
+  background: #fff7ed;
+}
+
+.runner-status[data-state="stopped"] span,
+.runner-status[data-state="error"] span {
+  background: var(--amber);
+}
+
+.compact-metrics {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: -6px;
+}
+
+.live-feed {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 360px;
+  overflow: auto;
+  margin-bottom: 12px;
+}
+
+.live-event-card {
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 10px 12px;
+}
+
+.live-event-card[data-level="blocked"] {
+  border-left-color: var(--red);
+}
+
+.live-event-card[data-level="alert"] {
+  border-left-color: var(--amber);
+}
+
+.live-event-card[data-level="running"] {
+  border-left-color: var(--accent);
+}
+
+.live-event-card[data-level="complete"] {
+  border-left-color: var(--green);
+}
+
+.live-event-card strong {
+  display: block;
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.live-event-card p {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.live-event-card code {
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 11px;
 }
 
 /* ── File Strip ──────────────────────────── */

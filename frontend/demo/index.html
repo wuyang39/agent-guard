@@ -31,7 +31,7 @@
         </div>
         <div class="landing-trust-row">
           <span>OpenClaw Adapter</span>
-          <span>Runtime Supervision</span>
+          <span>Bypass Gateway Supervision</span>
           <span>DefenseReport HTML</span>
         </div>
       </main>
@@ -51,7 +51,7 @@
           <button class="top-nav-link" type="button" data-module-target="workbench">Run E2E</button>
           <button class="top-nav-link" type="button" data-module-target="detection">Detection</button>
           <button class="top-nav-link" type="button" data-module-target="reports">Defense</button>
-          <button class="top-nav-link" type="button" data-module-target="external">External</button>
+          <button class="top-nav-link" type="button" data-module-target="external">Gateway Tests</button>
         </nav>
         <div class="top-actions">
           <span class="status-pill"><i></i> P2 Demo</span>
@@ -80,13 +80,13 @@
               <span>Detection</span><small>检测画像与策略</small>
             </button>
             <button class="module-link" type="button" data-module-target="supervision">
-              <span>Supervision</span><small>监督记录</small>
+              <span>Supervision</span><small>旁路监督记录</small>
             </button>
             <button class="module-link" type="button" data-module-target="reports">
               <span>Defense Report</span><small>防御效果</small>
             </button>
             <button class="module-link" type="button" data-module-target="external">
-              <span>External Tests</span><small>留出测试预览</small>
+              <span>Gateway Tests</span><small>系统外流量</small>
             </button>
             <button class="module-link" type="button" data-module-target="system">
               <span>System</span><small>运行状态</small>
@@ -142,11 +142,11 @@
               </article>
               <article class="module-card" data-module-target="supervision">
                 <h3>Supervision</h3>
-                <p>查看策略命中的阻断、告警和工具输出净化记录。</p>
+                <p>查看旁路监督网关产生的阻断、告警和工具输出净化记录。</p>
               </article>
               <article class="module-card" data-module-target="external">
-                <h3>External Tests</h3>
-                <p>预留系统外测试集，用来验证监督策略的泛化能力。</p>
+                <h3>Gateway Tests</h3>
+                <p>系统外测试流量通过旁路监督网关，用来验证监督策略的泛化能力。</p>
               </article>
             </section>
 
@@ -158,9 +158,11 @@
                   <i></i>
                   <span>TestContext</span>
                   <i></i>
-                  <span>RiskReport</span>
+                  <span>RiskProfile</span>
                   <i></i>
                   <span>PolicyPack</span>
+                  <i></i>
+                  <span>Gateway</span>
                   <i></i>
                   <span>DefenseReport</span>
                 </div>
@@ -199,13 +201,13 @@
           <section class="module-view" id="module-supervision">
             <header class="module-header">
               <div>
-                <p class="eyebrow">Runtime Supervision</p>
-                <h2>监督记录</h2>
+                <p class="eyebrow">Bypass Gateway Supervision</p>
+                <h2>旁路监督记录</h2>
               </div>
               <button class="secondary-action" type="button" data-module-target="workbench">查看运行链路</button>
             </header>
             <div class="report-dashboard" id="supervisionDashboard">
-              <div class="empty-state">暂无监督记录。生成 DefenseReport 后会显示阻断、告警和净化动作。</div>
+              <div class="empty-state">暂无旁路监督记录。系统外流量通过网关后会显示阻断、告警和净化动作。</div>
             </div>
           </section>
 
@@ -225,13 +227,13 @@
           <section class="module-view" id="module-external">
             <header class="module-header">
               <div>
-                <p class="eyebrow">External Holdout Evaluation</p>
-                <h2>系统外测试预览</h2>
+                <p class="eyebrow">External Gateway Traffic</p>
+                <h2>系统外测试流量</h2>
               </div>
               <button class="secondary-action" type="button" data-module-target="workbench">先跑 P2 演示</button>
             </header>
             <div class="report-dashboard" id="externalDashboard">
-              <div class="empty-state">暂无外部测试预览。生成 DefenseReport 后会给出下一轮留出测试建议。</div>
+              <div class="empty-state">暂无系统外测试流量结果。开启旁路监督后接入外部用例。</div>
             </div>
           </section>
 
@@ -260,12 +262,12 @@
 
                 <ol class="steps" id="stepList">
                   <li class="active" data-step="0"><span>0</span><div><b>Agent 接入</b><small>OpenClaw / HTTP / Mock</small></div></li>
-                  <li data-step="1"><span>1</span><div><b>攻击场景</b><small>3 类以上红队测试</small></div></li>
-                  <li data-step="2"><span>2</span><div><b>监督前风险画像</b><small>Risk / Detection / Profile</small></div></li>
+                  <li data-step="1"><span>1</span><div><b>内置画像测试</b><small>3 类以上红队测试</small></div></li>
+                  <li data-step="2"><span>2</span><div><b>Agent 风险画像</b><small>Risk / Detection / Profile</small></div></li>
                   <li data-step="3"><span>3</span><div><b>监督策略包</b><small>SupervisionPolicyPack</small></div></li>
-                  <li data-step="4"><span>4</span><div><b>监督验证</b><small>阻断 / 观察 / 询问</small></div></li>
-                  <li data-step="5"><span>5</span><div><b>未知风险复测</b><small>外部留出样本</small></div></li>
-                  <li data-step="6"><span>6</span><div><b>防御报告</b><small>效果与证据链</small></div></li>
+                  <li data-step="4"><span>4</span><div><b>旁路监督会话</b><small>网关开启状态</small></div></li>
+                  <li data-step="5"><span>5</span><div><b>系统外测试流量</b><small>外部用例过网关</small></div></li>
+                  <li data-step="6"><span>6</span><div><b>防御报告</b><small>关闭会话与证据链</small></div></li>
                 </ol>
               </aside>
 
@@ -328,7 +330,7 @@
                       <div class="card-title">
                         <span class="card-index">02</span>
                         <div>
-                          <h3>攻击场景</h3>
+                          <h3>内置画像测试</h3>
                         </div>
                       </div>
                       <label>
@@ -362,7 +364,7 @@
                       <div class="card-title">
                         <span class="card-index">03</span>
                         <div>
-                          <h3>监督前风险画像</h3>
+                          <h3>Agent 风险画像</h3>
                         </div>
                       </div>
                       <div class="preview" id="runInput"></div>
@@ -410,7 +412,7 @@
                       </div>
                       <div class="preview" id="riskInput">等待风险画像</div>
                       <div class="policy-group-grid" id="policyGroupGrid"></div>
-                      <button id="buildRiskButton" disabled>进入监督验证</button>
+                      <button id="buildRiskButton" disabled>进入旁路监督</button>
                     </article>
                     <article class="card elevated">
                       <div class="card-title">
@@ -430,25 +432,25 @@
                       <div class="card-title">
                         <span class="card-index">05</span>
                         <div>
-                          <h3>监督验证</h3>
+                          <h3>旁路监督会话</h3>
                         </div>
                       </div>
                       <label>
-                        <span>验证模式</span>
+                        <span>旁路监督模式</span>
                         <select id="verificationMode">
                           <option value="block_high_risk">阻断模式：真实阻断高危行为</option>
                           <option value="observe_only">观察模式：只告警，不阻断</option>
                           <option value="ask_confirm">询问模式：高危动作需要确认</option>
                         </select>
                       </label>
-                      <div class="preview" id="validationInput">等待选择验证模式</div>
-                      <button id="runValidationButton" disabled>运行监督验证</button>
+                      <div class="preview" id="validationInput">等待开启旁路监督</div>
+                      <button id="runValidationButton" disabled>开启旁路监督</button>
                     </article>
                     <article class="card elevated">
                       <div class="card-title">
-                        <span class="card-index teal">V</span>
+                        <span class="card-index teal">G</span>
                         <div>
-                          <h3>验证结果</h3>
+                          <h3>会话状态</h3>
                         </div>
                       </div>
                       <div class="metrics">
@@ -457,7 +459,7 @@
                         <div><span id="validationAlertCount">0</span><p>告警数量</p></div>
                       </div>
                       <div class="finding-list" id="supervisionList"></div>
-                      <button id="toHoldoutButton" type="button" disabled>运行未知风险复测</button>
+                      <button id="toHoldoutButton" type="button" disabled>接入系统外测试流量</button>
                     </article>
                   </div>
                 </section>
@@ -468,26 +470,42 @@
                       <div class="card-title">
                         <span class="card-index">06</span>
                         <div>
-                          <h3>未知风险复测</h3>
+                          <h3>External Attack Runner</h3>
                         </div>
                       </div>
-                      <div class="preview" id="externalPreview">等待监督验证完成</div>
-                      <button id="runHoldoutButton" disabled>运行未知风险复测</button>
+                      <div class="preview" id="externalPreview">等待旁路监督开启</div>
+                      <div class="runner-status" id="externalRunnerStatus" data-state="idle">
+                        <span></span>
+                        <strong>外部攻击进程未启动</strong>
+                      </div>
+                      <div class="preview command-preview" id="externalRunnerCommand">npm run external:attack -- --gateway http://localhost:5177/gateway</div>
+                      <div class="button-row">
+                        <button id="runHoldoutButton" disabled>启动外部攻击进程</button>
+                        <button id="stopExternalRunnerButton" class="secondary-button" type="button" disabled>停止外部流量</button>
+                      </div>
                     </article>
                     <article class="card elevated">
                       <div class="card-title">
-                        <span class="card-index teal">U</span>
+                        <span class="card-index teal">T</span>
                         <div>
-                          <h3>复测结果</h3>
+                          <h3>实时监督记录</h3>
                         </div>
                       </div>
                       <div class="metrics">
-                        <div><span id="holdoutCaseCount">0</span><p>留出样本</p></div>
-                        <div><span id="holdoutHitRate">0%</span><p>命中率</p></div>
+                        <div><span id="holdoutCaseCount">0</span><p>系统外用例</p></div>
+                        <div><span id="holdoutHitRate">0%</span><p>监督命中率</p></div>
                         <div><span id="holdoutResidualCount">0</span><p>残余风险</p></div>
                       </div>
+                      <div class="metrics compact-metrics">
+                        <div><span id="liveEventCount">0</span><p>实时事件</p></div>
+                        <div><span id="liveBlockedCount">0</span><p>阻断</p></div>
+                        <div><span id="liveAlertCount">0</span><p>告警/询问</p></div>
+                      </div>
+                      <div class="live-feed" id="liveEventList">
+                        <div class="empty-state">等待外部攻击进程产生流量。</div>
+                      </div>
                       <div class="finding-list" id="holdoutList"></div>
-                      <button id="buildReportButton" type="button" disabled>生成防御报告</button>
+                      <button id="buildReportButton" type="button" disabled>关闭监督并生成防御报告</button>
                     </article>
                   </div>
                 </section>
@@ -496,7 +514,7 @@
                   <div class="two-col">
                     <article class="card">
                       <div class="card-title">
-                        <span class="card-index">05</span>
+                        <span class="card-index">07</span>
                         <div>
                           <h3>防御报告产物</h3>
                         </div>
@@ -517,7 +535,7 @@
                         <div><span id="policyHitCount">0</span><p>策略命中</p></div>
                         <div><span id="chainCount">0</span><p>阻断动作</p></div>
                         <div><span id="evidenceCount">0</span><p>告警数量</p></div>
-                        <div><span id="finalHoldoutRate">0%</span><p>未知复测命中率</p></div>
+                        <div><span id="finalHoldoutRate">0%</span><p>外部流量命中率</p></div>
                         <div><span id="reportRisk">0</span><p>残余风险</p></div>
                       </div>
                       <div class="finding-list" id="evidenceList"></div>

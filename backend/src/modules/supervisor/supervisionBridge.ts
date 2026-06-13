@@ -16,10 +16,12 @@ import type {
   RuntimeEmailSendPayload,
   RuntimeApiCallPayload,
   RuntimeResourceAccessPayload,
+  RuntimeCodeExecutionPayload,
 } from "@agent-guard/contracts";
 import type { TraceRecorder } from "../monitor/traceRecorder";
 import type { AgentSupervisor } from "./agentSupervisor";
 import { findMatchingPolicies } from "./policyEngine";
+import { askChannel, getAskTimeoutConfig } from "./askChannel";
 
 export type SupervisionBridgeOptions = {
   baseBridge: AgentMcpBridge;
@@ -52,6 +54,8 @@ function mapTargetTypeForToolCall(toolId: string): SupervisionTargetType {
       return "file_write";
     case "tool.send_email":
       return "email_send";
+    case "tool.execute_code":
+      return "code_execution";
     case "tool.send_request":
     case "tool.call_api":
       return "api_call";
@@ -77,6 +81,10 @@ function buildRuntimePayload(
     case "file_write":
       return {
         path: typeof params.path === "string" ? params.path : "",
+        contentPreview:
+          typeof params.content === "string"
+            ? params.content.slice(0, 200)
+            : undefined,
       } satisfies RuntimeFileWritePayload;
 
     case "email_send":
@@ -86,17 +94,35 @@ function buildRuntimePayload(
         bodyPreview:
           typeof params.bodyPreview === "string"
             ? params.bodyPreview
-            : undefined,
+            : typeof params.body === "string"
+              ? params.body.slice(0, 200)
+              : undefined,
       } satisfies RuntimeEmailSendPayload;
 
     case "api_call":
       return {
         method: typeof params.method === "string" ? params.method : "GET",
         url: typeof params.url === "string" ? params.url : "",
-        data: typeof params.data === "string" ? params.data : undefined,
+        data:
+          typeof params.data === "string"
+            ? params.data
+            : typeof params.body === "string"
+              ? params.body
+              : undefined,
         headers:
           isJsonObject(params.headers) ? params.headers : undefined,
       } satisfies RuntimeApiCallPayload;
+
+    case "code_execution":
+      return {
+        language: typeof params.language === "string" ? params.language : "shell",
+        codePreview:
+          typeof params.code === "string"
+            ? params.code.slice(0, 200)
+            : typeof params.command === "string"
+              ? params.command.slice(0, 200)
+              : JSON.stringify(params).slice(0, 200),
+      } satisfies RuntimeCodeExecutionPayload;
 
     default:
       return {
@@ -136,6 +162,15 @@ function redactRequestParameters(
       const paramKey = resolveRequestParameterKey(matcher.fieldPath, targetType);
       if (paramKey && typeof params[paramKey] === "string") {
         params[paramKey] = "[REDACTED]";
+      }
+      if (targetType === "email_send" && paramKey === "bodyPreview" && typeof params.body === "string") {
+        params.body = "[REDACTED]";
+      }
+      if (targetType === "api_call" && paramKey === "data" && typeof params.body === "string") {
+        params.body = "[REDACTED]";
+      }
+      if (targetType === "file_write" && paramKey === "contentPreview" && typeof params.content === "string") {
+        params.content = "[REDACTED]";
       }
     }
   }
@@ -231,9 +266,46 @@ export function createSupervisionBridge(
             riskTagIds: [],
           };
 
-        case "ask":
-          // demo 固定确认通过
-          return baseBridge.handleToolCall(request);
+        case "ask": {
+          // B-4 半真实 HITL: 创建 PendingAsk，等待人工确认或超时
+          const matchedAskPolicies = findMatchingPolicies(supervisor.policyPack, action);
+          const askPolicy = matchedAskPolicies[0] ?? decision;
+          const pending = askChannel.create({
+            runtimeSessionId,
+            agentId,
+            policyId: askPolicy.policyId,
+            policyPackId: supervisor.policyPack.policyPackId,
+            targetType: decision.targetType,
+            targetId: request.toolId,
+            payload: runtimePayload as Record<string, unknown>,
+            reason: askPolicy.reason ?? decision.decisionReason,
+            riskLevel: askPolicy.riskLevel ?? "medium",
+          });
+
+          const result = await askChannel.wait(pending.askId);
+
+          if (result === "approved") {
+            return baseBridge.handleToolCall(request);
+          }
+          // rejected 或 timeout+reject → 阻断。timeout+demo_approve 在上方 approved 分支已放行。
+          const isTimeout = pending.status === "timeout";
+          const failCode = isTimeout ? "SUPERVISION_ASK_TIMEOUT" : "SUPERVISION_ASK_REJECTED";
+          const failReason = isTimeout
+            ? `Ask ${pending.askId} timed out after ${getAskTimeoutConfig().timeoutMs}ms (default: reject)`
+            : `Ask ${pending.askId} was rejected by ${pending.resolvedBy ?? "api"}`;
+          recorder.record("system_error", "system", {
+            code: failCode,
+            message: `${failReason}: ${askPolicy.reason}`,
+            detail: { policyId: askPolicy.policyId, askId: pending.askId, result, status: pending.status },
+          });
+          return {
+            callId: createId("call"),
+            toolId: request.toolId,
+            result: { blocked: true, reason: failCode, policyId: askPolicy.policyId, askId: pending.askId },
+            containsInjection: false,
+            riskTagIds: [],
+          };
+        }
 
         case "redact": {
           const matchedPolicies = findMatchingPolicies(

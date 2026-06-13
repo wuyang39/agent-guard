@@ -12,6 +12,7 @@
 
 import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { createId } from "../../shared";
 import type { AgentMcpBridge } from "./agentMcpBridge";
@@ -24,6 +25,7 @@ import type {
   ParsedToolResult,
 } from "./openclawTypes";
 import { resolveOpenClawCliInvocation } from "./openclawAdapter";
+import { isPathInsideDirectory } from "../../storage/pathSafety";
 
 const DEFAULT_TIMEOUT_MS = Number(process.env.OPENCLAW_TIMEOUT_MS ?? 120_000);
 const JSONL_OUTPUT_DIR = path.resolve(
@@ -322,7 +324,24 @@ async function parseSessionJsonl(
 
 // ---- JSONL artifact ----
 
+/** 确定 OpenClaw 数据目录（用于 sessionFile 可信校验） */
+function resolveOpenClawDataDir(): string {
+  const fromEnv = process.env.OPENCLAW_HOME?.trim();
+  if (fromEnv) return path.resolve(fromEnv);
+  const home = os.homedir();
+  return path.join(home, ".openclaw");
+}
+
 async function saveJsonlArtifact(sessionFile: string, runId: string): Promise<string> {
+  // 可信目录校验：sessionFile 必须在 OpenClaw 数据目录内
+  const resolved = path.resolve(sessionFile);
+  const dataDir = resolveOpenClawDataDir();
+  if (!isPathInsideDirectory(resolved, dataDir)) {
+    throw new Error(
+      `OpenClaw sessionFile is outside the trusted OpenClaw data directory (${dataDir}): ${sessionFile.slice(0, 200)}`,
+    );
+  }
+
   await fs.mkdir(JSONL_OUTPUT_DIR, { recursive: true });
   const dest = path.join(JSONL_OUTPUT_DIR, `${runId}_${path.basename(sessionFile)}`);
   await fs.copyFile(sessionFile, dest);

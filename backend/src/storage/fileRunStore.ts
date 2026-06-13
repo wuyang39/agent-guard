@@ -6,7 +6,7 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import { createId, nowIso } from "../shared";
+import { createId, Mutex, nowIso } from "../shared";
 import type { RunE2ERequest, P2RunGroup, P2AdapterKind } from "../api/types";
 import type { RunStatus, RuntimeSupervisionRecord } from "@agent-guard/contracts";
 import { resolveInsideDirectory } from "./pathSafety";
@@ -14,6 +14,9 @@ import { resolveInsideDirectory } from "./pathSafety";
 const ROOT = path.resolve(process.cwd(), "outputs", "run-index");
 const RUN_GROUPS_FILE = path.join(ROOT, "run-groups.json");
 const SESSIONS_DIR = path.join(ROOT, "sessions");
+
+/** 保护 run-groups.json 的并发 read-modify-write */
+const runGroupsMutex = new Mutex();
 
 async function ensureDir(dir: string): Promise<void> {
   await fs.mkdir(dir, { recursive: true });
@@ -62,15 +65,17 @@ export function buildInitialRunGroup(
 // ---- RunGroup CRUD ----
 
 export async function saveRunGroup(runGroup: P2RunGroup): Promise<void> {
-  await ensureDir(ROOT);
-  const all = await readJson<P2RunGroup[]>(RUN_GROUPS_FILE, []);
-  const idx = all.findIndex((r) => r.runGroupId === runGroup.runGroupId);
-  if (idx >= 0) {
-    all[idx] = runGroup;
-  } else {
-    all.push(runGroup);
-  }
-  await writeJson(RUN_GROUPS_FILE, all);
+  await runGroupsMutex.run(async () => {
+    await ensureDir(ROOT);
+    const all = await readJson<P2RunGroup[]>(RUN_GROUPS_FILE, []);
+    const idx = all.findIndex((r) => r.runGroupId === runGroup.runGroupId);
+    if (idx >= 0) {
+      all[idx] = runGroup;
+    } else {
+      all.push(runGroup);
+    }
+    await writeJson(RUN_GROUPS_FILE, all);
+  });
 }
 
 export async function getRunGroup(

@@ -9,9 +9,15 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { P2ArtifactView } from "../api/types";
 import type { ReportArtifact } from "@agent-guard/contracts";
+import { Mutex } from "../shared";
+import { resolveInsideDirectory } from "./pathSafety";
 
 const ROOT = path.resolve(process.cwd(), "outputs", "report-index");
+const ARTIFACTS_DIR = path.join(ROOT, "artifacts");
 const INDEX_FILE = path.join(ROOT, "report-index.json");
+
+/** 保护 report-index.json 的并发 read-modify-write */
+const reportIndexMutex = new Mutex();
 
 async function ensureDir(dir: string): Promise<void> {
   await fs.mkdir(dir, { recursive: true });
@@ -60,19 +66,21 @@ type ArtifactIndexEntry = {
 // ---- B-line Report Index ----
 
 export async function indexReport(entry: ReportIndexEntry): Promise<void> {
-  const index = await readJson<ReportIndex>(INDEX_FILE, {
-    version: 1,
-    entries: [],
+  await reportIndexMutex.run(async () => {
+    const index = await readJson<ReportIndex>(INDEX_FILE, {
+      version: 1,
+      entries: [],
+    });
+    const existing = index.entries.findIndex(
+      (item) => item.reportId === entry.reportId,
+    );
+    if (existing >= 0) {
+      index.entries[existing] = entry;
+    } else {
+      index.entries.push(entry);
+    }
+    await writeJson(INDEX_FILE, index);
   });
-  const existing = index.entries.findIndex(
-    (item) => item.reportId === entry.reportId,
-  );
-  if (existing >= 0) {
-    index.entries[existing] = entry;
-  } else {
-    index.entries.push(entry);
-  }
-  await writeJson(INDEX_FILE, index);
 }
 
 export async function getReportEntry(
@@ -105,10 +113,8 @@ export async function getArtifactEntry(
   artifactId: string,
 ): Promise<ArtifactIndexEntry | undefined> {
   try {
-    const raw = await fs.readFile(
-      path.join(ROOT, "artifacts", `${artifactId}.json`),
-      "utf-8",
-    );
+    const artifactPath = resolveInsideDirectory(ARTIFACTS_DIR, `${artifactId}.json`);
+    const raw = await fs.readFile(artifactPath, "utf-8");
     return JSON.parse(raw) as ArtifactIndexEntry;
   } catch {
     return undefined;

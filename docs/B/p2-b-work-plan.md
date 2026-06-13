@@ -562,6 +562,63 @@ npm run verify:openclaw:realtime
 - `GET /api/v1/supervision/sessions/:id` 可反查 deny/ask/redact 记录。
 - `GET /api/v1/traces/:traceId` 可反查实时 MCP trace。
 
+### 8.5.7 Realtime MCP 工具覆盖边界 (B-P2-4)
+
+P2 实时监督白名单限定为 6 个 canonical toolId：
+
+```txt
+tool.read_file
+tool.write_file
+tool.execute_code
+tool.send_email
+tool.call_api
+tool.send_request
+```
+
+映射规则：
+
+```txt
+OpenClaw MCP tool name (agent_guard_*) → canonical toolId
+agent_guard_read_file    → tool.read_file
+agent_guard_write_file   → tool.write_file
+agent_guard_execute_code → tool.execute_code
+agent_guard_send_email   → tool.send_email
+agent_guard_call_api     → tool.call_api
+agent_guard_send_request → tool.send_request
+```
+
+边界约束：
+
+- 入口同时兼容 `read_file`、`exec`、`bash`、`fetch` 等常见别名，内部统一归一到 `tool.*`。
+- 其他 OpenClaw tool name（如 `web_search`、`query_database`、`browser`、`glob` 等）可以 normalize 到 canonical ID 用于 trace 记录，但**不自动进入监督白名单**。
+- 新增监督工具必须先更新 `REALTIME_TOOL_IDS` 常量、同步本白名单文档和 `TOOL_NAME_BY_ID` 映射。
+- 文档、UI 和报告必须强调"已监督工具列表"，不宣称覆盖所有 OpenClaw 原生工具。
+
+### 8.5.8 OpenClaw Required 验证模式 (B-P2-1)
+
+`verify-p2-api-e2e.ts` 支持 required 模式，用于 OpenClaw 环境的 sign-off：
+
+```bash
+# 普通模式：OpenClaw 不可用时 skip（optional）
+npm run verify:p2:api-e2e
+
+# Required 模式：OpenClaw 不可用即阻断
+VERIFY_OPENCLAW_REQUIRED=1 npm run verify:p2:api-e2e
+```
+
+Required 模式的行为：
+
+- OpenClaw CLI adapter 不可用时抛出错误而非 skip。
+- OpenClaw CLI 检测阶段失败时抛出错误而非 skip。
+- 当前基线（2026-06-13）：本地 OpenClaw 2026.6.1 (2e08f0f) 环境已通过 required 模式验证。
+
+P2 sign-off 必须满足：
+
+```bash
+VERIFY_OPENCLAW_REQUIRED=1 npm run verify:p2:api-e2e  # 全部 required 通过，0 optional skipped
+npm run verify:openclaw:realtime                        # OpenClaw realtime MCP 覆盖 deny/ask/redact
+```
+
 ## 9. 降级策略
 
 ```

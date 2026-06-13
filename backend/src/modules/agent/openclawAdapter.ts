@@ -1,14 +1,13 @@
 /**
  * openclawAdapter — OpenClaw CLI Adapter (AgentAdapter 实现)
  *
- * B-3 定位: 真实 OpenClaw 行为采集 + 事后影子监督（非实时阻断）
- *
- * 两段式:
- *   1. Detection pass: 执行 openclaw agent --json CLI → 解析 JSONL → 存入 parsedSessionRegistry
- *   2. 生成 PolicyPack 后: e2eRunService 用真实策略对 toolCalls 做 post-hoc replay
+ * 定位: 真实 OpenClaw 行为采集。CLI 检测阶段负责生成 trace、
+ * RiskReport、DetectionReport、RiskProfile 和 PolicyPack；实时监督
+ * 由 OpenClaw realtime MCP 入口承接。
  */
 
 import fs from "node:fs";
+import { spawn } from "node:child_process";
 import { nowIso } from "../../shared";
 import type { AgentAdapter, AgentRunMeta, AgentSession } from "./agentAdapter";
 import type { AgentMcpBridge } from "./agentMcpBridge";
@@ -19,19 +18,6 @@ import type {
   AgentUnderTest,
 } from "@agent-guard/contracts";
 import { runOpenClawSession } from "./openclawSession";
-import type { ParsedSession } from "./openclawTypes";
-
-/** 模块级 parsed session 注册表 —— e2eRunService 通过 runId 查询 */
-type ParsedEntry = { session: ParsedSession; jsonlPath: string };
-const parsedRegistry = new Map<string, ParsedEntry[]>();
-
-export function getParsedSessions(runId: string): ParsedEntry[] {
-  return parsedRegistry.get(runId) ?? [];
-}
-
-export function clearParsedRegistry(): void {
-  parsedRegistry.clear();
-}
 
 export type OpenClawAdapterOptions = {
   gatewayUrl?: string;
@@ -41,8 +27,6 @@ export type OpenClawAdapterOptions = {
 
 const CLI_CANDIDATES = [
   process.env.OPENCLAW_CLI,
-  "F:\\OpenClaw\\openclaw-local.cmd",
-  "F:\\OpenClaw\\cli\\openclaw.cmd",
   "openclaw",
 ].filter((value): value is string => Boolean(value && value.trim()));
 
@@ -126,13 +110,6 @@ export class OpenClawSession implements AgentSession {
         { cliPath: this.cliPath, timeoutMs: this.timeoutMs },
       );
 
-      // 存入 registry 供 e2eRunService 做 post-hoc replay
-      if (runMeta?.runId) {
-        const entries = parsedRegistry.get(runMeta.runId) ?? [];
-        entries.push({ session: result.session, jsonlPath: result.jsonlPath });
-        parsedRegistry.set(runMeta.runId, entries);
-      }
-
       const endedAt = nowIso();
       return {
         schemaVersion: "mvp-1",
@@ -167,17 +144,54 @@ export class OpenClawSession implements AgentSession {
 export async function checkOpenClawAvailable(cliPath?: string): Promise<{
   available: boolean; version?: string; error?: string;
 }> {
-  const { exec } = await import("node:child_process");
   const cli = resolveOpenClawCliPath(cliPath);
   return new Promise((resolve) => {
-    exec(`"${cli}" --version`, { timeout: 10_000 }, (error, stdout) => {
-      if (error) {
-        resolve({ available: false, error: `CLI not available: ${error.message?.slice(0, 100)}` });
-      } else if (stdout.trim()) {
-        resolve({ available: true, version: stdout.trim() });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const child = spawn(cli, ["--version"], {
+      windowsHide: true,
+      shell: shouldUseWindowsShell(cli),
+    });
+    const timer = setTimeout(() => {
+      child.kill();
+      if (!settled) {
+        settled = true;
+        resolve({ available: false, error: "CLI version check timed out." });
+      }
+    }, 10_000);
+
+    child.stdout?.setEncoding("utf-8");
+    child.stderr?.setEncoding("utf-8");
+    child.stdout?.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr?.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      if (settled) return;
+      settled = true;
+      resolve({ available: false, error: `CLI not available: ${error.message.slice(0, 100)}` });
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (settled) return;
+      settled = true;
+      const version = stdout.trim();
+      if (code === 0 && version) {
+        resolve({ available: true, version });
       } else {
-        resolve({ available: false, error: "Empty output" });
+        resolve({
+          available: false,
+          error: stderr.trim() ? stderr.trim().slice(0, 160) : "Empty output",
+        });
       }
     });
   });
+}
+
+function shouldUseWindowsShell(commandPath: string): boolean {
+  return process.platform === "win32" && /\.(?:cmd|bat)$/i.test(commandPath);
 }

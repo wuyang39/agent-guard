@@ -12,12 +12,14 @@ type AgentConfigIndex = {
   agents: AgentConnectionConfig[];
 };
 
+const DEFAULT_OPENCLAW_CLI_PATH = process.env.OPENCLAW_CLI?.trim() || undefined;
+
 const DEFAULT_AGENT: AgentConnectionConfig = {
   adapterKind: "openclaw",
   agentId: "agent.openclaw.demo",
   name: "OpenClaw CLI Agent",
   description: "OpenClaw local agent used by Agent Guard E2E detection.",
-  openclawCliPath: "F:\\OpenClaw\\openclaw-local.cmd",
+  openclawCliPath: DEFAULT_OPENCLAW_CLI_PATH,
   gatewayUrl: "http://127.0.0.1:18789",
   endpointUrl: "http://127.0.0.1:7001/agent/run?mode=vulnerable",
   timeoutMs: 120000,

@@ -32,7 +32,7 @@ export function DashboardPage({
         message={state.message}
         action={
           <button className="primary-button" disabled={running} onClick={onRun}>
-            {running ? "运行中..." : "运行一次 E2E 检测"}
+            {running ? "运行中..." : "生成检测策略包"}
           </button>
         }
       />
@@ -69,7 +69,7 @@ export function DashboardPage({
           <p className="eyebrow">Project Console</p>
           <h1>总览</h1>
           <p className="hero-lead">
-            从接入对象到检测、监督和报告的演示主控台。当前页面只放关键结论和下一步操作。
+            按 OpenClaw 主路线推进：内置场景检测、生成策略包、进入实时监督，再沉淀防御报告。
           </p>
         </div>
         <div className="hero-actions">
@@ -77,7 +77,7 @@ export function DashboardPage({
             {state.source === "api" ? "Live API" : "Typed mock"}
           </Badge>
           <button className="primary-button hero-button" disabled={running} onClick={onRun}>
-            {running ? "运行中..." : "运行一次 E2E 检测"}
+            {running ? "运行中..." : "生成检测策略包"}
           </button>
         </div>
         <div className="hero-metric">
@@ -172,8 +172,15 @@ export function DashboardPage({
                   <p>{latest?.policyPackId || "检测完成后生成策略包"}</p>
                 </div>
               </div>
-              <div className={`workflow-step ${latest?.defenseReportId ? "is-done" : ""}`}>
+              <div className={`workflow-step ${latest?.runtimeSessionIds.length ? "is-done" : ""}`}>
                 <span>4</span>
+                <div>
+                  <strong>实时监督</strong>
+                  <p>{latest?.runtimeSessionIds.length ? `${latest.runtimeSessionIds.length} 个监督会话` : "使用策略包监督 OpenClaw 工具调用"}</p>
+                </div>
+              </div>
+              <div className={`workflow-step ${latest?.defenseReportId ? "is-done" : ""}`}>
+                <span>5</span>
                 <div>
                   <strong>防御报告</strong>
                   <p>{latest?.defenseReportId || "监督记录沉淀后生成报告"}</p>

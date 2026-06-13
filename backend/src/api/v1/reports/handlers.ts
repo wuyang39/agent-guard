@@ -179,7 +179,15 @@ export async function artifactRoutes(app: FastifyInstance): Promise<void> {
         );
       }
 
-      const raw = await fs.readFile(entry.filePath, "utf-8");
+      const artifactPath = path.resolve(entry.filePath);
+      if (!isPathInsideDirectory(artifactPath, REPORTS_BASE)) {
+        reply.code(403);
+        return reply.type("application/json").send(
+          JSON.stringify(failure("FORBIDDEN", "Artifact path is outside the reports store.")),
+        );
+      }
+
+      const raw = await fs.readFile(artifactPath, "utf-8");
       if (entry.format === "html") {
         return reply.type("text/html").send(raw);
       }
@@ -192,4 +200,9 @@ export async function artifactRoutes(app: FastifyInstance): Promise<void> {
       );
     }
   });
+}
+
+function isPathInsideDirectory(targetPath: string, baseDir: string): boolean {
+  const relative = path.relative(baseDir, targetPath);
+  return Boolean(relative) && !relative.startsWith("..") && !path.isAbsolute(relative);
 }

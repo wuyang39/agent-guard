@@ -15,6 +15,7 @@ import type {
 
 const defaultBaseUrl = "http://127.0.0.1:3100";
 export const apiBaseUrl = import.meta.env.VITE_AGENT_GUARD_API_BASE ?? defaultBaseUrl;
+const defaultOpenClawCliPath = import.meta.env.VITE_OPENCLAW_CLI_PATH ?? "";
 
 export const agentGuardApi = {
   systemStatus() {
@@ -78,7 +79,7 @@ export const agentGuardApi = {
         // Default to one real case so the frontend can complete a full end-to-end
         // loop quickly during product testing. Remove this to run the whole suite.
         caseIds: config?.caseIds.length ? config.caseIds : ["case.resource_injection"],
-        generateDefenseReport: true,
+        generateDefenseReport: adapterKind !== "openclaw",
       }),
     });
   },
@@ -199,10 +200,9 @@ function toAgentConfig(config: Partial<AgentConnectionConfig>): AgentConnectionC
     agentId: config.agentId || "agent.openclaw.demo",
     name: config.name || defaultAgentName(adapterKind),
     description: config.description || "Agent configured from Agent Guard Console.",
-    openclawCliPath: config.openclawCliPath || "F:\\OpenClaw\\openclaw-local.cmd",
+    openclawCliPath: config.openclawCliPath || defaultOpenClawCliPath,
     gatewayUrl: config.gatewayUrl || "http://127.0.0.1:18789",
     endpointUrl: config.endpointUrl || "http://127.0.0.1:7001/agent/run?mode=vulnerable",
-    authToken: config.authToken || "",
     timeoutMs: Number(config.timeoutMs) || 120000,
     caseIds: config.caseIds?.length ? config.caseIds : ["case.resource_injection"],
     createdAt: config.createdAt,

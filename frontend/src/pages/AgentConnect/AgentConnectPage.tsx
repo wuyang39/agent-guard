@@ -72,7 +72,7 @@ export function AgentConnectPage({
           <p className="eyebrow">Agent Connection</p>
           <h1>智能体接入</h1>
           <p className="hero-lead">
-            先明确要检测和监督的对象，再把这份配置用于总览中的真实 E2E 运行。
+            OpenClaw CLI 用于内置场景检测和策略包生成；实时监督页负责执行策略并沉淀防御报告。
           </p>
         </div>
         <div className="hero-actions">
@@ -194,16 +194,6 @@ export function AgentConnectPage({
                   }
                 />
               </label>
-              <label className="field wide-field">
-                <span>API Token</span>
-                <input
-                  value={draft.authToken}
-                  onChange={(event) =>
-                    setDraft((current) => ({ ...current, authToken: event.target.value }))
-                  }
-                  type="password"
-                />
-              </label>
             </div>
           ) : null}
 
@@ -309,7 +299,6 @@ function normalizeConfig(config: AgentConnectionConfig): AgentConnectionConfig {
     openclawCliPath: config.openclawCliPath.trim(),
     gatewayUrl: config.gatewayUrl.trim(),
     endpointUrl: config.endpointUrl.trim(),
-    authToken: config.authToken.trim(),
     timeoutMs: Math.max(5000, Number(config.timeoutMs) || 120000),
     caseIds: config.caseIds.length ? config.caseIds : ["case.resource_injection"],
   };

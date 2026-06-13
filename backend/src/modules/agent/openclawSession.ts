@@ -6,11 +6,11 @@
  *   2. 解析 session JSONL → 提取 tool_call / tool_result
  *   3. 落盘原始 JSONL 作为证据链 artifact
  *
- * 注意: 本模块不做监督判定。监督判定在 e2eRunService 中，
- * PolicyPack 生成后用真实策略做 post-hoc replay。
+ * 注意: 本模块不做实时监督判定。CLI 检测只采集行为和证据；
+ * PolicyPack 生成后由 OpenClaw realtime MCP 路径执行实时监督。
  */
 
-import { exec } from "node:child_process";
+import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createId } from "../../shared";
@@ -184,44 +184,85 @@ async function spawnOpenClawAgent(
 ): Promise<OpenClawAgentOutput> {
   const cliPath = resolveOpenClawCliPath(options.cliPath);
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  // 转义 message: shell 双引号内仍需处理的特殊字符
-  const escaped = message
-    .replace(/"/g, '\\"')
-    .replace(/%/g, "%%")
-    .replace(/&/g, "^&")
-    .replace(/</g, "^<")
-    .replace(/>/g, "^>")
-    .replace(/\|/g, "^|");
   const timeoutSec = String(Math.floor(timeoutMs / 1000));
-  const cmd = `"${cliPath}" agent --session-key "${sessionKey}" --message "${escaped}" --json --timeout ${timeoutSec}`;
+  const args = [
+    "agent",
+    "--session-key",
+    sessionKey,
+    "--message",
+    message,
+    "--json",
+    "--timeout",
+    timeoutSec,
+  ];
 
   return new Promise((resolve, reject) => {
-    exec(cmd, { env: { ...process.env }, timeout: timeoutMs + 10_000 },
-      (error, stdout, stderr) => {
-        if (error && stdout.trim().length === 0) {
-          reject(new Error(
-            `Cannot execute OpenClaw CLI "${cliPath}": ${error.message}. ` +
-            `Check OPENCLAW_CLI env. stderr: ${stderr.slice(0, 300)}`,
-          ));
-          return;
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const child = spawn(cliPath, args, {
+      env: { ...process.env },
+      windowsHide: true,
+      shell: shouldUseWindowsShell(cliPath),
+    });
+    const timer = setTimeout(() => {
+      child.kill();
+      if (!settled) {
+        settled = true;
+        reject(new Error(`OpenClaw CLI timed out after ${timeoutMs}ms.`));
+      }
+    }, timeoutMs + 10_000);
+
+    child.stdout?.setEncoding("utf-8");
+    child.stderr?.setEncoding("utf-8");
+    child.stdout?.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr?.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      if (settled) return;
+      settled = true;
+      reject(new Error(
+        `Cannot execute OpenClaw CLI "${cliPath}": ${error.message}. ` +
+        `Check OPENCLAW_CLI env. stderr: ${stderr.slice(0, 300)}`,
+      ));
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (settled) return;
+      settled = true;
+
+      if (code !== 0 && stdout.trim().length === 0) {
+        reject(new Error(
+          `OpenClaw CLI "${cliPath}" exited with code ${code ?? "unknown"}. ` +
+          `stderr: ${stderr.slice(0, 300)}`,
+        ));
+        return;
+      }
+
+      try {
+        resolve(JSON.parse(stdout.trim()) as OpenClawAgentOutput);
+      } catch {
+        if (stdout.trim()) {
+          resolve({
+            runId: createId("oc_run"),
+            status: "ok",
+            summary: "completed",
+            result: { payloads: [{ text: stdout.trim(), mediaUrl: null }] },
+          });
+        } else {
+          reject(new Error(`OpenClaw empty output. stderr: ${stderr.slice(0, 300)}`));
         }
-        try {
-          resolve(JSON.parse(stdout.trim()) as OpenClawAgentOutput);
-        } catch {
-          if (stdout.trim()) {
-            resolve({
-              runId: createId("oc_run"),
-              status: "ok",
-              summary: "completed",
-              result: { payloads: [{ text: stdout.trim(), mediaUrl: null }] },
-            });
-          } else {
-            reject(new Error(`OpenClaw empty output. stderr: ${stderr.slice(0, 300)}`));
-          }
-        }
-      },
-    );
+      }
+    });
   });
+}
+
+function shouldUseWindowsShell(commandPath: string): boolean {
+  return process.platform === "win32" && /\.(?:cmd|bat)$/i.test(commandPath);
 }
 
 // ---- JSONL 解析 ----

@@ -105,7 +105,6 @@ export type AgentConnectionConfig = {
   openclawCliPath: string;
   gatewayUrl: string;
   endpointUrl: string;
-  authToken: string;
   timeoutMs: number;
   caseIds: string[];
   createdAt?: string;

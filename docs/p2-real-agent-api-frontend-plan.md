@@ -104,8 +104,9 @@ Frontend Web Console
   -> buildDetectionReport()
   -> buildAgentRiskProfile()
   -> buildSupervisionPolicyPack()
-  -> runTestCase(...policyPack)
-  -> buildDefenseReport()
+  -> set realtime active policy
+  -> OpenClaw realtime MCP supervision
+  -> buildDefenseReport() after realtime session
   -> export reports
   -> RunHistory / ReportIndex
   -> Frontend Web Console
@@ -292,7 +293,7 @@ OpenClaw 是 P2 默认演示 Agent，但实现上分成两条互补路径:
 ```txt
 OpenClaw CLI adapter:
   用 openclaw agent --json 采集真实 OpenClaw 行为和 JSONL 证据链。
-  适合生成 trace、风险画像和 DefenseReport 的 post-hoc shadow supervision。
+  适合生成 trace、RiskReport、DetectionReport、风险画像和监督策略包。
 
 OpenClaw Realtime MCP supervision:
   用 OpenClaw MCP server/proxy 配置指向 Agent Guard。
@@ -499,7 +500,7 @@ B 线负责把运行链路接到正式 API、OpenClaw 和兜底半真实 Agent:
 - 实现 OpenClaw Realtime MCP 入口，作为核心实时监督演示路径。
 - 实现 `http_sample` adapter，作为 OpenClaw 不可用时的半真实兜底。
 - 实现 `e2eRunService` 中运行阶段的 B 线部分。
-- 将 `runTestCase(...policyPack)` 纳入 API 触发链路。
+- 将 OpenClaw CLI 检测产出的 PolicyPack 接入 realtime active-policy。
 - 保障监督记录和 trace 的 ID 可被 C 查询。
 - 提供 `verify:p2:api-e2e` 和 `verify:openclaw:realtime` 的后端链路断言。
 
@@ -544,7 +545,7 @@ P2 完成时必须满足:
 - 新增 `npm run verify:openclaw:realtime`，验证 OpenClaw MCP 实时监督入口。
 - Fastify API 能启动，并能通过 API 触发完整 E2E 链路。
 - Vite + React 前端能启动，并通过 API 展示核心页面。
-- OpenClaw 能作为核心演示 Agent 被接入，并产出 trace。
+- OpenClaw 能作为核心演示 Agent 被接入，并通过 CLI 检测产出 trace 和 PolicyPack。
 - OpenClaw MCP 工具调用能实时进入 Agent Guard，并产生可查询的 deny/ask/redact 监督记录。
 - 本地 HTTP sample agent 能作为半真实兜底被接入并产出 trace；mock adapter 作为最终兜底仍可运行。
 - API 能查询 `TestRun`、`InteractionTrace`、`DetectionReport`、`AgentRiskProfile`、`SupervisionPolicyPack`、`DefenseReport`。

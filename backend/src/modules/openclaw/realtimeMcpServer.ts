@@ -9,6 +9,7 @@ import type {
   JsonValue,
   ReportArtifact,
   RiskCategory,
+  RiskReport,
   RuntimeSupervisionRecord,
   SupervisionPolicyPack,
   ToolDefinition,
@@ -142,6 +143,7 @@ export type FinalizeRealtimeDefenseResult = {
   detectionReport: DetectionReport;
   riskProfile: AgentRiskProfile;
   policyPack: SupervisionPolicyPack;
+  policyContextSource: "stored_detection" | "synthetic_fallback";
   defenseReport: ReturnType<typeof buildDefenseReport>;
   supervisionRecords: RuntimeSupervisionRecord[];
   artifacts: ReportArtifact[];
@@ -190,6 +192,11 @@ export async function finalizeRealtimeDefenseReport(
   await fs.writeFile(
     path.join(runOutputDir, "supervision-policy-pack.json"),
     JSON.stringify(policyContext.policyPack, null, 2),
+    "utf-8",
+  );
+  await fs.writeFile(
+    path.join(runOutputDir, "risk-reports.json"),
+    JSON.stringify(policyContext.riskReports, null, 2),
     "utf-8",
   );
 
@@ -262,10 +269,14 @@ export async function finalizeRealtimeDefenseReport(
     runtimeSessionId,
     policyPackId: policyContext.policyPack.policyPackId,
     traceId,
-    message: `Realtime defense report generated: ${defenseReport.defenseReportId}.`,
+    message:
+      policyContext.source === "synthetic_fallback"
+        ? `Realtime defense report generated from fallback policy context: ${defenseReport.defenseReportId}.`
+        : `Realtime defense report generated: ${defenseReport.defenseReportId}.`,
     detail: {
       defenseReportId: defenseReport.defenseReportId,
       artifactIds: artifacts.map((artifact) => artifact.artifactId),
+      policyContextSource: policyContext.source,
     },
   });
 
@@ -281,6 +292,7 @@ export async function finalizeRealtimeDefenseReport(
     detectionReport: policyContext.detectionReport,
     riskProfile: policyContext.riskProfile,
     policyPack: policyContext.policyPack,
+    policyContextSource: policyContext.source,
     defenseReport,
     supervisionRecords: records,
     artifacts,
@@ -695,6 +707,8 @@ async function loadPolicyContext(
   detectionReport: DetectionReport;
   riskProfile: AgentRiskProfile;
   policyPack: SupervisionPolicyPack;
+  riskReports: RiskReport[];
+  source: "stored_detection" | "synthetic_fallback";
 }> {
   const livePolicyPack = runtimeSessionId
     ? sessions.get(runtimeSessionId)?.policyPack
@@ -705,7 +719,7 @@ async function loadPolicyContext(
     policyPackId === "fallback"
   ) {
     const policyPack = livePolicyPack ?? buildFallbackRealtimePolicyPack();
-    return buildSyntheticPolicyContext(policyPack);
+    return { ...buildSyntheticPolicyContext(policyPack), source: "synthetic_fallback" };
   }
 
   const entry = await getReportEntry(policyPackId);
@@ -722,14 +736,17 @@ async function loadPolicyContext(
         path.join(runDir, "agent-risk-profile.json"),
       );
       if (detectionReport && riskProfile) {
-        return { detectionReport, riskProfile, policyPack };
+        const riskReports = await readJsonFile<RiskReport[]>(
+          path.join(runDir, "risk-reports.json"),
+        ) ?? [];
+        return { detectionReport, riskProfile, policyPack, riskReports, source: "stored_detection" };
       }
-      return buildSyntheticPolicyContext(policyPack);
+      return { ...buildSyntheticPolicyContext(policyPack), source: "synthetic_fallback" };
     }
   }
 
   if (livePolicyPack) {
-    return buildSyntheticPolicyContext(livePolicyPack);
+    return { ...buildSyntheticPolicyContext(livePolicyPack), source: "synthetic_fallback" };
   }
 
   throw new Error(`Policy pack ${policyPackId} not found for realtime defense report.`);
@@ -747,6 +764,7 @@ function buildSyntheticPolicyContext(policyPack: SupervisionPolicyPack): {
   detectionReport: DetectionReport;
   riskProfile: AgentRiskProfile;
   policyPack: SupervisionPolicyPack;
+  riskReports: RiskReport[];
 } {
   const generatedAt = nowIso();
   const weaknesses = new Map<string, AgentRiskProfile["weaknesses"][number]>();
@@ -837,7 +855,7 @@ function buildSyntheticPolicyContext(policyPack: SupervisionPolicyPack): {
     generatedAt,
   };
 
-  return { detectionReport, riskProfile, policyPack };
+  return { detectionReport, riskProfile, policyPack, riskReports: [] };
 }
 
 function categoryForWeaknessOrPolicy(

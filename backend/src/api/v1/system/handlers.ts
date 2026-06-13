@@ -7,25 +7,29 @@ import { listRunGroups } from "../../../storage/fileRunStore";
 
 let cachedOpenClawAvailable = false;
 let lastCheck = 0;
+let cachedOpenClawCliPath: string | undefined;
 const CHECK_TTL_MS = 30_000;
 
 export async function systemRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/v1/system/status", async (_request, _reply) => {
-    // 缓存 OpenClaw 可用性检查（30s TTL）
-    const now = Date.now();
-    if (now - lastCheck > CHECK_TTL_MS) {
-      const check = await checkOpenClawAvailable().catch(() => ({
-        available: false,
-      }));
-      cachedOpenClawAvailable = check.available;
-      lastCheck = now;
-    }
-
     const [activeAgent, agents, latestRuns] = await Promise.all([
       getActiveAgentConfig(),
       listAgentConfigs(),
       listRunGroups({ limit: 1 }),
     ]);
+
+    // 缓存 OpenClaw 可用性检查（30s TTL），但 active agent CLI 路径变化时立即重查。
+    const now = Date.now();
+    const openclawCliPath = activeAgent.openclawCliPath;
+    if (now - lastCheck > CHECK_TTL_MS || openclawCliPath !== cachedOpenClawCliPath) {
+      const check = await checkOpenClawAvailable(openclawCliPath).catch(() => ({
+        available: false,
+      }));
+      cachedOpenClawAvailable = check.available;
+      cachedOpenClawCliPath = openclawCliPath;
+      lastCheck = now;
+    }
+
     const outputDir = path.resolve(process.cwd(), "outputs");
     const outputStoreAvailable = await directoryAvailable(outputDir);
 

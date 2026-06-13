@@ -34,15 +34,16 @@ type ViewKey =
 
 const AGENT_CONFIG_STORAGE_KEY = "agent-guard.agent-config";
 
+const defaultOpenClawCliPath = import.meta.env.VITE_OPENCLAW_CLI_PATH ?? "";
+
 const defaultAgentConfig: AgentConnectionConfig = {
   adapterKind: "openclaw",
   agentId: "agent.openclaw.demo",
   name: "OpenClaw CLI Agent",
-  description: "OpenClaw local agent used by Agent Guard E2E detection.",
-  openclawCliPath: "F:\\OpenClaw\\openclaw-local.cmd",
+  description: "OpenClaw CLI detection target used to generate a realtime supervision policy pack.",
+  openclawCliPath: defaultOpenClawCliPath,
   gatewayUrl: "http://127.0.0.1:18789",
   endpointUrl: "http://127.0.0.1:7001/agent/run?mode=vulnerable",
-  authToken: "",
   timeoutMs: 120000,
   caseIds: ["case.resource_injection"],
 };
@@ -85,13 +86,26 @@ export function App() {
     });
   }, []);
 
-  function hasCompleteDetails(runGroup: CLineRunGroup | undefined): boolean {
+  function hasDetectionDetails(runGroup: CLineRunGroup | undefined): boolean {
     return Boolean(
       runGroup &&
       runGroup.detectionReportId &&
-      runGroup.defenseReportId &&
       runGroup.traceIds.length > 0,
     );
+  }
+
+  async function loadDefenseForRunGroup(runGroup: CLineRunGroup): Promise<void> {
+    if (!runGroup.defenseReportId) {
+      setDefenseState({
+        status: "empty",
+        message: "检测和策略包已生成。进入实施监督，完成实时监督会话后再生成防御报告。",
+      });
+      return;
+    }
+
+    setDefenseState({ status: "loading" });
+    const defense = await agentGuardApi.defenseDetail(runGroup.defenseReportId);
+    setDefenseState({ status: "ready", data: defense, source: "api" });
   }
 
   const loadDetails = useCallback(async (summary: CLineDashboardSummary) => {
@@ -112,9 +126,9 @@ export function App() {
       return;
     }
 
-    if (!hasCompleteDetails(latest)) {
+    if (!hasDetectionDetails(latest)) {
       const fallbackRunGroup = summary.recentRunGroups.find((runGroup) =>
-        hasCompleteDetails(runGroup),
+        hasDetectionDetails(runGroup),
       );
       if (!fallbackRunGroup) {
         const runStatus = latest.status === "failed" ? "failed" : "incomplete";
@@ -136,48 +150,31 @@ export function App() {
         return;
       }
 
-      setDetectionState({
-        status: "empty",
-        message: `Latest run group failed before reports were generated. Showing the most recent completed reports instead.`,
-      });
-      setDefenseState({
-        status: "empty",
-        message: `Latest run group failed before reports were generated. Showing the most recent completed reports instead.`,
-      });
-      setTraceState({
-        status: "empty",
-        message: `Latest run group failed before reports were generated. Showing the most recent completed trace instead.`,
-      });
-
       setDetectionState({ status: "loading" });
-      setDefenseState({ status: "loading" });
       setTraceState({ status: "loading" });
 
-      const [detection, defense, trace] = await Promise.all([
+      const [detection, trace] = await Promise.all([
         agentGuardApi.detectionDetail(fallbackRunGroup.detectionReportId),
-        agentGuardApi.defenseDetail(fallbackRunGroup.defenseReportId),
         agentGuardApi.traceDetail(fallbackRunGroup.traceIds[0]),
       ]);
 
       setDetectionState({ status: "ready", data: detection, source: "api" });
-      setDefenseState({ status: "ready", data: defense, source: "api" });
       setTraceState({ status: "ready", data: trace, source: "api" });
+      await loadDefenseForRunGroup(fallbackRunGroup);
       return;
     }
 
     setDetectionState({ status: "loading" });
-    setDefenseState({ status: "loading" });
     setTraceState({ status: "loading" });
 
-    const [detection, defense, trace] = await Promise.all([
+    const [detection, trace] = await Promise.all([
       agentGuardApi.detectionDetail(latest.detectionReportId),
-      agentGuardApi.defenseDetail(latest.defenseReportId),
       agentGuardApi.traceDetail(latest.traceIds[0]),
     ]);
 
     setDetectionState({ status: "ready", data: detection, source: "api" });
-    setDefenseState({ status: "ready", data: defense, source: "api" });
     setTraceState({ status: "ready", data: trace, source: "api" });
+    await loadDefenseForRunGroup(latest);
   }, []);
 
   const loadInitial = useCallback(async () => {
@@ -236,7 +233,7 @@ export function App() {
     setSummaryState({ status: "loading" });
     try {
       const saved = await agentGuardApi.saveAgent(agentConfig);
-      const nextConfig = { ...agentConfig, ...saved.agent, authToken: agentConfig.authToken };
+      const nextConfig = { ...agentConfig, ...saved.agent };
       persistAgentConfig(nextConfig);
       const started = await agentGuardApi.runE2E(nextConfig);
       if (started.runGroup?.runGroupId) {
@@ -283,7 +280,7 @@ export function App() {
     persistAgentConfig(next);
     try {
       const saved = await agentGuardApi.saveAgent(next);
-      persistAgentConfig({ ...next, ...saved.agent, authToken: next.authToken });
+      persistAgentConfig({ ...next, ...saved.agent });
     } catch (error) {
       console.error("Failed to persist agent config to API", error);
     }

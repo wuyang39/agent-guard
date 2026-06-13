@@ -108,11 +108,3 @@ export type ParsedToolResult = {
   text: string;
   timestamp: string;
 };
-
-/** Shadow supervision record — 事后影子判定 */
-export type ShadowSupervisionMeta = {
-  mode: "post_hoc";
-  wouldAction: string;
-  reason: string;
-  originalToolCall: ParsedToolCall;
-};

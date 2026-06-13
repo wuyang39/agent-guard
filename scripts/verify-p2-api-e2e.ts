@@ -18,8 +18,11 @@
 import { buildApp } from "../backend/src/app";
 import type { FastifyInstance } from "fastify";
 import { createId } from "../backend/src/shared/ids";
+import { spawn, type ChildProcess } from "node:child_process";
+import path from "node:path";
 
 const API_PORT = Number(process.env.VERIFY_API_PORT ?? 32100);
+const ROOT_DIR = path.resolve(process.cwd());
 
 function assert(condition: boolean, message: string): asserts condition {
   if (!condition) throw new Error(`❌ ${message}`);
@@ -86,8 +89,9 @@ async function main(): Promise<void> {
 
   const app = await buildApp({ logger: false });
   let passed = 0;
-  let skipped = 0;
+  let optionalSkipped = 0;
   let serverStopped = false;
+  let sampleAgentProcess: ChildProcess | undefined;
 
   // listen 供 SSE 等真实 HTTP 测试
   await app.listen({ port: API_PORT, host: "127.0.0.1" });
@@ -99,6 +103,8 @@ async function main(): Promise<void> {
   };
 
   try {
+    sampleAgentProcess = await ensureSampleAgent();
+
     // ================================================================
     // 1. System Status
     // ================================================================
@@ -138,22 +144,14 @@ async function main(): Promise<void> {
     // ================================================================
     console.log("\n3. POST /test-runs/e2e (http_sample)");
     const httpPort = process.env.SAMPLE_AGENT_PORT ?? "7001";
-    try {
-      const httpRun = await injectJson(app, "POST", "/api/v1/test-runs/e2e", {
-        adapterKind: "http_sample", agent: { name: "B5 HTTP" },
-        connection: { endpointUrl: `http://localhost:${httpPort}/agent/run` },
-        caseIds: ["case.resource_injection"], generateDefenseReport: true,
-      });
-      ok(httpRun);
-      console.log("   OK");
-      passed++;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes("ECONNREFUSED") || msg.includes("Cannot connect") || msg.includes("fetch failed")) {
-        console.log(`   SKIP: HTTP agent not running (${msg.slice(0, 80)})`);
-        skipped++;
-      } else { console.log(`   SKIP: ${msg.slice(0, 120)}`); skipped++; }
-    }
+    const httpRun = await injectJson(app, "POST", "/api/v1/test-runs/e2e", {
+      adapterKind: "http_sample", agent: { name: "B5 HTTP" },
+      connection: { endpointUrl: `http://localhost:${httpPort}/agent/run` },
+      caseIds: ["case.resource_injection"], generateDefenseReport: true,
+    });
+    ok(httpRun);
+    console.log("   OK");
+    passed++;
 
     // ================================================================
     // 4. OpenClaw adapter (带短超时保护)
@@ -171,10 +169,19 @@ async function main(): Promise<void> {
         passed++;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        console.log(`   SKIP: ${msg.slice(0, 120)}`);
-        skipped++;
+        if (process.env.VERIFY_OPENCLAW_REQUIRED === "1") {
+          throw err;
+        }
+        console.log(`   OPTIONAL SKIP: ${msg.slice(0, 120)}`);
+        optionalSkipped++;
       }
-    } else { console.log("   SKIP: CLI not available"); skipped++; }
+    } else {
+      if (process.env.VERIFY_OPENCLAW_REQUIRED === "1") {
+        throw new Error("OpenClaw CLI is required but not available");
+      }
+      console.log("   OPTIONAL SKIP: CLI not available");
+      optionalSkipped++;
+    }
 
     // ================================================================
     // 5. GET /test-runs + /test-runs/:id
@@ -311,10 +318,52 @@ async function main(): Promise<void> {
     // DONE
     // ================================================================
     console.log(`\n${"=".repeat(60)}`);
-    console.log(`✅ P2 API E2E VERIFIED (${passed} passed, ${skipped} skipped)`);
+    console.log(`✅ P2 API E2E VERIFIED (${passed} required passed, ${optionalSkipped} optional skipped)`);
     console.log("=".repeat(60));
   } finally {
+    if (sampleAgentProcess && !sampleAgentProcess.killed) {
+      sampleAgentProcess.kill();
+    }
     await stop();
+  }
+}
+
+async function ensureSampleAgent(): Promise<ChildProcess | undefined> {
+  const port = process.env.SAMPLE_AGENT_PORT ?? "7001";
+  const healthUrl = `http://127.0.0.1:${port}/health`;
+  if (await sampleAgentHealthy(healthUrl)) {
+    return undefined;
+  }
+
+  const child = spawn(process.execPath, ["scripts/sample-agent-server.mjs"], {
+    cwd: ROOT_DIR,
+    env: { ...process.env, SAMPLE_AGENT_PORT: port },
+    stdio: "ignore",
+    windowsHide: true,
+  });
+
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    if (await sampleAgentHealthy(healthUrl)) {
+      return child;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+
+  child.kill();
+  throw new Error(`HTTP sample agent did not become ready at ${healthUrl}`);
+}
+
+async function sampleAgentHealthy(healthUrl: string): Promise<boolean> {
+  try {
+    const response = await fetch(healthUrl, {
+      signal: AbortSignal.timeout(800),
+    });
+    if (!response.ok) return false;
+    const payload = (await response.json()) as { ok?: boolean };
+    return payload.ok === true;
+  } catch {
+    return false;
   }
 }
 

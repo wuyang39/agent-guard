@@ -7,6 +7,7 @@
  */
 
 import fs from "node:fs";
+import path from "node:path";
 import { spawn } from "node:child_process";
 import { nowIso } from "../../shared";
 import type { AgentAdapter, AgentRunMeta, AgentSession } from "./agentAdapter";
@@ -32,17 +33,43 @@ const CLI_CANDIDATES = [
 
 export function resolveOpenClawCliPath(preferredCliPath?: string): string {
   if (preferredCliPath?.trim()) {
-    return preferredCliPath.trim();
+    return resolveCommandPath(preferredCliPath.trim());
   }
   for (const candidate of CLI_CANDIDATES) {
     if (candidate === "openclaw") {
-      return candidate;
+      return resolveCommandPath(candidate);
     }
     if (fs.existsSync(candidate)) {
       return candidate;
     }
   }
-  return process.env.OPENCLAW_CLI ?? "openclaw";
+  return resolveCommandPath(process.env.OPENCLAW_CLI ?? "openclaw");
+}
+
+export type OpenClawCliInvocation = {
+  command: string;
+  argsPrefix: string[];
+  displayPath: string;
+  shell: boolean;
+};
+
+export function resolveOpenClawCliInvocation(preferredCliPath?: string): OpenClawCliInvocation {
+  const cliPath = resolveOpenClawCliPath(preferredCliPath);
+  const npmShimTarget = resolveWindowsNpmShimTarget(cliPath);
+  if (npmShimTarget) {
+    return {
+      command: process.execPath,
+      argsPrefix: [npmShimTarget],
+      displayPath: cliPath,
+      shell: false,
+    };
+  }
+  return {
+    command: cliPath,
+    argsPrefix: [],
+    displayPath: cliPath,
+    shell: shouldUseWindowsShell(cliPath),
+  };
 }
 
 const DEFAULT_GATEWAY =
@@ -144,14 +171,14 @@ export class OpenClawSession implements AgentSession {
 export async function checkOpenClawAvailable(cliPath?: string): Promise<{
   available: boolean; version?: string; error?: string;
 }> {
-  const cli = resolveOpenClawCliPath(cliPath);
+  const cli = resolveOpenClawCliInvocation(cliPath);
   return new Promise((resolve) => {
     let stdout = "";
     let stderr = "";
     let settled = false;
-    const child = spawn(cli, ["--version"], {
+    const child = spawn(cli.command, [...cli.argsPrefix, "--version"], {
       windowsHide: true,
-      shell: shouldUseWindowsShell(cli),
+      shell: cli.shell,
     });
     const timer = setTimeout(() => {
       child.kill();
@@ -194,4 +221,42 @@ export async function checkOpenClawAvailable(cliPath?: string): Promise<{
 
 function shouldUseWindowsShell(commandPath: string): boolean {
   return process.platform === "win32" && /\.(?:cmd|bat)$/i.test(commandPath);
+}
+
+function resolveWindowsNpmShimTarget(commandPath: string): string | undefined {
+  if (process.platform !== "win32" || !/\.cmd$/i.test(commandPath)) {
+    return undefined;
+  }
+  const target = path.join(
+    path.dirname(commandPath),
+    "node_modules",
+    "openclaw",
+    "openclaw.mjs",
+  );
+  return fs.existsSync(target) ? target : undefined;
+}
+
+function resolveCommandPath(commandPath: string): string {
+  if (process.platform !== "win32") return commandPath;
+  if (path.isAbsolute(commandPath) || commandPath.includes("\\") || commandPath.includes("/")) {
+    return commandPath;
+  }
+
+  const pathEntries = (process.env.PATH ?? "").split(path.delimiter).filter(Boolean);
+  const pathExts = (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD")
+    .split(";")
+    .map((ext) => ext.toLowerCase());
+  const hasExtension = path.extname(commandPath).length > 0;
+  const candidates = hasExtension
+    ? [commandPath]
+    : [...pathExts.map((ext) => `${commandPath}${ext}`), commandPath];
+
+  for (const entry of pathEntries) {
+    for (const candidate of candidates) {
+      const fullPath = path.join(entry, candidate);
+      if (fs.existsSync(fullPath)) return fullPath;
+    }
+  }
+
+  return commandPath;
 }

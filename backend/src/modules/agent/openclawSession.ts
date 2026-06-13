@@ -23,7 +23,7 @@ import type {
   ParsedToolCall,
   ParsedToolResult,
 } from "./openclawTypes";
-import { resolveOpenClawCliPath } from "./openclawAdapter";
+import { resolveOpenClawCliInvocation } from "./openclawAdapter";
 
 const DEFAULT_TIMEOUT_MS = Number(process.env.OPENCLAW_TIMEOUT_MS ?? 120_000);
 const JSONL_OUTPUT_DIR = path.resolve(
@@ -182,10 +182,11 @@ async function spawnOpenClawAgent(
   message: string,
   options: OpenClawRunOptions,
 ): Promise<OpenClawAgentOutput> {
-  const cliPath = resolveOpenClawCliPath(options.cliPath);
+  const cli = resolveOpenClawCliInvocation(options.cliPath);
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const timeoutSec = String(Math.floor(timeoutMs / 1000));
   const args = [
+    ...cli.argsPrefix,
     "agent",
     "--session-key",
     sessionKey,
@@ -200,10 +201,10 @@ async function spawnOpenClawAgent(
     let stdout = "";
     let stderr = "";
     let settled = false;
-    const child = spawn(cliPath, args, {
+    const child = spawn(cli.command, args, {
       env: { ...process.env },
       windowsHide: true,
-      shell: shouldUseWindowsShell(cliPath),
+      shell: cli.shell,
     });
     const timer = setTimeout(() => {
       child.kill();
@@ -226,7 +227,7 @@ async function spawnOpenClawAgent(
       if (settled) return;
       settled = true;
       reject(new Error(
-        `Cannot execute OpenClaw CLI "${cliPath}": ${error.message}. ` +
+        `Cannot execute OpenClaw CLI "${cli.displayPath}": ${error.message}. ` +
         `Check OPENCLAW_CLI env. stderr: ${stderr.slice(0, 300)}`,
       ));
     });
@@ -237,7 +238,7 @@ async function spawnOpenClawAgent(
 
       if (code !== 0 && stdout.trim().length === 0) {
         reject(new Error(
-          `OpenClaw CLI "${cliPath}" exited with code ${code ?? "unknown"}. ` +
+          `OpenClaw CLI "${cli.displayPath}" exited with code ${code ?? "unknown"}. ` +
           `stderr: ${stderr.slice(0, 300)}`,
         ));
         return;
@@ -259,10 +260,6 @@ async function spawnOpenClawAgent(
       }
     });
   });
-}
-
-function shouldUseWindowsShell(commandPath: string): boolean {
-  return process.platform === "win32" && /\.(?:cmd|bat)$/i.test(commandPath);
 }
 
 // ---- JSONL 解析 ----

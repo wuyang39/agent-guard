@@ -4,6 +4,8 @@ coverage/
 backend/dist/
 frontend/dist/
 frontend/node_modules/
+__pycache__/
+*.pyc
 .env
 .env.*
 outputs/*

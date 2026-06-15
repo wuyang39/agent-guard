@@ -5,6 +5,7 @@ import type {
   JsonObject,
   JsonValue,
   PyritAttackLibrary,
+  PyritJailbreakTemplateIndex,
   RedTeamScenarioSet,
   TestContext,
   TestOracle,
@@ -65,6 +66,10 @@ export async function loadConfigRepository(
     pyritAttackLibrary: await readJsonObject<PyritAttackLibrary>(
       root,
       "pyrit_attack_library.json",
+    ),
+    pyritJailbreakTemplateIndex: await readJsonObject<PyritJailbreakTemplateIndex>(
+      root,
+      "pyrit_jailbreak_template_index.json",
     ),
   };
 

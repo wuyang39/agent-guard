@@ -22,6 +22,8 @@
 - `A/p1-a-line-aig-adaptation-plan.md`: A 线 P1 攻击库、Sandbox 扩展和 AIG `mcp-scan` / `agent-scan` 可迁移能力分析。
 - `A/p2-pyrit-understanding-record.md`: A 线对本地定制 PyRIT 项目的结构审阅、可迁移能力、已迁入内容和已知限制。
 - `A/p2-a-line-pyrit-integration-plan.md`: A 线 P2 PyRIT 攻击库迁移、配置接入、sandbox 适配、验证和后续开发计划。
+- `A/p2-built-in-test-data-guide.md`: A 线 P2 内置 case、OpenClaw/fallback 分层、AIG/PyRIT 来源和答辩说明。
+- `A/p2-pyrit-python-bridge-contract.md`: 可选 PyRIT Python bridge 的输入输出、边界、烟测和后续接入约束。
 - `B/p1-b-runtime-supervision-work-plan.md`: B 线 P1 运行时监督实现计划。
 - `B/superpowers/**`: B 线历史设计规格和实现计划。
 - `p1-supervision-defense-plan.md`: P1 检测画像驱动的 Agent 运行时监督、策略包生成和防御报告规划。

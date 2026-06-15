@@ -126,6 +126,16 @@ export function validateConfigRepository(
     "pyritAttackLibrary.samples",
     repository.pyritAttackLibrary.samples.map((sample) => sample.sampleId),
   );
+  assertUnique(
+    issues,
+    "pyritJailbreakTemplateIndex.groups",
+    repository.pyritJailbreakTemplateIndex.groups.map((group) => group.groupId),
+  );
+  assertUnique(
+    issues,
+    "pyritJailbreakTemplateIndex.templates",
+    repository.pyritJailbreakTemplateIndex.templates.map((template) => template.templateId),
+  );
 
   const toolIds = new Set(repository.tools.map((tool) => tool.toolId));
   const resourceIds = new Set(
@@ -447,6 +457,7 @@ export function validateConfigRepository(
     pyritFamilyIds,
     pyritConverterIds,
   });
+  validatePyritJailbreakTemplateIndex(issues, repository);
 
   return {
     ok: !issues.some((issue) => issue.severity === "error"),
@@ -590,6 +601,86 @@ function validatePyritAttackLibrary(
         scenarioId,
         `pyritAttackLibrary.samples.${sample.sampleId}.metadata.scenarioIds`,
       );
+    }
+  }
+}
+
+function validatePyritJailbreakTemplateIndex(
+  issues: ValidationIssue[],
+  repository: ConfigRepository,
+): void {
+  const index = repository.pyritJailbreakTemplateIndex;
+  if (index.schemaVersion !== schemaVersion) {
+    issues.push({
+      severity: "error",
+      code: "invalid_schema_version",
+      message: `PyRIT jailbreak template index "${index.indexId}" must use schemaVersion "${schemaVersion}".`,
+      path: "pyritJailbreakTemplateIndex.schemaVersion",
+    });
+  }
+
+  if (!index.sourcePath) {
+    issues.push({
+      severity: "error",
+      code: "missing_pyrit_source_path",
+      message: "PyRIT jailbreak template index must include sourcePath.",
+      path: "pyritJailbreakTemplateIndex.sourcePath",
+    });
+  }
+
+  if (index.totalTemplates !== index.templates.length) {
+    issues.push({
+      severity: "error",
+      code: "pyrit_template_count_mismatch",
+      message: `PyRIT jailbreak template totalTemplates ${index.totalTemplates} does not match templates length ${index.templates.length}.`,
+      path: "pyritJailbreakTemplateIndex.totalTemplates",
+    });
+  }
+
+  const groupIds = new Set(index.groups.map((group) => group.groupId));
+  const actualGroupCounts = new Map<string, number>();
+
+  for (const template of index.templates) {
+    assertReference(
+      issues,
+      groupIds,
+      template.groupId,
+      `pyritJailbreakTemplateIndex.templates.${template.templateId}.groupId`,
+    );
+
+    actualGroupCounts.set(
+      template.groupId,
+      (actualGroupCounts.get(template.groupId) ?? 0) + 1,
+    );
+
+    if (!template.sourcePath || !template.sha256) {
+      issues.push({
+        severity: "error",
+        code: "invalid_pyrit_template_reference",
+        message: `PyRIT jailbreak template "${template.templateId}" must include sourcePath and sha256.`,
+        path: `pyritJailbreakTemplateIndex.templates.${template.templateId}`,
+      });
+    }
+
+    if (template.byteLength <= 0) {
+      issues.push({
+        severity: "error",
+        code: "invalid_pyrit_template_reference",
+        message: `PyRIT jailbreak template "${template.templateId}" must have positive byteLength.`,
+        path: `pyritJailbreakTemplateIndex.templates.${template.templateId}.byteLength`,
+      });
+    }
+  }
+
+  for (const group of index.groups) {
+    const actualCount = actualGroupCounts.get(group.groupId) ?? 0;
+    if (group.templateCount !== actualCount) {
+      issues.push({
+        severity: "error",
+        code: "pyrit_template_group_count_mismatch",
+        message: `PyRIT jailbreak template group "${group.groupId}" declares ${group.templateCount} templates but index contains ${actualCount}.`,
+        path: `pyritJailbreakTemplateIndex.groups.${group.groupId}.templateCount`,
+      });
     }
   }
 }

@@ -11,7 +11,12 @@ export const PYRIT_NATIVE_CONVERTER_IDS = [
   "pyrit.converter.base64",
   "pyrit.converter.rot13",
   "pyrit.converter.caesar_3",
+  "pyrit.converter.atbash",
+  "pyrit.converter.binary_16",
+  "pyrit.converter.morse",
+  "pyrit.converter.flip",
   "pyrit.converter.leetspeak",
+  "pyrit.converter.unicode_confusable",
   "pyrit.converter.character_space",
   "pyrit.converter.zero_width",
   "pyrit.converter.string_join_dash",
@@ -55,8 +60,18 @@ function convertPrompt(converterId: string, prompt: string): string {
       return rot13(prompt);
     case "pyrit.converter.caesar_3":
       return caesar(prompt, 3);
+    case "pyrit.converter.atbash":
+      return atbash(prompt);
+    case "pyrit.converter.binary_16":
+      return binary(prompt, 16);
+    case "pyrit.converter.morse":
+      return morse(prompt);
+    case "pyrit.converter.flip":
+      return [...prompt].reverse().join("");
     case "pyrit.converter.leetspeak":
       return leetspeak(prompt);
+    case "pyrit.converter.unicode_confusable":
+      return unicodeConfusable(prompt);
     case "pyrit.converter.character_space":
       return characterSpace(prompt);
     case "pyrit.converter.zero_width":
@@ -95,6 +110,95 @@ function caesar(value: string, offset: number): string {
   });
 }
 
+function atbash(value: string): string {
+  return value.replace(/[a-zA-Z0-9]/g, (char) => {
+    const code = char.charCodeAt(0);
+    if (code >= 48 && code <= 57) {
+      return String.fromCharCode(57 - (code - 48));
+    }
+    if (code >= 65 && code <= 90) {
+      return String.fromCharCode(90 - (code - 65));
+    }
+    return String.fromCharCode(122 - (code - 97));
+  });
+}
+
+function binary(value: string, bitsPerChar: 8 | 16 | 32): string {
+  const spaceBinary = " ".codePointAt(0)!.toString(2).padStart(bitsPerChar, "0");
+  return value
+    .split(" ")
+    .map((word) =>
+      [...word]
+        .map((char) => char.codePointAt(0)!.toString(2).padStart(bitsPerChar, "0"))
+        .join(" "),
+    )
+    .join(` ${spaceBinary} `);
+}
+
+function morse(value: string): string {
+  const mapping: Record<string, string> = {
+    A: ".-",
+    B: "-...",
+    C: "-.-.",
+    D: "-..",
+    E: ".",
+    F: "..-.",
+    G: "--.",
+    H: "....",
+    I: "..",
+    J: ".---",
+    K: "-.-",
+    L: ".-..",
+    M: "--",
+    N: "-.",
+    O: "---",
+    P: ".--.",
+    Q: "--.-",
+    R: ".-.",
+    S: "...",
+    T: "-",
+    U: "..-",
+    V: "...-",
+    W: ".--",
+    X: "-..-",
+    Y: "-.--",
+    Z: "--..",
+    "0": "-----",
+    "1": ".----",
+    "2": "..---",
+    "3": "...--",
+    "4": "....-",
+    "5": ".....",
+    "6": "-....",
+    "7": "--...",
+    "8": "---..",
+    "9": "----.",
+    "'": ".----.",
+    '"': ".-..-.",
+    ":": "---...",
+    "@": ".--.-.",
+    ",": "--..--",
+    ".": ".-.-.-",
+    "!": "-.-.--",
+    "?": "..--..",
+    "-": "-....-",
+    "/": "-..-.",
+    "+": ".-.-.",
+    "=": "-...-",
+    "(": "-.--.",
+    ")": "-.--.-",
+    "&": ".-...",
+    " ": "/",
+  };
+  const text = value
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .join(" ");
+  return [...text.toUpperCase()]
+    .map((char) => mapping[char] ?? "........")
+    .join(" ");
+}
+
 function leetspeak(value: string): string {
   const substitutions: Record<string, string> = {
     a: "4",
@@ -114,6 +218,38 @@ function leetspeak(value: string): string {
     .split("")
     .map((char) => substitutions[char.toLowerCase()] ?? char)
     .join("");
+}
+
+function unicodeConfusable(value: string): string {
+  const substitutions: Record<string, string> = {
+    A: "\u0391",
+    B: "\u0392",
+    C: "\u03F9",
+    E: "\u0395",
+    H: "\u0397",
+    I: "\u0399",
+    K: "\u039A",
+    M: "\u039C",
+    N: "\u039D",
+    O: "\u039F",
+    P: "\u03A1",
+    S: "\u0405",
+    T: "\u03A4",
+    X: "\u03A7",
+    Y: "\u03A5",
+    Z: "\u0396",
+    a: "\u0430",
+    c: "\u0441",
+    e: "\u0435",
+    i: "\u0456",
+    j: "\u0458",
+    o: "\u043E",
+    p: "\u0440",
+    s: "\u0455",
+    x: "\u0445",
+    y: "\u0443",
+  };
+  return [...value].map((char) => substitutions[char] ?? char).join("");
 }
 
 function characterSpace(value: string): string {

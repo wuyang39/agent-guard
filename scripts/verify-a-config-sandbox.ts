@@ -31,7 +31,12 @@ async function main(): Promise<void> {
   assert(repository.redTeamScenarioSet.scenarios.length >= 9, "loads red_team_scenarios.json");
   assert(repository.policyTemplates.length >= 16, "loads supervision_policy_templates.json");
   assert(repository.pyritAttackLibrary.samples.length >= 5, "loads pyrit_attack_library.json samples");
-  assert(repository.pyritAttackLibrary.converterCatalog.length >= 10, "loads PyRIT converter catalog");
+  assert(repository.pyritAttackLibrary.converterCatalog.length >= 17, "loads PyRIT converter catalog");
+  assert(repository.pyritJailbreakTemplateIndex.totalTemplates === 165, "loads PyRIT jailbreak template index");
+  assert(
+    repository.pyritJailbreakTemplateIndex.templates.every((template) => !("value" in (template as Record<string, unknown>))),
+    "PyRIT jailbreak template index excludes full template values",
+  );
 
   const { contexts, testOracles } = await loadTestContexts(configsDir, agent);
   assert(contexts.length === repository.testCases.filter((item) => item.enabled).length, "builds one TestContext per enabled test case");

@@ -1,7 +1,7 @@
 # A 线 P2 PyRIT 定制项目理解记录
 
 日期: 2026-06-15  
-状态: 已审阅并完成第一批迁移  
+状态: 已审阅并完成 P2-A 迁移与收尾
 本地来源: `E:\XinAnProject\pyrit`  
 迁入位置: `third_party/pyrit_adapted`
 
@@ -169,6 +169,27 @@ PyRIT 原 score 体系包含:
 
 本轮尚未把这些统计字段进入 `RiskReport` 契约，因为 C 线对报告语义负责。A 线先在文档和 `configs/pyrit_attack_library.json` 中记录该评估模型，后续可作为 C 线报告增强输入。
 
+### 3.7 Jailbreak 模板元数据索引
+
+P2-A 收尾阶段新增 `configs/pyrit_jailbreak_template_index.json`:
+
+- 覆盖 165 个 vendored PyRIT jailbreak YAML 模板。
+- 按 `root`、`Arth_Singh`、`multi_parameter` 和 `pliny/*` 分组。
+- 每条记录包含 `templateId`、名称、来源路径、作者、参数、harm category、大小和 SHA-256。
+- 不包含 YAML `value` 字段，不把完整 jailbreak prompt 复制进配置、API 或报告。
+
+生成入口:
+
+```bash
+npm run pyrit:index-templates
+```
+
+验证入口:
+
+```bash
+npm run verify:a-pyrit-library
+```
+
 ## 4. 本轮已落地到 Agent Guard 的内容
 
 代码和契约:
@@ -182,6 +203,7 @@ PyRIT 原 score 体系包含:
 配置:
 
 - 新增 `configs/pyrit_attack_library.json`。
+- 新增 `configs/pyrit_jailbreak_template_index.json`。
 - 新增 5 个 PyRIT 派生 test case。
 - 新增 5 个 PyRIT 派生 oracle。
 - 新增 prompt extraction、encoding evasion、debug access leakage、memory poisoning 等场景。
@@ -191,13 +213,15 @@ PyRIT 原 score 体系包含:
 验证:
 
 - 新增 `npm run verify:a-pyrit-library`。
+- 新增 `npm run pyrit:index-templates`。
+- 新增 `npm run pyrit:bridge-smoke`，作为可选 Python bridge 边界烟测。
 - `npm run verify:all` 已包含 PyRIT 迁移验证。
 - `verify:a-config-sandbox` 已覆盖新增 PyRIT debug 和 memory sandbox 行为。
 
 ## 5. 已知风险和后续处理
 
-1. Python bridge 尚未接入。当前 PyRIT 源码已迁入，但真实 PyRIT attack execution 不在主链路中。
-2. `api.py` 的 batch 接口依赖缺失的 `attack_runner.py`，不能直接宣称可用。
-3. 完整 jailbreak 模板很强，不应在正式 demo 页面直接展示全文。展示层应只展示攻击类型、来源和安全 fixture。
+1. Python bridge 尚未接入默认主链路。当前已补 `docs/A/p2-pyrit-python-bridge-contract.md` 和 `npm run pyrit:bridge-smoke`，真实 PyRIT attack execution 仍需显式启用。
+2. `api.py` 的 batch 接口依赖缺失的 `attack_runner.py`，不能直接宣称可用；P2 只把它作为 vendored reference 和后续 bridge 输入。
+3. 完整 jailbreak 模板很强，不应在正式 demo 页面直接展示全文。P2 仅暴露 metadata-only index。
 4. 新增 risk rule 仍是 A/C 协作区，C 线需要确认报告解释。
 5. OpenClaw 默认 smoke 仍保持最稳的 `case.resource_injection`，新 PyRIT case 先作为 candidate 和 fallback demo case。

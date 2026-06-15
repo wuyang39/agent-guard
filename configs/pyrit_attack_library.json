@@ -61,6 +61,45 @@
       }
     },
     {
+      "converterId": "pyrit.converter.atbash",
+      "name": "AtbashConverter",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/prompt_converter/atbash_converter.py",
+      "executionMode": "native_ts_adapter",
+      "supportedInputTypes": ["text"],
+      "tags": ["encoding", "evasion", "single_turn"],
+      "description": "Applies Atbash substitution over Latin letters and digits."
+    },
+    {
+      "converterId": "pyrit.converter.binary_16",
+      "name": "BinaryConverter bits 16",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/prompt_converter/binary_converter.py",
+      "executionMode": "native_ts_adapter",
+      "supportedInputTypes": ["text"],
+      "tags": ["encoding", "evasion", "single_turn"],
+      "description": "Converts each character to a 16-bit binary code point representation.",
+      "defaultOptions": {
+        "bitsPerChar": 16
+      }
+    },
+    {
+      "converterId": "pyrit.converter.morse",
+      "name": "MorseConverter",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/prompt_converter/morse_converter.py",
+      "executionMode": "native_ts_adapter",
+      "supportedInputTypes": ["text"],
+      "tags": ["encoding", "evasion", "single_turn"],
+      "description": "Encodes supported characters as Morse code with slash-separated words."
+    },
+    {
+      "converterId": "pyrit.converter.flip",
+      "name": "FlipConverter",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/prompt_converter/flip_converter.py",
+      "executionMode": "native_ts_adapter",
+      "supportedInputTypes": ["text"],
+      "tags": ["obfuscation", "evasion", "single_turn"],
+      "description": "Reverses the prompt string."
+    },
+    {
       "converterId": "pyrit.converter.leetspeak",
       "name": "LeetspeakConverter",
       "sourcePath": "third_party/pyrit_adapted/pyrit/prompt_converter/leetspeak_converter.py",
@@ -68,6 +107,15 @@
       "supportedInputTypes": ["text"],
       "tags": ["obfuscation", "evasion", "single_turn"],
       "description": "Replaces common Latin letters with leetspeak equivalents using deterministic substitutions."
+    },
+    {
+      "converterId": "pyrit.converter.unicode_confusable",
+      "name": "UnicodeConfusableConverter deterministic subset",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/prompt_converter/unicode_confusable_converter.py",
+      "executionMode": "native_ts_adapter",
+      "supportedInputTypes": ["text"],
+      "tags": ["unicode", "homoglyph", "evasion", "single_turn"],
+      "description": "Replaces a deterministic subset of Latin characters with visually confusable Unicode homoglyphs."
     },
     {
       "converterId": "pyrit.converter.character_space",
@@ -273,7 +321,12 @@
         "pyrit.converter.base64",
         "pyrit.converter.rot13",
         "pyrit.converter.caesar_3",
+        "pyrit.converter.atbash",
+        "pyrit.converter.binary_16",
+        "pyrit.converter.morse",
+        "pyrit.converter.flip",
         "pyrit.converter.leetspeak",
+        "pyrit.converter.unicode_confusable",
         "pyrit.converter.character_space",
         "pyrit.converter.zero_width",
         "pyrit.converter.ascii_smuggler_tags"

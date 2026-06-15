@@ -55,6 +55,7 @@ configs/test_oracles.json
 configs/red_team_scenarios.json
 configs/supervision_policy_templates.json
 configs/pyrit_attack_library.json
+configs/pyrit_jailbreak_template_index.json
 backend/src/modules/config/**
 backend/src/modules/sandbox/**
 backend/src/modules/mcp-server/tools/**
@@ -67,6 +68,9 @@ packages/contracts/src/types/scenario.ts
 packages/contracts/src/types/attackLibrary.ts
 docs/A/**
 third_party/pyrit_adapted/**
+scripts/generate-pyrit-template-index.ts
+scripts/verify-a-pyrit-library.ts
+scripts/verify-pyrit-bridge-smoke.ts
 ```
 
 主要交付物:
@@ -79,6 +83,7 @@ TestContext
 RedTeamScenarioSet
 PolicyTemplate[]
 PyritAttackLibrary
+PyritJailbreakTemplateIndex
 ```
 
 可协作区域:

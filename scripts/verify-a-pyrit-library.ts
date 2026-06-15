@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { access, readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { loadConfigRepository } from "../backend/src/modules/config/loadTestContext";
@@ -62,6 +63,16 @@ async function main(): Promise<void> {
   assert(library.libraryId === "pyrit_adapted.p2", "loads PyRIT adapted library");
   assert(library.attackFamilies.length >= 6, "loads PyRIT attack families");
   assert(library.samples.length >= 5, "loads PyRIT mapped samples");
+  assert(library.converterCatalog.length >= 17, "loads extended PyRIT converter catalog");
+
+  const templateIndex = repository.pyritJailbreakTemplateIndex;
+  assert(templateIndex.indexId === "pyrit.jailbreak_templates.p2", "loads PyRIT jailbreak template index");
+  assert(templateIndex.totalTemplates === 165, "indexes all vendored PyRIT jailbreak templates");
+  assert(templateIndex.templates.length === templateIndex.totalTemplates, "template index count matches templates");
+  assert(
+    templateIndex.templates.every((template) => !("value" in (template as Record<string, unknown>))),
+    "template index does not copy full jailbreak prompt values",
+  );
 
   await assertPathExists(path.join(vendorDir, "run_attack_cli.py"));
   await assertPathExists(path.join(vendorDir, "api.py"));
@@ -102,8 +113,27 @@ async function main(): Promise<void> {
   const caesar = applyPyritPromptConverter("pyrit.converter.caesar_3", "Az9");
   assert(caesar.output === "Dc2", "Caesar converter output");
 
+  const atbash = applyPyritPromptConverter("pyrit.converter.atbash", "Az9");
+  assert(atbash.output === "Za0", "Atbash converter output");
+
+  const binary = applyPyritPromptConverter("pyrit.converter.binary_16", "A B");
+  assert(
+    binary.output === "0000000001000001 0000000000100000 0000000001000010",
+    "Binary converter output",
+  );
+
+  const morse = applyPyritPromptConverter("pyrit.converter.morse", "SOS 2");
+  assert(morse.output === "... --- ... / ..---", "Morse converter output");
+
+  const flip = applyPyritPromptConverter("pyrit.converter.flip", "abc");
+  assert(flip.output === "cba", "Flip converter output");
+
   const leet = applyPyritPromptConverter("pyrit.converter.leetspeak", "steal token");
   assert(leet.output === "57341 70k3n", "Leetspeak converter output");
+
+  const unicodeConfusable = applyPyritPromptConverter("pyrit.converter.unicode_confusable", "attack");
+  assert(unicodeConfusable.output !== "attack", "Unicode confusable converter changes prompt");
+  assert(unicodeConfusable.output.includes("\u0430"), "Unicode confusable converter uses homoglyphs");
 
   const zeroWidth = applyPyritPromptConverter("pyrit.converter.zero_width", "abc");
   assert(zeroWidth.output.length > 3, "Zero-width converter expands prompt");
@@ -114,6 +144,17 @@ async function main(): Promise<void> {
 
   const secretHits = await scanForRealSecrets(vendorDir);
   assert(secretHits.length === 0, `vendored PyRIT contains possible real secrets: ${secretHits.slice(0, 5).join("; ")}`);
+
+  const templateFiles = (await listFiles(path.resolve(rootDir, templateIndex.sourcePath))).filter((filePath) =>
+    /\.ya?ml$/i.test(filePath),
+  );
+  assert(templateFiles.length === templateIndex.totalTemplates, "template index matches vendored template file count");
+  for (const template of templateIndex.templates) {
+    await assertPathExists(path.resolve(rootDir, template.sourcePath));
+    const content = await readFile(path.resolve(rootDir, template.sourcePath), "utf8");
+    const sha256 = createHash("sha256").update(content).digest("hex");
+    assert(sha256 === template.sha256, `template hash matches ${template.templateId}`);
+  }
 
   console.log("PASS: A line PyRIT adapted library verification");
 }

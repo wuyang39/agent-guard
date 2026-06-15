@@ -504,6 +504,7 @@ third_party/pyrit_adapted
 npm run typecheck
 npm run verify:a-config-sandbox
 npm run verify:a-pyrit-library
+npm run pyrit:bridge-smoke
 ```
 
 仍需在最终提交前执行:
@@ -529,3 +530,120 @@ C 线:
 - `configs/pyrit_attack_library.json` 是攻击库目录和来源映射，不是风险结论。
 - PyRIT `evaluator.py` 的 grade / similarity / iter_count / mutate_total_count / success variance 可作为后续报告统计增强候选。
 - 不建议前端直接展示完整 jailbreak 模板全文，应展示 family、sample、case、risk category 和安全 fixture。
+
+## 12. 2026-06-15 A 线 P2 收尾补齐
+
+分支: `docs/a-line-aig-review-plan`
+
+本轮在上一批 PyRIT 迁入基础上继续补齐 P2-A 未落成的收尾项，目标是让 A 线 P2 达到“可交接、可验证、可答辩说明”的完成状态。
+
+### 12.1 模板索引
+
+新增:
+
+```txt
+configs/pyrit_jailbreak_template_index.json
+scripts/generate-pyrit-template-index.ts
+```
+
+实现内容:
+
+- 从 `third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates` 生成 metadata-only 索引。
+- 共索引 165 个 PyRIT jailbreak YAML 模板。
+- 分组覆盖 `root`、`Arth_Singh`、`multi_parameter` 和 `pliny/*`。
+- 每条模板记录只保存路径、参数、作者、来源、harm category、大小和 SHA-256。
+- 不复制 YAML `value` 字段，不让完整 jailbreak prompt 进入配置、API 或报告默认视图。
+
+新增命令:
+
+```bash
+npm run pyrit:index-templates
+```
+
+### 12.2 Converter 扩展
+
+`backend/src/modules/sandbox/pyritPromptMutators.ts` 新增确定性 TS adapter:
+
+- Atbash
+- Binary 16
+- Morse
+- Flip
+- Unicode confusable
+
+当前 native TS adapter 合计 15 个:
+
+```txt
+base64, rot13, caesar_3, atbash, binary_16, morse, flip,
+leetspeak, unicode_confusable, character_space, zero_width,
+string_join_dash, suffix_append_marker, url_encode, ascii_smuggler_tags
+```
+
+`configs/pyrit_attack_library.json` 已同步 converter catalog 和 encoding evasion sample 的 converter 矩阵。
+
+### 12.3 Python bridge 边界
+
+新增:
+
+```txt
+docs/A/p2-pyrit-python-bridge-contract.md
+scripts/verify-pyrit-bridge-smoke.ts
+```
+
+新增命令:
+
+```bash
+npm run pyrit:bridge-smoke
+```
+
+该命令只做 Python 可用性、vendored Python 语法和已知 batch runner 边界检查；不调用真实模型、不发网络、不写 evaluator DB。真实执行 PyRIT attack executor 仍需后续按 bridge 契约单独启用。
+
+### 12.4 内置数据说明
+
+新增:
+
+```txt
+docs/A/p2-built-in-test-data-guide.md
+```
+
+文档内容:
+
+- 解释 A 线内置数据是系统测试夹具，不是被测 MCP Server。
+- 梳理 12 个当前 enabled case 的场景、攻击入口、关键工具和展示点。
+- 固化 `defaultOpenClawCaseIds`、`openClawCandidateCaseIds`、`fallbackAdapterCaseIds`、`fallbackOnlyCaseIds` 的语义。
+- 说明 AIG 与 PyRIT 的引用边界。
+- 给 B/C 提供 case 使用和展示建议。
+
+### 12.5 契约与文档同步
+
+已同步:
+
+- `packages/contracts/src/types/attackLibrary.ts`
+- `backend/src/modules/config/**`
+- `docs/contracts.md`
+- `docs/interfaces.md`
+- `docs/ownership.md`
+- `docs/architecture.md`
+- `docs/README.md`
+- `README.md`
+- `third_party/pyrit_adapted/README.agent-guard.md`
+
+`ConfigRepository` 当前新增 `pyritJailbreakTemplateIndex`，并提供 `pyritJailbreakTemplatesById` 索引。`validateConfigRepository()` 会校验 schema、ID 唯一、group count、模板总数、sourcePath、hash 和正整数 byteLength。
+
+### 12.6 当前 P2-A 完成判断
+
+A 线 P2 当前已完成:
+
+1. 定制 PyRIT 源码受控迁入。
+2. PyRIT attack library 配置和契约接入。
+3. 165 个 jailbreak 模板 metadata-only 索引。
+4. 15 个确定性 converter 的 TS adapter。
+5. 5 个 PyRIT 派生 runnable case。
+6. P2 demo case 分层。
+7. 可选 Python bridge 草案和 smoke。
+8. 内置数据说明、接口、契约、ownership 和工作日志更新。
+
+仍需要 B/C 决策但不阻塞 P2-A:
+
+- 哪些 PyRIT candidate case 提升为 OpenClaw 默认 smoke。
+- 是否实现真实 PyRIT Python bridge。
+- PyRIT evaluator 统计字段是否进入正式报告和前端展示。

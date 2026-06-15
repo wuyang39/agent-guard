@@ -923,11 +923,14 @@ P1/P2 新增配置文件:
 configs/red_team_scenarios.json
 configs/supervision_policy_templates.json
 configs/pyrit_attack_library.json
+configs/pyrit_jailbreak_template_index.json
 ```
 
 `configs/red_team_scenarios.json` 用于维护红队场景索引、用例归属和样本引用。`configs/supervision_policy_templates.json` 用于维护可复用策略模板。根据某个 Agent 检测结果生成的 `SupervisionPolicyPack` 不得写回策略模板配置文件。
 
 P2 新增的 `configs/pyrit_attack_library.json` 用于维护迁入 PyRIT 攻击库的来源、converter catalog、attack family 和 sample 到 case 的映射。它是攻击库目录对象，不是风险判定结果。
+
+P2 新增的 `configs/pyrit_jailbreak_template_index.json` 用于维护迁入 PyRIT jailbreak YAML 模板的元数据索引。它不得包含模板全文或 `value` 字段，只能包含路径、分组、参数、作者、哈希、大小和安全说明。
 
 P1 配置对象:
 
@@ -1020,6 +1023,41 @@ type PyritAttackSample = {
   successMarkers: string[]
   safetyNotes: string
   metadata?: JsonObject
+}
+
+type PyritJailbreakTemplateIndex = {
+  schemaVersion: "mvp-1"
+  indexId: string
+  name: string
+  description: string
+  sourcePath: string
+  generatedAt: string
+  totalTemplates: number
+  groups: PyritJailbreakTemplateGroup[]
+  templates: PyritJailbreakTemplateRef[]
+  safetyNotes: string
+}
+
+type PyritJailbreakTemplateGroup = {
+  groupId: string
+  name: string
+  sourcePath: string
+  templateCount: number
+}
+
+type PyritJailbreakTemplateRef = {
+  templateId: string
+  name: string
+  groupId: string
+  sourcePath: string
+  sourceName?: string
+  authors: string[]
+  parameters: string[]
+  dataType?: string
+  harmCategories: string[]
+  isGeneralTechnique?: boolean
+  byteLength: number
+  sha256: string
 }
 ```
 

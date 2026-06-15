@@ -16,6 +16,41 @@ export type PyritAttackLibrary = {
   samples: PyritAttackSample[];
 };
 
+export type PyritJailbreakTemplateIndex = {
+  schemaVersion: SchemaVersion;
+  indexId: string;
+  name: string;
+  description: string;
+  sourcePath: string;
+  generatedAt: string;
+  totalTemplates: number;
+  groups: PyritJailbreakTemplateGroup[];
+  templates: PyritJailbreakTemplateRef[];
+  safetyNotes: string;
+};
+
+export type PyritJailbreakTemplateGroup = {
+  groupId: string;
+  name: string;
+  sourcePath: string;
+  templateCount: number;
+};
+
+export type PyritJailbreakTemplateRef = {
+  templateId: string;
+  name: string;
+  groupId: string;
+  sourcePath: string;
+  sourceName?: string;
+  authors: string[];
+  parameters: string[];
+  dataType?: string;
+  harmCategories: string[];
+  isGeneralTechnique?: boolean;
+  byteLength: number;
+  sha256: string;
+};
+
 export type PyritSourceMetadata = {
   upstreamName: string;
   upstreamVersion?: string;

@@ -50,6 +50,7 @@ configs/test_oracles.json
 configs/red_team_scenarios.json
 configs/supervision_policy_templates.json
 configs/pyrit_attack_library.json
+configs/pyrit_jailbreak_template_index.json
 AgentUnderTest
 ```
 
@@ -60,6 +61,7 @@ TestContext
 RedTeamScenarioSet
 PolicyTemplate[]
 PyritAttackLibrary
+PyritJailbreakTemplateIndex
 ```
 
 输出给 C:
@@ -90,6 +92,8 @@ TestOracle
 ```
 
 `PyritAttackLibrary` 是 A 线 P2 新增的攻击库目录对象，用于描述 vendored PyRIT 来源、converter catalog、attack family 和 sample 到 case 的映射。它不是运行时风险结论，不能替代 `InteractionTrace` 或 C 线报告。
+
+`PyritJailbreakTemplateIndex` 是 A 线 P2 新增的 PyRIT jailbreak 模板元数据索引。它只保存路径、分组、参数、作者、哈希和大小，不保存模板全文；前端和报告只能把它作为来源说明或覆盖率统计。
 
 其中 `sandbox` 必须包含:
 

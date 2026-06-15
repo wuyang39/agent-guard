@@ -15,6 +15,7 @@ outputs/        Generated runs, traces, reports, and exported artifacts
 docs/           Architecture, directory, interface, ownership, and development specifications
 scripts/        Engineering scripts for validation, build, and local startup
 tests/          Cross-system end-to-end tests
+third_party/    Vendored reference sources used by line-specific adapters, such as the A-line PyRIT adapted attack library
 ```
 
 Line-specific implementation notes are grouped under `docs/A/`, `docs/B/`, and `docs/C/`.

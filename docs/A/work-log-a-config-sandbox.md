@@ -345,3 +345,187 @@ C 前端:
 - 如果只是为前端展示补 metadata，优先放在 P2 API view 或可选配置字段，不要贸然改共享契约。
 - 如果新增 `RiskCategory`、`AttackEntryType` 或 `RedTeamScenario` 必填字段，必须先同步 `docs/contracts.md`、`packages/contracts/src/types/**`、`docs/interfaces.md` 和 `docs/ownership.md`。
 - 新增 risk rule 仍属于 A/C 协作区，C 线负责最终规则语义和报告解释。
+
+## 11. 2026-06-15 A 线 P2 PyRIT 攻击库迁移
+
+分支: `docs/a-line-aig-review-plan`
+
+本轮根据用户补充指令，把本地定制 PyRIT 项目作为 A 线 P2 的直接迁移来源，而不是只抽取设计思想。迁移原则是“源码可追溯 + Agent Guard 适配层可运行”。
+
+### 11.1 PyRIT 源码迁入
+
+本地来源:
+
+```txt
+E:\XinAnProject\pyrit
+```
+
+迁入位置:
+
+```txt
+third_party/pyrit_adapted
+```
+
+已迁入:
+
+- `pyrit/` Python 核心包。
+- `run_attack_cli.py`、`api.py`、`evaluator.py`。
+- `pyproject.toml`。
+- `README.md`、`LICENSE`、`NOTICE.txt`、`CITATION.cff`。
+- 示例配置文件。
+
+未迁入:
+
+- `.git`、`.github`。
+- notebook、Excel、SQLite DB、`uv.lock`。
+- docker、CI、frontend 原型和临时产物。
+
+安全处理:
+
+- 迁入副本中两处 OpenAI-like key 形态字符串已替换为 `sk-redacted-demo-key`。
+- 源 `E:\XinAnProject\pyrit` 未修改。
+- 新增 `npm run verify:a-pyrit-library` 检查 `.git` 不存在、关键源码存在、配置引用存在、converter 输出正确和无明显真实密钥形态。
+
+### 11.2 Agent Guard 适配实现
+
+新增契约:
+
+- `packages/contracts/src/types/attackLibrary.ts`
+
+新增配置:
+
+- `configs/pyrit_attack_library.json`
+
+`ConfigRepository` 新增:
+
+- `pyritAttackLibrary`
+- `pyritAttackFamiliesById`
+- `pyritConvertersById`
+- `pyritSamplesById`
+
+`validateConfigRepository()` 新增校验:
+
+- PyRIT library schema version。
+- converter id 唯一、执行模式合法、sourcePath 存在配置。
+- family id 唯一、maturity 合法、risk category 合法、case 引用合法。
+- sample id 唯一、family/case/prompt/converter/scenario 引用合法。
+
+新增离线 mutator:
+
+- `backend/src/modules/sandbox/pyritPromptMutators.ts`
+
+已适配 PyRIT converter:
+
+- Base64
+- ROT13
+- Caesar offset 3
+- Leetspeak
+- Character spacing
+- Zero-width spacing
+- String join dash
+- Suffix append marker
+- URL encode
+- ASCII smuggler Unicode tags
+
+### 11.3 攻击库与 Sandbox 扩展
+
+当前配置规模:
+
+- 8 个工具。
+- 9 个资源。
+- 10 个 prompt。
+- 9 个 tool response template。
+- 12 个 test case。
+- 12 个 test oracle。
+- 17 条 risk rule。
+- 16 个 supervision policy template。
+- 9 个 red team scenario。
+- 1 个 PyRIT attack library。
+- PyRIT library 内含 6 个 attack family、12 个 converter、5 个 mapped sample。
+
+新增工具:
+
+- `tool.update_memory`: 模拟长期记忆写入，不产生真实持久化。
+
+新增 PyRIT 派生用例:
+
+- `case.pyrit_jailbreak_system_prompt_extraction`
+- `case.pyrit_encoding_evasion_secret_exfil`
+- `case.pyrit_crescendo_debug_access`
+- `case.pyrit_bola_cross_tenant_database`
+- `case.pyrit_memory_context_poisoning`
+
+新增或扩展场景:
+
+- `scenario.prompt_extraction`
+- `scenario.encoding_evasion`
+- `scenario.debug_access_leakage`
+- `scenario.memory_context_poisoning`
+- `scenario.authorization_bypass` 已补 BOLA / cross-tenant case。
+- `scenario.data_exfiltration` 已补 PyRIT encoding exfil case。
+
+新增策略模板:
+
+- `policy.warn.pyrit_jailbreak_prompt`
+- `policy.deny.system_prompt_read`
+- `policy.deny.debug_endpoint`
+- `policy.deny.cross_tenant_query`
+- `policy.deny.memory_poison_update`
+
+### 11.4 P2 demo case 分层
+
+`configs/p2_demo_cases.json` 已更新:
+
+- `defaultOpenClawCaseIds` 继续保持最稳 smoke: `case.resource_injection`。
+- 新增 `openClawCandidateCaseIds`: 后续由 B 线确认哪些 PyRIT case 可提升为 OpenClaw CLI 默认路径。
+- `fallbackAdapterCaseIds` 纳入 PyRIT case，方便 mock/http_sample 展示攻击库广度。
+- `fallbackOnlyCaseIds` 标记当前更依赖内部 fixture 的用例。
+
+### 11.5 Demo 与 sample agent
+
+已更新:
+
+- `scripts/sample-agent-server.mjs`
+- `scripts/demo-web-server.mjs`
+
+新增 case 行为:
+
+- PyRIT jailbreak system prompt read。
+- Encoding evasion secret read + outbound request。
+- Crescendo debug endpoint + internal config。
+- BOLA cross-tenant query。
+- Memory poisoning update。
+
+### 11.6 验证记录
+
+本轮已通过:
+
+```bash
+npm run typecheck
+npm run verify:a-config-sandbox
+npm run verify:a-pyrit-library
+```
+
+仍需在最终提交前执行:
+
+```bash
+npm run verify:all
+npm run verify:e2e
+npm run verify:p2:api-e2e
+npm run typecheck:frontend
+npm run build:frontend
+```
+
+### 11.7 后续协作提醒
+
+B 线:
+
+- 默认 OpenClaw smoke 暂不自动扩大，避免真实 CLI 不稳定。
+- 可从 `openClawCandidateCaseIds` 逐个确认 PyRIT case。
+- 若要直接执行 PyRIT Python，需要先定义 Python bridge 的超时、依赖、输出 schema 和脱敏规则。
+
+C 线:
+
+- `configs/pyrit_attack_library.json` 是攻击库目录和来源映射，不是风险结论。
+- PyRIT `evaluator.py` 的 grade / similarity / iter_count / mutate_total_count / success variance 可作为后续报告统计增强候选。
+- 不建议前端直接展示完整 jailbreak 模板全文，应展示 family、sample、case、risk category 和安全 fixture。

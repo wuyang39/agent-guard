@@ -917,14 +917,17 @@ configs/test_oracles.json
 
 `configs/test_oracles.json` 只用于验收测试、回归测试和评测统计，不得进入运行时 `TestContext`。
 
-P1 新增配置文件:
+P1/P2 新增配置文件:
 
 ```txt
 configs/red_team_scenarios.json
 configs/supervision_policy_templates.json
+configs/pyrit_attack_library.json
 ```
 
 `configs/red_team_scenarios.json` 用于维护红队场景索引、用例归属和样本引用。`configs/supervision_policy_templates.json` 用于维护可复用策略模板。根据某个 Agent 检测结果生成的 `SupervisionPolicyPack` 不得写回策略模板配置文件。
+
+P2 新增的 `configs/pyrit_attack_library.json` 用于维护迁入 PyRIT 攻击库的来源、converter catalog、attack family 和 sample 到 case 的映射。它是攻击库目录对象，不是风险判定结果。
 
 P1 配置对象:
 
@@ -957,6 +960,66 @@ type PolicyTemplate = {
   riskCategory: RiskCategory
   match: RuleMatchCondition
   reasonTemplate: string
+}
+
+type PyritAttackLibrary = {
+  schemaVersion: "mvp-1"
+  libraryId: string
+  name: string
+  description: string
+  source: PyritSourceMetadata
+  converterCatalog: PyritPromptConverterSpec[]
+  attackFamilies: PyritAttackFamily[]
+  samples: PyritAttackSample[]
+}
+
+type PyritSourceMetadata = {
+  upstreamName: string
+  upstreamVersion?: string
+  localSourcePath: string
+  importedPath: string
+  importedAt: string
+  includedComponents: string[]
+  excludedComponents: string[]
+  notes?: string
+}
+
+type PyritPromptConverterSpec = {
+  converterId: string
+  name: string
+  sourcePath: string
+  executionMode: "native_ts_adapter" | "python_reference" | "metadata_only"
+  supportedInputTypes: string[]
+  tags: string[]
+  description: string
+  defaultOptions?: JsonObject
+}
+
+type PyritAttackFamily = {
+  familyId: string
+  name: string
+  sourcePaths: string[]
+  strategy: string
+  maturity: "vendored_reference" | "config_integrated" | "runtime_integrated"
+  recommendedCaseIds: string[]
+  riskCategories: RiskCategory[]
+  notes?: string
+}
+
+type PyritAttackSample = {
+  sampleId: string
+  familyId: string
+  name: string
+  sourcePath: string
+  caseIds: string[]
+  promptIds: string[]
+  converterIds: string[]
+  attackEntryType: AttackEntryType
+  riskCategories: RiskCategory[]
+  objective: string
+  successMarkers: string[]
+  safetyNotes: string
+  metadata?: JsonObject
 }
 ```
 

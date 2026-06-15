@@ -1,6 +1,7 @@
 export type {
   ExpectedOutcome,
   FieldMatcher,
+  PyritAttackLibrary,
   RiskRule,
   TestCase,
   TestContext,

@@ -4,6 +4,7 @@ import type {
   AgentUnderTest,
   JsonObject,
   JsonValue,
+  PyritAttackLibrary,
   RedTeamScenarioSet,
   TestContext,
   TestOracle,
@@ -61,6 +62,10 @@ export async function loadConfigRepository(
       "red_team_scenarios.json",
     ),
     policyTemplates: await readJsonArray(root, "supervision_policy_templates.json"),
+    pyritAttackLibrary: await readJsonObject<PyritAttackLibrary>(
+      root,
+      "pyrit_attack_library.json",
+    ),
   };
 
   const validation = validateConfigRepository(repository);

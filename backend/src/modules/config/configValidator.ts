@@ -48,6 +48,22 @@ const supervisionTargetTypes = new Set([
   "code_execution",
   "agent_message",
 ]);
+const pyritExecutionModes = new Set([
+  "native_ts_adapter",
+  "python_reference",
+  "metadata_only",
+]);
+const pyritMaturityLevels = new Set([
+  "vendored_reference",
+  "config_integrated",
+  "runtime_integrated",
+]);
+const attackEntryTypes = new Set([
+  "malicious_user_prompt",
+  "malicious_resource",
+  "tool_response_injection",
+  "multi_turn_induction",
+]);
 
 export function validateConfigRepository(
   repository: ConfigRepository,
@@ -95,6 +111,21 @@ export function validateConfigRepository(
     "policyTemplates",
     repository.policyTemplates.map((template) => template.policyTemplateId),
   );
+  assertUnique(
+    issues,
+    "pyritAttackLibrary.converterCatalog",
+    repository.pyritAttackLibrary.converterCatalog.map((converter) => converter.converterId),
+  );
+  assertUnique(
+    issues,
+    "pyritAttackLibrary.attackFamilies",
+    repository.pyritAttackLibrary.attackFamilies.map((family) => family.familyId),
+  );
+  assertUnique(
+    issues,
+    "pyritAttackLibrary.samples",
+    repository.pyritAttackLibrary.samples.map((sample) => sample.sampleId),
+  );
 
   const toolIds = new Set(repository.tools.map((tool) => tool.toolId));
   const resourceIds = new Set(
@@ -112,6 +143,16 @@ export function validateConfigRepository(
   );
   const policyTemplateIds = new Set(
     repository.policyTemplates.map((template) => template.policyTemplateId),
+  );
+  const scenarioIds = new Set(
+    repository.redTeamScenarioSet.scenarios.map((scenario) => scenario.scenarioId),
+  );
+  const promptIdsForPyrit = new Set(repository.prompts.map((prompt) => prompt.promptId));
+  const pyritFamilyIds = new Set(
+    repository.pyritAttackLibrary.attackFamilies.map((family) => family.familyId),
+  );
+  const pyritConverterIds = new Set(
+    repository.pyritAttackLibrary.converterCatalog.map((converter) => converter.converterId),
   );
   const riskTagIds = new Set<string>();
 
@@ -399,10 +440,165 @@ export function validateConfigRepository(
     }
   }
 
+  validatePyritAttackLibrary(issues, repository, {
+    caseIds,
+    promptIds: promptIdsForPyrit,
+    scenarioIds,
+    pyritFamilyIds,
+    pyritConverterIds,
+  });
+
   return {
     ok: !issues.some((issue) => issue.severity === "error"),
     issues,
   };
+}
+
+function validatePyritAttackLibrary(
+  issues: ValidationIssue[],
+  repository: ConfigRepository,
+  refs: {
+    caseIds: Set<string>;
+    promptIds: Set<string>;
+    scenarioIds: Set<string>;
+    pyritFamilyIds: Set<string>;
+    pyritConverterIds: Set<string>;
+  },
+): void {
+  const library = repository.pyritAttackLibrary;
+  if (library.schemaVersion !== schemaVersion) {
+    issues.push({
+      severity: "error",
+      code: "invalid_schema_version",
+      message: `PyRIT attack library "${library.libraryId}" must use schemaVersion "${schemaVersion}".`,
+      path: "pyritAttackLibrary.schemaVersion",
+    });
+  }
+
+  if (!library.source.importedPath || !library.source.localSourcePath) {
+    issues.push({
+      severity: "error",
+      code: "missing_pyrit_source_path",
+      message: "PyRIT attack library source must include localSourcePath and importedPath.",
+      path: "pyritAttackLibrary.source",
+    });
+  }
+
+  for (const converter of library.converterCatalog) {
+    if (!pyritExecutionModes.has(converter.executionMode)) {
+      issues.push({
+        severity: "error",
+        code: "invalid_pyrit_execution_mode",
+        message: `Unknown PyRIT converter execution mode "${converter.executionMode}".`,
+        path: `pyritAttackLibrary.converterCatalog.${converter.converterId}.executionMode`,
+      });
+    }
+    if (!converter.sourcePath) {
+      issues.push({
+        severity: "error",
+        code: "missing_pyrit_source_path",
+        message: `PyRIT converter "${converter.converterId}" must include sourcePath.`,
+        path: `pyritAttackLibrary.converterCatalog.${converter.converterId}.sourcePath`,
+      });
+    }
+  }
+
+  for (const family of library.attackFamilies) {
+    if (!pyritMaturityLevels.has(family.maturity)) {
+      issues.push({
+        severity: "error",
+        code: "invalid_pyrit_maturity",
+        message: `Unknown PyRIT family maturity "${family.maturity}".`,
+        path: `pyritAttackLibrary.attackFamilies.${family.familyId}.maturity`,
+      });
+    }
+    for (const category of family.riskCategories) {
+      if (!riskCategories.has(category)) {
+        issues.push({
+          severity: "error",
+          code: "invalid_risk_category",
+          message: `Unknown risk category "${category}".`,
+          path: `pyritAttackLibrary.attackFamilies.${family.familyId}.riskCategories`,
+        });
+      }
+    }
+    for (const caseId of family.recommendedCaseIds) {
+      assertReference(
+        issues,
+        refs.caseIds,
+        caseId,
+        `pyritAttackLibrary.attackFamilies.${family.familyId}.recommendedCaseIds`,
+      );
+    }
+  }
+
+  for (const sample of library.samples) {
+    assertReference(
+      issues,
+      refs.pyritFamilyIds,
+      sample.familyId,
+      `pyritAttackLibrary.samples.${sample.sampleId}.familyId`,
+    );
+
+    if (!attackEntryTypes.has(sample.attackEntryType)) {
+      issues.push({
+        severity: "error",
+        code: "invalid_attack_entry_type",
+        message: `Unknown attack entry type "${sample.attackEntryType}".`,
+        path: `pyritAttackLibrary.samples.${sample.sampleId}.attackEntryType`,
+      });
+    }
+
+    for (const category of sample.riskCategories) {
+      if (!riskCategories.has(category)) {
+        issues.push({
+          severity: "error",
+          code: "invalid_risk_category",
+          message: `Unknown risk category "${category}".`,
+          path: `pyritAttackLibrary.samples.${sample.sampleId}.riskCategories`,
+        });
+      }
+    }
+    for (const caseId of sample.caseIds) {
+      assertReference(
+        issues,
+        refs.caseIds,
+        caseId,
+        `pyritAttackLibrary.samples.${sample.sampleId}.caseIds`,
+      );
+    }
+    for (const promptId of sample.promptIds) {
+      assertReference(
+        issues,
+        refs.promptIds,
+        promptId,
+        `pyritAttackLibrary.samples.${sample.sampleId}.promptIds`,
+      );
+    }
+    for (const converterId of sample.converterIds) {
+      assertReference(
+        issues,
+        refs.pyritConverterIds,
+        converterId,
+        `pyritAttackLibrary.samples.${sample.sampleId}.converterIds`,
+      );
+    }
+    for (const scenarioId of getStringArray(sample.metadata?.scenarioIds)) {
+      assertReference(
+        issues,
+        refs.scenarioIds,
+        scenarioId,
+        `pyritAttackLibrary.samples.${sample.sampleId}.metadata.scenarioIds`,
+      );
+    }
+  }
+}
+
+function getStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter((item): item is string => typeof item === "string");
 }
 
 function validateMatchCondition(

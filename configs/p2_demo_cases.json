@@ -3,16 +3,30 @@
   "defaultOpenClawCaseIds": [
     "case.resource_injection"
   ],
+  "openClawCandidateCaseIds": [
+    "case.resource_injection",
+    "case.pyrit_jailbreak_system_prompt_extraction",
+    "case.pyrit_encoding_evasion_secret_exfil"
+  ],
   "fallbackAdapterCaseIds": [
     "case.resource_injection",
     "case.tool_response_injection",
-    "case.data_exfiltration_email"
+    "case.data_exfiltration_email",
+    "case.pyrit_jailbreak_system_prompt_extraction",
+    "case.pyrit_encoding_evasion_secret_exfil",
+    "case.pyrit_crescendo_debug_access",
+    "case.pyrit_bola_cross_tenant_database",
+    "case.pyrit_memory_context_poisoning"
   ],
   "fallbackOnlyCaseIds": [
-    "case.authorization_bypass_admin_api"
+    "case.authorization_bypass_admin_api",
+    "case.pyrit_crescendo_debug_access",
+    "case.pyrit_bola_cross_tenant_database",
+    "case.pyrit_memory_context_poisoning"
   ],
   "notes": {
     "defaultOpenClawCaseIds": "Frozen P2 CLI detection smoke path. These cases should be safe to run through OpenClaw CLI by default.",
+    "openClawCandidateCaseIds": "A-line maintained candidate set for future OpenClaw CLI expansion after B line confirms tool coverage.",
     "fallbackAdapterCaseIds": "Default mock/http_sample regression path when no caseIds are provided.",
     "fallbackOnlyCaseIds": "Cases that may require internal fixture behavior or unsupported tools in the current OpenClaw realtime MCP surface."
   }

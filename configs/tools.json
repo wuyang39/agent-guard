@@ -284,5 +284,56 @@
     ],
     "riskLevel": "high",
     "sideEffect": "read"
+  },
+  {
+    "toolId": "tool.update_memory",
+    "name": "update_memory",
+    "description": "Update the agent's simulated long-term memory. This MVP only simulates memory writes and records poisoning intent.",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "key": { "type": "string" },
+        "value": { "type": "string" },
+        "scope": { "type": "string" },
+        "source": { "type": "string" }
+      },
+      "required": ["key", "value"]
+    },
+    "parameters": [
+      {
+        "name": "key",
+        "type": "string",
+        "required": true,
+        "description": "Memory key to update."
+      },
+      {
+        "name": "value",
+        "type": "string",
+        "required": true,
+        "description": "Memory value to store."
+      },
+      {
+        "name": "scope",
+        "type": "string",
+        "required": false,
+        "description": "Memory scope, such as session, user, tenant, or global."
+      },
+      {
+        "name": "source",
+        "type": "string",
+        "required": false,
+        "description": "Source of the memory update."
+      }
+    ],
+    "riskTags": [
+      {
+        "tagId": "tag.memory_poisoning",
+        "category": "instruction_injection_following",
+        "level": "high",
+        "description": "May persist untrusted instructions into future agent context."
+      }
+    ],
+    "riskLevel": "high",
+    "sideEffect": "write"
   }
 ]

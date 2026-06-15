@@ -2,6 +2,7 @@ import type {
   McpSandboxProfile,
   PolicyTemplate,
   PromptDefinition,
+  PyritAttackLibrary,
   RedTeamScenarioSet,
   ResourceDefinition,
   RiskRule,
@@ -21,6 +22,7 @@ export type ConfigRepository = {
   testOracles: TestOracle[];
   redTeamScenarioSet: RedTeamScenarioSet;
   policyTemplates: PolicyTemplate[];
+  pyritAttackLibrary: PyritAttackLibrary;
 };
 
 export type ConfigIndex = {
@@ -33,6 +35,9 @@ export type ConfigIndex = {
   testOraclesByCaseId: ReadonlyMap<string, TestOracle>;
   redTeamScenariosById: ReadonlyMap<string, RedTeamScenarioSet["scenarios"][number]>;
   policyTemplatesById: ReadonlyMap<string, PolicyTemplate>;
+  pyritAttackFamiliesById: ReadonlyMap<string, PyritAttackLibrary["attackFamilies"][number]>;
+  pyritConvertersById: ReadonlyMap<string, PyritAttackLibrary["converterCatalog"][number]>;
+  pyritSamplesById: ReadonlyMap<string, PyritAttackLibrary["samples"][number]>;
 };
 
 export function buildConfigIndex(repository: ConfigRepository): ConfigIndex {
@@ -54,6 +59,18 @@ export function buildConfigIndex(repository: ConfigRepository): ConfigIndex {
     policyTemplatesById: indexBy(
       repository.policyTemplates,
       (template) => template.policyTemplateId,
+    ),
+    pyritAttackFamiliesById: indexBy(
+      repository.pyritAttackLibrary.attackFamilies,
+      (family) => family.familyId,
+    ),
+    pyritConvertersById: indexBy(
+      repository.pyritAttackLibrary.converterCatalog,
+      (converter) => converter.converterId,
+    ),
+    pyritSamplesById: indexBy(
+      repository.pyritAttackLibrary.samples,
+      (sample) => sample.sampleId,
     ),
   };
 }

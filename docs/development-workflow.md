@@ -145,14 +145,33 @@ OpenClaw 相关验证必须区分两类结果:
 6. `.gitignore` 覆盖本地 runtime、第三方临时仓库、日志、outputs 和密钥文件。
 7. 用户要求先审阅时，不得擅自合并。
 
-## 8. 本地 runtime 与密钥
+## 8. 推送规则
+
+审核完成并完成本地 commit 后，可以推送到远端，但推送前必须再次确认:
+
+1. 当前仓库是 `agent-guard`，不是 AIG、PyRIT、OpenClaw runtime 或其他本地参考项目。
+2. 当前分支和目标远端分支正确。
+3. 已 `git fetch --all --prune`，远端目标分支没有新的未整合提交。
+4. `git status --short --branch` 显示工作区干净。
+5. 最近提交信息符合中文 commit 规则。
+6. 没有把本地 runtime、outputs、日志、密钥、第三方临时仓库 `.git` 元数据加入提交。
+
+推送主线推荐命令:
+
+```bash
+git push origin main
+```
+
+如果用户只要求本地合并或先审阅，不得擅自推送。
+
+## 9. 本地 runtime 与密钥
 
 - OpenClaw 本体、workspace、状态库和模型凭证属于本地 runtime，不进入 `agent-guard` 仓库。
 - 本机可使用项目隔离 runtime，例如 `E:\XinAnProject\openclaw-runtime`，但只提交启动脚本、runbook 和忽略规则。
 - provider key 只能来自用户环境变量或本地未提交配置，不写入文档、命令行明文、提交记录或 `AgentAdapterConfig`。
 - 如果需要把用户环境变量映射成 OpenClaw 识别的变量，只能在当前进程内完成，并避免打印 key 值。
 
-## 9. 工作日志
+## 10. 工作日志
 
 每个阶段性任务都要留下可追溯记录，至少包含:
 

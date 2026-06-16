@@ -647,3 +647,45 @@ A 线 P2 当前已完成:
 - 哪些 PyRIT candidate case 提升为 OpenClaw 默认 smoke。
 - 是否实现真实 PyRIT Python bridge。
 - PyRIT evaluator 统计字段是否进入正式报告和前端展示。
+
+## 13. 2026-06-16 OpenClaw 项目隔离运行环境
+
+分支: `a/openclaw-project-runtime-demo`
+
+本轮按用户要求为本项目单独部署 OpenClaw runtime，用于 P2 demo 和真实 OpenClaw adapter 联调。部署目录在 `E:\XinAnProject\openclaw-runtime`，不在 `agent-guard` 仓库内，不提交 OpenClaw 本体、workspace、状态库、token 或模型 key。
+
+已完成:
+
+- 安装 `openclaw@2026.6.6` 到项目旁边的本地 runtime。
+- 创建本地 wrapper `E:\XinAnProject\openclaw-runtime\openclaw-local.cmd`。
+- 初始化 `OPENCLAW_HOME=E:\XinAnProject\openclaw-runtime\home` 和 workspace。
+- 启动 OpenClaw gateway 到 `127.0.0.1:18789`。
+- 新增 `scripts/start-agent-guard-openclaw.cmd` / `.ps1`，用于带隔离环境变量启动 demo。
+- 新增 `docs/A/p2-openclaw-project-runtime-test.md` 记录部署、验证和缺口。
+
+验证结果:
+
+```powershell
+npm run verify:openclaw:realtime
+npm run verify:p2:api-e2e
+```
+
+结果:
+
+- `verify:openclaw:realtime` 通过，覆盖 `deny`、`ask`、`redact`、trace 查询和 realtime events stream。
+- 补充 DeepSeek key 映射前，`verify:p2:api-e2e` 在普通模式通过，OpenClaw CLI adapter 可识别，但 OpenClaw agent run 因缺模型 provider key 被 optional skip。
+- `VERIFY_OPENCLAW_REQUIRED=1 npm run verify:p2:api-e2e` 当前阻塞在 OpenClaw 模型认证，错误语义为缺 API key。
+
+补充更新:
+
+- 用户提供本机用户环境变量 `DeepSeek_API_2`，用于 DeepSeek API key。
+- 已将本地 runtime wrapper 和项目启动脚本更新为进程内映射: `DeepSeek_API_2` → `DEEPSEEK_API_KEY`。
+- OpenClaw 默认模型按用户指定切换为 `deepseek/deepseek-v4-flash`。
+- key 不写入仓库、不写入文档明文、不拼入命令行参数。
+- `VERIFY_OPENCLAW_REQUIRED=1 npm run verify:p2:api-e2e` 已通过，结果为 13 个 required 通过、0 个 optional skipped。
+
+重要注意:
+
+- Agent Guard 的 OpenClaw adapter 会把 Windows npm shim 解析成 `node openclaw.mjs`，所以联调时必须同时设置 `OPENCLAW_CLI` 和 `OPENCLAW_HOME`。
+- 此前失败点不是 A 线攻击库或 sandbox 配置问题，也不是 OpenClaw CLI 路径问题，而是当时本地 OpenClaw 尚未配置模型 provider 凭证。
+- 补充 provider key 后，required 模式已确认真实 OpenClaw CLI 检测不再 skip。

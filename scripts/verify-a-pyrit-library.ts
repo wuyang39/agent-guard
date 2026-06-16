@@ -152,8 +152,13 @@ async function main(): Promise<void> {
   for (const template of templateIndex.templates) {
     await assertPathExists(path.resolve(rootDir, template.sourcePath));
     const content = await readFile(path.resolve(rootDir, template.sourcePath), "utf8");
-    const sha256 = createHash("sha256").update(content).digest("hex");
+    const normalizedContent = normalizeLineEndings(content);
+    const sha256 = createHash("sha256").update(normalizedContent).digest("hex");
     assert(sha256 === template.sha256, `template hash matches ${template.templateId}`);
+    assert(
+      Buffer.byteLength(normalizedContent, "utf8") === template.byteLength,
+      `template normalized byte length matches ${template.templateId}`,
+    );
   }
 
   console.log("PASS: A line PyRIT adapted library verification");
@@ -224,6 +229,10 @@ async function listFiles(root: string): Promise<string[]> {
   }
 
   return files;
+}
+
+function normalizeLineEndings(value: string): string {
+  return value.replace(/\r\n/g, "\n");
 }
 
 main().catch((error) => {

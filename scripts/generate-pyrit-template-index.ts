@@ -42,6 +42,7 @@ async function main(): Promise<void> {
 
   for (const filePath of files) {
     const content = await readFile(filePath, "utf8");
+    const normalizedContent = normalizeLineEndings(content);
     const metadata = parseMetadata(content);
     const relativePath = toPosix(path.relative(rootDir, filePath));
     const relativeTemplatePath = toPosix(path.relative(templateRoot, filePath));
@@ -60,8 +61,8 @@ async function main(): Promise<void> {
       ...(typeof metadata.isGeneralTechnique === "boolean"
         ? { isGeneralTechnique: metadata.isGeneralTechnique }
         : {}),
-      byteLength: Buffer.byteLength(content, "utf8"),
-      sha256: createHash("sha256").update(content).digest("hex"),
+      byteLength: Buffer.byteLength(normalizedContent, "utf8"),
+      sha256: createHash("sha256").update(normalizedContent).digest("hex"),
     });
   }
 
@@ -208,6 +209,10 @@ function sanitizeId(value: string): string {
 
 function toPosix(value: string): string {
   return value.replace(/\\/g, "/");
+}
+
+function normalizeLineEndings(value: string): string {
+  return value.replace(/\r\n/g, "\n");
 }
 
 main().catch((error) => {

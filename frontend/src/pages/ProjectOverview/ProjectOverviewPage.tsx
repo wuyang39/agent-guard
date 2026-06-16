@@ -17,7 +17,7 @@ export function ProjectOverviewPage({
     return (
       <EmptyBlock
         title={titleFor(kind)}
-        message="当前没有可展示的项目运行数据。先运行一次 E2E 检测即可填充该视图。"
+        message="当前没有可展示的运行数据。先生成监督策略包即可填充该视图。"
       />
     );
   }
@@ -30,27 +30,27 @@ export function ProjectOverviewPage({
       <section className="panel">
         <div className="section-header">
           <div>
-            <p className="eyebrow">Project Console</p>
+            <p className="eyebrow">证据中心</p>
             <h1>{titleFor(kind)}</h1>
           </div>
-          <Badge>{latest?.status ?? "no run"}</Badge>
+          <Badge>{latest?.status ?? "暂无运行"}</Badge>
         </div>
         {kind === "agent" ? (
           <div className="id-grid">
             <div>
-              <span>Agent</span>
+              <span>智能体</span>
               <code>{latest?.agentId ?? "-"}</code>
             </div>
             <div>
-              <span>Detection report</span>
+              <span>检测报告</span>
               <code>{latest?.detectionReportId ?? "-"}</code>
             </div>
             <div>
-              <span>Policy pack</span>
+              <span>策略包</span>
               <code>{latest?.policyPackId ?? "-"}</code>
             </div>
             <div>
-              <span>Defense report</span>
+              <span>防御报告</span>
               <code>{latest?.defenseReportId ?? "-"}</code>
             </div>
           </div>
@@ -60,7 +60,7 @@ export function ProjectOverviewPage({
             {(latest?.caseIds ?? []).map((caseId) => (
               <div className="report-row" key={caseId}>
                 <code>{caseId}</code>
-                <span>included in latest run</span>
+                <span>包含在最新运行中</span>
               </div>
             ))}
           </div>
@@ -68,19 +68,19 @@ export function ProjectOverviewPage({
         {kind === "configs" ? (
           <div className="id-grid">
             <div>
-              <span>Risk reports</span>
+              <span>风险报告</span>
               <code>{latest?.riskReportIds.length ?? 0}</code>
             </div>
             <div>
-              <span>Scenario summaries</span>
+              <span>场景摘要</span>
               <code>{detection?.detectionReport.scenarioSummary.length ?? 0}</code>
             </div>
             <div>
-              <span>Policy templates used</span>
+              <span>策略模板</span>
               <code>{detection?.detectionReport.recommendedPolicyTemplateIds.length ?? 0}</code>
             </div>
             <div>
-              <span>Generated policies</span>
+              <span>生成策略</span>
               <code>{detection?.policyPack.policies.length ?? 0}</code>
             </div>
           </div>
@@ -92,10 +92,10 @@ export function ProjectOverviewPage({
 
 function titleFor(kind: ProjectOverviewPageProps["kind"]): string {
   if (kind === "agent") {
-    return "Agent Connect";
+    return "智能体接入";
   }
   if (kind === "cases") {
-    return "Test Cases";
+    return "测试用例";
   }
-  return "Configs";
+  return "配置摘要";
 }

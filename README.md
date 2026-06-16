@@ -46,7 +46,11 @@ AgentUnderTest
 
 ```bash
 npm run demo
+npm run demo:p2
+npm run frontend
 npm run typecheck
 ```
 
 `npm run demo` starts the isolated display demo from `frontend/demo`. It is for product-flow demonstration only and is not the formal frontend implementation baseline.
+
+`npm run demo:p2` starts the P2 demo services and the formal Vite frontend. The frontend URL is `http://127.0.0.1:5173` by default.

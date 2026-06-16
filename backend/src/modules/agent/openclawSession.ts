@@ -24,7 +24,7 @@ import type {
   ParsedToolCall,
   ParsedToolResult,
 } from "./openclawTypes";
-import { resolveOpenClawCliInvocation } from "./openclawAdapter";
+import { resolveOpenClawCliInvocation, type OpenClawCliInvocation } from "./openclawAdapter";
 import { isPathInsideDirectory } from "../../storage/pathSafety";
 
 const DEFAULT_TIMEOUT_MS = Number(process.env.OPENCLAW_TIMEOUT_MS ?? 120_000);
@@ -137,9 +137,10 @@ export async function runOpenClawSession(
 ): Promise<OpenClawRunResult> {
   const sessionKey = runMeta.runId;
   const messageText = buildOpenClawMessage(task, sandboxInfo);
+  const cli = resolveOpenClawCliInvocation(options.cliPath);
 
   // 1. 执行 openclaw agent --json
-  const output = await spawnOpenClawAgent(sessionKey, messageText, options);
+  const output = await spawnOpenClawAgent(sessionKey, messageText, options, cli);
 
   const sessionFile = getOutputSessionFile(output);
   if (output.status === "error" || !sessionFile) {
@@ -149,7 +150,11 @@ export async function runOpenClawSession(
   }
 
   // 2. 落盘原始 JSONL（证据链 artifact）
-  const jsonlPath = await saveJsonlArtifact(sessionFile, runMeta.runId);
+  const jsonlPath = await saveJsonlArtifact(
+    sessionFile,
+    runMeta.runId,
+    resolveOpenClawDataDirs(cli.env),
+  );
 
   // 3. 解析 JSONL → 提取 tool_call / tool_result
   const session = await parseSessionJsonl(jsonlPath, sessionKey, output);
@@ -183,8 +188,8 @@ async function spawnOpenClawAgent(
   sessionKey: string,
   message: string,
   options: OpenClawRunOptions,
+  cli: OpenClawCliInvocation,
 ): Promise<OpenClawAgentOutput> {
-  const cli = resolveOpenClawCliInvocation(options.cliPath);
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const timeoutSec = String(Math.floor(timeoutMs / 1000));
   const args = [
@@ -204,7 +209,7 @@ async function spawnOpenClawAgent(
     let stderr = "";
     let settled = false;
     const child = spawn(cli.command, args, {
-      env: { ...process.env },
+      env: { ...process.env, ...cli.env },
       windowsHide: true,
       shell: cli.shell,
     });
@@ -325,20 +330,31 @@ async function parseSessionJsonl(
 // ---- JSONL artifact ----
 
 /** 确定 OpenClaw 数据目录（用于 sessionFile 可信校验） */
-function resolveOpenClawDataDir(): string {
-  const fromEnv = process.env.OPENCLAW_HOME?.trim();
-  if (fromEnv) return path.resolve(fromEnv);
-  const home = os.homedir();
-  return path.join(home, ".openclaw");
+function resolveOpenClawDataDirs(env: Record<string, string> | undefined): string[] {
+  const roots = [
+    env?.OPENCLAW_HOME,
+    env?.OPENCLAW_STATE_DIR,
+    process.env.OPENCLAW_HOME,
+    process.env.OPENCLAW_STATE_DIR,
+  ]
+    .map((value) => value?.trim())
+    .filter((value): value is string => Boolean(value));
+  if (!roots.length) {
+    roots.push(path.join(os.homedir(), ".openclaw"));
+  }
+  return [...new Set(roots.map((root) => path.resolve(root)))];
 }
 
-async function saveJsonlArtifact(sessionFile: string, runId: string): Promise<string> {
+async function saveJsonlArtifact(
+  sessionFile: string,
+  runId: string,
+  trustedDataDirs: string[],
+): Promise<string> {
   // 可信目录校验：sessionFile 必须在 OpenClaw 数据目录内
   const resolved = path.resolve(sessionFile);
-  const dataDir = resolveOpenClawDataDir();
-  if (!isPathInsideDirectory(resolved, dataDir)) {
+  if (!trustedDataDirs.some((dataDir) => isPathInsideDirectory(resolved, dataDir))) {
     throw new Error(
-      `OpenClaw sessionFile is outside the trusted OpenClaw data directory (${dataDir}): ${sessionFile.slice(0, 200)}`,
+      `OpenClaw sessionFile is outside the trusted OpenClaw data directories (${trustedDataDirs.join(", ")}): ${sessionFile.slice(0, 200)}`,
     );
   }
 

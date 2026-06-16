@@ -8,8 +8,9 @@ import type {
   RealtimeActivePolicyState,
   RealtimePreparedSession,
 } from "../../lib/api/types";
-import { actionTone } from "../../lib/formatters/risk";
+import { actionLabel, actionTone } from "../../lib/formatters/risk";
 import { formatDateTime } from "../../lib/formatters/time";
+import { shouldDisplayRealtimeEvent } from "../../lib/models/realtime";
 
 type LiveSupervisionPageProps = {
   onGoRuns: () => void;
@@ -36,6 +37,7 @@ export function LiveSupervisionPage({
   const [preparedSession, setPreparedSession] = useState<RealtimePreparedSession | undefined>();
   const [statusError, setStatusError] = useState<string | undefined>();
   const [events, setEvents] = useState<LiveSupervisionEvent[]>([]);
+  const [includeHistory, setIncludeHistory] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [finalizing, setFinalizing] = useState(false);
   const [latestDefenseReportId, setLatestDefenseReportId] = useState<string | undefined>();
@@ -79,6 +81,8 @@ export function LiveSupervisionPage({
   async function resetSession() {
     setStatusError(undefined);
     try {
+      sourceRef.current?.close();
+      setStreaming(false);
       if (preparedSession) {
         await agentGuardApi.resetRealtimeSessions(preparedSession.runtimeSessionId);
       }
@@ -93,15 +97,25 @@ export function LiveSupervisionPage({
   }
 
   function startStream() {
+    openStream(includeHistory);
+  }
+
+  function openStream(nextIncludeHistory: boolean) {
     sourceRef.current?.close();
     setEvents([]);
     setStreaming(true);
-    const source = new EventSource(agentGuardApi.liveSupervisionUrl());
+    const runtimeSessionId = preparedSession?.runtimeSessionId;
+    const source = new EventSource(
+      agentGuardApi.liveSupervisionUrl({ includeHistory: nextIncludeHistory }),
+    );
     sourceRef.current = source;
 
     for (const eventType of REALTIME_EVENT_TYPES) {
       source.addEventListener(eventType, (message) => {
         const event = JSON.parse((message as MessageEvent).data) as LiveSupervisionEvent;
+        if (!shouldDisplayRealtimeEvent(event, runtimeSessionId, nextIncludeHistory)) {
+          return;
+        }
         setEvents((current) => [...current, event]);
         if (event.type === "active_policy_updated") {
           void refreshActivePolicy();
@@ -119,12 +133,19 @@ export function LiveSupervisionPage({
         {
           timestamp: new Date().toISOString(),
           type: "live_error",
-          message: "SSE connection failed.",
+          message: "实时事件连接失败。",
         },
       ]);
       setStreaming(false);
       source.close();
     };
+  }
+
+  function changeStreamMode(nextIncludeHistory: boolean) {
+    setIncludeHistory(nextIncludeHistory);
+    if (streaming) {
+      openStream(nextIncludeHistory);
+    }
   }
 
   function stopStream() {
@@ -158,20 +179,22 @@ export function LiveSupervisionPage({
   const redactCount = decisionEvents.filter((event) => event.action === "redact").length;
   const askCount = decisionEvents.filter((event) => event.action === "ask").length;
   const allowCount = decisionEvents.filter((event) => event.action === "allow").length;
+  const newestEvents = [...events].reverse();
+  const newestDecisionEvents = [...decisionEvents].reverse();
 
   return (
     <div className="page-stack fill-page supervision-page">
       <section className="page-hero supervision-hero">
         <div className="hero-copy">
-          <p className="eyebrow">OpenClaw Realtime MCP</p>
-          <h1>实施监督</h1>
-          <p className="hero-lead">
-            监听 OpenClaw 工具调用，把策略判定、阻断和报告生成过程实时展示出来。
-          </p>
+          <p className="eyebrow">实时监督</p>
+          <h1>实时监督</h1>
         </div>
         <div className="hero-actions">
           <Badge tone={streaming ? "tone-medium" : "tone-neutral"}>
-            {streaming ? "streaming" : `${events.length} events`}
+            {streaming ? "监听中" : `${events.length} 条事件`}
+          </Badge>
+          <Badge tone={includeHistory ? "tone-high" : "tone-low"}>
+            {includeHistory ? "含历史" : "仅实时"}
           </Badge>
           <button className="primary-button hero-button" onClick={streaming ? stopStream : startStream}>
             {streaming ? "停止监听" : "监听实时事件"}
@@ -191,19 +214,56 @@ export function LiveSupervisionPage({
               <h2>实时事件流</h2>
               <p className="muted">OpenClaw 调用 agent_guard_* 工具后，监督事件会追加到这里。</p>
             </div>
-            <Badge tone={streaming ? "tone-medium" : "tone-neutral"}>
-              {streaming ? "streaming" : `${events.length} events`}
-            </Badge>
+            <div className="event-toolbar">
+              <div className="segmented-control" aria-label="实时事件范围">
+                <button
+                  className={!includeHistory ? "active" : ""}
+                  onClick={() => changeStreamMode(false)}
+                  type="button"
+                >
+                  仅实时
+                </button>
+                <button
+                  className={includeHistory ? "active" : ""}
+                  onClick={() => changeStreamMode(true)}
+                  type="button"
+                >
+                  含历史
+                </button>
+              </div>
+              <Badge tone={streaming ? "tone-medium" : "tone-neutral"}>
+                {streaming ? "实时" : "暂停"}
+              </Badge>
+              <Badge>{events.length} 条事件</Badge>
+              <Badge>最新优先</Badge>
+              <span className="session-chip">
+                <span>Session</span>
+                <code>{preparedSession?.runtimeSessionId ?? "准备中"}</code>
+              </span>
+            </div>
           </div>
           <div className="event-list">
             {events.length ? (
-              events.map((event, index) => (
-                <article className="event-row" key={`${event.eventId ?? event.timestamp}-${index}`}>
-                  <div className="event-index">{index + 1}</div>
-                  <div>
+              newestEvents.map((event, index) => (
+                <article
+                  className={`event-row ${eventRowClass(event)}`}
+                  key={`${event.eventId ?? event.timestamp}-${index}`}
+                >
+                  <div className="event-index">{events.length - index}</div>
+                  <div className="event-body">
                     <div className="event-title">
-                      <strong>{event.type}</strong>
+                      <strong>{eventTitle(event)}</strong>
                       <span>{formatDateTime(event.timestamp)}</span>
+                      {event.action ? (
+                        <Badge tone={actionTone(event.action)}>
+                          {actionLabel(event.action)}
+                        </Badge>
+                      ) : null}
+                    </div>
+                    <div className="event-meta">
+                      {event.runtimeSessionId ? <span>{event.runtimeSessionId}</span> : null}
+                      {event.toolId ? <span>{event.toolId}</span> : null}
+                      {event.policyPackId ? <span>{event.policyPackId}</span> : null}
                     </div>
                     <p className="muted">{event.message ?? summarizeEvent(event)}</p>
                   </div>
@@ -222,21 +282,21 @@ export function LiveSupervisionPage({
             <div className="section-header compact">
               <h2>当前策略</h2>
               <Badge tone={activePolicy?.source === "fallback" ? "tone-medium" : "tone-low"}>
-                {activePolicy?.source ?? "-"}
+                {activePolicy ? activePolicySourceLabel(activePolicy.source) : "-"}
               </Badge>
             </div>
             <div className="rail-list">
               <div>
-                <span>MCP URL</span>
+                <span>MCP 地址</span>
                 <code>http://127.0.0.1:3100/api/v1/openclaw/realtime/mcp</code>
               </div>
               <div>
-                <span>Active Policy</span>
+                <span>当前策略</span>
                 <code>{activePolicy?.resolvedPolicyPackId ?? "-"}</code>
               </div>
               <div>
-                <span>Runtime Session</span>
-                <code>{preparedSession?.runtimeSessionId ?? "preparing"}</code>
+                <span>运行会话</span>
+                <code>{preparedSession?.runtimeSessionId ?? "准备中"}</code>
               </div>
             </div>
             <div className="button-row rail-actions">
@@ -255,32 +315,32 @@ export function LiveSupervisionPage({
           <div className="rail-section">
             <div className="section-header compact">
               <h2>监督判定</h2>
-              <Badge>{decisionEvents.length} decisions</Badge>
+              <Badge>{decisionEvents.length} 条判定</Badge>
             </div>
             <div className="decision-grid">
               <div>
-                <span>allow</span>
+                <span>放行</span>
                 <strong>{allowCount}</strong>
               </div>
               <div>
-                <span>deny</span>
+                <span>阻断</span>
                 <strong>{denyCount}</strong>
               </div>
               <div>
-                <span>redact</span>
+                <span>脱敏</span>
                 <strong>{redactCount}</strong>
               </div>
               <div>
-                <span>ask</span>
+                <span>确认</span>
                 <strong>{askCount}</strong>
               </div>
             </div>
             <div className="button-row">
               <button className="secondary-button" onClick={onGoRuns}>
-                Test Runs
+                测试运行
               </button>
               <button className="secondary-button" onClick={onGoDefense}>
-                Defense
+                防御报告
               </button>
             </div>
           </div>
@@ -288,8 +348,7 @@ export function LiveSupervisionPage({
           <div className="rail-section grow-rail-section">
             <h2>判定明细</h2>
             <div className="timeline-list compact-timeline">
-            {events
-              .filter((event) => event.type === "supervision_decision")
+            {newestDecisionEvents
               .map((event) => (
                 <article className="list-item" key={event.eventId ?? `${event.timestamp}-${event.action}`}>
                   <div>
@@ -303,7 +362,7 @@ export function LiveSupervisionPage({
                 </article>
               ))}
             {!events.some((event) => event.type === "supervision_decision") ? (
-              <p className="muted">还没有监督判定。OpenClaw 工具调用进入 MCP 后会出现 deny、ask、redact 等记录。</p>
+              <p className="muted">还没有监督判定。OpenClaw 工具调用进入 MCP 后会出现阻断、确认、脱敏等记录。</p>
             ) : null}
             </div>
             {latestDefenseReportId ? (
@@ -318,16 +377,61 @@ export function LiveSupervisionPage({
 
 function summarizeEvent(event: LiveSupervisionEvent): string {
   if (event.type === "tool_call_started") {
-    return `${event.toolId} started in ${event.runtimeSessionId}`;
+    return `${event.toolId} 已在 ${event.runtimeSessionId} 中开始调用`;
   }
   if (event.type === "tool_call_result") {
-    return `${event.toolId} ${event.blocked ? "blocked" : "completed"}`;
+    return `${event.toolId} ${event.blocked ? "已阻断" : "已完成"}`;
   }
   if (event.type === "active_policy_updated") {
-    return `active policy=${event.policyPackId}`;
+    return `当前策略=${event.policyPackId}`;
   }
   if (event.type === "defense_report_generated") {
-    return `defense=${String(event.detail?.defenseReportId ?? "-")}`;
+    return `防御报告=${String(event.detail?.defenseReportId ?? "-")}`;
   }
   return "";
+}
+
+function eventTitle(event: LiveSupervisionEvent): string {
+  if (event.type === "supervision_decision" && event.action) {
+    return `${actionLabel(event.action)} 判定`;
+  }
+  return eventTypeLabel(event.type);
+}
+
+function eventTypeLabel(type: LiveSupervisionEvent["type"]): string {
+  const labels: Record<LiveSupervisionEvent["type"], string> = {
+    active_policy_updated: "策略已更新",
+    session_reset: "会话已重置",
+    session_created: "会话已创建",
+    tool_call_started: "工具调用开始",
+    supervision_decision: "监督判定",
+    tool_call_result: "工具调用结果",
+    defense_report_generated: "防御报告已生成",
+    live_error: "实时连接错误",
+  };
+  return labels[type];
+}
+
+function eventRowClass(event: LiveSupervisionEvent): string {
+  if (event.type === "supervision_decision" && event.action) {
+    return `event-row-${event.action}`;
+  }
+  if (event.type === "tool_call_result" && event.blocked) {
+    return "event-row-deny";
+  }
+  if (event.type === "live_error") {
+    return "event-row-warn";
+  }
+  return "";
+}
+
+function activePolicySourceLabel(source: RealtimeActivePolicyState["source"]): string {
+  const labels: Record<RealtimeActivePolicyState["source"], string> = {
+    request: "指定策略",
+    active: "当前策略",
+    env: "环境配置",
+    latest: "最新运行",
+    fallback: "兜底策略",
+  };
+  return labels[source];
 }

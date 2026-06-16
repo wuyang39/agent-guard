@@ -1,15 +1,29 @@
 import { Badge } from "../../components/ui/Badge";
 import { EmptyBlock, ErrorBlock, LoadingBlock } from "../../components/ui/StateBlock";
 import type { CLineRunGroup, LoadState } from "../../lib/api/types";
+import {
+  adapterKindLabel,
+  policySourceLabel,
+  runPhaseLabel,
+  runPhaseTone,
+} from "../../lib/formatters/run";
 import { formatDateTime } from "../../lib/formatters/time";
 
 type TestRunsPageProps = {
   state: LoadState<{ schemaVersion: "mvp-1"; runGroups: CLineRunGroup[] }>;
   onRun: () => void;
+  onSelectRunGroup: (runGroup: CLineRunGroup) => void;
+  selectedRunGroupId?: string;
   running: boolean;
 };
 
-export function TestRunsPage({ state, onRun, running }: TestRunsPageProps) {
+export function TestRunsPage({
+  state,
+  onRun,
+  onSelectRunGroup,
+  selectedRunGroupId,
+  running,
+}: TestRunsPageProps) {
   if (state.status === "idle" || state.status === "loading") {
     return <LoadingBlock message="正在加载测试运行索引..." />;
   }
@@ -22,10 +36,10 @@ export function TestRunsPage({ state, onRun, running }: TestRunsPageProps) {
     return (
       <EmptyBlock
         title="没有测试运行"
-        message="运行一次 E2E 检测后，这里会显示 runGroup、报告和 trace 索引。"
+        message="生成监督策略包后，这里会显示运行组、报告和调用轨迹索引。"
         action={
           <button className="primary-button" disabled={running} onClick={onRun}>
-            {running ? "运行中..." : "运行一次 E2E 检测"}
+            {running ? "正在生成策略包..." : "生成监督策略包"}
           </button>
         }
       />
@@ -37,54 +51,79 @@ export function TestRunsPage({ state, onRun, running }: TestRunsPageProps) {
       <section className="panel">
         <div className="section-header">
           <div>
-            <p className="eyebrow">Project Console</p>
-            <h1>Test Runs</h1>
+            <p className="eyebrow">证据中心</p>
+            <h1>测试运行</h1>
           </div>
-          <button className="primary-button" disabled={running} onClick={onRun}>
-            {running ? "运行中..." : "运行一次 E2E 检测"}
-          </button>
+          <div className="button-row">
+            {selectedRunGroupId ? <Badge tone="tone-medium">当前 {selectedRunGroupId}</Badge> : null}
+            <button className="primary-button" disabled={running} onClick={onRun}>
+              {running ? "正在生成策略包..." : "生成监督策略包"}
+            </button>
+          </div>
         </div>
         <div className="table-wrap">
           <table>
             <thead>
               <tr>
-                <th>Run Group</th>
-                <th>Agent</th>
-                <th>Status</th>
-                <th>Phase</th>
-                <th>Source</th>
-                <th>Cases</th>
-                <th>Risk Reports</th>
-                <th>Traces</th>
-                <th>Updated</th>
+                <th>运行组</th>
+                <th>智能体</th>
+                <th>状态</th>
+                <th>阶段</th>
+                <th>策略来源</th>
+                <th>用例</th>
+                <th>风险报告</th>
+                <th>调用轨迹</th>
+                <th>更新</th>
               </tr>
             </thead>
             <tbody>
-              {state.data.runGroups.map((runGroup) => (
-                <tr key={runGroup.runGroupId}>
+              {state.data.runGroups.map((runGroup) => {
+                const selected = selectedRunGroupId === runGroup.runGroupId;
+                return (
+                <tr
+                  className={`selectable-row${selected ? " selected-row" : ""}`}
+                  key={runGroup.runGroupId}
+                  onClick={() => onSelectRunGroup(runGroup)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      onSelectRunGroup(runGroup);
+                    }
+                  }}
+                  role="button"
+                  tabIndex={0}
+                >
                   <td>
                     <code>{runGroup.runGroupId}</code>
+                    {selected ? <Badge tone="tone-low">已选择</Badge> : null}
                   </td>
-                  <td>{runGroup.agentId}</td>
+                  <td>{runGroup.agentName ?? adapterKindLabel(runGroup.adapterKind)}</td>
                   <td>
                     <Badge tone={runGroup.status === "completed" ? "tone-low" : "tone-critical"}>
-                      {runGroup.status}
+                      {statusLabel(runGroup.status)}
                     </Badge>
                   </td>
                   <td>
-                    <Badge>{runGroup.phase}</Badge>
+                    <Badge tone={runPhaseTone(runGroup.phase)}>{runPhaseLabel(runGroup.phase)}</Badge>
                   </td>
-                  <td>{runGroup.policyContextSource ?? "-"}</td>
+                  <td>{policySourceLabel(runGroup.policyContextSource)}</td>
                   <td>{runGroup.caseIds.length}</td>
                   <td>{runGroup.riskReportIds.length}</td>
                   <td>{runGroup.traceIds.length}</td>
                   <td>{formatDateTime(runGroup.updatedAt)}</td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
       </section>
     </div>
   );
+}
+
+function statusLabel(status: CLineRunGroup["status"]): string {
+  if (status === "running") return "运行中";
+  if (status === "completed") return "已完成";
+  return "失败";
 }

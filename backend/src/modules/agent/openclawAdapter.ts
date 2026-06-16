@@ -51,6 +51,7 @@ export type OpenClawCliInvocation = {
   argsPrefix: string[];
   displayPath: string;
   shell: boolean;
+  env?: Record<string, string>;
 };
 
 export function resolveOpenClawCliInvocation(preferredCliPath?: string): OpenClawCliInvocation {
@@ -59,9 +60,10 @@ export function resolveOpenClawCliInvocation(preferredCliPath?: string): OpenCla
   if (npmShimTarget) {
     return {
       command: process.execPath,
-      argsPrefix: [npmShimTarget],
+      argsPrefix: [npmShimTarget.target],
       displayPath: cliPath,
       shell: false,
+      env: npmShimTarget.env,
     };
   }
   return {
@@ -179,6 +181,7 @@ export async function checkOpenClawAvailable(cliPath?: string): Promise<{
     const child = spawn(cli.command, [...cli.argsPrefix, "--version"], {
       windowsHide: true,
       shell: cli.shell,
+      env: { ...process.env, ...cli.env },
     });
     const timer = setTimeout(() => {
       child.kill();
@@ -223,17 +226,40 @@ function shouldUseWindowsShell(commandPath: string): boolean {
   return process.platform === "win32" && /\.(?:cmd|bat)$/i.test(commandPath);
 }
 
-function resolveWindowsNpmShimTarget(commandPath: string): string | undefined {
+function resolveWindowsNpmShimTarget(commandPath: string): {
+  target: string;
+  env?: Record<string, string>;
+} | undefined {
   if (process.platform !== "win32" || !/\.cmd$/i.test(commandPath)) {
     return undefined;
   }
-  const target = path.join(
-    path.dirname(commandPath),
-    "node_modules",
-    "openclaw",
-    "openclaw.mjs",
-  );
-  return fs.existsSync(target) ? target : undefined;
+  const baseDir = path.dirname(commandPath);
+  const parentDir = path.dirname(baseDir);
+  const candidateTargets = [
+    {
+      target: path.join(baseDir, "node_modules", "openclaw", "openclaw.mjs"),
+      env: resolveOpenClawLocalEnv(
+        path.basename(baseDir).toLowerCase() === "cli" ? parentDir : baseDir,
+      ),
+    },
+    {
+      target: path.join(baseDir, "cli", "node_modules", "openclaw", "openclaw.mjs"),
+      env: resolveOpenClawLocalEnv(baseDir),
+    },
+  ];
+  return candidateTargets.find((candidate) => fs.existsSync(candidate.target));
+}
+
+function resolveOpenClawLocalEnv(rootDir: string): Record<string, string> | undefined {
+  const configDir = path.join(rootDir, "config");
+  const configPath = path.join(configDir, "openclaw.json");
+  if (!fs.existsSync(configPath)) return undefined;
+  return {
+    OPENCLAW_STATE_DIR: path.join(rootDir, "state"),
+    OPENCLAW_CONFIG_PATH: configPath,
+    OPENCLAW_CONFIG_DIR: configDir,
+    OPENCLAW_HOME: rootDir,
+  };
 }
 
 function resolveCommandPath(commandPath: string): string {

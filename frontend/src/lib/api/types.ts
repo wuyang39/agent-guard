@@ -90,6 +90,22 @@ export type CLineDashboardSummary = {
   schemaVersion: "mvp-1";
   latestRunGroup?: CLineRunGroup;
   recentRunGroups: CLineRunGroup[];
+  historicalWindow?: {
+    runLimit: number;
+    runCount: number;
+  };
+  latestRunMetrics?: {
+    runGroupId: string;
+    traces: number;
+    riskReports: number;
+    findings: number;
+    blockedActions: number;
+    redactions: number;
+    askDecisions: number;
+    residualRisks: number;
+    highestRiskLevel: RiskReport["riskLevel"];
+    countsByCategory: RiskReport["summary"]["countsByCategory"];
+  };
   totals: {
     runGroups: number;
     traces: number;
@@ -234,8 +250,29 @@ export type DefenseDetailView = {
   riskProfile: AgentRiskProfile;
   policyPack: SupervisionPolicyPack;
   policyContextSource?: "stored_detection" | "synthetic_fallback";
+  evidenceSummary?: DefenseEvidenceSummary;
+  runtimeSessionSummaries?: RuntimeSessionSummary[];
   supervisionRecords: RuntimeSupervisionRecord[];
   artifacts: P2ArtifactView[];
+};
+
+export type DefenseEvidenceSummary = {
+  declaredRuntimeSessionCount: number;
+  runtimeSessionCount: number;
+  supervisionRecordCount: number;
+  realSupervisionRecordCount: number;
+  policyContextSource?: "stored_detection" | "synthetic_fallback";
+  usesSyntheticFallback: boolean;
+  canProveDefenseEffect: boolean;
+};
+
+export type RuntimeSessionSummary = {
+  runtimeSessionId: string;
+  policyContextSource?: "stored_detection" | "synthetic_fallback";
+  recordCount: number;
+  blockedCount: number;
+  redactedCount: number;
+  askCount: number;
 };
 
 export type TraceDetailView = {

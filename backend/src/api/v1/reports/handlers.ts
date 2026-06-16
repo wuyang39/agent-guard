@@ -33,11 +33,24 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
           getSessionRecords(runtimeSessionId),
         ),
       );
-      const sessionRecords = runtimeSessions.flatMap((session) => session?.records ?? []);
+      const loadedRuntimeSessions = runtimeSessions.filter(
+        (session): session is NonNullable<typeof session> => Boolean(session),
+      );
+      const sessionRecords = loadedRuntimeSessions.flatMap((session) => session.records);
       const runGroup = await getRunGroup(entry.runGroupId);
       const policyContextSource = runGroup?.policyContextSource ?? runtimeSessions.find(
         (session) => session?.policyContextSource,
       )?.policyContextSource;
+      const usesSyntheticFallback = policyContextSource === "synthetic_fallback";
+      const evidenceSummary = {
+        declaredRuntimeSessionCount: (defenseReport.runtimeSessionIds ?? []).length,
+        runtimeSessionCount: loadedRuntimeSessions.length,
+        supervisionRecordCount: sessionRecords.length,
+        realSupervisionRecordCount: usesSyntheticFallback ? 0 : sessionRecords.length,
+        policyContextSource,
+        usesSyntheticFallback,
+        canProveDefenseEffect: sessionRecords.length > 0 && !usesSyntheticFallback,
+      };
 
       const artifacts = await Promise.all(
         entry.artifactIds.map(async (artifactId: string) => {
@@ -61,14 +74,15 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
         riskProfile,
         policyPack,
         policyContextSource,
+        evidenceSummary,
         supervisionRecords: sessionRecords,
-        runtimeSessionSummaries: runtimeSessions.filter(Boolean).map((session) => ({
-          runtimeSessionId: session!.runtimeSessionId,
-          policyContextSource: session!.policyContextSource,
-          recordCount: session!.recordCount,
-          blockedCount: session!.blockedCount,
-          redactedCount: session!.redactedCount,
-          askCount: session!.askCount,
+        runtimeSessionSummaries: loadedRuntimeSessions.map((session) => ({
+          runtimeSessionId: session.runtimeSessionId,
+          policyContextSource: session.policyContextSource,
+          recordCount: session.recordCount,
+          blockedCount: session.blockedCount,
+          redactedCount: session.redactedCount,
+          askCount: session.askCount,
         })),
         artifacts: artifacts.filter(Boolean),
         links: [

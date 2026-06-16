@@ -11,6 +11,7 @@
     "api:c": "node --import tsx backend/src/server.ts",
     "frontend": "vite --config frontend/vite.config.ts",
     "build:frontend": "vite build --config frontend/vite.config.ts",
+    "test:frontend": "node --import tsx --test frontend/src/lib/api/realtime.test.ts frontend/src/lib/models/realtime.test.ts frontend/src/lib/models/defense.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "typecheck:frontend": "tsc -p frontend/tsconfig.json --noEmit",
     "verify:c-api": "node --import tsx scripts/verify-c-api.ts",

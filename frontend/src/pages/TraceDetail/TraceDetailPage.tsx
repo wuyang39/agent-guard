@@ -18,15 +18,15 @@ export function TraceDetailPage({
   onGoDefense,
 }: TraceDetailPageProps) {
   if (state.status === "idle" || state.status === "loading") {
-    return <LoadingBlock message="正在加载 trace、finding evidence 和监督记录..." />;
+    return <LoadingBlock message="正在加载调用轨迹、风险证据和监督记录..." />;
   }
 
   if (state.status === "empty") {
-    return <EmptyBlock title="没有 Trace" message={state.message} />;
+    return <EmptyBlock title="没有调用轨迹" message={state.message} />;
   }
 
   if (state.status === "error") {
-    return <ErrorBlock title="Trace 加载失败" message={state.message} />;
+    return <ErrorBlock title="调用轨迹加载失败" message={state.message} />;
   }
 
   const { trace, relatedFindings, relatedRiskReports, supervisionRecords } = state.data;
@@ -37,33 +37,33 @@ export function TraceDetailPage({
       <section className="panel">
         <div className="section-header">
           <div>
-            <p className="eyebrow">Trace Detail</p>
+            <p className="eyebrow">调用轨迹</p>
             <h1>事件追溯</h1>
           </div>
           <div className="button-row">
             <button className="secondary-button" onClick={onGoDetection}>
-              Detection
+              检测与策略
             </button>
             <button className="secondary-button" onClick={onGoDefense}>
-              Defense
+              防御报告
             </button>
           </div>
         </div>
         <div className="id-grid">
           <div>
-            <span>Trace</span>
+            <span>调用轨迹</span>
             <code>{trace.traceId}</code>
           </div>
           <div>
-            <span>Case</span>
+            <span>用例</span>
             <code>{trace.caseId}</code>
           </div>
           <div>
-            <span>Events</span>
+            <span>事件数</span>
             <code>{trace.events.length}</code>
           </div>
           <div>
-            <span>Ended</span>
+            <span>结束时间</span>
             <code>{formatDateTime(trace.endedAt)}</code>
           </div>
         </div>
@@ -71,7 +71,7 @@ export function TraceDetailPage({
 
       <section className="split-grid">
         <div className="panel">
-          <h2>Tool call / result 配对</h2>
+          <h2>工具调用配对</h2>
           <div className="timeline-list">
             {toolPairs.length ? (
               toolPairs.map((pair) => (
@@ -79,31 +79,31 @@ export function TraceDetailPage({
                   <div>
                     <strong>{toolName(pair.call)}</strong>
                     <p>
-                      call <code>{pair.call.eventId}</code>
+                      调用 <code>{pair.call.eventId}</code>
                       {pair.result ? (
                         <>
                           {" "}
-                          {"->"} result <code>{pair.result.eventId}</code>
+                          {"->"} 结果 <code>{pair.result.eventId}</code>
                         </>
                       ) : (
-                        " -> no result"
+                        " -> 暂无结果"
                       )}
                     </p>
                     <pre>{compactPayload(pair.call.payload)}</pre>
                   </div>
                   <Badge tone={pair.result ? "tone-low" : "tone-high"}>
-                    {pair.result ? "paired" : "missing"}
+                    {pair.result ? "已配对" : "缺少结果"}
                   </Badge>
                 </article>
               ))
             ) : (
-              <p className="muted">当前 trace 没有 tool_call 事件。</p>
+              <p className="muted">当前调用轨迹没有工具调用事件。</p>
             )}
           </div>
         </div>
 
         <div className="panel">
-          <h2>Evidence findings</h2>
+          <h2>风险证据</h2>
           <div className="timeline-list">
             {relatedFindings.length ? (
               relatedFindings.map((finding) => (
@@ -117,7 +117,7 @@ export function TraceDetailPage({
                 </article>
               ))
             ) : (
-              <p className="muted">没有与当前 trace 关联的 finding。</p>
+              <p className="muted">没有与当前调用轨迹关联的风险发现。</p>
             )}
           </div>
         </div>

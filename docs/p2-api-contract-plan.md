@@ -24,6 +24,9 @@ Frontend
   -> GET /api/v1/traces/:traceId
   -> GET /api/v1/reports/detection/:reportId
   -> GET /api/v1/policies/:policyPackId
+  -> POST /api/v1/openclaw/realtime/sessions
+  -> GET /api/v1/openclaw/realtime/events/stream?replay=0|1
+  -> POST /api/v1/openclaw/realtime/reports/defense
   -> GET /api/v1/supervision/sessions/:runtimeSessionId
   -> GET /api/v1/reports/defense/:reportId
 ```
@@ -703,8 +706,10 @@ OpenClaw MCP 配置保持固定 URL；Agent Guard 后端通过 active policy 决
 实时事件流:
 
 ```txt
-GET /api/v1/openclaw/realtime/events/stream?replay=1
+GET /api/v1/openclaw/realtime/events/stream?replay=0|1
 ```
+
+前端默认使用 `replay=0`，只监听当前打开后的实时事件；用户显式切换“含历史”时才使用 `replay=1`。如果事件带 `runtimeSessionId`，前端必须优先展示当前准备好的 runtime session，避免历史 session 混入当前监督过程。
 
 SSE 事件包括:
 
@@ -801,6 +806,9 @@ Freeze-P2-API-1:
   GET /api/v1/traces/:traceId
   GET /api/v1/reports/detection/:reportId
   GET /api/v1/policies/:policyPackId
+  POST /api/v1/openclaw/realtime/sessions
+  GET /api/v1/openclaw/realtime/events/stream?replay=0|1
+  POST /api/v1/openclaw/realtime/reports/defense
   GET /api/v1/supervision/sessions/:runtimeSessionId
   GET /api/v1/reports/defense/:reportId
 ```

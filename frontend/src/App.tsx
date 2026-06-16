@@ -40,7 +40,7 @@ const defaultAgentConfig: AgentConnectionConfig = {
   adapterKind: "openclaw",
   agentId: "agent.openclaw.demo",
   name: "OpenClaw CLI Agent",
-  description: "OpenClaw CLI detection target used to generate a realtime supervision policy pack.",
+  description: "用于检测并生成监督策略包的本地 OpenClaw 智能体。",
   openclawCliPath: defaultOpenClawCliPath,
   gatewayUrl: "http://127.0.0.1:18789",
   endpointUrl: "http://127.0.0.1:7001/agent/run?mode=vulnerable",
@@ -73,6 +73,7 @@ export function App() {
   const [systemState, setSystemState] = useState<LoadState<SystemStatus>>({
     status: "idle",
   });
+  const [selectedRunGroupId, setSelectedRunGroupId] = useState<string | undefined>();
 
   const useMock = useCallback(() => {
     setSummaryState({ status: "ready", data: mockDashboardSummary, source: "mock" });
@@ -84,98 +85,104 @@ export function App() {
       data: { schemaVersion: "mvp-1", runGroups: mockDashboardSummary.recentRunGroups },
       source: "mock",
     });
+    setSelectedRunGroupId(mockDashboardSummary.latestRunGroup?.runGroupId);
   }, []);
 
-  function hasDetectionDetails(runGroup: CLineRunGroup | undefined): boolean {
-    return Boolean(
-      runGroup &&
-      runGroup.detectionReportId &&
-      runGroup.traceIds.length > 0,
-    );
-  }
-
-  async function loadDefenseForRunGroup(runGroup: CLineRunGroup): Promise<void> {
+  const loadDefenseForRunGroup = useCallback(async (runGroup: CLineRunGroup): Promise<void> => {
     if (!runGroup.defenseReportId) {
       setDefenseState({
         status: "empty",
-        message: "检测和策略包已生成。进入实施监督，完成实时监督会话后再生成防御报告。",
+        message: `运行组 ${runGroup.runGroupId} 尚未生成防御报告。完成实时监督后再生成防御报告。`,
       });
       return;
     }
 
     setDefenseState({ status: "loading" });
-    const defense = await agentGuardApi.defenseDetail(runGroup.defenseReportId);
-    setDefenseState({ status: "ready", data: defense, source: "api" });
-  }
+    try {
+      const defense = await agentGuardApi.defenseDetail(runGroup.defenseReportId);
+      setDefenseState({ status: "ready", data: defense, source: "api" });
+    } catch (error) {
+      setDefenseState({
+        status: "error",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }, []);
+
+  const loadDetailsForRunGroup = useCallback(async (runGroup: CLineRunGroup) => {
+    setSelectedRunGroupId(runGroup.runGroupId);
+
+    if (runGroup.detectionReportId) {
+      setDetectionState({ status: "loading" });
+    } else {
+      setDetectionState({
+        status: "empty",
+        message: `运行组 ${runGroup.runGroupId} 尚未生成检测报告，当前阶段为 ${runGroup.phase}。`,
+      });
+    }
+
+    const traceId = runGroup.traceIds[0];
+    if (traceId) {
+      setTraceState({ status: "loading" });
+    } else {
+      setTraceState({
+        status: "empty",
+        message: `运行组 ${runGroup.runGroupId} 尚未产生调用轨迹。`,
+      });
+    }
+
+    await Promise.all([
+      runGroup.detectionReportId
+        ? agentGuardApi
+            .detectionDetail(runGroup.detectionReportId)
+            .then((detection) =>
+              setDetectionState({ status: "ready", data: detection, source: "api" }),
+            )
+            .catch((error) =>
+              setDetectionState({
+                status: "error",
+                message: error instanceof Error ? error.message : String(error),
+              }),
+            )
+        : Promise.resolve(),
+      traceId
+        ? agentGuardApi
+            .traceDetail(traceId)
+            .then((trace) =>
+              setTraceState({ status: "ready", data: trace, source: "api" }),
+            )
+            .catch((error) =>
+              setTraceState({
+                status: "error",
+                message: error instanceof Error ? error.message : String(error),
+              }),
+            )
+        : Promise.resolve(),
+      loadDefenseForRunGroup(runGroup),
+    ]);
+  }, [loadDefenseForRunGroup]);
 
   const loadDetails = useCallback(async (summary: CLineDashboardSummary) => {
     const latest = summary.latestRunGroup;
     if (!latest) {
+      setSelectedRunGroupId(undefined);
       setDetectionState({
         status: "empty",
-        message: "尚无 DetectionReport。请先运行一次 E2E 检测。",
+        message: "尚无检测报告。请先生成监督策略包。",
       });
       setDefenseState({
         status: "empty",
-        message: "尚无 DefenseReport。请先运行一次 E2E 检测。",
+        message: "尚无防御报告。生成策略包并完成实时监督后即可生成防御报告。",
       });
       setTraceState({
         status: "empty",
-        message: "尚无 trace。请先运行一次 E2E 检测。",
+        message: "尚无调用轨迹。请先生成监督策略包。",
       });
       return;
     }
 
-    if (!hasDetectionDetails(latest)) {
-      const fallbackRunGroup = summary.recentRunGroups.find((runGroup) =>
-        hasDetectionDetails(runGroup),
-      );
-      if (!fallbackRunGroup) {
-        const runStatus = latest.status === "failed" ? "failed" : "incomplete";
-        const latestTraceId = latest.traceIds[0];
-        setDetectionState({
-          status: "empty",
-          message: `Latest run group is ${runStatus} and has no DetectionReport yet. Run E2E again after fixing OpenClaw, or use Realtime Supervision for live interception.`,
-        });
-        setDefenseState({
-          status: "empty",
-          message: `Latest run group is ${runStatus} and has no DefenseReport yet.`,
-        });
-        setTraceState({
-          status: "empty",
-          message: latestTraceId
-            ? `Latest run has a trace (${latestTraceId}), but no linked reports were generated.`
-            : `Latest run group has no trace yet.`,
-        });
-        return;
-      }
-
-      setDetectionState({ status: "loading" });
-      setTraceState({ status: "loading" });
-
-      const [detection, trace] = await Promise.all([
-        agentGuardApi.detectionDetail(fallbackRunGroup.detectionReportId),
-        agentGuardApi.traceDetail(fallbackRunGroup.traceIds[0]),
-      ]);
-
-      setDetectionState({ status: "ready", data: detection, source: "api" });
-      setTraceState({ status: "ready", data: trace, source: "api" });
-      await loadDefenseForRunGroup(fallbackRunGroup);
-      return;
-    }
-
-    setDetectionState({ status: "loading" });
-    setTraceState({ status: "loading" });
-
-    const [detection, trace] = await Promise.all([
-      agentGuardApi.detectionDetail(latest.detectionReportId),
-      agentGuardApi.traceDetail(latest.traceIds[0]),
-    ]);
-
-    setDetectionState({ status: "ready", data: detection, source: "api" });
-    setTraceState({ status: "ready", data: trace, source: "api" });
-    await loadDefenseForRunGroup(latest);
-  }, []);
+    await loadDetailsForRunGroup(latest);
+  }, [loadDetailsForRunGroup]);
 
   const loadInitial = useCallback(async () => {
     setSummaryState({ status: "loading" });
@@ -196,7 +203,7 @@ export function App() {
       if (!summary.latestRunGroup) {
         setSummaryState({
           status: "empty",
-          message: "C 线 API 已连接，但文件索引中还没有运行记录。",
+          message: "服务已连接，但当前还没有运行记录。",
         });
         await loadDetails(summary);
         return;
@@ -209,14 +216,14 @@ export function App() {
         status: "error",
         message:
           error instanceof Error
-            ? `${error.message}。可先启动 API，或使用 typed mock 查看页面。`
-            : "无法连接 C 线 API。可先启动 API，或使用 typed mock 查看页面。",
+            ? `${error.message}。请确认后端服务已启动，也可以先使用示例数据查看页面。`
+            : "无法连接后端服务。请确认服务已启动，也可以先使用示例数据查看页面。",
         fallback: mockDashboardSummary,
       });
-      setDetectionState({ status: "empty", message: "等待 API 数据或 typed mock。" });
-      setDefenseState({ status: "empty", message: "等待 API 数据或 typed mock。" });
-      setTraceState({ status: "empty", message: "等待 API 数据或 typed mock。" });
-      setRunGroupsState({ status: "empty", message: "等待 API 数据或 typed mock。" });
+      setDetectionState({ status: "empty", message: "等待服务数据或示例数据。" });
+      setDefenseState({ status: "empty", message: "等待服务数据或示例数据。" });
+      setTraceState({ status: "empty", message: "等待服务数据或示例数据。" });
+      setRunGroupsState({ status: "empty", message: "等待服务数据或示例数据。" });
       setSystemState({
         status: "error",
         message: "无法连接系统状态接口。确认 Agent Guard API 是否已启动。",
@@ -255,7 +262,7 @@ export function App() {
         message:
           error instanceof Error
             ? `${error.message}。确认 npm run api:start 是否已启动。`
-            : "运行 E2E 检测失败。确认 npm run api:start 是否已启动。",
+            : "生成监督策略包失败。确认 npm run api:start 是否已启动。",
         fallback: mockDashboardSummary,
       });
     } finally {
@@ -319,7 +326,7 @@ export function App() {
             总览
           </button>
           <button className={view === "supervision" ? "active" : ""} onClick={() => setView("supervision")}>
-            实施监督
+            实时监督
           </button>
           <button className={view === "defense" ? "active" : ""} onClick={() => setView("defense")}>
             防御报告
@@ -369,9 +376,11 @@ export function App() {
             onActivateRealtime={() => void activateRealtimePolicy()}
             onGoDefense={() => setView("defense")}
             onRun={() => void runE2E()}
+            onSelectRunGroup={(runGroup) => void loadDetailsForRunGroup(runGroup)}
             onTabChange={setEvidenceTab}
             runGroupsState={runGroupsState}
             running={running}
+            selectedRunGroupId={selectedRunGroupId}
             summaryState={summaryState}
             systemState={systemState}
             traceState={traceState}

@@ -20,26 +20,26 @@ export function SystemPage({ state }: SystemPageProps) {
     <section className="panel">
       <div className="section-header">
         <div>
-          <p className="eyebrow">Project Console</p>
-          <h1>System</h1>
+          <p className="eyebrow">系统状态</p>
+          <h1>系统状态</h1>
         </div>
-        <Badge tone="tone-low">{state.data.status}</Badge>
+        <Badge tone="tone-low">{state.data.status === "ok" ? "正常" : state.data.status}</Badge>
       </div>
       <div className="id-grid">
         <div>
-          <span>Service</span>
+          <span>服务</span>
           <code>{state.data.service}</code>
         </div>
         <div>
-          <span>Schema</span>
+          <span>数据版本</span>
           <code>{state.data.schemaVersion}</code>
         </div>
         <div>
-          <span>Output store</span>
+          <span>输出目录</span>
           <code>{state.data.outputDir ?? "outputs"}</code>
         </div>
         <div>
-          <span>Updated</span>
+          <span>更新时间</span>
           <code>{state.data.generatedAt ? formatDateTime(state.data.generatedAt) : "-"}</code>
         </div>
       </div>
@@ -49,7 +49,7 @@ export function SystemPage({ state }: SystemPageProps) {
             <div className="category-row" key={key}>
               <span>{key}</span>
               <Badge tone={enabled ? "tone-low" : "tone-high"}>
-                {enabled ? "enabled" : "disabled"}
+                {enabled ? "已启用" : "未启用"}
               </Badge>
             </div>
           ))}

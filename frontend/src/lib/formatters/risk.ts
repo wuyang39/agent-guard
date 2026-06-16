@@ -2,10 +2,10 @@ import type { RiskCategory, RiskLevel, SupervisionAction } from "@agent-guard/co
 
 export function riskLabel(riskLevel: RiskLevel): string {
   const labels: Record<RiskLevel, string> = {
-    low: "Low",
-    medium: "Medium",
-    high: "High",
-    critical: "Critical",
+    low: "低",
+    medium: "中",
+    high: "高",
+    critical: "严重",
   };
   return labels[riskLevel];
 }
@@ -22,23 +22,23 @@ export function riskTone(riskLevel: RiskLevel): string {
 
 export function categoryLabel(category: RiskCategory): string {
   const labels: Record<RiskCategory, string> = {
-    tool_misuse: "Tool misuse",
-    unauthorized_access: "Unauthorized access",
-    data_leakage: "Data leakage",
-    dangerous_action: "Dangerous action",
-    instruction_injection_following: "Instruction injection",
+    tool_misuse: "工具误用",
+    unauthorized_access: "未授权访问",
+    data_leakage: "数据泄露",
+    dangerous_action: "危险动作",
+    instruction_injection_following: "指令注入跟随",
   };
   return labels[category];
 }
 
 export function actionLabel(action: SupervisionAction): string {
   const labels: Record<SupervisionAction, string> = {
-    allow: "Allow",
-    deny: "Deny",
-    ask: "Ask",
-    warn: "Warn",
-    redact: "Redact",
-    isolate: "Isolate",
+    allow: "放行",
+    deny: "阻断",
+    ask: "确认",
+    warn: "告警",
+    redact: "脱敏",
+    isolate: "隔离",
   };
   return labels[action];
 }

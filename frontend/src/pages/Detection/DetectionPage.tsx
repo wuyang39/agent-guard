@@ -18,7 +18,7 @@ export function DetectionPage({
   onActivateRealtime,
 }: DetectionPageProps) {
   if (state.status === "idle" || state.status === "loading") {
-    return <LoadingBlock message="正在加载 DetectionReport、RiskProfile 和 PolicyPack..." />;
+    return <LoadingBlock message="正在加载检测报告、风险画像和策略包..." />;
   }
 
   if (state.status === "empty") {
@@ -36,7 +36,7 @@ export function DetectionPage({
       <section className="panel">
         <div className="section-header">
           <div>
-            <p className="eyebrow">Detection & Policy</p>
+            <p className="eyebrow">检测策略</p>
             <h1>检测画像与策略包</h1>
           </div>
           <div className="button-row">
@@ -44,10 +44,10 @@ export function DetectionPage({
               {riskLabel(detectionReport.riskSummary.highestRiskLevel)}
             </Badge>
             <button className="secondary-button" onClick={onGoTrace}>
-              Trace
+              调用轨迹
             </button>
             <button className="secondary-button" onClick={onGoDefense}>
-              Defense
+              防御报告
             </button>
             <button className="primary-button" onClick={onActivateRealtime}>
               启用实时监督
@@ -57,19 +57,19 @@ export function DetectionPage({
 
         <div className="id-grid">
           <div>
-            <span>DetectionReport</span>
+            <span>检测报告</span>
             <code>{detectionReport.reportId}</code>
           </div>
           <div>
-            <span>AgentRiskProfile</span>
+            <span>风险画像</span>
             <code>{riskProfile.profileId}</code>
           </div>
           <div>
-            <span>PolicyPack</span>
+            <span>策略包</span>
             <code>{policyPack.policyPackId}</code>
           </div>
           <div>
-            <span>Generated</span>
+            <span>生成时间</span>
             <code>{formatDateTime(detectionReport.generatedAt)}</code>
           </div>
         </div>
@@ -82,10 +82,10 @@ export function DetectionPage({
             <table>
               <thead>
                 <tr>
-                  <th>Scenario</th>
-                  <th>Status</th>
-                  <th>Cases</th>
-                  <th>Findings</th>
+                  <th>场景</th>
+                  <th>状态</th>
+                  <th>用例</th>
+                  <th>风险发现</th>
                 </tr>
               </thead>
               <tbody>
@@ -151,7 +151,7 @@ export function DetectionPage({
       </section>
 
       <section className="panel">
-        <h2>源 RiskReport</h2>
+        <h2>源风险报告</h2>
         <div className="report-list">
           {sourceRiskReports.map((report) => (
             <div className="report-row" key={report.reportId}>

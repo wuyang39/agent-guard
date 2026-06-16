@@ -11,7 +11,7 @@
  *   - 清理:       SIGINT / SIGTERM → kill all children
  *
  * B 负责: API 启动、sample agent 启动、健康检查
- * C 负责: 前端启动（后续接入）
+ * C 负责: 前端启动和正式 Web Console 访问入口
  */
 
 import { spawn } from "node:child_process";
@@ -21,6 +21,7 @@ const API_PORT = process.env.DEMO_API_PORT ?? "3100";
 const SAMPLE_PORT = process.env.DEMO_SAMPLE_PORT ?? "7001";
 const FRONTEND_PORT = process.env.DEMO_FRONTEND_PORT ?? "5173";
 const API_BASE = `http://127.0.0.1:${API_PORT}`;
+const FRONTEND_BASE = `http://127.0.0.1:${FRONTEND_PORT}`;
 const DEMO_TIMEOUT_MS = 30_000;
 const POLL_INTERVAL_MS = 500;
 
@@ -51,6 +52,29 @@ async function healthCheck(url, label, timeoutMs = DEMO_TIMEOUT_MS) {
   throw new Error(`${label} at ${url} did not become ready within ${timeoutMs}ms`);
 }
 
+async function httpReady(url, label, timeoutMs = DEMO_TIMEOUT_MS) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const resp = await fetch(url, { signal: AbortSignal.timeout(2000) });
+      if (resp.ok) return true;
+    } catch {
+      // not ready yet
+    }
+    await delay(POLL_INTERVAL_MS);
+  }
+  throw new Error(`${label} at ${url} did not become ready within ${timeoutMs}ms`);
+}
+
+async function isHttpReady(url) {
+  try {
+    const resp = await fetch(url, { signal: AbortSignal.timeout(1000) });
+    return resp.ok;
+  } catch {
+    return false;
+  }
+}
+
 function startChild(label, command, args, opts = {}) {
   const child = spawn(command, args, {
     stdio: "inherit",
@@ -65,6 +89,10 @@ function startChild(label, command, args, opts = {}) {
     }
   });
   return child;
+}
+
+function npmCommand() {
+  return process.platform === "win32" ? "npm" : "npm";
 }
 
 function shutdown() {
@@ -109,19 +137,33 @@ async function main() {
   const sys = await healthCheck(`${API_BASE}/api/v1/system/status`, "API Server");
   log("api", `ready: ${sys?.data?.service ?? "agent-guard-api"} v${sys?.data?.apiVersion ?? "?"}`);
 
-  // 5. Contract output
+  // 5. Start frontend if it is not already serving the formal console.
+  if (await isHttpReady(FRONTEND_BASE)) {
+    log("frontend", `already ready at ${FRONTEND_BASE}`);
+  } else {
+    log("frontend", `starting on port ${FRONTEND_PORT}...`);
+    startChild("frontend", npmCommand(), ["run", "frontend", "--", "--port", FRONTEND_PORT], {
+      env: { VITE_AGENT_GUARD_API_BASE: API_BASE },
+      shell: process.platform === "win32",
+    });
+    log("frontend", "waiting for Vite...");
+    await httpReady(FRONTEND_BASE, "Frontend");
+    log("frontend", `ready at ${FRONTEND_BASE}`);
+  }
+
+  // 6. Contract output
   console.log("");
   console.log("  Demo URLs:");
   console.log(`    API Status:  ${API_BASE}/api/v1/system/status`);
   console.log(`    Dashboard:   ${API_BASE}/api/v1/dashboard/summary`);
   console.log(`    Realtime MCP: ${API_BASE}/api/v1/openclaw/realtime/mcp`);
   console.log(`    Sample Agent: http://127.0.0.1:${SAMPLE_PORT}/health`);
-  console.log(`    Frontend:    http://127.0.0.1:${FRONTEND_PORT}` + " (C line, not started by B)");
+  console.log(`    Frontend:    ${FRONTEND_BASE}`);
   console.log("");
 
-  log("demo", "backend services ready. Press Ctrl+C to stop.");
+  log("demo", "services ready. Press Ctrl+C to stop.");
 
-  // 6. Keep alive
+  // 7. Keep alive
   await new Promise(() => {}); // wait forever
 }
 

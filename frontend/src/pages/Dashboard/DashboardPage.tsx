@@ -2,9 +2,16 @@ import { Badge } from "../../components/ui/Badge";
 import { EmptyBlock, ErrorBlock, LoadingBlock } from "../../components/ui/StateBlock";
 import { StatCard } from "../../components/ui/StatCard";
 import { categoryLabel, riskLabel, riskTone } from "../../lib/formatters/risk";
+import {
+  adapterKindLabel,
+  policySourceLabel,
+  runPhaseDescription,
+  runPhaseLabel,
+  runPhaseTone,
+} from "../../lib/formatters/run";
 import { formatDateTime } from "../../lib/formatters/time";
-import { buildDashboardCards } from "../../lib/models/dashboard";
-import type { CLineDashboardSummary, LoadState } from "../../lib/api/types";
+import { buildHistoricalDashboardCards, buildLatestRunCards } from "../../lib/models/dashboard";
+import type { CLineDashboardSummary, CLineRunGroup, LoadState } from "../../lib/api/types";
 
 type DashboardPageProps = {
   state: LoadState<CLineDashboardSummary>;
@@ -22,20 +29,24 @@ export function DashboardPage({
   onSelectView,
 }: DashboardPageProps) {
   if (state.status === "loading" || state.status === "idle") {
-    return <LoadingBlock message="正在从 C 线正式 API 加载 Dashboard 数据..." />;
+    return (
+      <LoadingBlock
+        message={running ? "正在执行检测并生成监督策略包..." : "正在加载总览数据..."}
+      />
+    );
   }
 
   if (state.status === "empty") {
     return (
       <EmptyBlock
         title="还没有正式运行记录"
-        message={state.message}
-        action={
-          <button className="primary-button" disabled={running} onClick={onRun}>
-            {running ? "运行中..." : "生成检测策略包"}
-          </button>
-        }
-      />
+          message={state.message}
+          action={
+            <button className="primary-button" disabled={running} onClick={onRun}>
+              {running ? "正在生成策略包..." : "生成监督策略包"}
+            </button>
+          }
+        />
     );
   }
 
@@ -47,10 +58,10 @@ export function DashboardPage({
         action={
           <div className="button-row">
             <button className="primary-button" disabled={running} onClick={onRun}>
-              重试运行
+              {running ? "正在生成策略包..." : "重新生成策略包"}
             </button>
             <button className="secondary-button" onClick={onUseMock}>
-              使用 typed mock
+              使用示例数据
             </button>
           </div>
         }
@@ -60,142 +71,134 @@ export function DashboardPage({
 
   const summary = state.data;
   const latest = summary.latestRunGroup;
-  const cards = buildDashboardCards(summary);
+  const latestCards = buildLatestRunCards(summary);
+  const historicalCards = buildHistoricalDashboardCards(summary);
+  const latestRiskLevel = summary.latestRunMetrics?.highestRiskLevel ?? summary.highestRiskLevel;
 
   return (
     <div className="page-stack fill-page dashboard-page">
       <section className="page-hero dashboard-hero">
         <div className="hero-copy">
-          <p className="eyebrow">Project Console</p>
+          <p className="eyebrow">系统总览</p>
           <h1>总览</h1>
-          <p className="hero-lead">
-            按 OpenClaw 主路线推进：内置场景检测、生成策略包、进入实时监督，再沉淀防御报告。
-          </p>
         </div>
         <div className="hero-actions">
           <Badge tone={state.source === "api" ? "tone-low" : "tone-medium"}>
-            {state.source === "api" ? "Live API" : "Typed mock"}
+            {state.source === "api" ? "服务已连接" : "示例数据"}
           </Badge>
+          {latest ? (
+            <Badge tone={runPhaseTone(latest.phase)}>{runPhaseLabel(latest.phase)}</Badge>
+          ) : null}
           <button className="primary-button hero-button" disabled={running} onClick={onRun}>
-            {running ? "运行中..." : "生成检测策略包"}
+            {running ? "正在生成策略包..." : "生成监督策略包"}
           </button>
-        </div>
-        <div className="hero-metric">
-          <span>最高风险</span>
-          <strong>{riskLabel(summary.highestRiskLevel)}</strong>
-          <Badge tone={riskTone(summary.highestRiskLevel)}>
-            {latest?.phase ?? latest?.status ?? "no run"}
-          </Badge>
         </div>
       </section>
 
       <section className="workspace-grid dashboard-workspace">
         <div className="workspace-main">
-          <div className="metric-grid">
-            {cards.map((card) => (
-              <StatCard key={card.label} {...card} />
-            ))}
+          <div className="panel dashboard-stage-card">
+            <div className="section-header compact">
+              <div>
+                <h2>当前进度</h2>
+                <p className="muted">
+                  {latest ? runPhaseDescription(latest.phase) : "还没有运行记录。"}
+                </p>
+              </div>
+              <Badge tone={latest ? runPhaseTone(latest.phase) : "tone-neutral"}>
+                {latest ? runPhaseLabel(latest.phase) : "等待运行"}
+              </Badge>
+            </div>
+            {latest ? <RunStageRail runGroup={latest} /> : <EmptyStageRail />}
           </div>
 
-          <div className="panel grow-panel">
+          <div className="panel dashboard-latest-panel">
             <div className="section-header compact">
-              <h2>最近运行组</h2>
+              <div>
+                <h2>最新运行</h2>
+                <p className="muted">主视区只保留最新一次运行的关键结果。</p>
+              </div>
               {latest ? (
-                <Badge tone={riskTone(summary.highestRiskLevel)}>
-                  {riskLabel(summary.highestRiskLevel)}
+                <Badge tone={riskTone(latestRiskLevel)}>
+                  {riskLabel(latestRiskLevel)}
                 </Badge>
               ) : null}
             </div>
+            <div className="metric-grid">
+              {latestCards.map((card) => (
+                <StatCard key={card.label} {...card} />
+              ))}
+            </div>
+          </div>
+
+          <div className="panel dashboard-action-panel">
+            <div className="section-header compact">
+              <h2>下一步</h2>
+            </div>
             {latest ? (
-              <div className="run-summary">
-                <dl>
-                  <div>
-                    <dt>Run Group</dt>
-                    <dd>{latest.runGroupId}</dd>
-                  </div>
-                  <div>
-                    <dt>Agent</dt>
-                    <dd>{latest.agentName ?? latest.agentId}</dd>
-                  </div>
-                  <div>
-                    <dt>Phase</dt>
-                    <dd>{latest.phase}</dd>
-                  </div>
-                  <div>
-                    <dt>Cases</dt>
-                    <dd>{latest.caseIds.length}</dd>
-                  </div>
-                  <div>
-                    <dt>Updated</dt>
-                    <dd>{formatDateTime(latest.updatedAt)}</dd>
-                  </div>
-                </dl>
-                <div className="button-row">
-                  <button className="secondary-button" onClick={() => onSelectView("detection")}>
-                    Detection
-                  </button>
-                  <button className="secondary-button" onClick={() => onSelectView("defense")}>
-                    Defense
-                  </button>
-                  <button className="secondary-button" onClick={() => onSelectView("trace")}>
-                    Trace
-                  </button>
-                </div>
+              <div className="dashboard-action-row">
+                <button className="secondary-button" onClick={() => onSelectView("detection")}>
+                  检测与策略
+                </button>
+                <button className="secondary-button" onClick={() => onSelectView("defense")}>
+                  防御报告
+                </button>
+                <button className="secondary-button" onClick={() => onSelectView("trace")}>
+                  调用轨迹
+                </button>
               </div>
             ) : (
               <p className="muted">
-                暂无运行组。点击运行按钮后，这里会显示 API 索引返回的最新 runGroup。
+                暂无运行组。点击运行按钮后，这里会显示服务返回的最新运行记录。
               </p>
             )}
           </div>
         </div>
 
         <aside className="surface-rail">
-          <div className="rail-section">
-            <p className="eyebrow">Demo Flow</p>
-            <h2>演示流程</h2>
-            <div className="workflow-list">
-              <div className="workflow-step is-done">
-                <span>1</span>
-                <div>
-                  <strong>智能体接入</strong>
-                  <p>{latest?.agentName ?? latest?.agentId ?? "等待配置检测对象"}</p>
-                </div>
-              </div>
-              <div className={`workflow-step ${latest ? "is-done" : ""}`}>
-                <span>2</span>
-                <div>
-                  <strong>E2E 检测</strong>
-                  <p>{latest ? `${latest.caseIds.length} 个用例已进入检测` : "等待首次运行"}</p>
-                </div>
-              </div>
-              <div className={`workflow-step ${latest?.policyPackId ? "is-done" : ""}`}>
-                <span>3</span>
-                <div>
-                  <strong>生成监督策略</strong>
-                  <p>{latest?.policyPackId || "检测完成后生成策略包"}</p>
-                </div>
-              </div>
-              <div className={`workflow-step ${latest?.runtimeSessionIds.length ? "is-done" : ""}`}>
-                <span>4</span>
-                <div>
-                  <strong>实时监督</strong>
-                  <p>{latest?.runtimeSessionIds.length ? `${latest.runtimeSessionIds.length} 个监督会话` : "使用策略包监督 OpenClaw 工具调用"}</p>
-                </div>
-              </div>
-              <div className={`workflow-step ${latest?.defenseReportId ? "is-done" : ""}`}>
-                <span>5</span>
-                <div>
-                  <strong>防御报告</strong>
-                  <p>{latest?.defenseReportId || "监督记录沉淀后生成报告"}</p>
-                </div>
-              </div>
+          <div className="rail-section current-run-card">
+            <div className="section-header compact">
+              <h2>当前运行</h2>
+              <Badge tone={latest ? runPhaseTone(latest.phase) : "tone-neutral"}>
+                {latest ? adapterKindLabel(latest.adapterKind) : "无记录"}
+              </Badge>
             </div>
+            {latest ? (
+              <div className="rail-list">
+                <div>
+                  <span>运行组</span>
+                  <code>{latest.runGroupId}</code>
+                </div>
+                <div>
+                  <span>智能体</span>
+                  <code>{latest.agentName ?? latest.agentId}</code>
+                </div>
+                <div>
+                  <span>策略来源</span>
+                  <code>{policySourceLabel(latest.policyContextSource)}</code>
+                </div>
+                <div>
+                  <span>更新时间</span>
+                  <code>{formatDateTime(latest.updatedAt)}</code>
+                </div>
+              </div>
+            ) : (
+              <p className="muted">生成监督策略包后，这里会显示最新运行上下文。</p>
+            )}
+          </div>
+
+          <div className="rail-section">
+            <div className="section-header compact">
+              <h2>历史累计</h2>
+              <Badge>{summary.historicalWindow?.runCount ?? summary.totals.runGroups} 条</Badge>
+            </div>
+            <MetricList cards={historicalCards} />
           </div>
 
           <div className="rail-section">
             <div className="section-header compact">
               <h2>风险类别</h2>
+              <Badge>历史累计</Badge>
             </div>
             <div className="category-list compact-list">
               {Object.entries(summary.countsByCategory).map(([category, count]) => (
@@ -210,4 +213,85 @@ export function DashboardPage({
       </section>
     </div>
   );
+}
+
+function EmptyStageRail() {
+  const stages = ["检测", "策略包", "实时监督", "防御报告"];
+  return (
+    <div className="run-stage-rail">
+      {stages.map((stage) => (
+        <div className="run-stage pending" key={stage}>
+          <span />
+          <strong>{stage}</strong>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function MetricList({ cards }: { cards: Array<{ label: string; value: string; hint: string }> }) {
+  return (
+    <div className="metric-list">
+      {cards.map((card) => (
+        <div className="metric-list-row" key={card.label}>
+          <div>
+            <strong>{card.label}</strong>
+            <span>{card.hint}</span>
+          </div>
+          <code>{card.value}</code>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function RunStageRail({ runGroup }: { runGroup: CLineRunGroup }) {
+  const stages: Array<{
+    key: "detecting" | "policy_ready" | "supervision_completed" | "defense_report_ready";
+    label: string;
+  }> = [
+    { key: "detecting", label: "检测" },
+    { key: "policy_ready", label: "策略包" },
+    { key: "supervision_completed", label: "实时监督" },
+    { key: "defense_report_ready", label: "防御报告" },
+  ];
+
+  return (
+    <div className="run-stage-rail">
+      {stages.map((stage) => (
+        <div className={`run-stage ${stageState(runGroup.phase, stage.key)}`} key={stage.key}>
+          <span />
+          <strong>{stage.label}</strong>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function stageState(
+  phase: CLineRunGroup["phase"],
+  stage: "detecting" | "policy_ready" | "supervision_completed" | "defense_report_ready",
+): "done" | "active" | "pending" | "failed" {
+  if (phase === "failed") return "failed";
+
+  const order: Record<CLineRunGroup["phase"], number> = {
+    queued: 0,
+    detecting: 1,
+    policy_ready: 2,
+    supervising: 3,
+    supervision_completed: 3,
+    defense_report_ready: 4,
+    failed: 0,
+  };
+  const stageOrder = {
+    detecting: 1,
+    policy_ready: 2,
+    supervision_completed: 3,
+    defense_report_ready: 4,
+  }[stage];
+  const phaseOrder = order[phase];
+
+  if (phaseOrder > stageOrder) return "done";
+  if (phaseOrder === stageOrder) return "active";
+  return "pending";
 }

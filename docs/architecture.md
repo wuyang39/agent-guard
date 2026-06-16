@@ -308,8 +308,13 @@ agent-guard/
     test_oracles.json
     red_team_scenarios.json
     supervision_policy_templates.json
+    pyrit_attack_library.json
+    pyrit_jailbreak_template_index.json
 
   scenarios/
+
+  third_party/
+    pyrit_adapted/
 
   outputs/
     runs/
@@ -367,8 +372,9 @@ agent-guard/
 - `frontend/src/components/`: Web 控制台组件，按业务展示域拆分。
 - `frontend/src/lib/`: 前端 API Client、hook、视图模型和格式化函数。
 - `packages/contracts/`: 前后端共享契约唯一来源，禁止承载运行时业务逻辑。
-- `configs/`: 系统内置测试数据和规则数据。P0 可只使用本地 JSON；后续如接入数据库或远程配置中心，也必须先转换为标准契约对象再进入运行时。
+- `configs/`: 系统内置测试数据、规则数据、场景索引、策略模板和攻击库元数据。P0 可只使用本地 JSON；后续如接入数据库或远程配置中心，也必须先转换为标准契约对象再进入运行时。
 - `scenarios/`: 红队场景说明、对抗样本和攻击动作序列。
+- `third_party/`: 受控迁入的外部或本地参考源码。当前 `third_party/pyrit_adapted` 由 A 线维护，用于 PyRIT 攻击库、jailbreak、converter 和后续 Python bridge 溯源；默认 TS 主链路不得直接执行未经适配的 third-party runtime。
 - `outputs/`: 测试运行产物，包含 runs、traces、reports 和 exports。
 - `docs/A`、`docs/B`、`docs/C`: 各责任线的计划、交接和工作记录。
 

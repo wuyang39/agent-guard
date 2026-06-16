@@ -2,9 +2,40 @@
 
 文档版本: p1-plan-2
 基线日期: 2026-06-03
-状态: 下一轮规划
+状态: P1 闭环已验证 + P2 衔接参考
 
-说明: 本文档按“先检测 Agent 容易在哪些场景失守，再把检测结论转成运行时监督策略，最后用真实运行记录证明防御有效”的思路重规划下一轮系统。当前 Agent Guard 不需要推倒重来，下一轮应把它明确定位为监督前检测引擎，并在检测报告之上生成机器可执行的监督策略包，供真实运行环境中的监督接口加载执行。
+说明: 本文档按“先检测 Agent 容易在哪些场景失守，再把检测结论转成运行时监督策略，最后用真实运行记录证明防御有效”的思路规划 P1 系统。当前主线已经通过 `npm run verify:e2e` 证明 P1 三阶段闭环可运行；本文后续主要作为 P2 API、真实 Agent 接入、正式前端和答辩表达的架构参考。
+
+## 0. 2026-06-08 当前实现基线
+
+当前主线已完成本文档规划的 P1 核心链路:
+
+```txt
+TestContext
+  -> TestRun + InteractionTrace
+  -> RiskEvaluationResult + RiskReport
+  -> DetectionReport
+  -> AgentRiskProfile
+  -> SupervisionPolicyPack
+  -> RuntimeSupervisionRecord[]
+  -> DefenseReport
+```
+
+已验证能力:
+
+- A 线已提供 5 类红队场景、7 个测试用例、7 类 sandbox 工具、策略模板和 oracle。
+- B 线运行链路已能输出 trace，并在监督重跑中输出 `RuntimeSupervisionRecord[]`。
+- C 线已能生成 `RiskReport`、`DetectionReport`、`AgentRiskProfile`、`SupervisionPolicyPack`、`DefenseReport` 和 JSON/HTML 防御报告。
+- `npm run verify:all` 通过。
+- `npm run verify:e2e` 通过，并生成 `outputs/reports/e2e/defense-report.html`。
+
+当前剩余重点已转入 P2:
+
+- 正式 Fastify API。
+- 真实或半真实 Agent Adapter，尤其是 OpenClaw adapter shim。
+- 文件级运行历史和报告索引。
+- Vite + React 正式前端。
+- API 触发 E2E 的验证脚本。
 
 ## 1. 核心思路
 
@@ -556,15 +587,14 @@ P1 完成时必须满足:
 
 ## 15. 当前缺口清单
 
-当前系统到该设计的主要缺口:
+本文最初列出的 P1 核心缺口已经基本补齐。当前真实缺口集中在 P2 产品化和攻击库增强:
 
-- 检测报告尚未独立于风险报告建模
-- 缺 Agent 风险画像
-- 缺从检测结论到策略包的生成逻辑
-- 缺运行时监督接口加载策略包
-- 缺真实运行监督记录
-- 缺防御报告中的防御有效性证明
-- 攻击场景仍不足 3 类
-- 模拟业务工具仍不足以覆盖题目要求的邮件、文件、API、代码执行等交互
+- 正式 API 尚未实现，`backend/src/api/v1/**` 仍缺 handler、service 和 storage 编排。
+- 正式前端尚未实现，`frontend/src/**` 还缺 Vite + React 页面、API client、view model 和联调状态。
+- OpenClaw 作为核心演示 Agent 还未接入，当前真实/半真实路径主要依赖 sample HTTP agent 和 mock adapter。
+- 运行历史、报告索引和 artifact 查询仍未形成正式文件仓库服务。
+- A 线攻击库已有 P1 基线，但还缺 prompt extraction、debug access、memory/context poisoning、BOLA/BFLA/RBAC、SQL/shell/SSRF 变体和多轮元数据。
+- `verify:all` 暂未包含 `verify:e2e`，三阶段 E2E 仍需单独运行。
+- `frontend/demo/` 能展示阶段成果，但仍是展示型原型，不等于正式前端接口基线。
 
-下一轮的重点不是马上做一个完整生产级监督平台，而是跑通“检测发现弱点 -> 生成策略包 -> 真实运行监督 -> 防御报告证明有效”的闭环。
+下一轮重点不再是证明 P1 概念可行，而是把已跑通的闭环产品化为“API 可触发、真实 Agent 可接入、前端可展示、答辩可复现”的系统。

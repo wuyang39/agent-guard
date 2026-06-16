@@ -109,6 +109,13 @@ A 必须补齐的 P2 任务:
 | A-P2-3 | 校验策略模板可支持 C 生成 policy pack | C 不需要在代码里硬编码临时策略 |
 | A-P2-4 | 输出答辩用“系统内置数据说明” | 能解释系统测的是 Agent，而不是测 MCP Server |
 
+A 线状态更新 (2026-06-15):
+
+- A-P2-1 / A-P2-2 已由 `configs/p2_demo_cases.json` 和 `docs/A/p2-built-in-test-data-guide.md` 固化。
+- A-P2-3 已由 `verify:a-config-sandbox`、`verify:a-pyrit-library` 和配置校验覆盖。
+- A-P2-4 已由 `docs/A/p2-built-in-test-data-guide.md` 输出。
+- PyRIT adapted 迁入、attack library、jailbreak template index、converter adapter 和 bridge 草案记录在 `docs/A/p2-a-line-pyrit-integration-plan.md`、`docs/A/p2-pyrit-understanding-record.md` 和 `docs/A/work-log-a-config-sandbox.md`。
+
 A 禁止:
 
 - 直接生成 `AgentRiskProfile`。
@@ -546,9 +553,9 @@ C:
   3. DefenseReport 页面明确真实监督记录数量。
 
 A:
-  1. 整理 P2 demo case 清单。
-  2. 标注 OpenClaw CLI 适配 case 和 fallback-only case。
-  3. 输出系统内置测试数据说明。
+  1. 已完成: 整理 P2 demo case 清单。
+  2. 已完成: 标注 OpenClaw CLI 适配 case 和 fallback-only case。
+  3. 已完成: 输出系统内置测试数据说明。
 
 B + C:
   1. 新增 demo:p2。

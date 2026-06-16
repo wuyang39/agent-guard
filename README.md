@@ -10,11 +10,12 @@ The only tested object is the Agent. MCP Server, Tool, Resource, Prompt, Tool Re
 backend/        Backend runtime, API boundary, Agent execution, MCP sandbox, monitoring, risk, and report modules
 frontend/       Web console workspace for dashboard, traces, risk reports, configs, and system views
 packages/       Shared packages; contracts is the single front/back interface source
-configs/        Internal tools, resources, prompts, tool responses, rules, test cases, and test oracles
+configs/        Internal tools, resources, prompts, tool responses, rules, test cases, oracles, scenarios, and attack-library indexes
 outputs/        Generated runs, traces, reports, and exported artifacts
 docs/           Architecture, directory, interface, ownership, and development specifications
 scripts/        Engineering scripts for validation, build, and local startup
 tests/          Cross-system end-to-end tests
+third_party/    Vendored reference sources used by line-specific adapters, such as the A-line PyRIT adapted attack library
 ```
 
 Line-specific implementation notes are grouped under `docs/A/`, `docs/B/`, and `docs/C/`.
@@ -47,6 +48,17 @@ AgentUnderTest
 ```bash
 npm run demo
 npm run typecheck
+npm run verify:all
+npm run verify:e2e
 ```
 
 `npm run demo` starts the isolated display demo from `frontend/demo`. It is for product-flow demonstration only and is not the formal frontend implementation baseline.
+
+`npm run verify:all` runs the standard typecheck and module verification suite. `npm run verify:e2e` runs the three-stage end-to-end pipeline: pre-supervision detection, supervised rerun, and defense report export.
+
+A-line P2 PyRIT checks:
+
+```bash
+npm run verify:a-pyrit-library
+npm run pyrit:bridge-smoke
+```

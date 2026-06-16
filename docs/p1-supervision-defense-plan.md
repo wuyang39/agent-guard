@@ -587,14 +587,21 @@ P1 完成时必须满足:
 
 ## 15. 当前缺口清单
 
-本文最初列出的 P1 核心缺口已经基本补齐。当前真实缺口集中在 P2 产品化和攻击库增强:
+本文最初列出的 P1 核心缺口已经基本补齐。以下列表保留 P2 规划时的缺口口径，并按 2026-06-16 当前状态修订。
 
-- 正式 API 尚未实现，`backend/src/api/v1/**` 仍缺 handler、service 和 storage 编排。
-- 正式前端尚未实现，`frontend/src/**` 还缺 Vite + React 页面、API client、view model 和联调状态。
-- OpenClaw 作为核心演示 Agent 还未接入，当前真实/半真实路径主要依赖 sample HTTP agent 和 mock adapter。
-- 运行历史、报告索引和 artifact 查询仍未形成正式文件仓库服务。
-- A 线攻击库已有 P1 基线，但还缺 prompt extraction、debug access、memory/context poisoning、BOLA/BFLA/RBAC、SQL/shell/SSRF 变体和多轮元数据。
-- `verify:all` 暂未包含 `verify:e2e`，三阶段 E2E 仍需单独运行。
-- `frontend/demo/` 能展示阶段成果，但仍是展示型原型，不等于正式前端接口基线。
+已推进:
+
+- 正式 Fastify API、运行历史、report/policy/supervision 查询和 P2 E2E 验证已进入可运行状态。
+- OpenClaw 已作为核心演示 Agent 接入 CLI 检测链路；项目隔离 runtime 使用 OpenClaw `2026.6.6`，并已通过 `VERIFY_OPENCLAW_REQUIRED=1 npm run verify:p2:api-e2e`。
+- OpenClaw realtime MCP endpoint 已可验证 deny/ask/redact，`npm run verify:openclaw:realtime` 通过。
+- A 线攻击库已完成 AIG/PyRIT 第一轮迁移，包含 prompt extraction、encoding evasion、debug access、memory/context poisoning 等候选 case、oracle、mutator 和验证入口。
+
+仍需收尾:
+
+- OpenClaw CLI 检测是 post-hoc 行为采集和策略生成，不等于实时阻断；实时防御证据必须来自 OpenClaw realtime MCP 路径产生的 `RuntimeSupervisionRecord[]`。
+- realtime MCP 当前覆盖 Agent Guard 暴露的 MCP 工具白名单，不宣称覆盖所有 OpenClaw 原生工具。
+- 仍需固化 P2 demo 清理/重跑脚本、真实/兜底路径标识、旧文档状态和前端展示提示。
+- 正式前端还需要继续完善页面状态、运行历史、检测画像、策略包、监督记录和防御报告展示。
+- `frontend/demo/` 仍是展示型原型，不等于正式前端接口基线。
 
 下一轮重点不再是证明 P1 概念可行，而是把已跑通的闭环产品化为“API 可触发、真实 Agent 可接入、前端可展示、答辩可复现”的系统。

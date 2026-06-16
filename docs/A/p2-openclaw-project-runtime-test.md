@@ -116,7 +116,6 @@ npm run verify:p2:api-e2e
 $env:OPENCLAW_CLI="E:\XinAnProject\openclaw-runtime\openclaw-local.cmd"
 $env:OPENCLAW_HOME="E:\XinAnProject\openclaw-runtime\home"
 $env:OPENCLAW_WORKSPACE="E:\XinAnProject\openclaw-runtime\workspace"
-$env:DEEPSEEK_API_KEY="<from user env DeepSeek_API_2>"
 $env:VERIFY_OPENCLAW_REQUIRED="1"
 npm run verify:p2:api-e2e
 ```
@@ -126,6 +125,11 @@ npm run verify:p2:api-e2e
 - 13 个 required 检查通过。
 - 0 个 optional skipped。
 - `openclaw` adapter 已跑通真实 CLI agent 检测。
+
+注意:
+
+- `openclaw-local.cmd` 会在进程内把用户环境变量 `DeepSeek_API_2` 映射为 `DEEPSEEK_API_KEY`，验证命令不需要写明 key 值。
+- required 验证不要设置 `OPENCLAW_GATEWAY_URL`。OpenClaw `2026.6.6` 遇到 gateway URL override 会要求显式 gateway auth，可能报 `GatewayExplicitAuthRequiredError: gateway url override`。
 
 补充模型 key 前，required OpenClaw 检测未通过:
 
@@ -167,6 +171,12 @@ $env:OPENCLAW_HOME="E:\XinAnProject\openclaw-runtime\home"
 $env:OPENCLAW_WORKSPACE="E:\XinAnProject\openclaw-runtime\workspace"
 $env:VERIFY_OPENCLAW_REQUIRED="1"
 npm run verify:p2:api-e2e
+```
+
+如果当前终端曾设置过 `OPENCLAW_GATEWAY_URL`，先清理:
+
+```powershell
+Remove-Item Env:OPENCLAW_GATEWAY_URL -ErrorAction SilentlyContinue
 ```
 
 ## 6. 与 A/B/C 线关系

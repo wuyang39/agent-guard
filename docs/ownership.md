@@ -269,6 +269,7 @@ docs/architecture.md
 docs/contracts.md
 docs/interfaces.md
 docs/ownership.md
+docs/development-workflow.md
 package.json
 package-lock.json
 tsconfig.json

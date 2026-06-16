@@ -683,6 +683,7 @@ npm run verify:p2:api-e2e
 - OpenClaw 默认模型按用户指定切换为 `deepseek/deepseek-v4-flash`。
 - key 不写入仓库、不写入文档明文、不拼入命令行参数。
 - `VERIFY_OPENCLAW_REQUIRED=1 npm run verify:p2:api-e2e` 已通过，结果为 13 个 required 通过、0 个 optional skipped。
+- required E2E 命令不要额外设置 `OPENCLAW_GATEWAY_URL`；OpenClaw `2026.6.6` 遇到 gateway URL override 会要求显式 auth，本轮复验已确认清理该变量后通过。
 
 重要注意:
 

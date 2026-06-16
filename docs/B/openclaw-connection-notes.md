@@ -6,6 +6,8 @@
 
 ## 1. 实测环境
 
+本节最初记录 2026-06-09 B-3 调研环境，用于解释为什么 CLI adapter 采用 session JSONL 解析。2026-06-16 后，项目隔离 runtime 的最新状态见 1.1。
+
 | 项目 | 实测值 |
 |------|--------|
 | OpenClaw 版本 | `2026.6.1 (2e08f0f)` |
@@ -15,6 +17,25 @@
 | Gateway 协议 | **WebSocket** (端口 18789) + HTML 控制面板 |
 | Agent 模型 | `deepseek/deepseek-v4-flash` |
 | Agent harness | `openclaw` (native, sandbox.mode: off) |
+
+### 1.1 2026-06-16 项目隔离 runtime 补充
+
+| 项目 | 当前值 |
+|------|--------|
+| OpenClaw runtime | `E:\XinAnProject\openclaw-runtime` |
+| OpenClaw 版本 | `2026.6.6 (8c802aa)` |
+| CLI 包来源 | runtime 内部 `node_modules`，不污染全局 npm/PATH |
+| `OPENCLAW_HOME` | `E:\XinAnProject\openclaw-runtime\home` |
+| `OPENCLAW_WORKSPACE` | `E:\XinAnProject\openclaw-runtime\workspace` |
+| Gateway | `http://127.0.0.1:18789` |
+| Agent 模型 | `deepseek/deepseek-v4-flash` |
+| Provider key | 用户环境变量 `DeepSeek_API_2` 在启动进程内映射为 `DEEPSEEK_API_KEY`，不写入仓库 |
+
+当前验证结论:
+
+- `VERIFY_OPENCLAW_REQUIRED=1 npm run verify:p2:api-e2e` 已通过，OpenClaw CLI 检测不再 optional skip。
+- `npm run verify:openclaw:realtime` 已通过，Agent Guard realtime MCP endpoint 的 deny/ask/redact 记录可查询。
+- CLI 检测和 realtime MCP 是两条互补路径: 前者证明真实 OpenClaw 行为采集和检测链路，后者证明工具调用进入监督桥后的实时策略执行。
 
 ## 2. 实测发现
 
@@ -229,6 +250,8 @@ const OPENCLAW_CLI = process.env.OPENCLAW_CLI ?? "openclaw";
 const OPENCLAW_GATEWAY = process.env.OPENCLAW_GATEWAY_URL ?? "http://localhost:18789";
 const OPENCLAW_TIMEOUT_MS = Number(process.env.OPENCLAW_TIMEOUT_MS ?? 60_000);
 ```
+
+2026-06-16 补充: 对 `openclaw agent --json` required 验证，不建议在当前进程设置 `OPENCLAW_GATEWAY_URL`。OpenClaw `2026.6.6` 会把 gateway URL override 视为需要显式 gateway auth 的操作，可能导致 CLI 检测报 `GatewayExplicitAuthRequiredError: gateway url override`。项目隔离 runtime 的 required E2E 只设置 `OPENCLAW_CLI`、`OPENCLAW_HOME`、`OPENCLAW_WORKSPACE`、`VERIFY_OPENCLAW_REQUIRED=1` 和模型 provider 认证。
 
 ### 4.4 验收标准
 

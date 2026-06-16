@@ -435,6 +435,8 @@ outputs/reports/{caseId}-{reportId}.html
 
 开发者以共享契约为边界。任何模块不得依赖其他模块内部实现；联调失败时，优先检查 schema、字段命名、版本号和事件顺序。
 
+日常开发工作流以 `docs/development-workflow.md` 为准。所有开发、审查和合并前必须确认当前分支、拉取最新远端状态或说明跳过原因、使用中文 commit、保持代码与文档同步，并按改动范围执行验证。
+
 命名规则:
 
 - 共享数据类型使用名词，例如 `TestContext`、`InteractionTrace`、`RiskReport`、`SupervisionPolicyPack`。

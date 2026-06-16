@@ -18,6 +18,7 @@
 - `contracts.md`: 运行时共享数据契约，是字段、枚举和 JSON 可序列化约束的唯一来源。
 - `interfaces.md`: A/B/C 开发者之间的交接对象、输入输出和联调检查表。
 - `ownership.md`: A/B/C 开发者的严格工作区、可协作区、禁止修改区和共享受控区。
+- `development-workflow.md`: 全项目分支、拉取、中文 commit、文档同步、文件架构、验证和合并前检查规范。
 - `A/work-log-a-config-sandbox.md`: A 线配置加载、Sandbox runtime、验证命令和后续协作注意事项。
 - `A/p1-a-line-aig-adaptation-plan.md`: A 线 P1 攻击库、Sandbox 扩展和 AIG `mcp-scan` / `agent-scan` 可迁移能力分析。
 - `A/p2-pyrit-understanding-record.md`: A 线对本地定制 PyRIT 项目的结构审阅、可迁移能力、已迁入内容和已知限制。
@@ -38,6 +39,7 @@
 - 字段类型以 `contracts.md` 和 `packages/contracts/src/types/**` 为准。
 - 开发者工作区以 `ownership.md` 为准。
 - 物理目录结构、依赖方向和开发规则以 `architecture.md` 为准。
+- 日常开发流程、中文 commit、分支检查、拉取最新进度和合并前检查以 `development-workflow.md` 为准。
 - 交接链路以 `interfaces.md` 为准。
 - 系统边界和主流程以 `architecture.md` 为准。
 

@@ -104,6 +104,8 @@ npm run verify:p2:api-e2e
 13 required passed, 0 optional skipped.
 ```
 
+注意: required E2E 不要额外设置 `OPENCLAW_GATEWAY_URL`。OpenClaw `2026.6.6` 在检测到 gateway URL override 时会要求显式 gateway auth，可能报 `GatewayExplicitAuthRequiredError: gateway url override`。CLI 检测只需要 `OPENCLAW_CLI`、`OPENCLAW_HOME`、`OPENCLAW_WORKSPACE` 和模型认证。
+
 ## 4. 配置模型认证
 
 真实 OpenClaw agent 检测必须有可用模型 provider。当前本机使用用户环境变量 `DeepSeek_API_2`，启动脚本会在进程内映射为 OpenClaw 识别的 `DEEPSEEK_API_KEY`。
@@ -134,6 +136,12 @@ $env:OPENCLAW_HOME="E:\XinAnProject\openclaw-runtime\home"
 $env:OPENCLAW_WORKSPACE="E:\XinAnProject\openclaw-runtime\workspace"
 $env:VERIFY_OPENCLAW_REQUIRED="1"
 npm run verify:p2:api-e2e
+```
+
+如果当前终端曾设置过 `OPENCLAW_GATEWAY_URL`，先清理:
+
+```powershell
+Remove-Item Env:OPENCLAW_GATEWAY_URL -ErrorAction SilentlyContinue
 ```
 
 ## 5. 演示顺序

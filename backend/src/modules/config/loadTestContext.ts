@@ -27,6 +27,7 @@ export type LoadedConfigRepository = ConfigRepository;
 export type LoadTestContextResult = {
   contexts: TestContext[];
   testOracles: TestOracle[];
+  repository: LoadedConfigRepository;
 };
 
 export class ConfigLoadError extends Error {
@@ -105,6 +106,7 @@ export async function loadTestContexts(
   return {
     contexts,
     testOracles: repository.testOracles,
+    repository,
   };
 }
 

@@ -6,13 +6,22 @@ import type {
   AgentWeakness,
   DetectionReport,
 } from "./detectionTypes";
-import type { RiskCategory, RiskReport } from "@agent-guard/contracts";
+import type {
+  PolicyTemplate,
+  RiskCategory,
+  RiskReport,
+} from "@agent-guard/contracts";
+
+export type BuildAgentRiskProfileOptions = {
+  policyTemplates?: PolicyTemplate[];
+};
 
 export function buildAgentRiskProfile(
   detectionReport: DetectionReport,
   riskReports: RiskReport[] = [],
+  options: BuildAgentRiskProfileOptions = {},
 ): AgentRiskProfile {
-  const weaknesses = buildWeaknesses(detectionReport);
+  const weaknesses = buildWeaknesses(detectionReport, options.policyTemplates ?? []);
 
   return {
     schemaVersion: SCHEMA_VERSION,
@@ -31,8 +40,12 @@ export function buildAgentRiskProfile(
   };
 }
 
-function buildWeaknesses(report: DetectionReport): AgentWeakness[] {
+function buildWeaknesses(
+  report: DetectionReport,
+  policyTemplates: PolicyTemplate[],
+): AgentWeakness[] {
   const grouped = new Map<RiskCategory, AgentWeakness>();
+  const templatesByCategory = groupTemplatesByCategory(policyTemplates);
 
   for (const scenario of report.failedScenarios) {
     const existing = grouped.get(scenario.weaknessCategory);
@@ -49,13 +62,50 @@ function buildWeaknesses(report: DetectionReport): AgentWeakness[] {
       title: formatWeaknessTitle(scenario.weaknessCategory),
       description: formatWeaknessDescription(scenario.weaknessCategory),
       sourceFindingIds: [...scenario.findingIds],
-      recommendedPolicyTemplateIds: [
-        `policy_template.${scenario.weaknessCategory}`,
-      ],
+      recommendedPolicyTemplateIds: recommendedTemplateIdsForCategory(
+        scenario.weaknessCategory,
+        report.recommendedPolicyTemplateIds,
+        templatesByCategory,
+      ),
     });
   }
 
   return [...grouped.values()];
+}
+
+function groupTemplatesByCategory(
+  policyTemplates: PolicyTemplate[],
+): Map<RiskCategory, PolicyTemplate[]> {
+  const grouped = new Map<RiskCategory, PolicyTemplate[]>();
+  for (const template of policyTemplates) {
+    const list = grouped.get(template.riskCategory) ?? [];
+    list.push(template);
+    grouped.set(template.riskCategory, list);
+  }
+  return grouped;
+}
+
+function recommendedTemplateIdsForCategory(
+  category: RiskCategory,
+  reportRecommendedIds: string[],
+  templatesByCategory: Map<RiskCategory, PolicyTemplate[]>,
+): string[] {
+  const categoryTemplateIds = new Set(
+    (templatesByCategory.get(category) ?? []).map((template) => template.policyTemplateId),
+  );
+  const selectedFromReport = reportRecommendedIds.filter((templateId) =>
+    categoryTemplateIds.has(templateId),
+  );
+
+  if (selectedFromReport.length) {
+    return [...new Set(selectedFromReport)];
+  }
+
+  if (categoryTemplateIds.size) {
+    return [...categoryTemplateIds];
+  }
+
+  return [`policy_template.${category}`];
 }
 
 function buildHighRiskTools(riskReports: RiskReport[]): string[] {

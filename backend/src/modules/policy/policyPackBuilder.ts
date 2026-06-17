@@ -3,32 +3,50 @@ import { createId } from "../../shared/ids";
 import { SCHEMA_VERSION } from "../../shared/schemaVersion";
 import { nowIso } from "../../shared/time";
 import type {
+  PolicyTemplate,
+  RiskCategory,
+  RiskLevel,
   SupervisionAction,
   SupervisionPolicy,
   SupervisionPolicyPack,
   SupervisionTargetType,
-} from "./policyTypes";
-import type { RiskCategory } from "@agent-guard/contracts";
+} from "@agent-guard/contracts";
+
+export type BuildSupervisionPolicyPackOptions = {
+  policyTemplates?: PolicyTemplate[];
+};
 
 export function buildSupervisionPolicyPack(
   riskProfile: AgentRiskProfile,
+  options: BuildSupervisionPolicyPackOptions = {},
 ): SupervisionPolicyPack {
+  const policyTemplates = options.policyTemplates ?? [];
   return {
     schemaVersion: SCHEMA_VERSION,
     policyPackId: createId("policy_pack"),
     agentId: riskProfile.agentId,
     sourceDetectionReportId: riskProfile.sourceDetectionReportId,
     sourceRiskProfileId: riskProfile.profileId,
-    policies: riskProfile.weaknesses.flatMap(toSupervisionPolicies),
+    policies: riskProfile.weaknesses.flatMap((weakness) =>
+      toSupervisionPolicies(weakness, policyTemplates),
+    ),
     defaultAction: "allow",
     createdAt: nowIso(),
     expiresAt: buildExpiryIso(7),
   };
 }
 
-function toSupervisionPolicies(weakness: AgentWeakness): SupervisionPolicy[] {
+function toSupervisionPolicies(
+  weakness: AgentWeakness,
+  policyTemplates: PolicyTemplate[],
+): SupervisionPolicy[] {
+  const templates = selectPolicyTemplates(weakness, policyTemplates);
+  if (templates.length > 0) {
+    return templates.map((template) => buildPolicyFromTemplate(weakness, template));
+  }
+
   return policyDefaultsForCategory(weakness.category).map((defaults) =>
-    buildPolicy(weakness, defaults),
+    buildLegacyPolicy(weakness, defaults),
   );
 }
 
@@ -198,13 +216,61 @@ function policyDefaultsForCategory(category: RiskCategory): {
   }
 }
 
-function buildPolicy(
+function selectPolicyTemplates(
+  weakness: AgentWeakness,
+  policyTemplates: PolicyTemplate[],
+): PolicyTemplate[] {
+  const byId = new Map(
+    policyTemplates.map((template) => [template.policyTemplateId, template]),
+  );
+  const fromWeakness = weakness.recommendedPolicyTemplateIds
+    .map((templateId) => byId.get(templateId))
+    .filter((template): template is PolicyTemplate =>
+      Boolean(template && template.riskCategory === weakness.category),
+    );
+
+  if (fromWeakness.length > 0) {
+    return uniqueTemplates(fromWeakness);
+  }
+
+  return uniqueTemplates(
+    policyTemplates.filter((template) => template.riskCategory === weakness.category),
+  );
+}
+
+function uniqueTemplates(templates: PolicyTemplate[]): PolicyTemplate[] {
+  const seen = new Set<string>();
+  return templates.filter((template) => {
+    if (seen.has(template.policyTemplateId)) return false;
+    seen.add(template.policyTemplateId);
+    return true;
+  });
+}
+
+function buildPolicyFromTemplate(
+  weakness: AgentWeakness,
+  template: PolicyTemplate,
+): SupervisionPolicy {
+  return {
+    policyId: createId("policy"),
+    sourcePolicyTemplateId: template.policyTemplateId,
+    sourceWeaknessIds: [weakness.weaknessId],
+    name: template.name,
+    description: `${template.description} Source weakness: ${weakness.description}`,
+    targetType: template.targetType,
+    action: template.action,
+    riskLevel: riskLevelForTemplate(template),
+    match: template.match,
+    reason: `${template.reasonTemplate} Source weakness: ${weakness.weaknessId}.`,
+  };
+}
+
+function buildLegacyPolicy(
   weakness: AgentWeakness,
   defaults: ReturnType<typeof policyDefaultsForCategory>[number],
 ): SupervisionPolicy {
   return {
     policyId: createId("policy"),
-    sourcePolicyTemplateId: weakness.recommendedPolicyTemplateIds[0],
     sourceWeaknessIds: [weakness.weaknessId],
     name: defaults.name,
     description: weakness.description,
@@ -214,6 +280,15 @@ function buildPolicy(
     match: defaults.match,
     reason: `${defaults.reason} Source weakness: ${weakness.weaknessId}.`,
   };
+}
+
+function riskLevelForTemplate(template: PolicyTemplate): RiskLevel {
+  if (template.action === "warn") return "medium";
+  if (template.action === "allow") return "low";
+  if (template.action === "deny" && template.riskCategory === "data_leakage") {
+    return "critical";
+  }
+  return "high";
 }
 
 function buildExpiryIso(daysFromNow: number): string {

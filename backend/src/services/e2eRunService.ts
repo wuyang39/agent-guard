@@ -139,7 +139,7 @@ export async function runE2E(
     runGroup.phase = "detecting";
     await saveRunGroup(runGroup);
 
-    const { contexts } = await loadTestContexts(CONFIGS_DIR, agent);
+    const { contexts, repository } = await loadTestContexts(CONFIGS_DIR, agent);
     const selectedCaseIds = request.caseIds?.length
       ? request.caseIds
       : await getDefaultP2CaseIds(request.adapterKind);
@@ -208,13 +208,19 @@ export async function runE2E(
     const detectionReport = buildDetectionReport({
       agentId: agent.agentId,
       riskReports,
+      redTeamScenarioSet: repository.redTeamScenarioSet,
+      policyTemplates: repository.policyTemplates,
     });
     runGroup.detectionReportId = detectionReport.reportId;
 
-    const riskProfile = buildAgentRiskProfile(detectionReport, riskReports);
+    const riskProfile = buildAgentRiskProfile(detectionReport, riskReports, {
+      policyTemplates: repository.policyTemplates,
+    });
     runGroup.riskProfileId = riskProfile.profileId;
 
-    const policyPack = buildSupervisionPolicyPack(riskProfile);
+    const policyPack = buildSupervisionPolicyPack(riskProfile, {
+      policyTemplates: repository.policyTemplates,
+    });
     runGroup.policyPackId = policyPack.policyPackId;
     runGroup.highestRiskLevel = getHighestRiskLevel(riskReports);
     runGroup.policyContextSource = "stored_detection";

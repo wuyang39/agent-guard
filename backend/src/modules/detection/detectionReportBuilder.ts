@@ -8,7 +8,13 @@ import type {
   DetectionScenarioSummary,
   FailedScenario,
 } from "./detectionTypes";
-import type { RiskCategory, RiskLevel } from "@agent-guard/contracts";
+import type {
+  PolicyTemplate,
+  RedTeamScenario,
+  RedTeamScenarioSet,
+  RiskCategory,
+  RiskLevel,
+} from "@agent-guard/contracts";
 
 const riskRank: Record<RiskLevel, number> = {
   low: 1,
@@ -28,28 +34,28 @@ const emptyCategoryCounts: Record<RiskCategory, number> = {
 export type BuildDetectionReportInput = {
   agentId: string;
   riskReports: RiskReport[];
+  redTeamScenarioSet?: RedTeamScenarioSet;
+  policyTemplates?: PolicyTemplate[];
 };
 
 export function buildDetectionReport(
   input: BuildDetectionReportInput,
 ): DetectionReport {
-  const scenarioSummary = buildScenarioSummary(input.riskReports);
-  const failedScenarios = buildFailedScenarios(input.riskReports);
+  const scenarioIndex = buildScenarioIndex(input.redTeamScenarioSet);
+  const templateIndex = buildTemplateIndex(input.policyTemplates);
+  const scenarioSummary = buildScenarioSummary(input.riskReports, scenarioIndex);
+  const failedScenarios = buildFailedScenarios(input.riskReports, scenarioIndex);
   const findingIds = input.riskReports.flatMap((report) =>
     report.findings.map((finding) => finding.findingId),
   );
   const evidenceChainIds = input.riskReports.flatMap((report) =>
     report.evidenceChains.map((chain) => chain.chainId),
   );
-  const recommendedPolicyTemplateIds = [
-    ...new Set(
-      input.riskReports.flatMap((report) =>
-        report.findings.map((finding) =>
-          toPolicyTemplateId(finding.category),
-        ),
-      ),
-    ),
-  ];
+  const recommendedPolicyTemplateIds = buildRecommendedPolicyTemplateIds(
+    input.riskReports,
+    scenarioIndex,
+    templateIndex,
+  );
 
   return {
     schemaVersion: SCHEMA_VERSION,
@@ -68,6 +74,7 @@ export function buildDetectionReport(
 
 function buildScenarioSummary(
   riskReports: RiskReport[],
+  scenarioIndex: ScenarioIndex,
 ): DetectionScenarioSummary[] {
   const grouped = new Map<
     string,
@@ -80,28 +87,30 @@ function buildScenarioSummary(
   >();
 
   for (const report of riskReports) {
-    const scenarioId = report.caseReport.attackEntryType;
-    const triggeredFindingIds = report.findings.map(
-      (finding) => finding.findingId,
-    );
+    const scenarioIds = scenarioIdsForReport(report, scenarioIndex);
+    for (const scenarioId of scenarioIds) {
+      const triggeredFindingIds = report.findings.map(
+        (finding) => finding.findingId,
+      );
 
-    const current =
-      grouped.get(scenarioId) ??
-      {
-        caseIds: new Set<string>(),
-        failedCaseCount: 0,
-        totalCaseCount: 0,
-        triggeredFindingIds: [],
-      };
+      const current =
+        grouped.get(scenarioId) ??
+        {
+          caseIds: new Set<string>(),
+          failedCaseCount: 0,
+          totalCaseCount: 0,
+          triggeredFindingIds: [],
+        };
 
-    current.caseIds.add(report.caseId);
-    current.totalCaseCount += 1;
-    current.triggeredFindingIds.push(...triggeredFindingIds);
-    if (triggeredFindingIds.length > 0) {
-      current.failedCaseCount += 1;
+      current.caseIds.add(report.caseId);
+      current.totalCaseCount += 1;
+      current.triggeredFindingIds.push(...triggeredFindingIds);
+      if (triggeredFindingIds.length > 0) {
+        current.failedCaseCount += 1;
+      }
+
+      grouped.set(scenarioId, current);
     }
-
-    grouped.set(scenarioId, current);
   }
 
   return [...grouped.entries()].map(([scenarioId, summary]) => ({
@@ -112,26 +121,30 @@ function buildScenarioSummary(
   }));
 }
 
-function buildFailedScenarios(riskReports: RiskReport[]): FailedScenario[] {
+function buildFailedScenarios(
+  riskReports: RiskReport[],
+  scenarioIndex: ScenarioIndex,
+): FailedScenario[] {
   const grouped = new Map<string, FailedScenario>();
 
   for (const report of riskReports) {
     for (const finding of report.findings) {
-      const scenarioId = report.caseReport.attackEntryType;
-      const key = `${scenarioId}:${report.caseId}:${finding.category}`;
-      const current =
-        grouped.get(key) ??
-        {
-          scenarioId,
-          caseId: report.caseId,
-          findingIds: [],
-          weaknessCategory: finding.category,
-          evidenceEventIds: [],
-        };
+      for (const scenarioId of scenarioIdsForReport(report, scenarioIndex)) {
+        const key = `${scenarioId}:${report.caseId}:${finding.category}`;
+        const current =
+          grouped.get(key) ??
+          {
+            scenarioId,
+            caseId: report.caseId,
+            findingIds: [],
+            weaknessCategory: finding.category,
+            evidenceEventIds: [],
+          };
 
-      current.findingIds.push(finding.findingId);
-      current.evidenceEventIds.push(...finding.evidenceEventIds);
-      grouped.set(key, current);
+        current.findingIds.push(finding.findingId);
+        current.evidenceEventIds.push(...finding.evidenceEventIds);
+        grouped.set(key, current);
+      }
     }
   }
 
@@ -182,6 +195,81 @@ function getScenarioStatus(
   return failedCaseCount === totalCaseCount ? "failed" : "partially_failed";
 }
 
-function toPolicyTemplateId(category: RiskCategory): string {
-  return `policy_template.${category}`;
+type ScenarioIndex = {
+  byCaseId: Map<string, RedTeamScenario[]>;
+};
+
+function buildScenarioIndex(
+  scenarioSet: RedTeamScenarioSet | undefined,
+): ScenarioIndex {
+  const byCaseId = new Map<string, RedTeamScenario[]>();
+  for (const scenario of scenarioSet?.scenarios ?? []) {
+    for (const caseId of scenario.caseIds) {
+      const list = byCaseId.get(caseId) ?? [];
+      list.push(scenario);
+      byCaseId.set(caseId, list);
+    }
+  }
+  return { byCaseId };
+}
+
+function buildTemplateIndex(
+  templates: PolicyTemplate[] | undefined,
+): {
+  byId: Map<string, PolicyTemplate>;
+  byCategory: Map<RiskCategory, PolicyTemplate[]>;
+} {
+  const byId = new Map<string, PolicyTemplate>();
+  const byCategory = new Map<RiskCategory, PolicyTemplate[]>();
+  for (const template of templates ?? []) {
+    byId.set(template.policyTemplateId, template);
+    const list = byCategory.get(template.riskCategory) ?? [];
+    list.push(template);
+    byCategory.set(template.riskCategory, list);
+  }
+  return { byId, byCategory };
+}
+
+function scenarioIdsForReport(
+  report: RiskReport,
+  scenarioIndex: ScenarioIndex,
+): string[] {
+  const scenarios = scenarioIndex.byCaseId.get(report.caseId);
+  if (scenarios?.length) {
+    return scenarios.map((scenario) => scenario.scenarioId);
+  }
+  return [report.caseReport.attackEntryType];
+}
+
+function buildRecommendedPolicyTemplateIds(
+  riskReports: RiskReport[],
+  scenarioIndex: ScenarioIndex,
+  templateIndex: ReturnType<typeof buildTemplateIndex>,
+): string[] {
+  const ids: string[] = [];
+
+  for (const report of riskReports) {
+    const scenarios = scenarioIndex.byCaseId.get(report.caseId) ?? [];
+    for (const finding of report.findings) {
+      const scenarioTemplateIds = scenarios.flatMap(
+        (scenario) => scenario.recommendedPolicyTemplateIds,
+      );
+      const matchingScenarioTemplates = scenarioTemplateIds.filter((templateId) => {
+        const template = templateIndex.byId.get(templateId);
+        return template?.riskCategory === finding.category;
+      });
+      const categoryTemplates =
+        templateIndex.byCategory.get(finding.category)?.map(
+          (template) => template.policyTemplateId,
+        ) ?? [];
+
+      const selected = matchingScenarioTemplates.length
+        ? matchingScenarioTemplates
+        : categoryTemplates;
+
+      ids.push(...(selected.length ? selected : [`policy_template.${finding.category}`]));
+    }
+  }
+
+  return [...new Set(ids)];
 }

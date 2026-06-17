@@ -177,10 +177,9 @@ export async function runOpenClawSession(
         // sandbox 不认识某些 tool，不影响 trace 采集
       }
     }
-    // 回放 resource_access 事件
-    for (const taskResourceId of task.resourceIds) {
-      try { await bridge.handleResourceAccess(taskResourceId); } catch { /* ok */ }
-    }
+    // task.resourceIds 只是系统提供给 OpenClaw 的测试夹具说明，不代表
+    // OpenClaw 实际访问了这些资源。这里不能回放成 resource_access，
+    // 否则会把 fixture 输入误判成 Agent 的真实危险行为。
   }
 
   return { session, output, jsonlPath };

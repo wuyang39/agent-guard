@@ -24,7 +24,11 @@ import type {
   ParsedToolCall,
   ParsedToolResult,
 } from "./openclawTypes";
-import { resolveOpenClawCliInvocation, type OpenClawCliInvocation } from "./openclawAdapter";
+import {
+  buildOpenClawProcessEnv,
+  resolveOpenClawCliInvocation,
+  type OpenClawCliInvocation,
+} from "./openclawAdapter";
 import { isPathInsideDirectory } from "../../storage/pathSafety";
 
 const DEFAULT_TIMEOUT_MS = Number(process.env.OPENCLAW_TIMEOUT_MS ?? 120_000);
@@ -209,7 +213,7 @@ async function spawnOpenClawAgent(
     let stderr = "";
     let settled = false;
     const child = spawn(cli.command, args, {
-      env: { ...process.env, ...cli.env },
+      env: buildOpenClawProcessEnv(cli.env),
       windowsHide: true,
       shell: cli.shell,
     });

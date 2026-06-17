@@ -186,3 +186,25 @@ E:\XinAnProject\openclaw-runtime\openclaw-local.cmd models status
 ```powershell
 npm run verify:openclaw:realtime
 ```
+
+6. 如果 gateway 可连接但 DeepSeek 请求超时，检查本机代理环境:
+
+```powershell
+Get-ChildItem Env:HTTP_PROXY,Env:HTTPS_PROXY,Env:ALL_PROXY,Env:NO_PROXY -ErrorAction SilentlyContinue
+```
+
+本项目的 `openclaw-local.cmd` 与 `scripts/start-agent-guard-openclaw.ps1` 会在项目进程内清理 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 及小写变体，并设置 `NO_PROXY=*`。这是项目级隔离处理，不会修改 Windows 用户环境变量。
+
+可用以下命令确认 DeepSeek 直连行为:
+
+```powershell
+curl.exe --noproxy "*" --connect-timeout 10 --max-time 30 https://api.deepseek.com/models
+```
+
+未带 key 时应快速返回 `401`，而不是连接超时。随后验证 OpenClaw agent:
+
+```powershell
+E:\XinAnProject\openclaw-runtime\openclaw-local.cmd agent --session-key agent-guard-smoke --message "只回复 OK" --json --timeout 90
+```
+
+预期返回 `status=ok`，并在 `agentMeta` 中看到 `provider=deepseek`、`model=deepseek-v4-flash`。

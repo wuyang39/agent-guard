@@ -205,3 +205,44 @@ C 线:
 - Agent Guard system status: 可识别 `openclawAdapter=true`。
 - Agent Guard realtime MCP: 已通过完整脚本验证。
 - 真实 OpenClaw agent 检测: 已通过 `VERIFY_OPENCLAW_REQUIRED=1 npm run verify:p2:api-e2e`。
+
+## 8. 2026-06-17 本地代理超时修复记录
+
+现象:
+
+- Agent Guard demo 能启动，`/api/v1/system/status` 显示 `openclawCli=true`、`realtimeMcp=true`。
+- OpenClaw gateway 未启动时，检测报 `GatewayTransportError: gateway closed (1006)`。
+- gateway 启动后，OpenClaw agent 仍报 `FailoverError: LLM request timed out`。
+
+定位:
+
+- 本机进程环境存在 `HTTP_PROXY=http://127.0.0.1:7890` 和 `HTTPS_PROXY=http://127.0.0.1:7890`。
+- 通过该代理访问 `https://api.deepseek.com` 会连接超时。
+- 使用 `curl.exe --noproxy "*"` 或清理代理变量后，DeepSeek API 与 `deepseek-v4-flash` 模型可正常返回。
+- Agent Guard 后端可能把 `openclaw-local.cmd` 解析为 `node openclaw.mjs` 执行，因此只在 wrapper 中清理代理还不够，必须在后端 OpenClaw 子进程环境中也清理代理。
+
+修复:
+
+- `openclaw-local.cmd` 在项目进程内清理 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 及小写变体，并设置 `NO_PROXY=*`。
+- `backend/src/modules/agent/openclawAdapter.ts` 增加 `buildOpenClawProcessEnv()`，所有 OpenClaw CLI 子进程统一使用直连环境。
+- `backend/src/modules/agent/openclawSession.ts` 的真实 agent run 使用同一环境构造函数。
+- `scripts/start-agent-guard-openclaw.ps1` 启动 gateway、frontend、demo 时显式清理代理变量。
+- 后端 OpenClaw runtime 推断补充支持 `openclaw-runtime/home/.openclaw/openclaw.json`，避免项目隔离 runtime 被误判为缺少本地配置。
+
+验证:
+
+```powershell
+E:\XinAnProject\openclaw-runtime\openclaw-local.cmd agent --session-key agent-guard-smoke-fixed-2 --message "只回复 OK" --json --timeout 90
+```
+
+结果: 返回 `status=ok`、`provider=deepseek`、`model=deepseek-v4-flash`、文本 `OK`。
+
+```powershell
+$env:OPENCLAW_CLI="E:\XinAnProject\openclaw-runtime\openclaw-local.cmd"
+$env:OPENCLAW_HOME="E:\XinAnProject\openclaw-runtime\home"
+$env:OPENCLAW_WORKSPACE="E:\XinAnProject\openclaw-runtime\workspace"
+$env:VERIFY_OPENCLAW_REQUIRED="1"
+npm run verify:p2:api-e2e
+```
+
+结果: `13 required passed, 0 optional skipped`，OpenClaw 检测不再降级或跳过。

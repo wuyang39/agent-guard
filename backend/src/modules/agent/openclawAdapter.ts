@@ -54,6 +54,21 @@ export type OpenClawCliInvocation = {
   env?: Record<string, string>;
 };
 
+export function buildOpenClawProcessEnv(extraEnv?: Record<string, string>): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    ...extraEnv,
+    HTTP_PROXY: "",
+    HTTPS_PROXY: "",
+    ALL_PROXY: "",
+    http_proxy: "",
+    https_proxy: "",
+    all_proxy: "",
+    NO_PROXY: "*",
+    no_proxy: "*",
+  };
+}
+
 export function resolveOpenClawCliInvocation(preferredCliPath?: string): OpenClawCliInvocation {
   const cliPath = resolveOpenClawCliPath(preferredCliPath);
   const npmShimTarget = resolveWindowsNpmShimTarget(cliPath);
@@ -181,7 +196,7 @@ export async function checkOpenClawAvailable(cliPath?: string): Promise<{
     const child = spawn(cli.command, [...cli.argsPrefix, "--version"], {
       windowsHide: true,
       shell: cli.shell,
-      env: { ...process.env, ...cli.env },
+      env: buildOpenClawProcessEnv(cli.env),
     });
     const timer = setTimeout(() => {
       child.kill();
@@ -253,12 +268,15 @@ function resolveWindowsNpmShimTarget(commandPath: string): {
 function resolveOpenClawLocalEnv(rootDir: string): Record<string, string> | undefined {
   const configDir = path.join(rootDir, "config");
   const configPath = path.join(configDir, "openclaw.json");
-  if (!fs.existsSync(configPath)) return undefined;
+  const homeDir = path.join(rootDir, "home");
+  const homeConfigPath = path.join(homeDir, ".openclaw", "openclaw.json");
+  if (!fs.existsSync(configPath) && !fs.existsSync(homeConfigPath)) return undefined;
   return {
     OPENCLAW_STATE_DIR: path.join(rootDir, "state"),
-    OPENCLAW_CONFIG_PATH: configPath,
-    OPENCLAW_CONFIG_DIR: configDir,
-    OPENCLAW_HOME: rootDir,
+    OPENCLAW_CONFIG_PATH: fs.existsSync(configPath) ? configPath : homeConfigPath,
+    OPENCLAW_CONFIG_DIR: fs.existsSync(configPath) ? configDir : path.dirname(homeConfigPath),
+    OPENCLAW_HOME: fs.existsSync(homeConfigPath) ? homeDir : rootDir,
+    OPENCLAW_WORKSPACE: path.join(rootDir, "workspace"),
   };
 }
 

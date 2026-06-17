@@ -24,6 +24,14 @@ $env:OPENCLAW_CLI = $openClawCli
 $env:OPENCLAW_HOME = $openClawHome
 $env:OPENCLAW_WORKSPACE = $openClawWorkspace
 $env:OPENCLAW_TIMEOUT_MS = "15000"
+$env:HTTP_PROXY = ""
+$env:HTTPS_PROXY = ""
+$env:ALL_PROXY = ""
+$env:http_proxy = ""
+$env:https_proxy = ""
+$env:all_proxy = ""
+$env:NO_PROXY = "*"
+$env:no_proxy = "*"
 
 if (-not $env:DEEPSEEK_API_KEY) {
   $deepSeekKey = [Environment]::GetEnvironmentVariable("DeepSeek_API_2")
@@ -58,6 +66,14 @@ if (-not (Test-PortListening 18789)) {
 `$env:OPENCLAW_HOME='$openClawHome';
 `$env:OPENCLAW_WORKSPACE='$openClawWorkspace';
 `$env:OPENCLAW_NO_ONBOARD='1';
+`$env:HTTP_PROXY='';
+`$env:HTTPS_PROXY='';
+`$env:ALL_PROXY='';
+`$env:http_proxy='';
+`$env:https_proxy='';
+`$env:all_proxy='';
+`$env:NO_PROXY='*';
+`$env:no_proxy='*';
 Set-Location '$RuntimeRoot';
 .\openclaw-local.cmd gateway run --port 18789 --bind loopback *> '$gatewayLog' 2> '$gatewayErr'
 "@
@@ -80,6 +96,14 @@ if (-not (Test-PortListening 5173)) {
 `$env:OPENCLAW_CLI='$openClawCli';
 `$env:OPENCLAW_HOME='$openClawHome';
 `$env:OPENCLAW_WORKSPACE='$openClawWorkspace';
+`$env:HTTP_PROXY='';
+`$env:HTTPS_PROXY='';
+`$env:ALL_PROXY='';
+`$env:http_proxy='';
+`$env:https_proxy='';
+`$env:all_proxy='';
+`$env:NO_PROXY='*';
+`$env:no_proxy='*';
 Set-Location '$repoRoot';
 npm run frontend *> '$frontendLog' 2> '$frontendErr'
 "@

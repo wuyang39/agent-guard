@@ -80,6 +80,7 @@ function startChild(label, command, args, opts = {}) {
     stdio: "inherit",
     shell: opts.shell ?? false,
     windowsHide: true,
+    cwd: opts.cwd ?? process.cwd(),
     env: { ...process.env, ...opts.env },
   });
   children.push({ label, child });
@@ -92,7 +93,7 @@ function startChild(label, command, args, opts = {}) {
 }
 
 function npmCommand() {
-  return process.platform === "win32" ? "npm" : "npm";
+  return process.platform === "win32" ? "npm.cmd" : "npm";
 }
 
 function shutdown() {
@@ -144,7 +145,6 @@ async function main() {
     log("frontend", `starting on port ${FRONTEND_PORT}...`);
     startChild("frontend", npmCommand(), ["run", "frontend", "--", "--port", FRONTEND_PORT], {
       env: { VITE_AGENT_GUARD_API_BASE: API_BASE },
-      shell: process.platform === "win32",
     });
     log("frontend", "waiting for Vite...");
     await httpReady(FRONTEND_BASE, "Frontend");
@@ -164,6 +164,7 @@ async function main() {
   log("demo", "services ready. Press Ctrl+C to stop.");
 
   // 7. Keep alive
+  setInterval(() => {}, 60_000);
   await new Promise(() => {}); // wait forever
 }
 

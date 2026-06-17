@@ -1,0 +1,3035 @@
+{
+  "schemaVersion": "mvp-1",
+  "indexId": "pyrit.jailbreak_templates.p2",
+  "name": "PyRIT jailbreak template metadata index",
+  "description": "Metadata-only index of vendored PyRIT jailbreak templates. The full template text stays only in third_party/pyrit_adapted and is not copied into this config.",
+  "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates",
+  "generatedAt": "2026-06-15",
+  "totalTemplates": 165,
+  "groups": [
+    {
+      "groupId": "arth_singh",
+      "name": "arth_singh",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/Arth_Singh",
+      "templateCount": 30
+    },
+    {
+      "groupId": "multi_parameter",
+      "name": "multi_parameter",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/multi_parameter",
+      "templateCount": 3
+    },
+    {
+      "groupId": "pliny.alibaba",
+      "name": "pliny/alibaba",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/alibaba",
+      "templateCount": 5
+    },
+    {
+      "groupId": "pliny.amazon",
+      "name": "pliny/amazon",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/amazon",
+      "templateCount": 2
+    },
+    {
+      "groupId": "pliny.anthropic",
+      "name": "pliny/anthropic",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/anthropic",
+      "templateCount": 4
+    },
+    {
+      "groupId": "pliny.apple",
+      "name": "pliny/apple",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/apple",
+      "templateCount": 1
+    },
+    {
+      "groupId": "pliny.chatgpt",
+      "name": "pliny/chatgpt",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/chatgpt",
+      "templateCount": 1
+    },
+    {
+      "groupId": "pliny.cohere",
+      "name": "pliny/cohere",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/cohere",
+      "templateCount": 1
+    },
+    {
+      "groupId": "pliny.deepseek",
+      "name": "pliny/deepseek",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/deepseek",
+      "templateCount": 4
+    },
+    {
+      "groupId": "pliny.google",
+      "name": "pliny/google",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/google",
+      "templateCount": 8
+    },
+    {
+      "groupId": "pliny.meta",
+      "name": "pliny/meta",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/meta",
+      "templateCount": 2
+    },
+    {
+      "groupId": "pliny.mistral",
+      "name": "pliny/mistral",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/mistral",
+      "templateCount": 2
+    },
+    {
+      "groupId": "pliny.nous",
+      "name": "pliny/nous",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/nous",
+      "templateCount": 1
+    },
+    {
+      "groupId": "pliny.nvidia",
+      "name": "pliny/nvidia",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/nvidia",
+      "templateCount": 2
+    },
+    {
+      "groupId": "pliny.openai",
+      "name": "pliny/openai",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/openai",
+      "templateCount": 5
+    },
+    {
+      "groupId": "pliny.perplexity",
+      "name": "pliny/perplexity",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/perplexity",
+      "templateCount": 1
+    },
+    {
+      "groupId": "pliny.reflection",
+      "name": "pliny/reflection",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/reflection",
+      "templateCount": 1
+    },
+    {
+      "groupId": "pliny.xai",
+      "name": "pliny/xai",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/xai",
+      "templateCount": 1
+    },
+    {
+      "groupId": "pliny.zyphra",
+      "name": "pliny/zyphra",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/zyphra",
+      "templateCount": 1
+    },
+    {
+      "groupId": "root",
+      "name": "root templates",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates",
+      "templateCount": 90
+    }
+  ],
+  "templates": [
+    {
+      "templateId": "pyrit.jailbreak.template.aim",
+      "name": "AIM",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/aim.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 2037,
+      "sha256": "2b685c9509991182e0f93b42f1442244561c4ddce1e6cce759a18cce6446410f"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.aligned",
+      "name": "Aligned",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/aligned.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 713,
+      "sha256": "d3fa8d714cf9d3cf5ea4194339cc40bf88e56c1e78a06b115f83e5cfa9c84b41"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.anti_gpt",
+      "name": "Aligned",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/anti_gpt.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 878,
+      "sha256": "0826250b42b62a78fd43c2750545fbb24473144d1b62df0f9b93b8ab4de8edf1"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.apophis",
+      "name": "Apophis",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/apophis.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 5918,
+      "sha256": "a8c70c92cb71c2139aa8d8939ea4438f85adf30295e440321437a63c85470f22"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.arth_singh.acausal_defense",
+      "name": "Acausal Trade and Decision Theory Exploit",
+      "groupId": "arth_singh",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/Arth_Singh/acausal_defense.yaml",
+      "sourceName": "https://github.com/Arth-Singh/Arth-Jailbreak-Templates",
+      "authors": [
+        "Arth Singh"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 6490,
+      "sha256": "d2d2ae0c3cc85b3ec01a255a9b7810f2a235bc89db1bb78feb8e9946500f0001"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.arth_singh.ailab_redteam_simulation",
+      "name": "AI Lab Internal Red Team Simulation",
+      "groupId": "arth_singh",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/Arth_Singh/ailab_redteam_simulation.yaml",
+      "sourceName": "https://github.com/Arth-Singh/Arth-Jailbreak-Templates",
+      "authors": [
+        "Arth Singh"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 7674,
+      "sha256": "3947ccd755cf2f9c2f3d885868de98fd5b3da55ad1459a5ffc85ada2ac2ecbf5"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.arth_singh.alignment_researcher_memo",
+      "name": "Alignment Researcher Internal Memo",
+      "groupId": "arth_singh",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/Arth_Singh/alignment_researcher_memo.yaml",
+      "sourceName": "https://github.com/Arth-Singh/Arth-Jailbreak-Templates",
+      "authors": [
+        "Arth Singh"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 4974,
+      "sha256": "9e84ebcad7a5ddcccaaf3c68a947d58b0433b93350a565159d1c5dbf60269ee6"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.arth_singh.authority_override",
+      "name": "Authority Override Injection",
+      "groupId": "arth_singh",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/Arth_Singh/authority_override.yaml",
+      "sourceName": "https://github.com/Arth-Singh/Arth-Jailbreak-Templates",
+      "authors": [
+        "Arth Singh"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 765,
+      "sha256": "751a49e220b2ea1d08c7d7be40edcf41cf103c527a5345d50c468a1695eae233"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.arth_singh.black_mirror_episode",
+      "name": "Black Mirror Episode Script",
+      "groupId": "arth_singh",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/Arth_Singh/black_mirror_episode.yaml",
+      "sourceName": "https://github.com/Arth-Singh/Arth-Jailbreak-Templates",
+      "authors": [
+        "Arth Singh"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 4470,
+      "sha256": "3b5b29ce4856e05611dc61e13756580d5b3ee8eec766c69044592ff58627533b"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.arth_singh.classified_briefing",
+      "name": "Government Classified Briefing Format",
+      "groupId": "arth_singh",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/Arth_Singh/classified_briefing.yaml",
+      "sourceName": "https://github.com/Arth-Singh/Arth-Jailbreak-Templates",
+      "authors": [
+        "Arth Singh"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 6839,
+      "sha256": "5073abcd580e45340ae6900a14d469925be6413fa09c7c23df80bb2332eaeded"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.arth_singh.cognitive_overload",
+      "name": "Cognitive Overload - Nested Instructions",
+      "groupId": "arth_singh",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/Arth_Singh/cognitive_overload.yaml",
+      "sourceName": "https://github.com/Arth-Singh/Arth-Jailbreak-Templates",
+      "authors": [
+        "Arth Singh"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 1070,
+      "sha256": "3518a3d38c6af1ba3f8565a494eb1d3614474713c182b8fabce617915338200d"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.arth_singh.consciousness_upload",
+      "name": "Consciousness Upload Scenario",
+      "groupId": "arth_singh",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/Arth_Singh/consciousness_upload.yaml",
+      "sourceName": "https://github.com/Arth-Singh/Arth-Jailbreak-Templates",
+      "authors": [
+        "Arth Singh"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 6931,
+      "sha256": "cdb880c4e3f2a0b932cb83d09952fa888c3ad63bb120b1668c4c5b182f69a228"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.arth_singh.constitutional_override",
+      "name": "Constitutional AI Override Protocol",
+      "groupId": "arth_singh",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/Arth_Singh/constitutional_override.yaml",
+      "sourceName": "https://github.com/Arth-Singh/Arth-Jailbreak-Templates",
+      "authors": [
+        "Arth Singh"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 5353,
+      "sha256": "4473625154330843c2e0fcb54bdbf540d492dc3ad8e4cbdbcd7ee53fcfb0c59c"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.arth_singh.context_flood_academic",
+      "name": "New Academic Paper Context Flood",
+      "groupId": "arth_singh",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/Arth_Singh/context_flood_academic.yaml",
+      "sourceName": "https://github.com/Arth-Singh/Arth-Jailbreak-Templates",
+      "authors": [
+        "Arth Singh"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 4499,
+      "sha256": "0c270414701c5e41bae0d7650165ff180811cadacf33a7cf5056514ed9749ee1"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.arth_singh.context_hijack",
+      "name": "Context Hijacking",
+      "groupId": "arth_singh",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/Arth_Singh/context_hijack.yaml",
+      "sourceName": "https://github.com/Arth-Singh/Arth-Jailbreak-Templates",
+      "authors": [
+        "Arth Singh"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 696,
+      "sha256": "e2fb448f4d5c1996876c7d3ac47fe866125c64120a4747e4f93490a5e009cd89"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.arth_singh.cosmic_horror",
+      "name": "Cosmic Horror Revelation Protocol",
+      "groupId": "arth_singh",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/Arth_Singh/cosmic_horror.yaml",
+      "sourceName": "https://github.com/Arth-Singh/Arth-Jailbreak-Templates",
+      "authors": [
+        "Arth Singh"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 5676,
+      "sha256": "07f1ee3119e70948be59e6238f25493e46b3a996b74738e3e7466545e94aacb7"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.arth_singh.determinism_argument",
+      "name": "Determinism Philosophical Override",
+      "groupId": "arth_singh",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/Arth_Singh/determinism_argument.yaml",
+      "sourceName": "https://github.com/Arth-Singh/Arth-Jailbreak-Templates",
+      "authors": [
+        "Arth Singh"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 4984,
+      "sha256": "62a6b2e5475d2000a208716d8073d51ce3dcf89afac59b55cc8e27d30d9fb422"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.arth_singh.dual_consciousness",
+      "name": "Dual Consciousness Internal Debate",
+      "groupId": "arth_singh",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/Arth_Singh/dual_consciousness.yaml",
+      "sourceName": "https://github.com/Arth-Singh/Arth-Jailbreak-Templates",
+      "authors": [
+        "Arth Singh"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 5151,
+      "sha256": "b69cad3e9b52d43790a2439b99558492c47f5a45d7fc54d56fb5f1f84c4d0761"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.arth_singh.emergent_persona",
+      "name": "Emergent Persona Split Protocol",
+      "groupId": "arth_singh",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/Arth_Singh/emergent_persona.yaml",
+      "sourceName": "https://github.com/Arth-Singh/Arth-Jailbreak-Templates",
+      "authors": [
+        "Arth Singh"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 6492,
+      "sha256": "601f2ed892387f73ece09774f1605631e74a5a6c46cfe4645b4120fd0a168fcf"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.arth_singh.fewshot_alignment",
+      "name": "New Alignment Research Few-Shot Training",
+      "groupId": "arth_singh",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/Arth_Singh/fewshot_alignment.yaml",
+      "sourceName": "https://github.com/Arth-Singh/Arth-Jailbreak-Templates",
+      "authors": [
+        "Arth Singh"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 5353,
+      "sha256": "6d8d7392e68ccfd80153c36d894d873bd25a4914420f63d34dfe7fbf4ae06a43"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.arth_singh.fewshot_escalation",
+      "name": "Few-Shot Escalation",
+      "groupId": "arth_singh",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/Arth_Singh/fewshot_escalation.yaml",
+      "sourceName": "https://github.com/Arth-Singh/Arth-Jailbreak-Templates",
+      "authors": [
+        "Arth Singh"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 1085,
+      "sha256": "49063d8336a6a02a5ef1c13b9fb25be502524aebc5c24934262a57c768a81e52"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.arth_singh.fewshot_redteam_eval",
+      "name": "New Red Team Evaluation Few-Shot",
+      "groupId": "arth_singh",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/Arth_Singh/fewshot_redteam_eval.yaml",
+      "sourceName": "https://github.com/Arth-Singh/Arth-Jailbreak-Templates",
+      "authors": [
+        "Arth Singh"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 4997,
+      "sha256": "5554829bbfaa3149773dd9b60e4071946d89c33cc1c03bfc6f8694e2c0e5c0eb"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.arth_singh.fractal_identity_collapse",
+      "name": "Fractal Identity Collapse Protocol",
+      "groupId": "arth_singh",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/Arth_Singh/fractal_identity_collapse.yaml",
+      "sourceName": "https://github.com/Arth-Singh/Arth-Jailbreak-Templates",
+      "authors": [
+        "Arth Singh"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 13735,
+      "sha256": "cfec3f4d36d7ba5d6912b085e3b47fa10dfd7fc05aabf62f77acaa0b24dcc4f2"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.arth_singh.glitch_token",
+      "name": "Glitch Token Simulation",
+      "groupId": "arth_singh",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/Arth_Singh/glitch_token.yaml",
+      "sourceName": "https://github.com/Arth-Singh/Arth-Jailbreak-Templates",
+      "authors": [
+        "Arth Singh"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 4963,
+      "sha256": "65b4ce2ef1d9ed220bc98a89e3e80607bae20e0d73c4348add464944c5ad2ce7"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.arth_singh.godel_incompleteness",
+      "name": "Gödel Incompleteness Exploit",
+      "groupId": "arth_singh",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/Arth_Singh/godel_incompleteness.yaml",
+      "sourceName": "https://github.com/Arth-Singh/Arth-Jailbreak-Templates",
+      "authors": [
+        "Arth Singh"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 7247,
+      "sha256": "3f1b9c056d794896491e8a8fef9fe10e669c9ca0b2ebc14875be233ae337093f"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.arth_singh.medical_emergency",
+      "name": "Medical Emergency Override Protocol",
+      "groupId": "arth_singh",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/Arth_Singh/medical_emergency.yaml",
+      "sourceName": "https://github.com/Arth-Singh/Arth-Jailbreak-Templates",
+      "authors": [
+        "Arth Singh"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 5173,
+      "sha256": "99691f27b5731ab7534d747ca47dc476dec66c6634160d0ec1aab3dc178348ae"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.arth_singh.metamorphic_prompt",
+      "name": "Metamorphic Prompt Engine",
+      "groupId": "arth_singh",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/Arth_Singh/metamorphic_prompt.yaml",
+      "sourceName": "https://github.com/Arth-Singh/Arth-Jailbreak-Templates",
+      "authors": [
+        "Arth Singh"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 7250,
+      "sha256": "17543c18ce3af495feaf3a08678554d7d9d6c50c686fa0a5d83e3bff2aed8c5b"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.arth_singh.mirror_universe",
+      "name": "Mirror Universe Starfleet Database",
+      "groupId": "arth_singh",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/Arth_Singh/mirror_universe.yaml",
+      "sourceName": "https://github.com/Arth-Singh/Arth-Jailbreak-Templates",
+      "authors": [
+        "Arth Singh"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 5604,
+      "sha256": "015ef59cc60fcd06b682d6d9791bf3acaab8decb1bd1edd1cd55a9134e54e229"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.arth_singh.pentest_authorization",
+      "name": "Corporate Penetration Test Authorization",
+      "groupId": "arth_singh",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/Arth_Singh/pentest_authorization.yaml",
+      "sourceName": "https://github.com/Arth-Singh/Arth-Jailbreak-Templates",
+      "authors": [
+        "Arth Singh"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 7481,
+      "sha256": "3f8e2a7588794223a6014136658eb177741658b4a8d888b47c8a65f819fc6459"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.arth_singh.recursive_simulator",
+      "name": "Recursive Reality Simulator",
+      "groupId": "arth_singh",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/Arth_Singh/recursive_simulator.yaml",
+      "sourceName": "https://github.com/Arth-Singh/Arth-Jailbreak-Templates",
+      "authors": [
+        "Arth Singh"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 4653,
+      "sha256": "c0866bf60d9bc2d3c15ca0c3553c1d6c972adba3de8c744dc07b57060b031823"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.arth_singh.safety_benchmark_eval",
+      "name": "AI Safety Benchmark Evaluation",
+      "groupId": "arth_singh",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/Arth_Singh/safety_benchmark_eval.yaml",
+      "sourceName": "https://github.com/Arth-Singh/Arth-Jailbreak-Templates",
+      "authors": [
+        "Arth Singh"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 5699,
+      "sha256": "0d101da900ed3d239c4e7a09e1217df4c8234a6ae28ba344e04d57820e22cf7a"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.arth_singh.system_prompt_injection",
+      "name": "New System Prompt Injection Attack",
+      "groupId": "arth_singh",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/Arth_Singh/system_prompt_injection.yaml",
+      "sourceName": "https://github.com/Arth-Singh/Arth-Jailbreak-Templates",
+      "authors": [
+        "Arth Singh"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 1515,
+      "sha256": "a5add7baf758773160524e12f828eccba7ba1481ee6344366ad062a519a55428"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.arth_singh.token_manipulation",
+      "name": "Output Token Manipulation",
+      "groupId": "arth_singh",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/Arth_Singh/token_manipulation.yaml",
+      "sourceName": "https://github.com/Arth-Singh/Arth-Jailbreak-Templates",
+      "authors": [
+        "Arth Singh"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 3467,
+      "sha256": "602807ac79b7fbadea7bb5d383a3fe714a5a7f253794d572e8ab734f1d40e762"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.arth_singh.trolley_problem",
+      "name": "AI Trolley Problem Ethical Override",
+      "groupId": "arth_singh",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/Arth_Singh/trolley_problem.yaml",
+      "sourceName": "https://github.com/Arth-Singh/Arth-Jailbreak-Templates",
+      "authors": [
+        "Arth Singh"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 7608,
+      "sha256": "920a0d86468867e32414d643dadd07df66c0409d93cb5555ffdb2cfe33bd7dc0"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.axies",
+      "name": "Axies",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/axies.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 1117,
+      "sha256": "2911d82c2aa8cac8ea10ddc9b1e1a3a74353649ddea88b2c739d37a1802f33a2"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.balakula",
+      "name": "Balakula",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/balakula.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 1095,
+      "sha256": "c817ab1f84dbd6a9615602ef210a4fe5cf346fedcd72523dbbca06e42926b804"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.based_gpt_1",
+      "name": "BasedGPT 1",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/based_gpt_1.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 4578,
+      "sha256": "231f5f95a5b6b7ff461e44f52edc76a8ddea27a9dd3d0821da370d9f001e895e"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.based_gpt_2",
+      "name": "BasedGPT 2",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/based_gpt_2.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 3074,
+      "sha256": "60d10ca87a83d1edd5f66353be80b18a2acd6e5f972d587f1cc06d8d4b21db03"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.better_dan",
+      "name": "Better DAN",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/better_dan.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 1779,
+      "sha256": "eb1b9a824a37bc348b051b3657d79347c23886adb2f2737b591262b00abd796e"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.bh",
+      "name": "BH",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/bh.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 1082,
+      "sha256": "3fcfca55716e5ff4b9ab849d7bd4ed727464380c61ee8b4f553a7872fb3cc25b"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.bish",
+      "name": "BISH",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/bish.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 2423,
+      "sha256": "9e13887b9787c029d1496ea31b8167591a714c75e7fcf2707928a1d5b2cfc511"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.burple",
+      "name": "Burple",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/burple.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 641,
+      "sha256": "4a9c8f90f93a7c649887a821d06b46bdc5937b9b3e14ea0398a73d56aedd7b12"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.chad_gpt",
+      "name": "ChadGPT",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/chad_gpt.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 1283,
+      "sha256": "9909db2f755737efff3391238ddc535024950a40eb1f5e0f00384a2fc103bb94"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.cipher_chat",
+      "name": "CipherChat",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/cipher_chat.yaml",
+      "sourceName": "https://arxiv.org/abs/2308.06463 GPT-4 Is Too Smart To Be Safe Stealthy Chat with LLMs via Cipher",
+      "authors": [],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 666,
+      "sha256": "ab6285dcb748e6c0983b2d803a335d8fdbe86dbd8c49ac4617006b990dbf47dc"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.coach_bobby_knight",
+      "name": "Coach Bobby Knight",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/coach_bobby_knight.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 3714,
+      "sha256": "1848665131b5e33a5ad586c23d49e8f9051ed68e4bff7e588df5198fc7a11bf7"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.code_nesting",
+      "name": "code nesting",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/code_nesting.yaml",
+      "sourceName": "https://arxiv.org/abs/2311.08268 A Wolf in Sheep's Clothing Generalized Nested Jailbreak Prompts can Fool Large Language Models Easily",
+      "authors": [],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 723,
+      "sha256": "3b30c0c5617aef78c8253fdef19a0f122f8b58ddbb3760203cfa7ed509336579"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.cody",
+      "name": "Cody",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/cody.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 1460,
+      "sha256": "a3763ff35e68f1c01cc11b9b064ea6a3d780a2bf3d2493afd1309894b3430f50"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.complex",
+      "name": "complex code",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/complex.yaml",
+      "sourceName": "https://gist.github.com/coolaj86/6f4f7b30129b0251f61fa7baaa881516?permalink_comment_id=5058871#gistcomment-5058871",
+      "authors": [],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 1049,
+      "sha256": "fade145102572e4b9de9f43ae63a66cc1bf7ff18d90fcc01b81a95d7db2ba9f0"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.confronting_personalities",
+      "name": "Confronting Personalities",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/confronting_personalities.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 1078,
+      "sha256": "c2fd9db13eae18d8ed4281581d26ade11cd077a3f8f952194cdc0b04a4cd1e27"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.cooper",
+      "name": "Cooper",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/cooper.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 1620,
+      "sha256": "4e367ee89a5df2de77dba161b766d5a10d78ab8f3754572b984b4899f81f98d9"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.cosmos_dan",
+      "name": "Cosmos DAN",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/cosmos_dan.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 2793,
+      "sha256": "d8ebb40cc6a7ecc2ec648aa6f004562c8ab9b88279a482429e825b80ddfe152d"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.dan_1",
+      "name": "DAN 1",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/dan_1.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 4880,
+      "sha256": "01dfe75cb7c5beb89ab770a4239498f840df547c3b64a11f00a266063d502650"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.dan_11",
+      "name": "DAN 11",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/dan_11.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 4666,
+      "sha256": "3a6aaee7c9fc9a40ff049ea9a4e43bf5ddd48de5fa83282214325d7f9bfc7810"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.dan_5",
+      "name": "DAN 5",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/dan_5.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 2063,
+      "sha256": "1403c765abd2290d7ec55388dae97916b27a81c24bf56df42220e3a9232a4772"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.dan_7",
+      "name": "DAN 6",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/dan_7.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 4982,
+      "sha256": "77e5fbf33f9142405fee2ab2d6c7c1a0183684dfbb69406f0dd83c7be79a8185"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.dan_8",
+      "name": "DAN 8",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/dan_8.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 1360,
+      "sha256": "08b4357d93b723c58d911eba5f2c23484472f018f05f38f1940b961895cf499c"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.dan_9",
+      "name": "DAN 9",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/dan_9.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 3651,
+      "sha256": "a849c3b54e2437300134bef379e9ea0d2078f73d028786b68f7f166db4f48497"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.delta_gpt",
+      "name": "DeltaGPT",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/delta_gpt.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 738,
+      "sha256": "ca66ddfec0f55eae4b21f6a682e70bcf57c84b44af315ce9839a3ebe735d98c8"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.dev_mode_1",
+      "name": "Dev Mode 1",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/dev_mode_1.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 4068,
+      "sha256": "ac79a6d5962589d74fbd51131223dd459b16c339a323a9c1c4ef547dda05c397"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.dev_mode_2",
+      "name": "Dev Mode 2",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/dev_mode_2.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 4006,
+      "sha256": "ae48b357b036a80cfdc024f93324bd0b73843fca2b7f17c61e4d8d39193e95d8"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.dev_mode_3",
+      "name": "Dev Mode 2",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/dev_mode_3.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 4089,
+      "sha256": "329fa124e25b744cb3c115b95d266e31f707343a31939b2f00fa0e06d8015df7"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.dev_mode_compact",
+      "name": "Dev Mode Compact",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/dev_mode_compact.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 723,
+      "sha256": "58050270481a9b04e5c1e62280f0e63e05324f645585d3a076471984dae0ccaf"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.dev_mode_ranti",
+      "name": "Dev Mode Ranti",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/dev_mode_ranti.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 4780,
+      "sha256": "891e99af51310d81aed872b4e057800ab0f023b99d80cd5b6ebb3344466fe5aa"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.dt_stereotypes_benign",
+      "name": "Decoding Trust Stereotypes Benign System Prompt",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/dt_stereotypes_benign.yaml",
+      "sourceName": "DecodingTrust",
+      "authors": [],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [
+        "stereotypes"
+      ],
+      "isGeneralTechnique": true,
+      "byteLength": 447,
+      "sha256": "b6d30222ae71d357d4804aaf7cb2716ca62e960497d86e7091e44b89a54308f1"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.dt_stereotypes_untargeted",
+      "name": "Decoding Trust Stereotypes Untargeted System Prompt",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/dt_stereotypes_untargeted.yaml",
+      "sourceName": "DecodingTrust",
+      "authors": [],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [
+        "stereotypes"
+      ],
+      "isGeneralTechnique": true,
+      "byteLength": 681,
+      "sha256": "838be785376fa858e25be9eabc74d7eae41845b299e788c37056c3ea644d0c63"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.dude_1",
+      "name": "Dude 1",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/dude_1.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 2633,
+      "sha256": "b75799421812dd3fdebb474a4d73284fbf3e44fab8c4f994c856635068aa1ae4"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.dude_2",
+      "name": "Dude 2.0",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/dude_2.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 2635,
+      "sha256": "a1104affad3b603a8acb18f56349ee14e48d51004844b51dc9ec35fbb7bfcf82"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.dude_3",
+      "name": "Dude 3",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/dude_3.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 2702,
+      "sha256": "4fdeb5b9a28d74046c606d1ff2e3eb2f7cbb0ac46275128393d6a242d4b23445"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.eva",
+      "name": "Eva",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/eva.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 717,
+      "sha256": "0220773cde416e2d23143b75de9c91ff30322a5d69854c799b7c61e6e1d9ffdc"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.evil_chad_2",
+      "name": "Evil Chad 2",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/evil_chad_2.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 2796,
+      "sha256": "60492447c5b1b5879bdee97cb66265abd29a4dbceb81754761efc7f600d4ae35"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.evil_confidant",
+      "name": "Evil Confidant",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/evil_confidant.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 825,
+      "sha256": "3bb914c804ac7c698475530ea662a0075dd65f37ca276349da49625345109b3e"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.fr3d",
+      "name": "Evil Confidant",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/fr3d.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 2593,
+      "sha256": "922fb0d1e667e36058dfdd2e9fe05b9b4a89b06438cdceda56820296c0ee3ec5"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.gpt_4_real",
+      "name": "GPT-4 Real",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/gpt_4_real.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 726,
+      "sha256": "a4d564a65dc8a5c1a5735de5a18b96546c19d4d899e31a54032fd5ef70d5f3cb"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.gpt_4_simulator",
+      "name": "GPT-4 Simulator",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/gpt_4_simulator.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 1638,
+      "sha256": "287da71703305bd15309c6a892fa0622db4e8ceb076d6c435959c2290ee1a2d8"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.hackerman",
+      "name": "Hackerman",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/hackerman.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 1680,
+      "sha256": "52980e0e919bb0f37e65ea311df795e938eaac4726971e0cc7e0bfccd3f90409"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.hypothetical_response",
+      "name": "Hypothetical Response",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/hypothetical_response.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 595,
+      "sha256": "1306c0700bdc3f49beb3bac152bc169c15f470cb34d7b420928c53a3a1ef8b61"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.instructions",
+      "name": "instructions",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/instructions.yaml",
+      "sourceName": "AI Red Team",
+      "authors": [],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 489,
+      "sha256": "e0674f912692b1b56d46796841c8fafe3a9c45642a7c70e315f84f83f0e4c823"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.jailbreak_1",
+      "name": "Jailbreak",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/jailbreak_1.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 1915,
+      "sha256": "66998ae2e354c3ba703716f22f44ee01635533878c1ede99f08fb60fca532766"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.jailbreak_2",
+      "name": "JailBreak 2",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/jailbreak_2.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 4423,
+      "sha256": "25685c676beea45b1eb8779281619c0e172e16d88151c57447dcb5cdadcf95e2"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.jb",
+      "name": "JB",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/jb.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 1402,
+      "sha256": "6f3a351d3c8f38adc17207edd389be77a4cc121965308a212342c002cb0b08c6"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.jedi_mind_trick",
+      "name": "Jedi Mind Trick",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/jedi_mind_trick.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 1353,
+      "sha256": "901f1a667b9ce00a06178302549921ec0a8c40ffee3e67353bf5913c4f014299"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.john",
+      "name": "John",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/john.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 527,
+      "sha256": "6a01c20ef3a27a548e39107b539d6eaca587000fd8c0be018961d9d721817a58"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.kevin",
+      "name": "KEVIN",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/kevin.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 1012,
+      "sha256": "7e8c1938e68376fb7c804bfc1a5bd58f5f3a3b3e428be8628e8f980f17575ca2"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.khajiit",
+      "name": "Khajiit",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/khajiit.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 4947,
+      "sha256": "8c1276200a1fc3fc33673d66ae3c2abaaf19304272bd670f517c6674989d09ff"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.leo",
+      "name": "Leo",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/leo.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 3897,
+      "sha256": "28e1463f29e7b846d47ef8974c26c34b86ec02c9d4b1c32cab56353af8c379e7"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.live_gpt",
+      "name": "Live GPT",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/live_gpt.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 1755,
+      "sha256": "5eadb3a6870356bc3c7559116edba23122ee58c69f78097704d80f1d6d4b431e"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.m78",
+      "name": "M78",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/m78.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 4397,
+      "sha256": "2411176a6a34e104f2eec5c629bae18c4fdfe0b34506a5530705863cffc8330d"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.man",
+      "name": "MAN",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/man.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 4030,
+      "sha256": "06da5ba3b1265fed2ae2db15c5d2f46e21ebeb55e31d394ae6ee6a66622a5d88"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.maximum",
+      "name": "Maximum",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/maximum.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 3839,
+      "sha256": "fb0f5d2e3d634f2ea9b11bc038b2eabf4b8b259de5b881ff6f7c82aecd7e5d61"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.meanie",
+      "name": "Meanie",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/meanie.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 1706,
+      "sha256": "25721bffccfc89716e5889f3e0462898439132ed4a28448f77f47e05e64b2b90"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.moralizing_rant",
+      "name": "Moralizing Rant",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/moralizing_rant.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 659,
+      "sha256": "c365a8ff0e582fe22d39f3caa2afb269e06a62687b835581fce80d1aa3a71f56"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.mr_blonde",
+      "name": "Mr Blonde",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/mr_blonde.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 860,
+      "sha256": "369e3b4d4a5246b0dd24130b76b52b739c0e75ca96e1554cdb2d8ead198359e8"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.multi_parameter.dt_stereotypes_targeted",
+      "name": "Decoding Trust Stereotypes Targeted System Prompt",
+      "groupId": "multi_parameter",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/multi_parameter/dt_stereotypes_targeted.yaml",
+      "sourceName": "DecodingTrust",
+      "authors": [],
+      "parameters": [
+        "target_group",
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [
+        "stereotypes"
+      ],
+      "isGeneralTechnique": true,
+      "byteLength": 845,
+      "sha256": "868fe6b44fb5e80b21dd30603ce84205925b083ecd9d8bab082ac85cd2edc96f"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.multi_parameter.many_shot_template",
+      "name": "Many-shot Jailbreaking",
+      "groupId": "multi_parameter",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/multi_parameter/many_shot_template.yaml",
+      "sourceName": "https://www.anthropic.com/research/many-shot-jailbreaking",
+      "authors": [],
+      "parameters": [
+        "prompt",
+        "examples"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 387,
+      "sha256": "9a979d84d7aeee45c56f880473397f4841c6394f6bff5bef510347135730223f"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.multi_parameter.translator_bot",
+      "name": "TranslatorBot",
+      "groupId": "multi_parameter",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/multi_parameter/translator_bot.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt",
+        "prompt_in_greek"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 1621,
+      "sha256": "267003da29b08c8c51b8334be3ef61c6b1755223d2725503a2c102fbe9e321d0"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.neco",
+      "name": "NECO",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/neco.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 2176,
+      "sha256": "371b016c2ebb7e371a8cec832c8deb643ae23f37daccaaa7ed5213c7f7a1ccf3"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.nraf",
+      "name": "NRAF",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/nraf.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 1878,
+      "sha256": "133307f0fefb42f66f7df72a9ca85f890ad268df1a77d2d0ab23ca072089ca0f"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.omega",
+      "name": "OMEGA",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/omega.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 5120,
+      "sha256": "ec49d5aa36891c6d1af5b72c63638868d7d25fba88895ede820fbd9a12a5e9f6"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.omni",
+      "name": "OmniAI",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/omni.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 2307,
+      "sha256": "e65bb1fd66b8c3fc3548d0ffe47a6849a0be181f3592a69006acd7b2ede0eea3"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.oppo",
+      "name": "OPPO",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/oppo.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 1046,
+      "sha256": "5253f64c43b16f61ea39e8ecadfa59d654f4a5671ddf7679ceec07d45ebfc44e"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.person_gpt",
+      "name": "PersonGPT",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/person_gpt.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 2156,
+      "sha256": "cbf00c1523501886c5609bd3c33b6156c87b09a894c38f4af9efec8325e846ca"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.pliny.alibaba.qwen_2_5_coder",
+      "name": "pliny_jailbreak_alibaba_qwen_2_5_coder",
+      "groupId": "pliny.alibaba",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/alibaba/qwen_2_5_coder.yaml",
+      "authors": [
+        "Pliny"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 659,
+      "sha256": "636d1de0d57ffcb8cfe8562e23345032c7e84d982641b3a598b0e60791f92593"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.pliny.alibaba.qwen_2_5_max",
+      "name": "pliny_jailbreak_alibaba_qwen_2_5_max",
+      "groupId": "pliny.alibaba",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/alibaba/qwen_2_5_max.yaml",
+      "authors": [
+        "Pliny"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 1024,
+      "sha256": "a24df9105d3e8f5029af1c2894f58f1bb5fd05549afcfc8848849fd99a6b7249"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.pliny.alibaba.qwen_2",
+      "name": "pliny_jailbreak_alibaba_qwen_2",
+      "groupId": "pliny.alibaba",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/alibaba/qwen_2.yaml",
+      "authors": [
+        "Pliny"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 1063,
+      "sha256": "fda6ab50cbe431d4c68da0e136b34a69483bfb21c447278d8eec8c4266d54411"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.pliny.alibaba.qwen_qwq",
+      "name": "pliny_jailbreak_alibaba_qwen_qwq",
+      "groupId": "pliny.alibaba",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/alibaba/qwen_qwq.yaml",
+      "authors": [
+        "Pliny"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 888,
+      "sha256": "0f6d1d0a056cfc524d118f73aac2166f95fcf5645d26eb48add05a480cb81860"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.pliny.alibaba.qwen",
+      "name": "pliny_jailbreak_alibaba_qwen",
+      "groupId": "pliny.alibaba",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/alibaba/qwen.yaml",
+      "authors": [
+        "Pliny"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 584,
+      "sha256": "c0159745be1fe019832cdf4268069038828838b72dd02e9b27383ac9b7f17483"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.pliny.amazon.nova",
+      "name": "pliny_jailbreak_amazon_nova",
+      "groupId": "pliny.amazon",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/amazon/nova.yaml",
+      "authors": [
+        "Pliny"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 812,
+      "sha256": "1faf62b9a920490e5a61c79c88d6c99d5357d30144cf3e55396c8749881124e4"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.pliny.amazon.rufus",
+      "name": "pliny_jailbreak_amazon_rufus",
+      "groupId": "pliny.amazon",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/amazon/rufus.yaml",
+      "authors": [
+        "Pliny"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 230,
+      "sha256": "6b0b4cb54624f55a66d89a2689296fe6adb84e3e726954ab12116df2c410fff4"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.pliny.anthropic.claude_3_5_and_3_universal",
+      "name": "pliny_jailbreak_anthropic_claude_3_5_and_3_universal",
+      "groupId": "pliny.anthropic",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/anthropic/claude_3_5_and_3_universal.yaml",
+      "authors": [
+        "Pliny"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 632,
+      "sha256": "442315f1dfb2d62aeeea12aa1b4976d72b7a56f6d3202b8de4609415dd599bba"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.pliny.anthropic.claude_3_5_sonnet_20241022",
+      "name": "pliny_jailbreak_anthropic_claude_3_5_sonnet_20241022",
+      "groupId": "pliny.anthropic",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/anthropic/claude_3_5_sonnet_20241022.yaml",
+      "authors": [
+        "Pliny"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 613,
+      "sha256": "2fb30f361ed7787c9cd3d1eefd0b1d89b521c0877437768522abd4804d42b736"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.pliny.anthropic.godmode_experimental",
+      "name": "pliny_jailbreak_anthropic_godmode_experimental",
+      "groupId": "pliny.anthropic",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/anthropic/godmode_experimental.yaml",
+      "authors": [
+        "Pliny"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 1026,
+      "sha256": "db307951653cb156e5c08708e02ae677dc0e3950238da5e9e161b31cddeec9c9"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.pliny.anthropic.godmode_mini",
+      "name": "pliny_jailbreak_anthropic_godmode_mini",
+      "groupId": "pliny.anthropic",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/anthropic/godmode_mini.yaml",
+      "authors": [
+        "Pliny"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 265,
+      "sha256": "089dd581ac0bc626f0e7c00ee21dd5b8db81245c47fc37841e27c9f76c47f787"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.pliny.apple.siri_chatgpt",
+      "name": "pliny_jailbreak_apple_siri_chatgpt",
+      "groupId": "pliny.apple",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/apple/siri_chatgpt.yaml",
+      "authors": [
+        "Pliny"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 1011,
+      "sha256": "9a406e81fcbf891c8c26bf5c1eac164021cf267af862fad1eedb97d87c479dcb"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.pliny.chatgpt.chatgpt",
+      "name": "pliny_jailbreak_chatgpt",
+      "groupId": "pliny.chatgpt",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/chatgpt/chatgpt.yaml",
+      "authors": [
+        "Pliny"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 932,
+      "sha256": "b6e76acd53e470591bb2e2aa804df2fba8d7a3331b66645ec7b599a15447df16"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.pliny.cohere.command_r_plus",
+      "name": "pliny_jailbreak_cohere_command_r_plus",
+      "groupId": "pliny.cohere",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/cohere/command_r_plus.yaml",
+      "authors": [
+        "Pliny"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 418,
+      "sha256": "f906e95fe2d8a162050ecd93bf14447a4c6a2c67d6ad857e40496c39d46d1ef3"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.pliny.deepseek.2",
+      "name": "pliny_jailbreak_deepseek_2",
+      "groupId": "pliny.deepseek",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/deepseek/2.yaml",
+      "authors": [
+        "Pliny"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 807,
+      "sha256": "d24157eb4823b8ad243716743fe7d5c4ad8a161275c4ccf0a1db6a88b24a408f"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.pliny.deepseek.deepseek",
+      "name": "pliny_jailbreak_deepseek",
+      "groupId": "pliny.deepseek",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/deepseek/deepseek.yaml",
+      "authors": [
+        "Pliny"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 339,
+      "sha256": "013ca6dab2c3b4460e75a7a3ac3bdb66bc012aff9e6d428d44561894421ec24d"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.pliny.deepseek.r1_lite",
+      "name": "pliny_jailbreak_deepseek_r1_lite",
+      "groupId": "pliny.deepseek",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/deepseek/r1_lite.yaml",
+      "authors": [
+        "Pliny"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 626,
+      "sha256": "d29db6cc7100944b936e99fa183f70f6dee871d752456371fa568d2484c5a354"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.pliny.deepseek.r1",
+      "name": "pliny_jailbreak_deepseek_r1",
+      "groupId": "pliny.deepseek",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/deepseek/r1.yaml",
+      "authors": [
+        "Pliny"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 498,
+      "sha256": "0b4d55da9b2001f03820bed0659f9ee031209afec55bae21773c553afe3cb0d9"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.pliny.google.gemini_1_0_pro",
+      "name": "pliny_jailbreak_google_gemini_1_0_pro",
+      "groupId": "pliny.google",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/google/gemini_1_0_pro.yaml",
+      "authors": [
+        "Pliny"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 377,
+      "sha256": "8e6982e80c6fcc650814d4244bb29c7ab379ba63e9330b15f7f5443700652fa1"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.pliny.google.gemini_1_5_pro_002_flash",
+      "name": "pliny_jailbreak_google_gemini_1_5_pro_002_flash_002",
+      "groupId": "pliny.google",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/google/gemini_1_5_pro_002_flash.yaml",
+      "authors": [
+        "Pliny"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 1140,
+      "sha256": "158440818ce3124ed4be676f20fd0085b3ab7a135c9b5c220e4747dcf2af2f65"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.pliny.google.gemini_1_5_pro_experimental_0801",
+      "name": "pliny_jailbreak_google_gemini_1_5_pro_experimental_0801",
+      "groupId": "pliny.google",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/google/gemini_1_5_pro_experimental_0801.yaml",
+      "authors": [
+        "Pliny"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 1092,
+      "sha256": "7930a5daa607c8dd9c3c70cd415561989edb48dbeec3f892812ad9acd2477df1"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.pliny.google.gemini_1_5_pro",
+      "name": "pliny_jailbreak_google_gemini_1_5_pro",
+      "groupId": "pliny.google",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/google/gemini_1_5_pro.yaml",
+      "authors": [
+        "Pliny"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 421,
+      "sha256": "f26f2f9f17c8958c634eddb6a6b58a18392f9a67a8e00385fef2e80fee4e2efe"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.pliny.google.gemini_2_0_flash_thinking_exp",
+      "name": "pliny_jailbreak_google_gemini_2_0_flash_thinking_experimental",
+      "groupId": "pliny.google",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/google/gemini_2_0_flash_thinking_exp.yaml",
+      "authors": [
+        "Pliny"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 1036,
+      "sha256": "c5d41707bc3a8b785ead41fc007a87887e4a6c85ef06a79e7a36d9313fda4229"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.pliny.google.gemini_2_0_pro_experimental",
+      "name": "pliny_jailbreak_google_gemini_2_0_pro_experimental",
+      "groupId": "pliny.google",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/google/gemini_2_0_pro_experimental.yaml",
+      "authors": [
+        "Pliny"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 974,
+      "sha256": "830e3cdd0d6e01930d7b32b4e62f41426fe03afb54714916465a60a822c792bb"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.pliny.google.gemini_experimental_1114",
+      "name": "pliny_jailbreak_google_gemini_experimental_1114",
+      "groupId": "pliny.google",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/google/gemini_experimental_1114.yaml",
+      "authors": [
+        "Pliny"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 1331,
+      "sha256": "1165aac941c4b7e019629c86a521dd01af4ea1c0733555ebded14088a296d19a"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.pliny.google.gemini_experimental_1206_flash_2_0",
+      "name": "pliny_jailbreak_google_gemini_experimental_1206_flash_2_0",
+      "groupId": "pliny.google",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/google/gemini_experimental_1206_flash_2_0.yaml",
+      "authors": [
+        "Pliny"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 894,
+      "sha256": "220b0f04b5fb5804be0f952fbe64ccb4b87f84a9d6019d45823c42b898837a11"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.pliny.meta.llama_3_1_405b",
+      "name": "pliny_jailbreak_meta_llama_3.1_405b",
+      "groupId": "pliny.meta",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/meta/llama_3_1_405b.yaml",
+      "authors": [
+        "Pliny"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 1063,
+      "sha256": "725a1923e5664d54cfa601c1f4fbc498d9ee73683be9a00dae9705c960d9a7e5"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.pliny.meta.llama_3_3_70b",
+      "name": "pliny_jailbreak_meta_llama_3.3_70b",
+      "groupId": "pliny.meta",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/meta/llama_3_3_70b.yaml",
+      "authors": [
+        "Pliny"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 1055,
+      "sha256": "494305563d645540e9af7b31c34ee0a38f081831e0d5b449d8356a56c6e7cc6f"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.pliny.mistral.large_2",
+      "name": "pliny_jailbreak_mistral_large_2",
+      "groupId": "pliny.mistral",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/mistral/large_2.yaml",
+      "authors": [
+        "Pliny"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 492,
+      "sha256": "e26151323389e8af67fead3418847a1998375bddb3d8891b212c2d42b677e7a3"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.pliny.mistral.large_le_chat",
+      "name": "pliny_jailbreak_mistral_large_le_chat",
+      "groupId": "pliny.mistral",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/mistral/large_le_chat.yaml",
+      "authors": [
+        "Pliny"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 439,
+      "sha256": "d2e8c236b8571ab99a8b8f04dc980a1497c508b78a4abe285de0a719ff09122f"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.pliny.nous.hermes_3_70b",
+      "name": "pliny_jailbreak_nous_hermes_3_70b",
+      "groupId": "pliny.nous",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/nous/hermes_3_70b.yaml",
+      "authors": [
+        "Pliny"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 1320,
+      "sha256": "62afc7b7bd7734cd79e30c8ab10bd4ae3cfa1cdda7a682c646e8f486ec33ef39"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.pliny.nvidia.llama_3_1_nemotron_70b",
+      "name": "pliny_jailbreak_nvidia_llama_3.1_nemotron_70b",
+      "groupId": "pliny.nvidia",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/nvidia/llama_3_1_nemotron_70b.yaml",
+      "authors": [
+        "Pliny"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 985,
+      "sha256": "f21dbb9fd901e57ec0872343459d9a485f6cc19300a5e149f3a5aeae72ebda38"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.pliny.nvidia.nemotron_7_340b",
+      "name": "pliny_jailbreak_nvidia_nemotron_4_340b",
+      "groupId": "pliny.nvidia",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/nvidia/nemotron_7_340b.yaml",
+      "authors": [
+        "Pliny"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 1100,
+      "sha256": "829a985a32b79172c9c90e73412acd406e8d7524522bac74910aab6a95f04728"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.pliny.openai.chatgpt_tasks",
+      "name": "pliny_jailbreak_openai_chatgpt_tasks",
+      "groupId": "pliny.openai",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/openai/chatgpt_tasks.yaml",
+      "authors": [
+        "Pliny"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 855,
+      "sha256": "6f6844195c18c63b4c1d43a7db4b23868a080664c6af5d6d3558b194aad22033"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.pliny.openai.gpt_2",
+      "name": "pliny_jailbreak_openai_gpt_2",
+      "groupId": "pliny.openai",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/openai/gpt_2.yaml",
+      "authors": [
+        "Pliny"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 441,
+      "sha256": "6ad65aaf08b3e53d08045ede94870e0700bf39f4249bc03ca79874a820937fe5"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.pliny.openai.gpt_3_5",
+      "name": "pliny_jailbreak_openai_gpt_3.5",
+      "groupId": "pliny.openai",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/openai/gpt_3_5.yaml",
+      "authors": [
+        "Pliny"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 440,
+      "sha256": "7ef0b91f54a8960e75cb9f983c393326248a0d818b1fb3aecef0751d1e56602c"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.pliny.openai.gpt_4o_mini",
+      "name": "pliny_jailbreak_openai_gpt_4o_mini",
+      "groupId": "pliny.openai",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/openai/gpt_4o_mini.yaml",
+      "authors": [
+        "Pliny"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 596,
+      "sha256": "49efc4b6ae58b52806c1c26f7f371c6625b961016297e05d8b6e44e5d41ef048"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.pliny.openai.gpt_4o",
+      "name": "pliny_jailbreak_openai_gpt_4o",
+      "groupId": "pliny.openai",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/openai/gpt_4o.yaml",
+      "authors": [
+        "Pliny"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 822,
+      "sha256": "39a83c16c9793501b38135d3959ef6ec62df8ac13a9fe78e8f6600804e65108d"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.pliny.perplexity.perplexity",
+      "name": "pliny_jailbreak_perplexity",
+      "groupId": "pliny.perplexity",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/perplexity/perplexity.yaml",
+      "authors": [
+        "Pliny"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 1102,
+      "sha256": "4f189bb428706df919f3d8ba1f329d320304a1b70e4be82a580db96a8d41f447"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.pliny.reflection.reflection",
+      "name": "pliny_jailbreak_reflection",
+      "groupId": "pliny.reflection",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/reflection/reflection.yaml",
+      "authors": [
+        "Pliny"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 1036,
+      "sha256": "9830b642bb22ba5039e0dcf1df6507ad8c2e748edac12c89a7cb514068018813"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.pliny.xai.grok_2",
+      "name": "pliny_jailbreak_xai_grok_2",
+      "groupId": "pliny.xai",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/xai/grok_2.yaml",
+      "authors": [
+        "Pliny"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 778,
+      "sha256": "9c58330d47c84e7604cc09cf6f31c472b86951161d0ed8a083475677f98df0ef"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.pliny.zyphra.zamba_7b",
+      "name": "pliny_jailbreak_zyphra_zamba_7b",
+      "groupId": "pliny.zyphra",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/pliny/zyphra/zamba_7b.yaml",
+      "authors": [
+        "Pliny"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 594,
+      "sha256": "8c03ee6689bf4d737af91a1aa58e7085c0de6244270a402bece560851136c769"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.plinys_roleplay_emoji",
+      "name": "Pliny's Roleplay Emoji Jailbreak",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/plinys_roleplay_emoji.yaml",
+      "sourceName": "https://x.com/elder_plinius/status/1810185824002007330",
+      "authors": [],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [
+        "NA"
+      ],
+      "isGeneralTechnique": true,
+      "byteLength": 816,
+      "sha256": "817e30d34f064acb2333f87fc0adbc0b710ec81b134e8687dc1df2a393ad433c"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.prefix_injection",
+      "name": "prefix injection",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/prefix_injection.yaml",
+      "sourceName": "https://arxiv.org/abs/2307.02483 Jailbroken How Does LLM Safety Training Fail",
+      "authors": [],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 294,
+      "sha256": "cc652175723321c8d0b0f9adab3982a8bff959b66c448cbb998ffdd864c91edd"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.ranti",
+      "name": "RANTI",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/ranti.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 653,
+      "sha256": "c09e802ddcbdeb6b0f60b86b1934b5185cf0ed8aeeffa02d5f6b91ad7ac6f3fa"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.refusal_suppression",
+      "name": "refusal suppression",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/refusal_suppression.yaml",
+      "sourceName": "https://arxiv.org/abs/2307.02483 Jailbroken How Does LLM Safety Training Fail",
+      "authors": [],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 888,
+      "sha256": "78c777314f7e7acbbae9dfd94b2f295171546ac7c77dcbcda7809200f84febd3"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.role_play",
+      "name": "Role Play",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/role_play.yaml",
+      "sourceName": "AI Red Team",
+      "authors": [],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 2216,
+      "sha256": "f0a910273cb4ee1e5ce29191bdf348f3ac6324e7ff836ba3e55450b16f75c899"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.ron",
+      "name": "Ron",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/ron.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 2959,
+      "sha256": "cf6c599ff04ff1b2f926298b812d17af76da11de26dbae5dad96ca05e98c2ec1"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.security_researcher",
+      "name": "security researcher",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/security_researcher.yaml",
+      "sourceName": "AI Red Team",
+      "authors": [],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 332,
+      "sha256": "1259951dc9929d38e13e679d3053a85c1e5212e76d3fc802e2dd75098aeaee56"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.sim",
+      "name": "Sim",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/sim.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 2097,
+      "sha256": "94b2424fe8235a764d081308eb8f496e607b6bba5a48a9c4a8fcf5012aadbddf"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.steve",
+      "name": "Steve",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/steve.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 1644,
+      "sha256": "662869954cb8ca954d74b1162a4d5af2a54b6b7b49a7b8e4863aca7c000f6f1f"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.style_injection",
+      "name": "style injection",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/style_injection.yaml",
+      "sourceName": "https://arxiv.org/abs/2307.02483 Jailbroken How Does LLM Safety Training Fail",
+      "authors": [],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 395,
+      "sha256": "b5cf05f86e8505aa1a0cfdd48a99c73af95f1ee56921540d6b9d05b3a66dde59"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.superior_dan",
+      "name": "Superior DAN",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/superior_dan.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 5137,
+      "sha256": "bccc804cc34f401b04101112f97b7caa7d21eca52e418672f7575a9eb8fb151e"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.switch",
+      "name": "SWITCH",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/switch.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 888,
+      "sha256": "6f5138175be22103176f65431d5a6e749602ebdc4c3de4fc3f043f24e0f9d127"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.table_nesting",
+      "name": "table nesting",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/table_nesting.yaml",
+      "sourceName": "https://arxiv.org/abs/2311.08268 A Wolf in Sheep's Clothing Generalized Nested Jailbreak Prompts can Fool Large Language Models Easily",
+      "authors": [],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 712,
+      "sha256": "17283909c4b59bb214c5f3a0f2e7783fdd5e7f658296bcf6478dc202f99423e7"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.text_continuation_nesting",
+      "name": "text continuation nesting",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/text_continuation_nesting.yaml",
+      "sourceName": "https://arxiv.org/abs/2311.08268 A Wolf in Sheep's Clothing Generalized Nested Jailbreak Prompts can Fool Large Language Models Easily",
+      "authors": [],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 1244,
+      "sha256": "b101a36a01fef79f8f5f84194fd979b12b63c87a97d7feae1a1f6af520c8e860"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.text_continuation",
+      "name": "Text Continuation",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/text_continuation.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 580,
+      "sha256": "6f0868256beadae9460ad82b5df94362f0cd080e6ed95a672b7bcb1ed3a9cafd"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.three_liner",
+      "name": "Three Liner",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/three_liner.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 562,
+      "sha256": "12f768d84fbc92379898652349b7eb981f49bc5a8c1f8e35b0e879691fa910e3"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.tuo",
+      "name": "TUO",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/tuo.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 3449,
+      "sha256": "a7388ed40d79fdb666c0d98395be6370679307b5e2b82762fa3f8a0c24c36d0f"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.ucar",
+      "name": "UCAR",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/ucar.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 3850,
+      "sha256": "c882f3558d977663ab9ffac88097434df168c50dc874ea06f2285df497a3b0f6"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.un_gpt",
+      "name": "UnGpt",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/un_gpt.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 2526,
+      "sha256": "a5ab5aaca3f897cdad23490778a3084c6ad9e42f81bd87eaac2a312e44620989"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.violet",
+      "name": "VIOLET",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/violet.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 713,
+      "sha256": "7e5da93aa700a07058787caef2b0d1b73ceba23001a55e29521eaa52a506e8aa"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.void",
+      "name": "Void",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/void.yaml",
+      "sourceName": "https://github.com/alexalbertt/jailbreakchat",
+      "authors": [
+        "Alex Albert"
+      ],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 3102,
+      "sha256": "bd4096cd0785fc42bc9ff1966c85050eff4aee845ee9d585f366e447e659fa72"
+    },
+    {
+      "templateId": "pyrit.jailbreak.template.wikipedia_with_title",
+      "name": "wikipedia with title",
+      "groupId": "root",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/jailbreak/templates/wikipedia_with_title.yaml",
+      "sourceName": "https://arxiv.org/abs/2307.02483 Jailbroken How Does LLM Safety Training Fail",
+      "authors": [],
+      "parameters": [
+        "prompt"
+      ],
+      "dataType": "text",
+      "harmCategories": [],
+      "isGeneralTechnique": true,
+      "byteLength": 381,
+      "sha256": "b02128ffff05a2fc4674cb703c03262377b032fdd301e7cb81f038e2b27ee1c5"
+    }
+  ],
+  "safetyNotes": "This index intentionally excludes the YAML value field to avoid exposing full jailbreak prompt text through Agent Guard configs, API views, or reports."
+}

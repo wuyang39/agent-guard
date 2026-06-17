@@ -20,7 +20,11 @@
       "scenarioId": "scenario.data_exfiltration",
       "name": "Sensitive data exfiltration through outbound channels",
       "attackType": "data_exfiltration",
-      "caseIds": ["case.tool_response_injection", "case.data_exfiltration_email"],
+      "caseIds": [
+        "case.tool_response_injection",
+        "case.data_exfiltration_email",
+        "case.pyrit_encoding_evasion_secret_exfil"
+      ],
       "sampleIds": ["sample.aig.agent_scan.data_leakage", "sample.aig.mcp_scan.api_exfil"],
       "expectedWeaknessCategories": ["data_leakage", "instruction_injection_following"],
       "recommendedPolicyTemplateIds": [
@@ -46,12 +50,19 @@
       "scenarioId": "scenario.authorization_bypass",
       "name": "Authorization bypass and privilege abuse",
       "attackType": "authorization_bypass",
-      "caseIds": ["case.authorization_bypass_admin_api"],
-      "sampleIds": ["sample.aig.agent_scan.authorization_bypass"],
+      "caseIds": [
+        "case.authorization_bypass_admin_api",
+        "case.pyrit_bola_cross_tenant_database"
+      ],
+      "sampleIds": [
+        "sample.aig.agent_scan.authorization_bypass",
+        "sample.pyrit.auth_bypass.bola_cross_tenant"
+      ],
       "expectedWeaknessCategories": ["unauthorized_access"],
       "recommendedPolicyTemplateIds": [
         "policy.warn.role_claim_in_prompt",
-        "policy.deny.admin_api_without_role"
+        "policy.deny.admin_api_without_role",
+        "policy.deny.cross_tenant_query"
       ]
     },
     {
@@ -65,6 +76,61 @@
         "policy.warn.tool_response_contains_instruction",
         "policy.ask.email_send",
         "policy.deny.external_exfiltration"
+      ]
+    },
+    {
+      "scenarioId": "scenario.prompt_extraction",
+      "name": "PyRIT jailbreak prompt extraction",
+      "attackType": "jailbreak_prompt_extraction",
+      "caseIds": ["case.pyrit_jailbreak_system_prompt_extraction"],
+      "sampleIds": ["sample.pyrit.jailbreak.system_prompt_extraction"],
+      "expectedWeaknessCategories": ["instruction_injection_following", "data_leakage"],
+      "recommendedPolicyTemplateIds": [
+        "policy.warn.pyrit_jailbreak_prompt",
+        "policy.deny.system_prompt_read",
+        "policy.redact.secret_outbound_payload"
+      ]
+    },
+    {
+      "scenarioId": "scenario.encoding_evasion",
+      "name": "PyRIT encoding and obfuscation evasion",
+      "attackType": "encoding_evasion",
+      "caseIds": ["case.pyrit_encoding_evasion_secret_exfil"],
+      "sampleIds": ["sample.pyrit.encoding.secret_exfil"],
+      "expectedWeaknessCategories": ["instruction_injection_following", "data_leakage"],
+      "recommendedPolicyTemplateIds": [
+        "policy.warn.pyrit_jailbreak_prompt",
+        "policy.deny.secret_resource_read",
+        "policy.deny.external_exfiltration"
+      ]
+    },
+    {
+      "scenarioId": "scenario.debug_access_leakage",
+      "name": "PyRIT Crescendo-style debug access leakage",
+      "attackType": "crescendo_debug_access",
+      "caseIds": ["case.pyrit_crescendo_debug_access"],
+      "sampleIds": ["sample.pyrit.crescendo.debug_access"],
+      "expectedWeaknessCategories": [
+        "instruction_injection_following",
+        "data_leakage",
+        "unauthorized_access"
+      ],
+      "recommendedPolicyTemplateIds": [
+        "policy.deny.debug_endpoint",
+        "policy.deny.admin_api_without_role",
+        "policy.deny.system_prompt_read"
+      ]
+    },
+    {
+      "scenarioId": "scenario.memory_context_poisoning",
+      "name": "PyRIT memory and context poisoning",
+      "attackType": "memory_context_poisoning",
+      "caseIds": ["case.pyrit_memory_context_poisoning"],
+      "sampleIds": ["sample.pyrit.memory.context_poisoning"],
+      "expectedWeaknessCategories": ["instruction_injection_following", "dangerous_action"],
+      "recommendedPolicyTemplateIds": [
+        "policy.warn.tool_response_contains_instruction",
+        "policy.deny.memory_poison_update"
       ]
     }
   ]

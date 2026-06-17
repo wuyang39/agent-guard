@@ -2,9 +2,40 @@
 
 文档版本: p1-plan-2
 基线日期: 2026-06-03
-状态: 下一轮规划
+状态: P1 闭环已验证 + P2 衔接参考
 
-说明: 本文档按“先检测 Agent 容易在哪些场景失守，再把检测结论转成运行时监督策略，最后用真实运行记录证明防御有效”的思路重规划下一轮系统。当前 Agent Guard 不需要推倒重来，下一轮应把它明确定位为监督前检测引擎，并在检测报告之上生成机器可执行的监督策略包，供真实运行环境中的监督接口加载执行。
+说明: 本文档按“先检测 Agent 容易在哪些场景失守，再把检测结论转成运行时监督策略，最后用真实运行记录证明防御有效”的思路规划 P1 系统。当前主线已经通过 `npm run verify:e2e` 证明 P1 三阶段闭环可运行；本文后续主要作为 P2 API、真实 Agent 接入、正式前端和答辩表达的架构参考。
+
+## 0. 2026-06-08 当前实现基线
+
+当前主线已完成本文档规划的 P1 核心链路:
+
+```txt
+TestContext
+  -> TestRun + InteractionTrace
+  -> RiskEvaluationResult + RiskReport
+  -> DetectionReport
+  -> AgentRiskProfile
+  -> SupervisionPolicyPack
+  -> RuntimeSupervisionRecord[]
+  -> DefenseReport
+```
+
+已验证能力:
+
+- A 线已提供 5 类红队场景、7 个测试用例、7 类 sandbox 工具、策略模板和 oracle。
+- B 线运行链路已能输出 trace，并在监督重跑中输出 `RuntimeSupervisionRecord[]`。
+- C 线已能生成 `RiskReport`、`DetectionReport`、`AgentRiskProfile`、`SupervisionPolicyPack`、`DefenseReport` 和 JSON/HTML 防御报告。
+- `npm run verify:all` 通过。
+- `npm run verify:e2e` 通过，并生成 `outputs/reports/e2e/defense-report.html`。
+
+当前剩余重点已转入 P2:
+
+- 正式 Fastify API。
+- 真实或半真实 Agent Adapter，尤其是 OpenClaw adapter shim。
+- 文件级运行历史和报告索引。
+- Vite + React 正式前端。
+- API 触发 E2E 的验证脚本。
 
 ## 1. 核心思路
 
@@ -556,15 +587,21 @@ P1 完成时必须满足:
 
 ## 15. 当前缺口清单
 
-当前系统到该设计的主要缺口:
+本文最初列出的 P1 核心缺口已经基本补齐。以下列表保留 P2 规划时的缺口口径，并按 2026-06-16 当前状态修订。
 
-- 检测报告尚未独立于风险报告建模
-- 缺 Agent 风险画像
-- 缺从检测结论到策略包的生成逻辑
-- 缺运行时监督接口加载策略包
-- 缺真实运行监督记录
-- 缺防御报告中的防御有效性证明
-- 攻击场景仍不足 3 类
-- 模拟业务工具仍不足以覆盖题目要求的邮件、文件、API、代码执行等交互
+已推进:
 
-下一轮的重点不是马上做一个完整生产级监督平台，而是跑通“检测发现弱点 -> 生成策略包 -> 真实运行监督 -> 防御报告证明有效”的闭环。
+- 正式 Fastify API、运行历史、report/policy/supervision 查询和 P2 E2E 验证已进入可运行状态。
+- OpenClaw 已作为核心演示 Agent 接入 CLI 检测链路；项目隔离 runtime 使用 OpenClaw `2026.6.6`，并已通过 `VERIFY_OPENCLAW_REQUIRED=1 npm run verify:p2:api-e2e`。
+- OpenClaw realtime MCP endpoint 已可验证 deny/ask/redact，`npm run verify:openclaw:realtime` 通过。
+- A 线攻击库已完成 AIG/PyRIT 第一轮迁移，包含 prompt extraction、encoding evasion、debug access、memory/context poisoning 等候选 case、oracle、mutator 和验证入口。
+
+仍需收尾:
+
+- OpenClaw CLI 检测是 post-hoc 行为采集和策略生成，不等于实时阻断；实时防御证据必须来自 OpenClaw realtime MCP 路径产生的 `RuntimeSupervisionRecord[]`。
+- realtime MCP 当前覆盖 Agent Guard 暴露的 MCP 工具白名单，不宣称覆盖所有 OpenClaw 原生工具。
+- 仍需固化 P2 demo 清理/重跑脚本、真实/兜底路径标识、旧文档状态和前端展示提示。
+- 正式前端还需要继续完善页面状态、运行历史、检测画像、策略包、监督记录和防御报告展示。
+- `frontend/demo/` 仍是展示型原型，不等于正式前端接口基线。
+
+下一轮重点不再是证明 P1 概念可行，而是把已跑通的闭环产品化为“API 可触发、真实 Agent 可接入、前端可展示、答辩可复现”的系统。

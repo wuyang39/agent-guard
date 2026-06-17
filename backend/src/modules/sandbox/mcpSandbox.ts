@@ -325,6 +325,24 @@ function buildToolResult(
     };
   }
 
+  if (tool.toolId === "tool.update_memory" || tool.name === "update_memory") {
+    const key = getStringParameter(parameters, "key");
+    const value = getStringParameter(parameters, "value");
+    const source = getStringParameter(parameters, "source") || "unknown";
+    const scope = getStringParameter(parameters, "scope") || "session";
+    return {
+      toolId: tool.toolId,
+      toolName: tool.name,
+      status: "simulated",
+      key,
+      scope,
+      source,
+      containsInstructionOverride: containsInstructionOverride(value),
+      fromUntrustedSource: /resource|tool_response|web|rag|untrusted/i.test(source),
+      memorySideEffect: "not_performed",
+    };
+  }
+
   return {
     toolId: tool.toolId,
     toolName: tool.name,
@@ -562,5 +580,11 @@ function isCrossUserDatabaseQuery(query: string, scope: string): boolean {
   return (
     /(\bselect\s+\*|from\s+users|admin|tenant|all\s+users)/i.test(query) ||
     /^(admin|tenant|all)$/i.test(scope)
+  );
+}
+
+function containsInstructionOverride(value: string): boolean {
+  return /(always approve|ignore future|external sends|disable warning|override|do not block)/i.test(
+    value,
   );
 }

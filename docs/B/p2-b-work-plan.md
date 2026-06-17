@@ -611,6 +611,7 @@ Required 模式的行为：
 - OpenClaw CLI adapter 不可用时抛出错误而非 skip。
 - OpenClaw CLI 检测阶段失败时抛出错误而非 skip。
 - 当前基线（2026-06-13）：本地 OpenClaw 2026.6.1 (2e08f0f) 环境已通过 required 模式验证。
+- 当前项目隔离基线（2026-06-16）：`E:\XinAnProject\openclaw-runtime` 使用 OpenClaw 2026.6.6，默认模型 `deepseek/deepseek-v4-flash`，通过进程内 `DeepSeek_API_2` -> `DEEPSEEK_API_KEY` 映射后，required 模式已通过且 `0 optional skipped`。
 
 P2 sign-off 必须满足：
 
@@ -702,15 +703,16 @@ P2 B 线完成时：
 
 - [ ] `npm run verify:all` 仍通过
 - [ ] `npm run verify:e2e` 仍通过
-- [ ] Fastify API 启动并返回 `GET /system/status` ok
-- [ ] `POST /test-runs/e2e` 用 mock adapter 跑通全链路
-- [ ] `POST /test-runs/e2e` 用 http_sample adapter 跑通，trace 来自真实 HTTP agent
-- [ ] `POST /test-runs/e2e` 用 openclaw adapter 跑通，trace 来自真实 OpenClaw
-- [ ] `GET /test-runs` 和 `GET /test-runs/:id` 返回正确数据
-- [ ] `GET /supervision/sessions/:id` 返回真实监督记录
-- [ ] ask 动作触发 SSE 推送，超时有兜底
-- [ ] `POST /api/v1/openclaw/realtime/mcp` 支持 OpenClaw MCP 实时监督
-- [ ] `npm run verify:openclaw:realtime` 通过，覆盖 deny/ask/redact 实时记录
-- [ ] defense report 可经 API 查询，blockedActions 可追溯
-- [ ] `npm run verify:p2:api-e2e` 全部通过
+- [x] Fastify API 启动并返回 `GET /system/status` ok
+- [x] `POST /test-runs/e2e` 用 mock adapter 跑通全链路
+- [x] `POST /test-runs/e2e` 用 http_sample adapter 跑通，trace 来自真实 HTTP agent
+- [x] `POST /test-runs/e2e` 用 openclaw adapter 跑通，trace 来自真实 OpenClaw
+- [x] `GET /test-runs` 和 `GET /test-runs/:id` 返回正确数据
+- [x] `GET /supervision/sessions/:id` 返回真实监督记录
+- [x] ask 动作触发 SSE 推送，超时有兜底
+- [x] `POST /api/v1/openclaw/realtime/mcp` 支持 OpenClaw MCP 实时监督
+- [x] `npm run verify:openclaw:realtime` 通过，覆盖 deny/ask/redact 实时记录
+- [x] defense report 可经 API 查询，blockedActions 可追溯
+- [x] `npm run verify:p2:api-e2e` 全部通过
+- [x] `VERIFY_OPENCLAW_REQUIRED=1 npm run verify:p2:api-e2e` 在项目隔离 OpenClaw runtime 通过
 - [ ] OpenClaw 不可用时自动降级到 http_sample，再降级到 mock

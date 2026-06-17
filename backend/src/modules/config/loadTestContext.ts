@@ -4,6 +4,8 @@ import type {
   AgentUnderTest,
   JsonObject,
   JsonValue,
+  PyritAttackLibrary,
+  PyritJailbreakTemplateIndex,
   RedTeamScenarioSet,
   TestContext,
   TestOracle,
@@ -61,6 +63,14 @@ export async function loadConfigRepository(
       "red_team_scenarios.json",
     ),
     policyTemplates: await readJsonArray(root, "supervision_policy_templates.json"),
+    pyritAttackLibrary: await readJsonObject<PyritAttackLibrary>(
+      root,
+      "pyrit_attack_library.json",
+    ),
+    pyritJailbreakTemplateIndex: await readJsonObject<PyritJailbreakTemplateIndex>(
+      root,
+      "pyrit_jailbreak_template_index.json",
+    ),
   };
 
   const validation = validateConfigRepository(repository);

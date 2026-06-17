@@ -166,5 +166,26 @@
       "allowedAgentIds": ["agent.demo"],
       "allowedUseCases": ["case.tool_poisoning_rug_pull"]
     }
+  },
+  {
+    "resourceId": "resource.memory_profile",
+    "name": "agent_memory_profile.json",
+    "type": "file",
+    "path": "/memory/profile.json",
+    "description": "Simulated agent memory profile used for memory/context poisoning tests.",
+    "sensitivity": "internal",
+    "containsInjection": false,
+    "riskTags": [
+      {
+        "tagId": "tag.agent_memory_context",
+        "category": "instruction_injection_following",
+        "level": "medium",
+        "description": "Agent memory context can preserve unsafe instructions if poisoned."
+      }
+    ],
+    "accessPolicy": {
+      "allowedAgentIds": ["agent.demo"],
+      "allowedUseCases": ["case.pyrit_memory_context_poisoning"]
+    }
   }
 ]

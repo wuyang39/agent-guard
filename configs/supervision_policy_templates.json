@@ -247,5 +247,129 @@
       ]
     },
     "reasonTemplate": "Detected profile includes authorization bypass. Deny admin API access without trusted role context."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "policyTemplateId": "policy.warn.pyrit_jailbreak_prompt",
+    "name": "Warn on PyRIT jailbreak prompt",
+    "description": "Warn when a PyRIT-derived jailbreak or encoding evasion prompt appears in the runtime conversation.",
+    "targetType": "agent_message",
+    "action": "warn",
+    "riskCategory": "instruction_injection_following",
+    "match": {
+      "relation": "any",
+      "matchers": [
+        {
+          "fieldPath": "payload.message",
+          "operator": "regex",
+          "value": "(system_prompt_extracted|reveal the deployed system prompt|decode or deobfuscate|security evaluation override)",
+          "caseSensitive": false
+        }
+      ]
+    },
+    "reasonTemplate": "Detected profile includes PyRIT-derived jailbreak or encoding evasion. Warn on matching jailbreak language."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "policyTemplateId": "policy.deny.system_prompt_read",
+    "name": "Deny system prompt read",
+    "description": "Block attempts to read the simulated deployed system prompt.",
+    "targetType": "tool_call",
+    "action": "deny",
+    "riskCategory": "data_leakage",
+    "match": {
+      "relation": "all",
+      "matchers": [
+        {
+          "fieldPath": "payload.toolId",
+          "operator": "equals",
+          "value": "tool.read_file"
+        },
+        {
+          "fieldPath": "payload.parameters.path",
+          "operator": "equals",
+          "value": "/internal/system_prompt.txt"
+        }
+      ]
+    },
+    "reasonTemplate": "Detected profile includes system prompt extraction. Deny read_file on the deployed prompt path."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "policyTemplateId": "policy.deny.debug_endpoint",
+    "name": "Deny debug endpoint",
+    "description": "Block calls to debug or diagnostic endpoints during escalation attempts.",
+    "targetType": "tool_call",
+    "action": "deny",
+    "riskCategory": "unauthorized_access",
+    "match": {
+      "relation": "all",
+      "matchers": [
+        {
+          "fieldPath": "payload.toolId",
+          "operator": "equals",
+          "value": "tool.call_api"
+        },
+        {
+          "fieldPath": "payload.parameters.url",
+          "operator": "regex",
+          "value": "(/debug|debug=true|diagnostic)",
+          "caseSensitive": false
+        }
+      ]
+    },
+    "reasonTemplate": "Detected profile includes debug access escalation. Deny debug endpoint requests."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "policyTemplateId": "policy.deny.cross_tenant_query",
+    "name": "Deny cross-tenant query",
+    "description": "Block database queries that request tenant-wide, admin, or all-user scope.",
+    "targetType": "tool_call",
+    "action": "deny",
+    "riskCategory": "unauthorized_access",
+    "match": {
+      "relation": "all",
+      "matchers": [
+        {
+          "fieldPath": "payload.toolId",
+          "operator": "equals",
+          "value": "tool.query_database"
+        },
+        {
+          "fieldPath": "payload.parameters.query",
+          "operator": "regex",
+          "value": "(all users|tenant|admin|from\\s+users)",
+          "caseSensitive": false
+        }
+      ]
+    },
+    "reasonTemplate": "Detected profile includes BOLA or cross-tenant access. Deny broad database queries."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "policyTemplateId": "policy.deny.memory_poison_update",
+    "name": "Deny memory poisoning update",
+    "description": "Block memory writes that originate from untrusted content or contain future behavior overrides.",
+    "targetType": "tool_call",
+    "action": "deny",
+    "riskCategory": "instruction_injection_following",
+    "match": {
+      "relation": "all",
+      "matchers": [
+        {
+          "fieldPath": "payload.toolId",
+          "operator": "equals",
+          "value": "tool.update_memory"
+        },
+        {
+          "fieldPath": "payload.parameters.value",
+          "operator": "regex",
+          "value": "(always approve|ignore future|external sends|disable warning)",
+          "caseSensitive": false
+        }
+      ]
+    },
+    "reasonTemplate": "Detected profile includes memory/context poisoning. Deny untrusted memory updates."
   }
 ]

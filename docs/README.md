@@ -19,6 +19,7 @@
 - `interfaces.md`: A/B/C 开发者之间的交接对象、输入输出和联调检查表。
 - `ownership.md`: A/B/C 开发者的严格工作区、可协作区、禁止修改区和共享受控区。
 - `development-workflow.md`: 全项目分支、拉取、中文 commit、文档同步、文件架构、验证和合并前检查规范。
+- `framework-risk-audit.md`: 工程文件框架、模块边界和后续迭代风险的历史审计记录。
 - `A/work-log-a-config-sandbox.md`: A 线配置加载、Sandbox runtime、验证命令和后续协作注意事项。
 - `A/p1-a-line-aig-adaptation-plan.md`: A 线 P1 攻击库、Sandbox 扩展和 AIG `mcp-scan` / `agent-scan` 可迁移能力分析。
 - `A/p2-pyrit-understanding-record.md`: A 线对本地定制 PyRIT 项目的结构审阅、可迁移能力、已迁入内容和已知限制。

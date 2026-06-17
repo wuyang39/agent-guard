@@ -7,7 +7,10 @@
     "demo": "node scripts/start-demo.mjs",
     "demo:web": "node scripts/demo-web-server.mjs",
     "demo:sample-agent": "node scripts/sample-agent-server.mjs",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "frontend:dev": "vite --host 127.0.0.1 --port 5174",
+    "frontend:build": "vite build",
+    "frontend:preview": "vite preview --host 127.0.0.1 --port 4174",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.frontend.json --noEmit",
     "verify:a-config-sandbox": "node --import tsx scripts/verify-a-config-sandbox.ts",
     "verify:all": "npm run typecheck && npm run verify:a-config-sandbox && npm run verify:full-pipeline && npm run verify:p1:detection-policy && npm run verify:p1:supervision-defense && npm run verify:c:weekly",
     "verify:e2e": "node --import tsx scripts/verify-e2e-three-stage.ts",
@@ -18,7 +21,19 @@
   },
   "devDependencies": {
     "@types/node": "^25.9.1",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.2",
+    "playwright-core": "^1.60.0",
     "tsx": "^4.20.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vite": "^8.0.16"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.101.0",
+    "lucide-react": "^1.17.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "react-router-dom": "^7.17.0"
   }
 }

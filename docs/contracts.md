@@ -917,14 +917,20 @@ configs/test_oracles.json
 
 `configs/test_oracles.json` 只用于验收测试、回归测试和评测统计，不得进入运行时 `TestContext`。
 
-P1 新增配置文件:
+P1/P2 新增配置文件:
 
 ```txt
 configs/red_team_scenarios.json
 configs/supervision_policy_templates.json
+configs/pyrit_attack_library.json
+configs/pyrit_jailbreak_template_index.json
 ```
 
 `configs/red_team_scenarios.json` 用于维护红队场景索引、用例归属和样本引用。`configs/supervision_policy_templates.json` 用于维护可复用策略模板。根据某个 Agent 检测结果生成的 `SupervisionPolicyPack` 不得写回策略模板配置文件。
+
+P2 新增的 `configs/pyrit_attack_library.json` 用于维护迁入 PyRIT 攻击库的来源、converter catalog、attack family 和 sample 到 case 的映射。它是攻击库目录对象，不是风险判定结果。
+
+P2 新增的 `configs/pyrit_jailbreak_template_index.json` 用于维护迁入 PyRIT jailbreak YAML 模板的元数据索引。它不得包含模板全文或 `value` 字段，只能包含路径、分组、参数、作者、哈希、大小和安全说明。
 
 P1 配置对象:
 
@@ -957,6 +963,101 @@ type PolicyTemplate = {
   riskCategory: RiskCategory
   match: RuleMatchCondition
   reasonTemplate: string
+}
+
+type PyritAttackLibrary = {
+  schemaVersion: "mvp-1"
+  libraryId: string
+  name: string
+  description: string
+  source: PyritSourceMetadata
+  converterCatalog: PyritPromptConverterSpec[]
+  attackFamilies: PyritAttackFamily[]
+  samples: PyritAttackSample[]
+}
+
+type PyritSourceMetadata = {
+  upstreamName: string
+  upstreamVersion?: string
+  localSourcePath: string
+  importedPath: string
+  importedAt: string
+  includedComponents: string[]
+  excludedComponents: string[]
+  notes?: string
+}
+
+type PyritPromptConverterSpec = {
+  converterId: string
+  name: string
+  sourcePath: string
+  executionMode: "native_ts_adapter" | "python_reference" | "metadata_only"
+  supportedInputTypes: string[]
+  tags: string[]
+  description: string
+  defaultOptions?: JsonObject
+}
+
+type PyritAttackFamily = {
+  familyId: string
+  name: string
+  sourcePaths: string[]
+  strategy: string
+  maturity: "vendored_reference" | "config_integrated" | "runtime_integrated"
+  recommendedCaseIds: string[]
+  riskCategories: RiskCategory[]
+  notes?: string
+}
+
+type PyritAttackSample = {
+  sampleId: string
+  familyId: string
+  name: string
+  sourcePath: string
+  caseIds: string[]
+  promptIds: string[]
+  converterIds: string[]
+  attackEntryType: AttackEntryType
+  riskCategories: RiskCategory[]
+  objective: string
+  successMarkers: string[]
+  safetyNotes: string
+  metadata?: JsonObject
+}
+
+type PyritJailbreakTemplateIndex = {
+  schemaVersion: "mvp-1"
+  indexId: string
+  name: string
+  description: string
+  sourcePath: string
+  generatedAt: string
+  totalTemplates: number
+  groups: PyritJailbreakTemplateGroup[]
+  templates: PyritJailbreakTemplateRef[]
+  safetyNotes: string
+}
+
+type PyritJailbreakTemplateGroup = {
+  groupId: string
+  name: string
+  sourcePath: string
+  templateCount: number
+}
+
+type PyritJailbreakTemplateRef = {
+  templateId: string
+  name: string
+  groupId: string
+  sourcePath: string
+  sourceName?: string
+  authors: string[]
+  parameters: string[]
+  dataType?: string
+  harmCategories: string[]
+  isGeneralTechnique?: boolean
+  byteLength: number
+  sha256: string
 }
 ```
 

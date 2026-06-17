@@ -18,12 +18,19 @@
 - `contracts.md`: 运行时共享数据契约，是字段、枚举和 JSON 可序列化约束的唯一来源。
 - `interfaces.md`: A/B/C 开发者之间的交接对象、输入输出和联调检查表。
 - `ownership.md`: A/B/C 开发者的严格工作区、可协作区、禁止修改区和共享受控区。
+- `development-workflow.md`: 全项目分支、拉取、中文 commit、文档同步、文件架构、验证和合并前检查规范。
 - `A/work-log-a-config-sandbox.md`: A 线配置加载、Sandbox runtime、验证命令和后续协作注意事项。
 - `A/p1-a-line-aig-adaptation-plan.md`: A 线 P1 攻击库、Sandbox 扩展和 AIG `mcp-scan` / `agent-scan` 可迁移能力分析。
+- `A/p2-pyrit-understanding-record.md`: A 线对本地定制 PyRIT 项目的结构审阅、可迁移能力、已迁入内容和已知限制。
+- `A/p2-a-line-pyrit-integration-plan.md`: A 线 P2 PyRIT 攻击库迁移、配置接入、sandbox 适配、验证和后续开发计划。
+- `A/p2-built-in-test-data-guide.md`: A 线 P2 内置 case、OpenClaw/fallback 分层、AIG/PyRIT 来源和答辩说明。
+- `A/p2-pyrit-python-bridge-contract.md`: 可选 PyRIT Python bridge 的输入输出、边界、烟测和后续接入约束。
+- `A/p2-openclaw-project-runtime-test.md`: 项目隔离 OpenClaw runtime 的本机部署、DeepSeek 模型映射和 required 验证结果。
 - `B/p1-b-runtime-supervision-work-plan.md`: B 线 P1 运行时监督实现计划。
 - `B/superpowers/**`: B 线历史设计规格和实现计划。
 - `p1-supervision-defense-plan.md`: P1 检测画像驱动的 Agent 运行时监督、策略包生成和防御报告规划。
 - `p2-real-agent-api-frontend-plan.md`: P2 以 OpenClaw 为核心演示 Agent 的正式 API、运行历史和前端演示系统规划。
+- `p2-unfinished-abc-responsibility-plan.md`: P2 剩余缺口、A/B/C 分工、OpenClaw 正确路线和并行约束收尾稿。
 - `p2-api-contract-plan.md`: P2 并行开发前必须冻结的前后端 API 草案。
 - `C/frontend-d-handoff.md`: C 线前端 Web Console 的开工边界、页面优先级、API Client 和联调检查点。文件名保留历史入口，职责已归入 C。
 
@@ -32,6 +39,7 @@
 - 字段类型以 `contracts.md` 和 `packages/contracts/src/types/**` 为准。
 - 开发者工作区以 `ownership.md` 为准。
 - 物理目录结构、依赖方向和开发规则以 `architecture.md` 为准。
+- 日常开发流程、中文 commit、分支检查、拉取最新进度和合并前检查以 `development-workflow.md` 为准。
 - 交接链路以 `interfaces.md` 为准。
 - 系统边界和主流程以 `architecture.md` 为准。
 

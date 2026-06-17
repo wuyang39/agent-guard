@@ -6,6 +6,7 @@ const navItems = [
   { to: "/new-run", label: "New Test Run", icon: PlayCircle },
   { to: "/runs", label: "Test Runs", icon: History },
   { to: "/artifacts", label: "Artifacts", icon: FileText },
+  { to: "/cline", label: "C-Line Console", icon: Activity },
 ];
 
 export function Shell() {

@@ -77,7 +77,7 @@ Frontend: Vite + React
 Primary demo agent: OpenClaw
 Fallback demo agent: local HTTP sample agent
 Last-resort demo agent: mock adapter
-OpenClaw support: first-class adapter shim
+OpenClaw support: first-class adapter shim + realtime MCP supervision endpoint
 Persistence: file-based key object store
 Report export: JSON + HTML in P2, Markdown / PDF in later phase
 ```
@@ -104,8 +104,9 @@ Frontend Web Console
   -> buildDetectionReport()
   -> buildAgentRiskProfile()
   -> buildSupervisionPolicyPack()
-  -> runTestCase(...policyPack)
-  -> buildDefenseReport()
+  -> set realtime active policy
+  -> OpenClaw realtime MCP supervision
+  -> buildDefenseReport() after realtime session
   -> export reports
   -> RunHistory / ReportIndex
   -> Frontend Web Console
@@ -154,6 +155,8 @@ GET  /api/v1/policies/:policyPackId
 GET  /api/v1/supervision/sessions/:runtimeSessionId
 GET  /api/v1/reports/defense/:reportId
 GET  /api/v1/artifacts/:artifactId
+GET  /api/v1/openclaw/realtime/mcp     # metadata + OpenClaw 配置示例
+POST /api/v1/openclaw/realtime/mcp     # raw JSON-RPC MCP endpoint
 ```
 
 P2 可选 API:
@@ -285,7 +288,21 @@ mock:
 
 ### 7.1 OpenClaw Adapter
 
-OpenClaw Adapter 是 P2 默认演示 adapter。它的职责是把 Agent Guard 的 `AgentTask`、工具/资源/Prompt 可见性和监督桥接结果转换成 OpenClaw 可执行的任务输入，再把 OpenClaw 的消息、工具请求和最终输出归一化为 Agent Guard 的运行时事件。
+OpenClaw 是 P2 默认演示 Agent，但实现上分成两条互补路径:
+
+```txt
+OpenClaw CLI adapter:
+  用 openclaw agent --json 采集真实 OpenClaw 行为和 JSONL 证据链。
+  适合生成 trace、RiskReport、DetectionReport、风险画像和监督策略包。
+
+OpenClaw Realtime MCP supervision:
+  用 OpenClaw MCP server/proxy 配置指向 Agent Guard。
+  工具调用实时进入 /api/v1/openclaw/realtime/mcp，在 sandbox 执行前完成 deny/ask/redact。
+  OpenClaw 保持固定 MCP URL，监督策略由 Agent Guard active-policy API 热切换。
+  适合作为答辩现场“外部测试用例 -> OpenClaw -> Agent Guard 监督台”的实时演示链路。
+```
+
+OpenClaw Adapter 的职责是把 Agent Guard 的 `AgentTask`、工具/资源/Prompt 可见性和监督桥接结果转换成 OpenClaw 可执行的任务输入，再把 OpenClaw 的消息、工具请求和最终输出归一化为 Agent Guard 的运行时事件。Realtime MCP 入口则负责把 OpenClaw 工具调用归一化为 Agent Guard canonical toolId，并复用 `SupervisionBridge`、`askChannel`、`McpSandbox` 和 trace/session storage。
 
 初版配置:
 
@@ -335,6 +352,10 @@ OpenClaw 接入原则:
 
 - 不把 OpenClaw 私有协议写入 `packages/contracts`。
 - 不让 OpenClaw 直接执行危险文件、网络或代码动作；动作必须经 sandbox / supervision bridge。
+- Realtime MCP 端点返回 raw JSON-RPC，不使用普通 `ApiResponse<T>` envelope。
+- `agent_guard_*` 工具名必须归一到 `tool.*`，确保 trace、风险识别和策略命中使用同一套语义。
+- 策略切换通过 `POST /api/v1/openclaw/realtime/active-policy` 完成，不要求修改 OpenClaw MCP URL。
+- 终端/前端可通过 `GET /api/v1/openclaw/realtime/events/stream` 订阅实时监督事件。
 - `authRef` 只能是引用，不允许在配置中保存明文密钥。
 - 如果 OpenClaw 协议变化，B 线只调整 adapter shim，不反向修改 A/C 数据契约。
 - P2 实现前需要确认 OpenClaw 的启动方式、任务输入方式、工具调用表示和运行输出格式。
@@ -476,17 +497,19 @@ Tool / Resource / Prompt display metadata
 B 线负责把运行链路接到正式 API、OpenClaw 和兜底半真实 Agent:
 
 - 实现 `openclaw` adapter，作为核心演示 Agent 接入路径。
+- 实现 OpenClaw Realtime MCP 入口，作为核心实时监督演示路径。
 - 实现 `http_sample` adapter，作为 OpenClaw 不可用时的半真实兜底。
 - 实现 `e2eRunService` 中运行阶段的 B 线部分。
-- 将 `runTestCase(...policyPack)` 纳入 API 触发链路。
+- 将 OpenClaw CLI 检测产出的 PolicyPack 接入 realtime active-policy。
 - 保障监督记录和 trace 的 ID 可被 C 查询。
-- 提供 `verify:p2:api-e2e` 的后端链路断言。
+- 提供 `verify:p2:api-e2e` 和 `verify:openclaw:realtime` 的后端链路断言。
 
 交付:
 
 ```txt
 Agent adapter registry
 OpenClaw adapter
+OpenClaw realtime MCP supervision endpoint
 HTTP Agent adapter
 Run API service integration
 RuntimeSupervisionRecord query support
@@ -519,9 +542,11 @@ P2 完成时必须满足:
 - `npm run verify:all` 仍通过。
 - `npm run verify:e2e` 仍通过。
 - 新增 `npm run verify:p2:api-e2e`，通过 API 触发完整 E2E 链路。
+- 新增 `npm run verify:openclaw:realtime`，验证 OpenClaw MCP 实时监督入口。
 - Fastify API 能启动，并能通过 API 触发完整 E2E 链路。
 - Vite + React 前端能启动，并通过 API 展示核心页面。
-- OpenClaw 能作为核心演示 Agent 被接入，并产出 trace。
+- OpenClaw 能作为核心演示 Agent 被接入，并通过 CLI 检测产出 trace 和 PolicyPack。
+- OpenClaw MCP 工具调用能实时进入 Agent Guard，并产生可查询的 deny/ask/redact 监督记录。
 - 本地 HTTP sample agent 能作为半真实兜底被接入并产出 trace；mock adapter 作为最终兜底仍可运行。
 - API 能查询 `TestRun`、`InteractionTrace`、`DetectionReport`、`AgentRiskProfile`、`SupervisionPolicyPack`、`DefenseReport`。
 - 前端能从 API 展示 Dashboard、运行列表、trace 详情、检测策略、防御报告。
@@ -564,19 +589,20 @@ API request
 1. 调研并冻结 OpenClaw 启动方式、任务输入方式、工具调用表示和输出格式。
 2. 定义 `openclaw` adapter shim。
 3. 通过 API 选择 `adapterKind: "openclaw"`。
-4. 确保 OpenClaw 的工具调用仍经过 sandbox 和 supervision bridge。
+4. 实现 OpenClaw Realtime MCP 入口，确保工具调用实时经过 sandbox 和 supervision bridge。
 5. 增加 OpenClaw 失败、超时、协议错误的 trace 记录。
 6. 实现 HTTP sample agent adapter 作为半真实兜底。
 7. 保留 mock adapter 作为最终兜底。
+8. 新增 `verify:openclaw:realtime` 覆盖 deny/ask/redact 三类监督动作。
 
 验收:
 
 ```txt
 openclaw
-  -> runTestCase
+  -> CLI JSONL trace / Realtime MCP tools/call
   -> InteractionTrace
-  -> RiskReport
-  -> supervised rerun
+  -> RiskReport / PolicyPack
+  -> SupervisionBridge
   -> RuntimeSupervisionRecord[]
 ```
 

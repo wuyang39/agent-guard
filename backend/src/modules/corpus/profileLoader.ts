@@ -11,13 +11,13 @@ import type {
   ToolResponseTemplate,
 } from "@agent-guard/contracts";
 import type { GeneratedCorpusSelection } from "./corpusTypes";
+import { corpusProfileFiles, resolveCorpusLayout } from "./corpusLayout";
 
 export async function loadGeneratedCorpusProfile(
   projectRoot: string,
   profileId: CorpusRunProfileId,
 ): Promise<GeneratedCorpusSelection> {
-  const generatedDir = join(projectRoot, "generated", "a-line");
-  const configDir = join(projectRoot, "configs");
+  const layout = resolveCorpusLayout(projectRoot);
   const [
     resources,
     prompts,
@@ -27,13 +27,13 @@ export async function loadGeneratedCorpusProfile(
     manifest,
     profiles,
   ] = await Promise.all([
-    readJson<ResourceDefinition[]>(generatedDir, "resources.generated.json"),
-    readJson<PromptDefinition[]>(generatedDir, "prompts.generated.json"),
-    readJson<ToolResponseTemplate[]>(generatedDir, "tool_responses.generated.json"),
-    readJson<TestCase[]>(generatedDir, "test_cases.generated.json"),
-    readJson<TestOracle[]>(generatedDir, "test_oracles.generated.json"),
-    readJson<CorpusManifest>(generatedDir, "corpus_manifest.json"),
-    readJson<CorpusRunProfile[]>(configDir, "corpus_run_profiles.json"),
+    readJson<ResourceDefinition[]>(layout.generatedDir, "resources.generated.json"),
+    readJson<PromptDefinition[]>(layout.generatedDir, "prompts.generated.json"),
+    readJson<ToolResponseTemplate[]>(layout.generatedDir, "tool_responses.generated.json"),
+    readJson<TestCase[]>(layout.generatedDir, "test_cases.generated.json"),
+    readJson<TestOracle[]>(layout.generatedDir, "test_oracles.generated.json"),
+    readJson<CorpusManifest>(layout.generatedDir, "corpus_manifest.json"),
+    readJson<CorpusRunProfile[]>(layout.profileDir, corpusProfileFiles.runProfiles),
   ]);
   const profile = profiles.find((item) => item.profileId === profileId);
   if (!profile) {
@@ -73,4 +73,3 @@ export async function loadGeneratedCorpusProfile(
 async function readJson<T>(dir: string, fileName: string): Promise<T> {
   return JSON.parse(await readFile(join(dir, fileName), "utf8")) as T;
 }
-

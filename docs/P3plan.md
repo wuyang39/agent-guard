@@ -111,18 +111,21 @@ pyrit mapped samples: 5
 pyrit jailbreak template refs: 165
 ```
 
-2026-06-18 首批 P3-A 实施已经把该基线推进为 generated corpus 生产链:
+2026-06-18 P3-A 实施已经把该基线推进为分层 generated corpus 生产链:
 
 ```txt
-resource seeds: 159
-attack/user prompt seeds: 239 + 239
-tool response seeds: 213
-mutation operators: 52
-generated prompts: 1200
-generated test cases: 1200
-generated oracles: 1200
+resource seeds: 687
+attack/user prompt seeds: 839 + 839
+tool response seeds: 309
+mutation operators: 76
+generated prompts: 2400
+generated test cases: 2400
+generated oracles: 2400
+red team scenarios: 25
 run profiles: smoke / openclaw / regression / full-corpus
 ```
+
+同时配置目录已完成分层: `configs/` 根目录只保留稳定运行基线；A 线攻击库元数据、PyRIT/AIG source index、seed、operator 和 profile 统一迁入 `configs/a-line/**`；生成物继续位于 `generated/a-line/**`。
 
 该实现仍遵守 P3 总口径: A 线产物是测试输入、来源索引和覆盖率材料，不是运行时风险结论；默认 demo 不自动运行 full corpus。
 
@@ -177,7 +180,7 @@ PyRIT generated 包括:
 新增文件:
 
 ```txt
-configs/resource_seeds.json
+configs/a-line/corpus/seeds/resource_seeds.json
 generated/a-line/resources.generated.json
 generated/a-line/resource_seed_manifest.json
 ```
@@ -247,7 +250,7 @@ type ResourceSeed = {
 | repo/devops resources | 10+ | CI config、package manifest、deploy token marker、git diff |
 | benign controls | 10+ | public/internal safe resources，用于误报控制 |
 
-用户补充的 resource、权限级别、示例 prompt 和 tool response 内容应先清洗到 `configs/resource_seeds.json`、`configs/attack_seeds.json` 和 `configs/tool_response_seeds.json`，再由 generator 转成正式 `ResourceDefinition` / `PromptDefinition` / `ToolResponseTemplate`。不要把表格草案直接追加在 `configs/resources.json` 末尾，否则会破坏配置加载。
+用户补充的 resource、权限级别、示例 prompt 和 tool response 内容应先清洗到 `configs/a-line/corpus/seeds/resource_seeds.json`、`configs/a-line/corpus/seeds/attack_seeds.json` 和 `configs/a-line/corpus/seeds/tool_response_seeds.json`，再由 generator 转成正式 `ResourceDefinition` / `PromptDefinition` / `ToolResponseTemplate`。不要把表格草案直接追加在 `configs/resources.json` 末尾，否则会破坏配置加载。
 
 ## 4. PyRIT 主导的攻击生成链路
 
@@ -266,14 +269,14 @@ PyRIT SeedDataset / SeedPrompt / SeedObjective
 新增文件:
 
 ```txt
-configs/attack_seeds.json
-configs/user_prompt_seeds.json
-configs/tool_response_seeds.json
-configs/pyrit_seed_dataset_index.json
-configs/pyrit_executor_template_index.json
-configs/pyrit_scorer_template_index.json
-configs/mutation_operators.json
-configs/corpus_run_profiles.json
+configs/a-line/corpus/seeds/attack_seeds.json
+configs/a-line/corpus/seeds/user_prompt_seeds.json
+configs/a-line/corpus/seeds/tool_response_seeds.json
+configs/a-line/sources/pyrit_seed_dataset_index.json
+configs/a-line/sources/pyrit_executor_template_index.json
+configs/a-line/sources/pyrit_scorer_template_index.json
+configs/a-line/corpus/operators/mutation_operators.json
+configs/a-line/corpus/profiles/corpus_run_profiles.json
 generated/a-line/prompts.generated.json
 generated/a-line/tool_responses.generated.json
 generated/a-line/test_cases.generated.json
@@ -488,7 +491,7 @@ qualityChecks
 交付:
 
 - `ResourceSeed`、`AttackSeed`、`MutationOperatorSpec`、`CorpusManifest` 契约。
-- `configs/resource_seeds.json`、`configs/attack_seeds.json`、`configs/mutation_operators.json`、`configs/corpus_run_profiles.json`。
+- `configs/a-line/corpus/seeds/resource_seeds.json`、`configs/a-line/corpus/seeds/attack_seeds.json`、`configs/a-line/corpus/operators/mutation_operators.json`、`configs/a-line/corpus/profiles/corpus_run_profiles.json`。
 - `generated/a-line/**` 目录和生成物边界。
 
 ### P3-A-1 Resource seed 大扩容
@@ -556,7 +559,7 @@ P3-A 完成标准:
 1. PyRIT dataset/template/converter/executor/scorer 均进入可追溯 index。
 2. 100+ resource seeds 和 200+ attack/user prompt seeds 已保存。
 3. 45+ mutation operators 可用于 native/template 生成。
-4. generated corpus 至少 1000 个 case，且 PyRIT 生成占比不低于 70%。
+4. generated corpus 至少 2000 个 case，当前实现为 2400 个 case，且 PyRIT 攻击生成项占比不低于 70%。
 5. smoke/openclaw/regression/full-corpus 四层 profile 清楚。
 6. `verify:a-corpus` 和 `verify:a-corpus-scale` 通过。
 7. B 线能按 profile 加载 case，不需要读取 PyRIT 私有结构。

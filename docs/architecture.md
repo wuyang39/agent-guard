@@ -308,14 +308,27 @@ agent-guard/
     test_oracles.json
     red_team_scenarios.json
     supervision_policy_templates.json
-    pyrit_attack_library.json
-    pyrit_jailbreak_template_index.json
-    resource_seeds.json
-    attack_seeds.json
-    user_prompt_seeds.json
-    tool_response_seeds.json
-    mutation_operators.json
-    corpus_run_profiles.json
+    p2_demo_cases.json
+    a-line/
+      README.md
+      sources/
+        pyrit_attack_library.json
+        pyrit_jailbreak_template_index.json
+        pyrit_seed_dataset_index.json
+        pyrit_executor_template_index.json
+        pyrit_scorer_template_index.json
+        aig_strategy_index.json
+      corpus/
+        seeds/
+          resource_seeds.json
+          attack_seeds.json
+          user_prompt_seeds.json
+          tool_response_seeds.json
+        operators/
+          mutation_operators.json
+        profiles/
+          attack_generation_profiles.json
+          corpus_run_profiles.json
 
   generated/
     a-line/
@@ -389,7 +402,8 @@ agent-guard/
 - `frontend/src/components/`: Web 控制台组件，按业务展示域拆分。
 - `frontend/src/lib/`: 前端 API Client、hook、视图模型和格式化函数。
 - `packages/contracts/`: 前后端共享契约唯一来源，禁止承载运行时业务逻辑。
-- `configs/`: 系统内置测试数据、规则数据、场景索引、策略模板和攻击库元数据。P0 可只使用本地 JSON；后续如接入数据库或远程配置中心，也必须先转换为标准契约对象再进入运行时。
+- `configs/`: 系统内置稳定运行基线配置。根目录只保留默认 `loadConfigRepository()` 读取的 tools、resources、prompts、tool responses、rules、cases、oracles、scenarios、policy templates 和 demo 分层文件。
+- `configs/a-line/`: A 线攻击库和语料工厂配置。`sources/` 保存 PyRIT/AIG 来源索引和攻击库元数据；`corpus/seeds/`、`corpus/operators/`、`corpus/profiles/` 保存生成输入。该目录不被默认 demo 自动展开为 full corpus。
 - `generated/a-line/`: A 线 P3 deterministic generated corpus。该目录保存可复现测试输入、oracle、manifest 和 stats；默认 demo 不自动加载 full corpus。
 - `scenarios/`: 红队场景说明、对抗样本和攻击动作序列。
 - `third_party/`: 受控迁入的外部或本地参考源码。当前 `third_party/pyrit_adapted` 由 A 线维护，用于 PyRIT 攻击库、jailbreak、converter 和后续 Python bridge 溯源；默认 TS 主链路不得直接执行未经适配的 third-party runtime。

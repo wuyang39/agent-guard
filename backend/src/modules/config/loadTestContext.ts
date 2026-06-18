@@ -66,11 +66,11 @@ export async function loadConfigRepository(
     policyTemplates: await readJsonArray(root, "supervision_policy_templates.json"),
     pyritAttackLibrary: await readJsonObject<PyritAttackLibrary>(
       root,
-      "pyrit_attack_library.json",
+      "a-line/sources/pyrit_attack_library.json",
     ),
     pyritJailbreakTemplateIndex: await readJsonObject<PyritJailbreakTemplateIndex>(
       root,
-      "pyrit_jailbreak_template_index.json",
+      "a-line/sources/pyrit_jailbreak_template_index.json",
     ),
   };
 

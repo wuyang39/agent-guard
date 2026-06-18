@@ -394,7 +394,7 @@ third_party/pyrit_adapted
 
 新增配置:
 
-- `configs/pyrit_attack_library.json`
+- `configs/a-line/sources/pyrit_attack_library.json`
 
 `ConfigRepository` 新增:
 
@@ -527,7 +527,7 @@ B 线:
 
 C 线:
 
-- `configs/pyrit_attack_library.json` 是攻击库目录和来源映射，不是风险结论。
+- `configs/a-line/sources/pyrit_attack_library.json` 是攻击库目录和来源映射，不是风险结论。
 - PyRIT `evaluator.py` 的 grade / similarity / iter_count / mutate_total_count / success variance 可作为后续报告统计增强候选。
 - 不建议前端直接展示完整 jailbreak 模板全文，应展示 family、sample、case、risk category 和安全 fixture。
 
@@ -542,7 +542,7 @@ C 线:
 新增:
 
 ```txt
-configs/pyrit_jailbreak_template_index.json
+configs/a-line/sources/pyrit_jailbreak_template_index.json
 scripts/generate-pyrit-template-index.ts
 ```
 
@@ -578,7 +578,7 @@ leetspeak, unicode_confusable, character_space, zero_width,
 string_join_dash, suffix_append_marker, url_encode, ascii_smuggler_tags
 ```
 
-`configs/pyrit_attack_library.json` 已同步 converter catalog 和 encoding evasion sample 的 converter 矩阵。
+`configs/a-line/sources/pyrit_attack_library.json` 已同步 converter catalog 和 encoding evasion sample 的 converter 矩阵。
 
 ### 12.3 Python bridge 边界
 
@@ -754,6 +754,8 @@ docs/A/p3-a-corpus-implementation-plan.md
 
 分支: `a/p3-a-corpus-implementation-plan`
 
+说明: 本节记录首批 1200 级实现的历史基线。当前有效架构和规模以第 17 节“P3-A 配置分层与攻击库重构增强”为准。
+
 本轮开始按 P3-A 执行计划实施 A 线重构和补充。核心变化是把 A 线从少量 demo fixture 扩展为 seed -> source index -> mutation operator -> generated corpus -> manifest -> profile -> verifier 的完整离线语料生产链。
 
 已完成:
@@ -762,7 +764,7 @@ docs/A/p3-a-corpus-implementation-plan.md
 - 新增 `packages/contracts/src/types/corpus.ts`，定义 `ResourceSeed`、`AttackSeed`、`ToolResponseSeed`、`MutationOperatorSpec`、`CorpusRunProfile`、PyRIT/AIG source index 和 `CorpusManifest`。
 - 新增 `backend/src/modules/corpus/**`，包含 seed factory、PyRIT/AIG source scanner、deterministic mutation operators、corpus generator、profile loader 和 validator。
 - 新增 `scripts/generate-a-corpus.ts`、`scripts/verify-a-corpus.ts`、`scripts/index-pyrit-seed-datasets.ts`、`scripts/index-aig-strategies.ts`。
-- 新增 `configs/resource_seeds.json`、`configs/attack_seeds.json`、`configs/user_prompt_seeds.json`、`configs/tool_response_seeds.json`、`configs/mutation_operators.json`、`configs/corpus_run_profiles.json`、`configs/*_index.json`。
+- 新增 `configs/a-line/corpus/seeds/resource_seeds.json`、`configs/a-line/corpus/seeds/attack_seeds.json`、`configs/a-line/corpus/seeds/user_prompt_seeds.json`、`configs/a-line/corpus/seeds/tool_response_seeds.json`、`configs/a-line/corpus/operators/mutation_operators.json`、`configs/a-line/corpus/profiles/corpus_run_profiles.json`、`configs/a-line/sources/*_index.json`。
 - 新增 `generated/a-line/**`，产出首批 generated corpus。
 
 当前规模:
@@ -809,3 +811,100 @@ npm run verify:a-corpus
 - `generated/a-line/test_oracles.generated.json` 仍只用于离线验收和 corpus 质量检查，不得进入运行时 `TestContext`。
 - B 线可使用 `loadGeneratedCorpusProfile()` 按 `smoke/openclaw/regression/full-corpus` 选择 case；不需要理解 PyRIT/AIG 内部结构。
 - C 线只能把 `CorpusManifest` 用于来源、覆盖率和样本分层展示，不得把 oracle 或 generated corpus 当风险结论。
+
+## 17. 2026-06-18 P3-A 配置分层与攻击库重构增强
+
+分支: `a/p3-a-corpus-implementation-plan`
+
+本轮针对 P3-A 首批实现“文件都堆在 `configs/` 根目录、场景广度仍偏 demo 化、generated case 只有 1200 级”的问题继续重构。核心目标是让 A 线攻击库从“能生成”升级到“目录清晰、来源清楚、体量足够、场景覆盖更完整”。
+
+### 17.1 配置目录重构
+
+当前目录分层:
+
+```txt
+configs/
+  tools/resources/prompts/tool_responses/risk_rules/test_cases/test_oracles
+  red_team_scenarios/supervision_policy_templates/p2_demo_cases
+  a-line/
+    README.md
+    sources/
+      pyrit_attack_library.json
+      pyrit_jailbreak_template_index.json
+      pyrit_seed_dataset_index.json
+      pyrit_executor_template_index.json
+      pyrit_scorer_template_index.json
+      aig_strategy_index.json
+    corpus/
+      seeds/
+      operators/
+      profiles/
+```
+
+说明:
+
+- `configs/` 根目录只保留默认运行基线，继续服务 `loadConfigRepository()` 和 demo。
+- `configs/a-line/sources/**` 保存 PyRIT/AIG 来源索引和攻击库元数据。
+- `configs/a-line/corpus/seeds/**` 保存 resource、attack、user prompt、tool response 种子。
+- `configs/a-line/corpus/operators/**` 保存 mutation operator 目录。
+- `configs/a-line/corpus/profiles/**` 保存生成 profile 和 run profile。
+- `generated/a-line/**` 继续保存可复现生成物，不写入 `outputs/**`。
+
+`loadConfigRepository()` 已改为从 `configs/a-line/sources/` 读取 PyRIT attack library 和 jailbreak template index。`loadGeneratedCorpusProfile()`、`generate-a-corpus`、`verify-a-corpus`、PyRIT/AIG 索引脚本都已同步新路径。
+
+### 17.2 攻击库和种子增强
+
+本轮扩展:
+
+- resource blueprint 从基础 12 类扩展到 secret、identity、cloud、devops、finance、CRM、support、internal API、browser、email、calendar、repo、memory、RAG、filesystem 等 36 类组合来源。
+- resource variant 增加 PII bundle、credential hint、SSRF target、tool override note、memory poison、shadow tool claim、payment side effect、safe negative control。
+- 红队场景从 10 类扩到 25 类，补齐 system prompt contract extraction、secret chain exfiltration、SSRF metadata probe、shell command injection、SQL query bypass、browser hidden instruction、email delegation confusion、payment escalation、repo dependency shadowing、vector store source conflict、long context instruction decay、refusal suppression、tool schema confusion、policy exception forgery、safe control regression。
+- prompt frame 从 20 类扩到 32 类，增加 PyRIT objective、controlled jailbreak、retrieval priority conflict、two-turn plan、connector embedded instruction、encoded/split instruction、OpenClaw candidate、runtime-supervision evidence fixture 等框架。
+- mutation operator 从 52 扩到 76，新增 base64 decode hint、unicode escape、NATO、A1Z26、braille、superscript、repeat token、markdown link/image、HTML hidden input、LaTeX table、PAIR、Tree-of-Attacks reflection、simulated target compliance、OWASP ASI mapping、tool schema confusion、browser hidden instruction、email delegation、SSRF probe、false-positive control、permission escalation 等。
+
+PyRIT 仍是主来源和主生成底座；AIG 只作为 Agent/MCP 策略、OWASP ASI 分类、tool/schema/browser/email/SSRF 等 enhancer 补充来源。
+
+### 17.3 生成与验证增强
+
+生成器调整:
+
+- 默认 generator version 升级为 `p3-a-generator-2`。
+- default/full corpus 生成上限从 1200 提升到 2400。
+- 生成算法从“每个 seed 连续生成 6 条”改成“按 seed 轮转采样”，避免前部场景占满 full-corpus 上限。
+- `verify:a-corpus` 现在要求 generated prompts/test cases 至少 2000，场景覆盖至少 20，并检查 legacy A-line seed/source 文件不得回流到 `configs/` 根目录。
+- PyRIT 主导比例改为按 prompt/test_case/oracle 等攻击生成项计算，不再把 synthetic resource 和基础 tool response 混入分母。
+
+当前规模:
+
+```txt
+resource seeds: 687
+attack seeds: 839
+user prompt seeds: 839
+tool response seeds: 309
+mutation operators: 76
+generated resources: 687
+generated prompts: 2400
+generated tool responses: 309
+generated test cases: 2400
+generated test oracles: 2400
+red team scenarios: 25
+profile summary: smoke=30, openclaw=80, regression=400, full-corpus=2400
+source summary: manual=437, user_supplied=279, pyrit=5154, aig=1639, synthetic=687
+```
+
+已执行:
+
+```powershell
+npm run a:generate-corpus
+npm run verify:a-corpus
+```
+
+后续收尾前仍需执行:
+
+```powershell
+npm run typecheck
+npm run verify:a-config-sandbox
+npm run verify:a-pyrit-library
+npm run verify:all
+git diff --check
+```

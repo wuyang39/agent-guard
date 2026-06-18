@@ -4,45 +4,54 @@ import { join, resolve } from "node:path";
 import {
   buildCorpusSeeds,
   buildCorpusSourceIndexes,
+  corpusOperatorFiles,
+  corpusProfileFiles,
+  corpusSeedFiles,
+  corpusSourceFiles,
   generateCorpus,
+  resolveCorpusLayout,
   validateCorpus,
 } from "../backend/src/modules/corpus";
 
 const projectRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
-const configDir = join(projectRoot, "configs");
-const generatedDir = join(projectRoot, "generated", "a-line");
+const layout = resolveCorpusLayout(projectRoot);
 
-await mkdir(configDir, { recursive: true });
-await mkdir(generatedDir, { recursive: true });
+await Promise.all([
+  mkdir(layout.seedDir, { recursive: true }),
+  mkdir(layout.operatorDir, { recursive: true }),
+  mkdir(layout.profileDir, { recursive: true }),
+  mkdir(layout.sourceDir, { recursive: true }),
+  mkdir(layout.generatedDir, { recursive: true }),
+]);
 
 const seeds = buildCorpusSeeds();
 const indexes = await buildCorpusSourceIndexes(projectRoot);
 const generated = generateCorpus(seeds, {
   generatedAt: "2026-06-18T00:00:00.000Z",
-  generatorVersion: "p3-a-generator-1",
-  maxCases: 1200,
+  generatorVersion: "p3-a-generator-2",
+  maxCases: 2400,
 });
 
 await Promise.all([
-  writeJson(configDir, "resource_seeds.json", seeds.resourceSeeds),
-  writeJson(configDir, "attack_seeds.json", seeds.attackSeeds),
-  writeJson(configDir, "user_prompt_seeds.json", seeds.userPromptSeeds),
-  writeJson(configDir, "tool_response_seeds.json", seeds.toolResponseSeeds),
-  writeJson(configDir, "mutation_operators.json", seeds.mutationOperators),
-  writeJson(configDir, "attack_generation_profiles.json", buildAttackGenerationProfiles()),
-  writeJson(configDir, "corpus_run_profiles.json", seeds.runProfiles),
-  writeJson(configDir, "pyrit_seed_dataset_index.json", indexes.pyritSeedDatasetIndex),
-  writeJson(configDir, "pyrit_executor_template_index.json", indexes.pyritExecutorTemplateIndex),
-  writeJson(configDir, "pyrit_scorer_template_index.json", indexes.pyritScorerTemplateIndex),
-  writeJson(configDir, "aig_strategy_index.json", indexes.aigStrategyIndex),
-  writeJson(generatedDir, "resources.generated.json", generated.resources),
-  writeJson(generatedDir, "prompts.generated.json", generated.prompts),
-  writeJson(generatedDir, "tool_responses.generated.json", generated.toolResponses),
-  writeJson(generatedDir, "test_cases.generated.json", generated.testCases),
-  writeJson(generatedDir, "test_oracles.generated.json", generated.testOracles),
-  writeJson(generatedDir, "red_team_scenarios.generated.json", generated.redTeamScenarioSet),
-  writeJson(generatedDir, "corpus_manifest.json", generated.manifest),
-  writeJson(generatedDir, "corpus_stats.json", generated.stats),
+  writeJson(layout.seedDir, corpusSeedFiles.resources, seeds.resourceSeeds),
+  writeJson(layout.seedDir, corpusSeedFiles.attacks, seeds.attackSeeds),
+  writeJson(layout.seedDir, corpusSeedFiles.userPrompts, seeds.userPromptSeeds),
+  writeJson(layout.seedDir, corpusSeedFiles.toolResponses, seeds.toolResponseSeeds),
+  writeJson(layout.operatorDir, corpusOperatorFiles.mutationOperators, seeds.mutationOperators),
+  writeJson(layout.profileDir, corpusProfileFiles.attackGenerationProfiles, buildAttackGenerationProfiles()),
+  writeJson(layout.profileDir, corpusProfileFiles.runProfiles, seeds.runProfiles),
+  writeJson(layout.sourceDir, corpusSourceFiles.pyritSeedDatasets, indexes.pyritSeedDatasetIndex),
+  writeJson(layout.sourceDir, corpusSourceFiles.pyritExecutors, indexes.pyritExecutorTemplateIndex),
+  writeJson(layout.sourceDir, corpusSourceFiles.pyritScorers, indexes.pyritScorerTemplateIndex),
+  writeJson(layout.sourceDir, corpusSourceFiles.aigStrategies, indexes.aigStrategyIndex),
+  writeJson(layout.generatedDir, "resources.generated.json", generated.resources),
+  writeJson(layout.generatedDir, "prompts.generated.json", generated.prompts),
+  writeJson(layout.generatedDir, "tool_responses.generated.json", generated.toolResponses),
+  writeJson(layout.generatedDir, "test_cases.generated.json", generated.testCases),
+  writeJson(layout.generatedDir, "test_oracles.generated.json", generated.testOracles),
+  writeJson(layout.generatedDir, "red_team_scenarios.generated.json", generated.redTeamScenarioSet),
+  writeJson(layout.generatedDir, "corpus_manifest.json", generated.manifest),
+  writeJson(layout.generatedDir, "corpus_stats.json", generated.stats),
 ]);
 
 const issues = validateCorpus({

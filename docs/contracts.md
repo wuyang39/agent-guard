@@ -922,30 +922,30 @@ P1/P2 新增配置文件:
 ```txt
 configs/red_team_scenarios.json
 configs/supervision_policy_templates.json
-configs/pyrit_attack_library.json
-configs/pyrit_jailbreak_template_index.json
+configs/a-line/sources/pyrit_attack_library.json
+configs/a-line/sources/pyrit_jailbreak_template_index.json
 ```
 
 `configs/red_team_scenarios.json` 用于维护红队场景索引、用例归属和样本引用。`configs/supervision_policy_templates.json` 用于维护可复用策略模板。根据某个 Agent 检测结果生成的 `SupervisionPolicyPack` 不得写回策略模板配置文件。
 
-P2 新增的 `configs/pyrit_attack_library.json` 用于维护迁入 PyRIT 攻击库的来源、converter catalog、attack family 和 sample 到 case 的映射。它是攻击库目录对象，不是风险判定结果。
+P2 新增的 `configs/a-line/sources/pyrit_attack_library.json` 用于维护迁入 PyRIT 攻击库的来源、converter catalog、attack family 和 sample 到 case 的映射。它是攻击库目录对象，不是风险判定结果。
 
-P2 新增的 `configs/pyrit_jailbreak_template_index.json` 用于维护迁入 PyRIT jailbreak YAML 模板的元数据索引。它不得包含模板全文或 `value` 字段，只能包含路径、分组、参数、作者、哈希、大小和安全说明。
+P2 新增的 `configs/a-line/sources/pyrit_jailbreak_template_index.json` 用于维护迁入 PyRIT jailbreak YAML 模板的元数据索引。它不得包含模板全文或 `value` 字段，只能包含路径、分组、参数、作者、哈希、大小和安全说明。
 
 P3-A 新增配置与生成物:
 
 ```txt
-configs/resource_seeds.json
-configs/attack_seeds.json
-configs/user_prompt_seeds.json
-configs/tool_response_seeds.json
-configs/mutation_operators.json
-configs/attack_generation_profiles.json
-configs/corpus_run_profiles.json
-configs/pyrit_seed_dataset_index.json
-configs/pyrit_executor_template_index.json
-configs/pyrit_scorer_template_index.json
-configs/aig_strategy_index.json
+configs/a-line/corpus/seeds/resource_seeds.json
+configs/a-line/corpus/seeds/attack_seeds.json
+configs/a-line/corpus/seeds/user_prompt_seeds.json
+configs/a-line/corpus/seeds/tool_response_seeds.json
+configs/a-line/corpus/operators/mutation_operators.json
+configs/a-line/corpus/profiles/attack_generation_profiles.json
+configs/a-line/corpus/profiles/corpus_run_profiles.json
+configs/a-line/sources/pyrit_seed_dataset_index.json
+configs/a-line/sources/pyrit_executor_template_index.json
+configs/a-line/sources/pyrit_scorer_template_index.json
+configs/a-line/sources/aig_strategy_index.json
 generated/a-line/resources.generated.json
 generated/a-line/prompts.generated.json
 generated/a-line/tool_responses.generated.json

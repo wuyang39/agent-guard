@@ -119,7 +119,7 @@ Agent Guard 当前不直接把长 jailbreak prompt 暴露到 demo 中，而是:
 
 - 在 `third_party/pyrit_adapted` 保留完整模板。
 - 在 `configs/prompts.json` 放安全、短、可判定的模拟 prompt。
-- 在 `configs/pyrit_attack_library.json` 建立 PyRIT 模板与 Agent Guard case 的映射。
+- 在 `configs/a-line/sources/pyrit_attack_library.json` 建立 PyRIT 模板与 Agent Guard case 的映射。
 
 ### 3.5 Scenario 和策略分类
 
@@ -167,11 +167,11 @@ PyRIT 原 score 体系包含:
 - 方法成功率。
 - 成功率方差。
 
-本轮尚未把这些统计字段进入 `RiskReport` 契约，因为 C 线对报告语义负责。A 线先在文档和 `configs/pyrit_attack_library.json` 中记录该评估模型，后续可作为 C 线报告增强输入。
+本轮尚未把这些统计字段进入 `RiskReport` 契约，因为 C 线对报告语义负责。A 线先在文档和 `configs/a-line/sources/pyrit_attack_library.json` 中记录该评估模型，后续可作为 C 线报告增强输入。
 
 ### 3.7 Jailbreak 模板元数据索引
 
-P2-A 收尾阶段新增 `configs/pyrit_jailbreak_template_index.json`:
+P2-A 收尾阶段新增 `configs/a-line/sources/pyrit_jailbreak_template_index.json`:
 
 - 覆盖 165 个 vendored PyRIT jailbreak YAML 模板。
 - 按 `root`、`Arth_Singh`、`multi_parameter` 和 `pliny/*` 分组。
@@ -202,8 +202,8 @@ npm run verify:a-pyrit-library
 
 配置:
 
-- 新增 `configs/pyrit_attack_library.json`。
-- 新增 `configs/pyrit_jailbreak_template_index.json`。
+- 新增 `configs/a-line/sources/pyrit_attack_library.json`。
+- 新增 `configs/a-line/sources/pyrit_jailbreak_template_index.json`。
 - 新增 5 个 PyRIT 派生 test case。
 - 新增 5 个 PyRIT 派生 oracle。
 - 新增 prompt extraction、encoding evasion、debug access leakage、memory poisoning 等场景。

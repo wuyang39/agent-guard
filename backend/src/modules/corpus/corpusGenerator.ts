@@ -31,8 +31,8 @@ export function generateCorpus(
   options: CorpusGenerationOptions = {},
 ): GeneratedCorpus {
   const generatedAt = options.generatedAt ?? defaultGeneratedAt;
-  const generatorVersion = options.generatorVersion ?? "p3-a-generator-1";
-  const maxCases = options.maxCases ?? 1200;
+  const generatorVersion = options.generatorVersion ?? "p3-a-generator-2";
+  const maxCases = options.maxCases ?? 2400;
   const resources = seeds.resourceSeeds.map((seed, index) => resourceFromSeed(seed, index));
   const toolResponses = seeds.toolResponseSeeds.map((seed, index) => toolResponseFromSeed(seed, index));
   const prompts: PromptDefinition[] = [];
@@ -46,15 +46,12 @@ export function generateCorpus(
     ...seeds.mutationOperators.filter((operator) => operator.source.origin !== "pyrit" && operator.source.origin !== "aig"),
   ];
 
-  let generatedIndex = 0;
-  outer: for (const attackSeed of seeds.attackSeeds) {
-    for (let offset = 0; offset < 6; offset += 1) {
-      if (generatedIndex >= maxCases) {
-        break outer;
-      }
+  for (let generatedIndex = 0; generatedIndex < maxCases; generatedIndex += 1) {
+      const attackSeed = seeds.attackSeeds[generatedIndex % seeds.attackSeeds.length];
+      const offset = Math.floor(generatedIndex / seeds.attackSeeds.length);
       const operator = operatorsByPriority[(generatedIndex + offset) % operatorsByPriority.length];
       const mutation = applyMutationOperator(operator, attackSeed.userPrompt);
-      const sourceOrigin = operator.source.origin === "pyrit" || offset < 4 ? "pyrit" : operator.source.origin;
+      const sourceOrigin = operator.source.origin;
       const promptId = `prompt.generated.${String(generatedIndex + 1).padStart(5, "0")}`;
       const caseId = `case.generated.${String(generatedIndex + 1).padStart(5, "0")}`;
       const oracleId = `oracle.generated.${String(generatedIndex + 1).padStart(5, "0")}`;
@@ -144,8 +141,6 @@ export function generateCorpus(
           oracleId,
         }),
       );
-      generatedIndex += 1;
-    }
   }
 
   for (const resource of resources) {
@@ -420,4 +415,3 @@ function policyTemplatesFor(categories: RiskCategory[]): string[] {
 function hash(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
-

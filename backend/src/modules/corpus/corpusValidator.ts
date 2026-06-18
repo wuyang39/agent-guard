@@ -52,8 +52,8 @@ export function validateCorpus(input: CorpusValidationInput): CorpusValidationIs
   assertMin(issues, input.attackSeeds.length + input.userPromptSeeds.length, 200, "attackSeeds", "attack_seed_count");
   assertMin(issues, input.toolResponseSeeds.length, 80, "toolResponseSeeds", "tool_response_seed_count");
   assertMin(issues, input.mutationOperators.length, 45, "mutationOperators", "mutation_operator_count");
-  assertMin(issues, input.prompts.length, 1000, "generated.prompts", "generated_prompt_count");
-  assertMin(issues, input.testCases.length, 1000, "generated.testCases", "generated_case_count");
+  assertMin(issues, input.prompts.length, 2000, "generated.prompts", "generated_prompt_count");
+  assertMin(issues, input.testCases.length, 2000, "generated.testCases", "generated_case_count");
 
   if (input.testOracles.length !== input.testCases.length) {
     issues.push({
@@ -105,14 +105,26 @@ export function validateCorpus(input: CorpusValidationInput): CorpusValidationIs
     assertRef(issues, caseIds, oracle.caseId, `generated.testOracles.${oracle.oracleId}.caseId`);
   }
 
-  const pyritGenerated = input.manifest.sourceSummary.pyrit;
-  const totalGenerated = Object.values(input.manifest.sourceSummary).reduce((sum, value) => sum + value, 0);
+  const attackGeneratedItems = input.manifest.items.filter((item) =>
+    item.itemType === "prompt" || item.itemType === "test_case" || item.itemType === "oracle",
+  );
+  const pyritGenerated = attackGeneratedItems.filter((item) => item.source.origin === "pyrit").length;
+  const totalGenerated = attackGeneratedItems.length;
   if (totalGenerated > 0 && pyritGenerated / totalGenerated < 0.7) {
     issues.push({
       severity: "error",
       code: "pyrit_source_ratio_low",
       message: `PyRIT generated ratio ${(pyritGenerated / totalGenerated).toFixed(3)} is below 0.7.`,
       path: "manifest.sourceSummary.pyrit",
+    });
+  }
+
+  if (Object.keys(input.manifest.coverage.scenarios).length < 20) {
+    issues.push({
+      severity: "error",
+      code: "scenario_coverage_low",
+      message: `Generated corpus covers ${Object.keys(input.manifest.coverage.scenarios).length} scenarios, expected at least 20.`,
+      path: "manifest.coverage.scenarios",
     });
   }
 
@@ -123,6 +135,31 @@ export function validateCorpus(input: CorpusValidationInput): CorpusValidationIs
         code: "empty_run_profile",
         message: `Run profile ${profile.profileId} has no generated cases.`,
         path: `runProfiles.${profile.profileId}`,
+      });
+    }
+  }
+
+  for (const rootOnlyFile of [
+    "resource_seeds.json",
+    "attack_seeds.json",
+    "user_prompt_seeds.json",
+    "tool_response_seeds.json",
+    "mutation_operators.json",
+    "attack_generation_profiles.json",
+    "corpus_run_profiles.json",
+    "pyrit_seed_dataset_index.json",
+    "pyrit_executor_template_index.json",
+    "pyrit_scorer_template_index.json",
+    "aig_strategy_index.json",
+    "pyrit_attack_library.json",
+    "pyrit_jailbreak_template_index.json",
+  ]) {
+    if (existsSync(join(input.projectRoot, "configs", rootOnlyFile))) {
+      issues.push({
+        severity: "error",
+        code: "legacy_root_corpus_config",
+        message: `A-line corpus config ${rootOnlyFile} must live under configs/a-line/**, not configs/.`,
+        path: `configs/${rootOnlyFile}`,
       });
     }
   }
@@ -240,4 +277,3 @@ function resolveSourcePath(projectRoot: string, sourcePath: string): string {
   }
   return join(projectRoot, sourcePath);
 }
-

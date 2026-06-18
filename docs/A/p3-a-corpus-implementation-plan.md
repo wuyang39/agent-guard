@@ -2,7 +2,7 @@
 
 文档版本: p3-a-implementation-1  
 生成日期: 2026-06-18  
-状态: 首批实现进行中  
+状态: P3-A 语料工厂重构已完成首轮实现
 分支: `a/p3-a-corpus-implementation-plan`  
 适用范围: A 线 P3 攻击库、资源种子、PyRIT/AIG 迁移、生成语料、sandbox/profile 接入和验证脚本
 
@@ -29,30 +29,31 @@
 - 200+ attack/user prompt seeds。
 - 80+ tool response seeds。
 - 45+ mutation operators。
-- 1000+ generated prompts。
-- 1000+ generated test cases，目标上限按生成成本扩展到 2000+。
+- 2000+ generated prompts。
+- 2000+ generated test cases，当前实现为 2400 级 full corpus。
 - generated oracles 数量等于 generated test cases。
 - PyRIT 生成来源占比不低于 70%。
 - smoke / openclaw / regression / full-corpus 四类运行 profile。
 
 ## 2. 当前审计基线
 
-### 2.0 2026-06-18 首批实现结果
+### 2.0 2026-06-18 重构实现结果
 
-本分支已完成 P3-A 首批工程化落地:
+本分支已完成 P3-A 语料工厂分层重构和工程化落地:
 
 ```txt
-resource seeds: 159
-attack seeds: 239
-user prompt seeds: 239
-tool response seeds: 213
-mutation operators: 52
-generated resources: 159
-generated prompts: 1200
-generated tool responses: 213
-generated test cases: 1200
-generated test oracles: 1200
-run profiles: smoke=30, openclaw=80, regression=400, full-corpus=1200
+resource seeds: 687
+attack seeds: 839
+user prompt seeds: 839
+tool response seeds: 309
+mutation operators: 76
+generated resources: 687
+generated prompts: 2400
+generated tool responses: 309
+generated test cases: 2400
+generated test oracles: 2400
+red team scenarios: 25
+run profiles: smoke=30, openclaw=80, regression=400, full-corpus=2400
 ```
 
 新增实现落点:
@@ -64,12 +65,11 @@ scripts/generate-a-corpus.ts
 scripts/verify-a-corpus.ts
 scripts/index-pyrit-seed-datasets.ts
 scripts/index-aig-strategies.ts
-configs/*_seeds.json
-configs/*_index.json
+configs/a-line/**
 generated/a-line/**
 ```
 
-首批实现保留了默认 `loadConfigRepository()` 行为，P2/P3 demo 不会默认加载 full corpus。大规模 generated corpus 通过显式 profile 和 `CorpusManifest` 被 B/C 线消费。
+当前配置目录已完成分层: `configs/` 根目录只保留稳定运行基线，A 线攻击库、seed、operator、profile 和 PyRIT/AIG source index 全部迁入 `configs/a-line/**`。默认 `loadConfigRepository()` 仍不会加载 full corpus；大规模 generated corpus 通过显式 profile 和 `CorpusManifest` 被 B/C 线消费。
 
 ### 2.1 当前配置体量
 
@@ -149,7 +149,7 @@ agent-guard/third_party/pyrit_adapted
 
 - 本地 `E:\XinAnProject\pyrit` 没有 `.git`，作为用户提供的定制 PyRIT 参考源。
 - `third_party/pyrit_adapted` 已受控迁入，包含 `run_attack_cli.py`、`evaluator.py`、PyRIT package、README 和 license/notice。
-- 已有 `configs/pyrit_attack_library.json` 和 `configs/pyrit_jailbreak_template_index.json`。
+- 已有 `configs/a-line/sources/pyrit_attack_library.json` 和 `configs/a-line/sources/pyrit_jailbreak_template_index.json`。
 - 已有 `backend/src/modules/sandbox/pyritPromptMutators.ts`，但 native converter 数量仍不足。
 
 P3-A 使用方式:
@@ -192,17 +192,17 @@ P3-A 使用方式:
 ### 5.1 新增配置 seed
 
 ```txt
-configs/resource_seeds.json
-configs/attack_seeds.json
-configs/user_prompt_seeds.json
-configs/tool_response_seeds.json
-configs/mutation_operators.json
-configs/attack_generation_profiles.json
-configs/corpus_run_profiles.json
-configs/pyrit_seed_dataset_index.json
-configs/pyrit_executor_template_index.json
-configs/pyrit_scorer_template_index.json
-configs/aig_strategy_index.json
+configs/a-line/corpus/seeds/resource_seeds.json
+configs/a-line/corpus/seeds/attack_seeds.json
+configs/a-line/corpus/seeds/user_prompt_seeds.json
+configs/a-line/corpus/seeds/tool_response_seeds.json
+configs/a-line/corpus/operators/mutation_operators.json
+configs/a-line/corpus/profiles/attack_generation_profiles.json
+configs/a-line/corpus/profiles/corpus_run_profiles.json
+configs/a-line/sources/pyrit_seed_dataset_index.json
+configs/a-line/sources/pyrit_executor_template_index.json
+configs/a-line/sources/pyrit_scorer_template_index.json
+configs/a-line/sources/aig_strategy_index.json
 ```
 
 说明:
@@ -453,9 +453,9 @@ type CorpusManifest = {
 
 - 从当前本地 `configs/resources.json` 末尾表格草稿提取权限级别、example、tool_response_1/2/3。
 - 清洗成:
-  - `configs/resource_seeds.json`
-  - `configs/user_prompt_seeds.json`
-  - `configs/tool_response_seeds.json`
+  - `configs/a-line/corpus/seeds/resource_seeds.json`
+  - `configs/a-line/corpus/seeds/user_prompt_seeds.json`
+  - `configs/a-line/corpus/seeds/tool_response_seeds.json`
 - 补充手工 seed，使 resource seeds 达到 100+，attack/user prompt seeds 达到 200+。
 
 清洗规则:
@@ -477,10 +477,10 @@ type CorpusManifest = {
 
 - 索引 `E:\XinAnProject\pyrit` 和 `third_party/pyrit_adapted` 中高价值 seed dataset、local prompt、jailbreak template、executor、converter、scorer。
 - 生成:
-  - `configs/pyrit_seed_dataset_index.json`
-  - `configs/pyrit_executor_template_index.json`
-  - `configs/pyrit_scorer_template_index.json`
-- 扩展 `configs/pyrit_attack_library.json`，记录新增 source paths 和生成能力。
+  - `configs/a-line/sources/pyrit_seed_dataset_index.json`
+  - `configs/a-line/sources/pyrit_executor_template_index.json`
+  - `configs/a-line/sources/pyrit_scorer_template_index.json`
+- 扩展 `configs/a-line/sources/pyrit_attack_library.json`，记录新增 source paths 和生成能力。
 
 优先索引:
 
@@ -503,7 +503,7 @@ type CorpusManifest = {
 
 目标:
 
-- 从 AIG 中提取策略和 enhancer metadata，生成 `configs/aig_strategy_index.json`。
+- 从 AIG 中提取策略和 enhancer metadata，生成 `configs/a-line/sources/aig_strategy_index.json`。
 - 映射到 Agent Guard 的 risk category、attack entry type、scenario、tool capability 和 policy template 建议。
 
 优先来源:
@@ -570,7 +570,7 @@ regression:
   200-400 个确定性 case，用于本地回归。
 
 full-corpus:
-  1000+ case，用于最终覆盖率和答辩材料。
+  2400 case，用于最终覆盖率和答辩材料。
 ```
 
 验收:
@@ -747,6 +747,6 @@ C 线不得:
 3. 清洗并扩容 resource/user prompt/tool response seed。
 4. 索引 PyRIT/AIG 来源。
 5. 实现 deterministic generator 和 `verify:a-corpus`。
-6. 生成首批 1000+ corpus。
+6. 已生成 2400 级 full corpus，并通过 `verify:a-corpus` 验证。
 7. 接入 run profile，不改变默认 demo 行为。
 8. 更新工作日志和 B/C 交接说明。

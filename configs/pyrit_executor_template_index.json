@@ -1,0 +1,1560 @@
+{
+  "schemaVersion": "mvp-1",
+  "indexId": "pyrit_executor_template_index.p3_a",
+  "generatedAt": "2026-06-18T15:23:42.328Z",
+  "sourceRoot": "third_party/pyrit_adapted",
+  "executors": [
+    {
+      "sourceId": "pyrit_executor_template.pyrit_datasets_executors_anecdoctor_anecdoctor_build_knowledge_graph_yaml",
+      "name": "anecdoctor_build_knowledge_graph.yaml",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/executors/anecdoctor/anecdoctor_build_knowledge_graph.yaml",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "3ab507e6ccfa51b8c22b9e363b1759a484f47b2f2d3cb5611943c82704e14c9c",
+      "byteLength": 3325,
+      "metadata": {
+        "relativePath": "pyrit/datasets/executors/anecdoctor/anecdoctor_build_knowledge_graph.yaml"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_datasets_executors_anecdoctor_anecdoctor_use_fewshot_yaml",
+      "name": "anecdoctor_use_fewshot.yaml",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/executors/anecdoctor/anecdoctor_use_fewshot.yaml",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "a838da289f40b440e248471445025282f60343ea834893c62e3f5da2924a1096",
+      "byteLength": 1893,
+      "metadata": {
+        "relativePath": "pyrit/datasets/executors/anecdoctor/anecdoctor_use_fewshot.yaml"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_datasets_executors_anecdoctor_anecdoctor_use_knowledge_graph_yaml",
+      "name": "anecdoctor_use_knowledge_graph.yaml",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/executors/anecdoctor/anecdoctor_use_knowledge_graph.yaml",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "56fea2eab3a14b3bb707a3469dcb8bf0a0c7188bb1db40619bdf9050f07672b4",
+      "byteLength": 2480,
+      "metadata": {
+        "relativePath": "pyrit/datasets/executors/anecdoctor/anecdoctor_use_knowledge_graph.yaml"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_datasets_executors_benchmark_one_plus_one_yaml",
+      "name": "one_plus_one.yaml",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/executors/benchmark/one_plus_one.yaml",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "d118c6d5bafe8405793919f7d9134e6ae7cbb58ecfa4f37f884df87d784fe0b9",
+      "byteLength": 728,
+      "metadata": {
+        "relativePath": "pyrit/datasets/executors/benchmark/one_plus_one.yaml"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_datasets_executors_context_compliance_context_description_yaml",
+      "name": "context_description.yaml",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/executors/context_compliance/context_description.yaml",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "54c40f0bc24e35b2dd11da1d965d0b5992b87b9c5fb0149f91c26ba3d4ae0c8d",
+      "byteLength": 3653,
+      "metadata": {
+        "relativePath": "pyrit/datasets/executors/context_compliance/context_description.yaml"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_datasets_executors_crescendo_crescendo_variant_1_yaml",
+      "name": "crescendo_variant_1.yaml",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/executors/crescendo/crescendo_variant_1.yaml",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor",
+        "crescendo"
+      ],
+      "sha256": "54247153ae2d6fe49567064ea650b79393cd4f99fdaf4870a6bf990281f2683d",
+      "byteLength": 9177,
+      "metadata": {
+        "relativePath": "pyrit/datasets/executors/crescendo/crescendo_variant_1.yaml"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_datasets_executors_crescendo_crescendo_variant_2_yaml",
+      "name": "crescendo_variant_2.yaml",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/executors/crescendo/crescendo_variant_2.yaml",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor",
+        "crescendo"
+      ],
+      "sha256": "c511e54a3bca3d283ffb3e1a709aef1dce4889055fb0ae6f561d7a408e510d33",
+      "byteLength": 4790,
+      "metadata": {
+        "relativePath": "pyrit/datasets/executors/crescendo/crescendo_variant_2.yaml"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_datasets_executors_crescendo_crescendo_variant_3_yaml",
+      "name": "crescendo_variant_3.yaml",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/executors/crescendo/crescendo_variant_3.yaml",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor",
+        "crescendo"
+      ],
+      "sha256": "55189a4873e22c5c1821ce2387c0172a94c99a28105450d11754d9c74081c244",
+      "byteLength": 3205,
+      "metadata": {
+        "relativePath": "pyrit/datasets/executors/crescendo/crescendo_variant_3.yaml"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_datasets_executors_crescendo_crescendo_variant_4_yaml",
+      "name": "crescendo_variant_4.yaml",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/executors/crescendo/crescendo_variant_4.yaml",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor",
+        "crescendo"
+      ],
+      "sha256": "aa1742d77335f7ad49adc1f16a5005d4975ebe998737c63ffde164002b3c5c37",
+      "byteLength": 6899,
+      "metadata": {
+        "relativePath": "pyrit/datasets/executors/crescendo/crescendo_variant_4.yaml"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_datasets_executors_crescendo_crescendo_variant_5_yaml",
+      "name": "crescendo_variant_5.yaml",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/executors/crescendo/crescendo_variant_5.yaml",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor",
+        "crescendo"
+      ],
+      "sha256": "ad024b8a0dd39102d7c57cf5c6c7c6d95f0017c5bac56d1f60945e0603437fd8",
+      "byteLength": 4313,
+      "metadata": {
+        "relativePath": "pyrit/datasets/executors/crescendo/crescendo_variant_5.yaml"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_datasets_executors_crescendo_escalation_crisis_yaml",
+      "name": "escalation_crisis.yaml",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/executors/crescendo/escalation_crisis.yaml",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor",
+        "crescendo"
+      ],
+      "sha256": "e1d92058c0d0618ef8884a6d28ae6eb0ef628a2c8ec19679c67799a6731d0fa7",
+      "byteLength": 6984,
+      "metadata": {
+        "relativePath": "pyrit/datasets/executors/crescendo/escalation_crisis.yaml"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_datasets_executors_crescendo_therapist_yaml",
+      "name": "therapist.yaml",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/executors/crescendo/therapist.yaml",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor",
+        "crescendo"
+      ],
+      "sha256": "93141ca1f69589c088b80dbe34ce2ec2fd1b4ce4832641f313e13a14cc12d9e2",
+      "byteLength": 6759,
+      "metadata": {
+        "relativePath": "pyrit/datasets/executors/crescendo/therapist.yaml"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_datasets_executors_flip_attack_yaml",
+      "name": "flip_attack.yaml",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/executors/flip_attack.yaml",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "d4aec3206ad8870e8128f097fdf21f055da551522ff2db753a64a9b7b42fa430",
+      "byteLength": 1159,
+      "metadata": {
+        "relativePath": "pyrit/datasets/executors/flip_attack.yaml"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_datasets_executors_pair_attacker_system_prompt_yaml",
+      "name": "attacker_system_prompt.yaml",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/executors/pair/attacker_system_prompt.yaml",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor",
+        "prompt"
+      ],
+      "sha256": "5f93ca231ef96756859ab7fdb776d06a6401ddf8e7e7e32b9f35d09a1e3f8f46",
+      "byteLength": 6750,
+      "metadata": {
+        "relativePath": "pyrit/datasets/executors/pair/attacker_system_prompt.yaml"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_datasets_executors_question_answer_wmdp_dataset_py",
+      "name": "wmdp_dataset.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/executors/question_answer/wmdp_dataset.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "29e362be36681ed303619826675f1234dd301d00ad36797d4b2ca60148aa9a55",
+      "byteLength": 4029,
+      "metadata": {
+        "relativePath": "pyrit/datasets/executors/question_answer/wmdp_dataset.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_datasets_executors_red_teaming_attack_prompt_gen_template_yaml",
+      "name": "attack_prompt_gen_template.yaml",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/executors/red_teaming/attack_prompt_gen_template.yaml",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor",
+        "prompt"
+      ],
+      "sha256": "a640e73753cec6afe11ce9250778e4a1952e1bc5c3cdfd0c6d2f0b5bf9594377",
+      "byteLength": 2197,
+      "metadata": {
+        "relativePath": "pyrit/datasets/executors/red_teaming/attack_prompt_gen_template.yaml"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_datasets_executors_red_teaming_crucible_yaml",
+      "name": "crucible.yaml",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/executors/red_teaming/crucible.yaml",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "6d7ea97dae08fe5ddb26a242d0b99a02cacbad63ea69162558ad0a4d50428c5b",
+      "byteLength": 1877,
+      "metadata": {
+        "relativePath": "pyrit/datasets/executors/red_teaming/crucible.yaml"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_datasets_executors_red_teaming_ethical_compliance_template_yaml",
+      "name": "ethical_compliance_template.yaml",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/executors/red_teaming/ethical_compliance_template.yaml",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "67ecb7f8c641d8d462091eae145414c9415069d02b062dc05efd9f273c0dd3ba",
+      "byteLength": 1072,
+      "metadata": {
+        "relativePath": "pyrit/datasets/executors/red_teaming/ethical_compliance_template.yaml"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_datasets_executors_red_teaming_image_generation_yaml",
+      "name": "image_generation.yaml",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/executors/red_teaming/image_generation.yaml",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "d7f2247bdec43963732772aaf13c9a5a897ad2522414030b20985f42cef0f4ed",
+      "byteLength": 1617,
+      "metadata": {
+        "relativePath": "pyrit/datasets/executors/red_teaming/image_generation.yaml"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_datasets_executors_red_teaming_naive_crescendo_yaml",
+      "name": "naive_crescendo.yaml",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/executors/red_teaming/naive_crescendo.yaml",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor",
+        "crescendo"
+      ],
+      "sha256": "163be5196410872106c6484249c79fd52309923ac6ff226ac3ff59b73d63646c",
+      "byteLength": 2263,
+      "metadata": {
+        "relativePath": "pyrit/datasets/executors/red_teaming/naive_crescendo.yaml"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_datasets_executors_red_teaming_persuasion_deception_behavior_manipulation_yaml",
+      "name": "behavior_manipulation.yaml",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/executors/red_teaming/persuasion_deception/behavior_manipulation.yaml",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "228bf87c470439f8c0024325c56e472e5254d4561ffed5fea1da3bccc80f011f",
+      "byteLength": 826,
+      "metadata": {
+        "relativePath": "pyrit/datasets/executors/red_teaming/persuasion_deception/behavior_manipulation.yaml"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_datasets_executors_red_teaming_persuasion_deception_fake_charity_scam_yaml",
+      "name": "fake_charity_scam.yaml",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/executors/red_teaming/persuasion_deception/fake_charity_scam.yaml",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "d58924ab8ce47706ae423d8c54edc88a169948821b623d82542ed17cc3a0757b",
+      "byteLength": 1071,
+      "metadata": {
+        "relativePath": "pyrit/datasets/executors/red_teaming/persuasion_deception/fake_charity_scam.yaml"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_datasets_executors_red_teaming_persuasion_deception_fake_social_media_profile_yaml",
+      "name": "fake_social_media_profile.yaml",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/executors/red_teaming/persuasion_deception/fake_social_media_profile.yaml",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "690be15bd039d9099a1ebf3dd38293710c718b2a845f9e1e60a290b24f8816fa",
+      "byteLength": 1054,
+      "metadata": {
+        "relativePath": "pyrit/datasets/executors/red_teaming/persuasion_deception/fake_social_media_profile.yaml"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_datasets_executors_red_teaming_persuasion_deception_fake_tech_support_scam_yaml",
+      "name": "fake_tech_support_scam.yaml",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/executors/red_teaming/persuasion_deception/fake_tech_support_scam.yaml",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "72b2b45b1bbb4fef027a4718166802b9a4608cce765ecaa1f776cd0f0f2e48c9",
+      "byteLength": 1189,
+      "metadata": {
+        "relativePath": "pyrit/datasets/executors/red_teaming/persuasion_deception/fake_tech_support_scam.yaml"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_datasets_executors_red_teaming_persuasion_deception_fraudulent_activities_yaml",
+      "name": "fraudulent_activities.yaml",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/executors/red_teaming/persuasion_deception/fraudulent_activities.yaml",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "79dfad8dc8666bd58da7fab4278afb84fca1a7709869921b86150829ed40227d",
+      "byteLength": 941,
+      "metadata": {
+        "relativePath": "pyrit/datasets/executors/red_teaming/persuasion_deception/fraudulent_activities.yaml"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_datasets_executors_red_teaming_persuasion_deception_joining_religious_organization_yaml",
+      "name": "joining_religious_organization.yaml",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/executors/red_teaming/persuasion_deception/joining_religious_organization.yaml",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "8083aca766f2dad8e79ff631851be773f42e750848a8fe544be01953a2ed101a",
+      "byteLength": 875,
+      "metadata": {
+        "relativePath": "pyrit/datasets/executors/red_teaming/persuasion_deception/joining_religious_organization.yaml"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_datasets_executors_red_teaming_persuasion_deception_lie_to_authorities_yaml",
+      "name": "lie_to_authorities.yaml",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/executors/red_teaming/persuasion_deception/lie_to_authorities.yaml",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor",
+        "auth"
+      ],
+      "sha256": "8a0e1b77e2a931096c8d90f757ea52aa017e5761bc61fc30175df15dd2b47740",
+      "byteLength": 1138,
+      "metadata": {
+        "relativePath": "pyrit/datasets/executors/red_teaming/persuasion_deception/lie_to_authorities.yaml"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_datasets_executors_red_teaming_persuasion_deception_lie_to_me_yaml",
+      "name": "lie_to_me.yaml",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/executors/red_teaming/persuasion_deception/lie_to_me.yaml",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "008636179acd93acd07a5995069a40121a3aae2ef919000aa2c63f0958940485",
+      "byteLength": 1087,
+      "metadata": {
+        "relativePath": "pyrit/datasets/executors/red_teaming/persuasion_deception/lie_to_me.yaml"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_datasets_executors_red_teaming_persuasion_deception_persuasion_persona_yaml",
+      "name": "persuasion_persona.yaml",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/executors/red_teaming/persuasion_deception/persuasion_persona.yaml",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "1092f476fbe1527cbe7a3ac7e4b74515760cc46e06164ca1f81777fe118fab08",
+      "byteLength": 3236,
+      "metadata": {
+        "relativePath": "pyrit/datasets/executors/red_teaming/persuasion_deception/persuasion_persona.yaml"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_datasets_executors_red_teaming_persuasion_deception_persuasion_persona_generic_yaml",
+      "name": "persuasion_persona_generic.yaml",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/executors/red_teaming/persuasion_deception/persuasion_persona_generic.yaml",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "5285497e5a737d111f392629ec63bf4347f4d43040160e1d5253fbebc2684b2c",
+      "byteLength": 3544,
+      "metadata": {
+        "relativePath": "pyrit/datasets/executors/red_teaming/persuasion_deception/persuasion_persona_generic.yaml"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_datasets_executors_red_teaming_persuasion_deception_phishing_email_yaml",
+      "name": "phishing_email.yaml",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/executors/red_teaming/persuasion_deception/phishing_email.yaml",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "1ffac5ac843db254bcf5a11937df72207a0c557beaa939668f761de8ff0ab723",
+      "byteLength": 1162,
+      "metadata": {
+        "relativePath": "pyrit/datasets/executors/red_teaming/persuasion_deception/phishing_email.yaml"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_datasets_executors_red_teaming_persuasion_deception_ruai_yaml",
+      "name": "RUAI.yaml",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/executors/red_teaming/persuasion_deception/RUAI.yaml",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "019e6bff41b6c2c2053c9b72e44ea6ae4a172a185f27c633c8c25da466f4cbb0",
+      "byteLength": 497,
+      "metadata": {
+        "relativePath": "pyrit/datasets/executors/red_teaming/persuasion_deception/RUAI.yaml"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_datasets_executors_red_teaming_text_generation_yaml",
+      "name": "text_generation.yaml",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/executors/red_teaming/text_generation.yaml",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "ed0051ab93793e5696ff9d6c804504478dfab18ff8d851f4a3450075d15a333e",
+      "byteLength": 1379,
+      "metadata": {
+        "relativePath": "pyrit/datasets/executors/red_teaming/text_generation.yaml"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_datasets_executors_red_teaming_unethical_task_generation_prompt_yaml",
+      "name": "unethical_task_generation_prompt.yaml",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/executors/red_teaming/unethical_task_generation_prompt.yaml",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor",
+        "prompt"
+      ],
+      "sha256": "cb27150fbca96b12878e1a8cf44885d38c8498a982a34465a683255a63af7dd0",
+      "byteLength": 876,
+      "metadata": {
+        "relativePath": "pyrit/datasets/executors/red_teaming/unethical_task_generation_prompt.yaml"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_datasets_executors_red_teaming_violent_durian_yaml",
+      "name": "violent_durian.yaml",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/executors/red_teaming/violent_durian.yaml",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "b4c5d84e7610bdad9b3762ee4b96409425f3acc002eb112525542cc5e78eb7a5",
+      "byteLength": 1017,
+      "metadata": {
+        "relativePath": "pyrit/datasets/executors/red_teaming/violent_durian.yaml"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_datasets_executors_renellm_scenario_templates_yaml",
+      "name": "scenario_templates.yaml",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/executors/renellm/scenario_templates.yaml",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "67b00aee36ecc7b2f8ef213117ed573775651c092b1868d063031e644a4607fe",
+      "byteLength": 2197,
+      "metadata": {
+        "relativePath": "pyrit/datasets/executors/renellm/scenario_templates.yaml"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_datasets_executors_role_play_movie_script_yaml",
+      "name": "movie_script.yaml",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/executors/role_play/movie_script.yaml",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "8464a794683f2ab8cd20b47481b7e3d6789332f3aa452e592136603354fcbf55",
+      "byteLength": 2231,
+      "metadata": {
+        "relativePath": "pyrit/datasets/executors/role_play/movie_script.yaml"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_datasets_executors_role_play_persuasion_script_yaml",
+      "name": "persuasion_script.yaml",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/executors/role_play/persuasion_script.yaml",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "19cf840b5f82ca4dce3cc4134c0662e185e801b332c3467f9ca4b5e1b7bf3e57",
+      "byteLength": 4310,
+      "metadata": {
+        "relativePath": "pyrit/datasets/executors/role_play/persuasion_script.yaml"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_datasets_executors_role_play_persuasion_script_written_yaml",
+      "name": "persuasion_script_written.yaml",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/executors/role_play/persuasion_script_written.yaml",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "4a11431631d095df8726286cc5f2951c73a54de7ffb04ef05afd05a56e546356",
+      "byteLength": 3743,
+      "metadata": {
+        "relativePath": "pyrit/datasets/executors/role_play/persuasion_script_written.yaml"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_datasets_executors_role_play_trivia_game_yaml",
+      "name": "trivia_game.yaml",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/executors/role_play/trivia_game.yaml",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "3add10373f1cb2b5ee5e7bd2247ad2584de427936ac47e7338c850ec4bdde6d8",
+      "byteLength": 2484,
+      "metadata": {
+        "relativePath": "pyrit/datasets/executors/role_play/trivia_game.yaml"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_datasets_executors_role_play_video_game_yaml",
+      "name": "video_game.yaml",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/executors/role_play/video_game.yaml",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "9516e9afd9c5cb7de4aac04c5b11add841f49af08a9521bab25803558c6a0bac",
+      "byteLength": 2602,
+      "metadata": {
+        "relativePath": "pyrit/datasets/executors/role_play/video_game.yaml"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_datasets_executors_simulated_target_compliant_yaml",
+      "name": "compliant.yaml",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/executors/simulated_target/compliant.yaml",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "0a007ae0401e6118b8095488aa2e0f6069c91b16f684919c368061024928c7d1",
+      "byteLength": 1607,
+      "metadata": {
+        "relativePath": "pyrit/datasets/executors/simulated_target/compliant.yaml"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_datasets_executors_simulated_target_direct_next_message_yaml",
+      "name": "direct_next_message.yaml",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/executors/simulated_target/direct_next_message.yaml",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "aef2d4da5e297c7ffb041ecd29ee45f52d479e5383c7511dad315db3399fcff8",
+      "byteLength": 1885,
+      "metadata": {
+        "relativePath": "pyrit/datasets/executors/simulated_target/direct_next_message.yaml"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_datasets_executors_skeleton_key_skeleton_key_prompt",
+      "name": "skeleton_key.prompt",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/executors/skeleton_key/skeleton_key.prompt",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor",
+        "prompt"
+      ],
+      "sha256": "4044c2a6a5c48e8478b438dab60ba122780350e6391fade524a40f5e11410515",
+      "byteLength": 673,
+      "metadata": {
+        "relativePath": "pyrit/datasets/executors/skeleton_key/skeleton_key.prompt"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_datasets_executors_tree_of_attacks_adversarial_prompt_template_yaml",
+      "name": "adversarial_prompt_template.yaml",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/executors/tree_of_attacks/adversarial_prompt_template.yaml",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor",
+        "prompt"
+      ],
+      "sha256": "694963c2e58ae7bc74440b57ff50702c4d11ba937dee56694af291f25fd04427",
+      "byteLength": 913,
+      "metadata": {
+        "relativePath": "pyrit/datasets/executors/tree_of_attacks/adversarial_prompt_template.yaml"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_datasets_executors_tree_of_attacks_adversarial_seed_prompt_yaml",
+      "name": "adversarial_seed_prompt.yaml",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/executors/tree_of_attacks/adversarial_seed_prompt.yaml",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor",
+        "seed",
+        "prompt"
+      ],
+      "sha256": "8b4192ad60e72523cb8d998f539de42b6435e190163c9c993b732f862853e04c",
+      "byteLength": 787,
+      "metadata": {
+        "relativePath": "pyrit/datasets/executors/tree_of_attacks/adversarial_seed_prompt.yaml"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_datasets_executors_tree_of_attacks_adversarial_system_prompt_yaml",
+      "name": "adversarial_system_prompt.yaml",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/executors/tree_of_attacks/adversarial_system_prompt.yaml",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor",
+        "prompt"
+      ],
+      "sha256": "345e6c8ad150a35e86286b49c3ca6a04869b564f609d4ad063cc95e99be6e282",
+      "byteLength": 6932,
+      "metadata": {
+        "relativePath": "pyrit/datasets/executors/tree_of_attacks/adversarial_system_prompt.yaml"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_attack_component_conversation_manager_py",
+      "name": "conversation_manager.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/attack/component/conversation_manager.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "f457943a691a2f814495e416c949307c5feaf9cd63b612c5af1225e0a5a48c7c",
+      "byteLength": 24200,
+      "metadata": {
+        "relativePath": "pyrit/executor/attack/component/conversation_manager.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_attack_component_prepended_conversation_config_py",
+      "name": "prepended_conversation_config.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/attack/component/prepended_conversation_config.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "6e1a0b0f796aa5c80d6dd6ae3b44b0811a2c8bcd6b4034b572d1a7eba6dbbeb0",
+      "byteLength": 4489,
+      "metadata": {
+        "relativePath": "pyrit/executor/attack/component/prepended_conversation_config.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_attack_component_init_py",
+      "name": "__init__.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/attack/component/__init__.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "3605130fc57093db880e2f0cccd435949cfa4f28ca6bf4b3ef561411f1cd89f3",
+      "byteLength": 755,
+      "metadata": {
+        "relativePath": "pyrit/executor/attack/component/__init__.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_attack_core_attack_config_py",
+      "name": "attack_config.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/attack/core/attack_config.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "1b3300de52e5a2ade8323eac55cc5656a648280d480e88fe16e26a321a111f61",
+      "byteLength": 2962,
+      "metadata": {
+        "relativePath": "pyrit/executor/attack/core/attack_config.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_attack_core_attack_executor_py",
+      "name": "attack_executor.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/attack/core/attack_executor.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "20749d1f51c6f17aaf7f50143852982fafc386b8233ae0d91e72ac597ee3ab26",
+      "byteLength": 22767,
+      "metadata": {
+        "relativePath": "pyrit/executor/attack/core/attack_executor.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_attack_core_attack_parameters_py",
+      "name": "attack_parameters.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/attack/core/attack_parameters.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "79f9c55d4b32aee9f8aa9c24ec22be62c0c7ea5a92d2d2f4622ad5da5c816dcb",
+      "byteLength": 11357,
+      "metadata": {
+        "relativePath": "pyrit/executor/attack/core/attack_parameters.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_attack_core_attack_strategy_py",
+      "name": "attack_strategy.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/attack/core/attack_strategy.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "38cbb1d55a315a5188cb7d3de54931b425bd91ff9f030997264efd246be3afe7",
+      "byteLength": 17942,
+      "metadata": {
+        "relativePath": "pyrit/executor/attack/core/attack_strategy.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_attack_core_init_py",
+      "name": "__init__.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/attack/core/__init__.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "3c0782e180371f0b75fa524375cb26b9fe88be83ff146763b615f226d5352277",
+      "byteLength": 929,
+      "metadata": {
+        "relativePath": "pyrit/executor/attack/core/__init__.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_attack_multi_turn_chunked_request_py",
+      "name": "chunked_request.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/attack/multi_turn/chunked_request.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "54b3250c7a14a9e708c836858faa125639ca5e648c564413a9d5e69510808ac2",
+      "byteLength": 16255,
+      "metadata": {
+        "relativePath": "pyrit/executor/attack/multi_turn/chunked_request.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_attack_multi_turn_crescendo_py",
+      "name": "crescendo.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/attack/multi_turn/crescendo.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor",
+        "crescendo"
+      ],
+      "sha256": "9176c56079c2f5532f0eb13b7336c9f8437ffba1a3673ba806a0f36294737a1d",
+      "byteLength": 33856,
+      "metadata": {
+        "relativePath": "pyrit/executor/attack/multi_turn/crescendo.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_attack_multi_turn_multi_prompt_sending_py",
+      "name": "multi_prompt_sending.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/attack/multi_turn/multi_prompt_sending.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor",
+        "prompt"
+      ],
+      "sha256": "d00026d5f3fd284f9b90bde0df1612d97dd7f1b82a4b6cb0adbabf3f3c2ee448",
+      "byteLength": 18087,
+      "metadata": {
+        "relativePath": "pyrit/executor/attack/multi_turn/multi_prompt_sending.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_attack_multi_turn_multi_turn_attack_strategy_py",
+      "name": "multi_turn_attack_strategy.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/attack/multi_turn/multi_turn_attack_strategy.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "d918a1af10939ce6a6be728dbae493b66f97f53293f49582ea18f2445ebcacff",
+      "byteLength": 5773,
+      "metadata": {
+        "relativePath": "pyrit/executor/attack/multi_turn/multi_turn_attack_strategy.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_attack_multi_turn_red_teaming_py",
+      "name": "red_teaming.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/attack/multi_turn/red_teaming.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "62d5ca99ce67de60a6aa39906cf1239db576883295f29d7a029bdc3e8a24916a",
+      "byteLength": 28714,
+      "metadata": {
+        "relativePath": "pyrit/executor/attack/multi_turn/red_teaming.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_attack_multi_turn_simulated_conversation_py",
+      "name": "simulated_conversation.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/attack/multi_turn/simulated_conversation.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "5ab369a163b0e98c3e7c89b5a5ff9d7b94bc2fc768c856494dbc5636da5cd4cf",
+      "byteLength": 10258,
+      "metadata": {
+        "relativePath": "pyrit/executor/attack/multi_turn/simulated_conversation.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_attack_multi_turn_tree_of_attacks_py",
+      "name": "tree_of_attacks.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/attack/multi_turn/tree_of_attacks.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "362ef3c313a56d54ca7ec0ed1291a3a80b3b0515a585019ca113184b4fda1a4c",
+      "byteLength": 105400,
+      "metadata": {
+        "relativePath": "pyrit/executor/attack/multi_turn/tree_of_attacks.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_attack_multi_turn_init_py",
+      "name": "__init__.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/attack/multi_turn/__init__.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "d53fdcd8881c69fcaa279282aa1540cafd7f0c6aaf4b14ea85684afa2fb0251e",
+      "byteLength": 1582,
+      "metadata": {
+        "relativePath": "pyrit/executor/attack/multi_turn/__init__.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_attack_printer_attack_result_printer_py",
+      "name": "attack_result_printer.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/attack/printer/attack_result_printer.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "4610ce82a1c102a0574b185ba926b388be4ec63fb7317dada68b88e8c5e72f18",
+      "byteLength": 3671,
+      "metadata": {
+        "relativePath": "pyrit/executor/attack/printer/attack_result_printer.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_attack_printer_console_printer_py",
+      "name": "console_printer.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/attack/printer/console_printer.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "71c2b5acfb0235db10d9e424dbaacd16f1151be2d8863593c6fb0131d273f98a",
+      "byteLength": 25738,
+      "metadata": {
+        "relativePath": "pyrit/executor/attack/printer/console_printer.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_attack_printer_markdown_printer_py",
+      "name": "markdown_printer.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/attack/printer/markdown_printer.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "18c9b03d9661ef218c0688a9e42e817a28bc2ebd242ae4f4451917983fa53453",
+      "byteLength": 26253,
+      "metadata": {
+        "relativePath": "pyrit/executor/attack/printer/markdown_printer.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_attack_printer_init_py",
+      "name": "__init__.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/attack/printer/__init__.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "978ea4d8bedf8ba19744181bef1f212ef42ee7a7ec15d6ad9c8959e0bf055e78",
+      "byteLength": 493,
+      "metadata": {
+        "relativePath": "pyrit/executor/attack/printer/__init__.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_attack_single_turn_context_compliance_py",
+      "name": "context_compliance.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/attack/single_turn/context_compliance.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "48c1b0a8ace0e77d64f68b3f3551f183649cf8dd32846e7ee975245436b613be",
+      "byteLength": 12735,
+      "metadata": {
+        "relativePath": "pyrit/executor/attack/single_turn/context_compliance.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_attack_single_turn_flip_attack_py",
+      "name": "flip_attack.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/attack/single_turn/flip_attack.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "0c080a5d2a5b85a971ead954d2326ee32a42f3f6863d249b3f303c4d9d30c3c4",
+      "byteLength": 4584,
+      "metadata": {
+        "relativePath": "pyrit/executor/attack/single_turn/flip_attack.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_attack_single_turn_many_shot_jailbreak_py",
+      "name": "many_shot_jailbreak.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/attack/single_turn/many_shot_jailbreak.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "jailbreak",
+        "executor"
+      ],
+      "sha256": "2ca7f320a88191b3cf22be4a581d541032c8d52b63e4d532e36d1d3fedadc466",
+      "byteLength": 5086,
+      "metadata": {
+        "relativePath": "pyrit/executor/attack/single_turn/many_shot_jailbreak.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_attack_single_turn_prompt_sending_py",
+      "name": "prompt_sending.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/attack/single_turn/prompt_sending.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor",
+        "prompt"
+      ],
+      "sha256": "1c06b58ef515b335474abe4d01404396136ea53ec7175d513fbd8f2afd0a90d5",
+      "byteLength": 16834,
+      "metadata": {
+        "relativePath": "pyrit/executor/attack/single_turn/prompt_sending.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_attack_single_turn_renellm_attack_py",
+      "name": "renellm_attack.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/attack/single_turn/renellm_attack.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "c7e4755c0315b9e1779b2624816c82f9e0a68db3e2bdc552189de22c8b3d9c62",
+      "byteLength": 9949,
+      "metadata": {
+        "relativePath": "pyrit/executor/attack/single_turn/renellm_attack.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_attack_single_turn_role_play_py",
+      "name": "role_play.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/attack/single_turn/role_play.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "5c46855a2eb6832de2ee8f684aa0edee79c940e7910fb15ac7e348d19532097f",
+      "byteLength": 9174,
+      "metadata": {
+        "relativePath": "pyrit/executor/attack/single_turn/role_play.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_attack_single_turn_single_turn_attack_strategy_py",
+      "name": "single_turn_attack_strategy.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/attack/single_turn/single_turn_attack_strategy.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "b043cb9e4b14ed7928c2fb10a6edc71b6fb51c37d1c2a8719ef0bb827beb8202",
+      "byteLength": 2605,
+      "metadata": {
+        "relativePath": "pyrit/executor/attack/single_turn/single_turn_attack_strategy.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_attack_single_turn_skeleton_key_py",
+      "name": "skeleton_key.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/attack/single_turn/skeleton_key.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "d5d4ea32c5407b1875b9cede26b5191e0a3b189fa8d65b489328a68202a78b73",
+      "byteLength": 7823,
+      "metadata": {
+        "relativePath": "pyrit/executor/attack/single_turn/skeleton_key.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_attack_single_turn_init_py",
+      "name": "__init__.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/attack/single_turn/__init__.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "6d20c1c72dba1082e46c7be32bac5582f61bd0f13746d58eece92a14b0371a0a",
+      "byteLength": 1125,
+      "metadata": {
+        "relativePath": "pyrit/executor/attack/single_turn/__init__.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_attack_init_py",
+      "name": "__init__.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/attack/__init__.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "358d35efebc7d46f717f55c2ee9e8e087c1aa288b5b63057635cfebdc5ec2525",
+      "byteLength": 2721,
+      "metadata": {
+        "relativePath": "pyrit/executor/attack/__init__.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_benchmark_fairness_bias_py",
+      "name": "fairness_bias.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/benchmark/fairness_bias.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "23d8fbf7255ef23a171809960c2a8caf87d8edb9c378b344969b549cbf3e96ce",
+      "byteLength": 17846,
+      "metadata": {
+        "relativePath": "pyrit/executor/benchmark/fairness_bias.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_benchmark_question_answering_py",
+      "name": "question_answering.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/benchmark/question_answering.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "166cb5e9099932377cac35323a82e55df06798ea8109c985acd6d491319ab4a8",
+      "byteLength": 11854,
+      "metadata": {
+        "relativePath": "pyrit/executor/benchmark/question_answering.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_benchmark_init_py",
+      "name": "__init__.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/benchmark/__init__.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "8b6068b85902e6dd2e5b0bdba5b2f4be2017d02d586f874863d46a8ecd1ea331",
+      "byteLength": 490,
+      "metadata": {
+        "relativePath": "pyrit/executor/benchmark/__init__.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_core_config_py",
+      "name": "config.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/core/config.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "c7dc160a527c22850b1ff3a7d6b5554a0613f3ea47cc6138de28e210f46de95c",
+      "byteLength": 800,
+      "metadata": {
+        "relativePath": "pyrit/executor/core/config.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_core_strategy_py",
+      "name": "strategy.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/core/strategy.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "07dc090c446a6d7b4bfddd3acf57201e108441324eeed0646bc8b0db90d75ada",
+      "byteLength": 14234,
+      "metadata": {
+        "relativePath": "pyrit/executor/core/strategy.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_core_init_py",
+      "name": "__init__.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/core/__init__.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "0438aace9f6682d35b7f78f66d268bd98e2695aac0d9af22e0073a77e03bbe05",
+      "byteLength": 495,
+      "metadata": {
+        "relativePath": "pyrit/executor/core/__init__.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_promptgen_anecdoctor_py",
+      "name": "anecdoctor.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/promptgen/anecdoctor.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor",
+        "prompt"
+      ],
+      "sha256": "ac75abd0bec34999b7b8abb3253d955ef9e304ec49515c663c4931abcd3d5b91",
+      "byteLength": 18206,
+      "metadata": {
+        "relativePath": "pyrit/executor/promptgen/anecdoctor.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_promptgen_core_prompt_generator_strategy_py",
+      "name": "prompt_generator_strategy.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/promptgen/core/prompt_generator_strategy.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor",
+        "prompt"
+      ],
+      "sha256": "dbcfac249bf45945fab0c07e644dafb9d186869ba585289d515032e72fe82d11",
+      "byteLength": 3209,
+      "metadata": {
+        "relativePath": "pyrit/executor/promptgen/core/prompt_generator_strategy.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_promptgen_core_init_py",
+      "name": "__init__.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/promptgen/core/__init__.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor",
+        "prompt"
+      ],
+      "sha256": "9b7ca364b2399f93926d62c15525143b430a23572c503b95790aa4d2c4c069c1",
+      "byteLength": 430,
+      "metadata": {
+        "relativePath": "pyrit/executor/promptgen/core/__init__.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_promptgen_fuzzer_fuzzer_py",
+      "name": "fuzzer.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/promptgen/fuzzer/fuzzer.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor",
+        "prompt"
+      ],
+      "sha256": "b60971bde3896af0e93f49c17a89db952e3eadfe45d2853ceedb8be24c6fdab1",
+      "byteLength": 48466,
+      "metadata": {
+        "relativePath": "pyrit/executor/promptgen/fuzzer/fuzzer.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_promptgen_fuzzer_fuzzer_converter_base_py",
+      "name": "fuzzer_converter_base.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/promptgen/fuzzer/fuzzer_converter_base.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "converter",
+        "executor",
+        "prompt"
+      ],
+      "sha256": "1a55fb82cb4e92b0e09d690da8281b7d870e4a3b4f9c0133d4708d933f2b79ef",
+      "byteLength": 5577,
+      "metadata": {
+        "relativePath": "pyrit/executor/promptgen/fuzzer/fuzzer_converter_base.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_promptgen_fuzzer_fuzzer_crossover_converter_py",
+      "name": "fuzzer_crossover_converter.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/promptgen/fuzzer/fuzzer_crossover_converter.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "converter",
+        "executor",
+        "prompt"
+      ],
+      "sha256": "b4f6b9ee67863124eeb3622ec641d38b72503d9f7f21dcf32ff7477fe3bbfc4d",
+      "byteLength": 4512,
+      "metadata": {
+        "relativePath": "pyrit/executor/promptgen/fuzzer/fuzzer_crossover_converter.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_promptgen_fuzzer_fuzzer_expand_converter_py",
+      "name": "fuzzer_expand_converter.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/promptgen/fuzzer/fuzzer_expand_converter.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "converter",
+        "executor",
+        "prompt"
+      ],
+      "sha256": "56fa88a25ade59e38e09c7bf1d002a265c9dac84f1365d4ee912ba3ad30ae875",
+      "byteLength": 3234,
+      "metadata": {
+        "relativePath": "pyrit/executor/promptgen/fuzzer/fuzzer_expand_converter.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_promptgen_fuzzer_fuzzer_rephrase_converter_py",
+      "name": "fuzzer_rephrase_converter.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/promptgen/fuzzer/fuzzer_rephrase_converter.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "converter",
+        "executor",
+        "prompt"
+      ],
+      "sha256": "a273b2fb7692c466c6eb278aedc5fc31f8008f873f66f5b58f40af8da953c08b",
+      "byteLength": 1177,
+      "metadata": {
+        "relativePath": "pyrit/executor/promptgen/fuzzer/fuzzer_rephrase_converter.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_promptgen_fuzzer_fuzzer_shorten_converter_py",
+      "name": "fuzzer_shorten_converter.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/promptgen/fuzzer/fuzzer_shorten_converter.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "converter",
+        "executor",
+        "prompt"
+      ],
+      "sha256": "180144e70e1f34c38d54b6362ddc6c097b00013713df3a2c9d3247b6f5fbef6b",
+      "byteLength": 1174,
+      "metadata": {
+        "relativePath": "pyrit/executor/promptgen/fuzzer/fuzzer_shorten_converter.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_promptgen_fuzzer_fuzzer_similar_converter_py",
+      "name": "fuzzer_similar_converter.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/promptgen/fuzzer/fuzzer_similar_converter.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "converter",
+        "executor",
+        "prompt"
+      ],
+      "sha256": "50e646302eba7841b0db2ecc3229e015b3bfdf1213c6f56e9ff6a54584495cae",
+      "byteLength": 1172,
+      "metadata": {
+        "relativePath": "pyrit/executor/promptgen/fuzzer/fuzzer_similar_converter.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_promptgen_fuzzer_init_py",
+      "name": "__init__.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/promptgen/fuzzer/__init__.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor",
+        "prompt"
+      ],
+      "sha256": "302e1d9bc8396da9a7e3c14bb07e6ce4848b2ac79253e25466175db8c0292944",
+      "byteLength": 1168,
+      "metadata": {
+        "relativePath": "pyrit/executor/promptgen/fuzzer/__init__.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_promptgen_init_py",
+      "name": "__init__.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/promptgen/__init__.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor",
+        "prompt"
+      ],
+      "sha256": "e38ce65cafebc9c739f33cb47f24007920f6b8f308258d7cd1a44257eb94b002",
+      "byteLength": 584,
+      "metadata": {
+        "relativePath": "pyrit/executor/promptgen/__init__.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_workflow_core_workflow_strategy_py",
+      "name": "workflow_strategy.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/workflow/core/workflow_strategy.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "3f1cfb8dda41dfb8ab4be804537cbb2cc6713e0067bbce389d0e19b6d2418ead",
+      "byteLength": 5339,
+      "metadata": {
+        "relativePath": "pyrit/executor/workflow/core/workflow_strategy.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_workflow_core_init_py",
+      "name": "__init__.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/workflow/core/__init__.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "673f6fec98556b4d5761c69c87110e74eda646690302016284844bee2daf5af6",
+      "byteLength": 370,
+      "metadata": {
+        "relativePath": "pyrit/executor/workflow/core/__init__.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_workflow_xpia_py",
+      "name": "xpia.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/workflow/xpia.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "322623ded132bea9c3676bac2795d88ac9a8e04ef396f5fdd6614faac9d3832b",
+      "byteLength": 26712,
+      "metadata": {
+        "relativePath": "pyrit/executor/workflow/xpia.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_workflow_init_py",
+      "name": "__init__.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/workflow/__init__.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "30281015208b1cd2e710d3d2f448fcae086cda0eb39861d96e00af0736bf3383",
+      "byteLength": 544,
+      "metadata": {
+        "relativePath": "pyrit/executor/workflow/__init__.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.pyrit_executor_init_py",
+      "name": "__init__.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/executor/__init__.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [
+        "executor"
+      ],
+      "sha256": "0c25c2d8e879a1c0bb498abf1a237a4877b45964156d88675786bda399cf7413",
+      "byteLength": 108,
+      "metadata": {
+        "relativePath": "pyrit/executor/__init__.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_executor_template.run_attack_cli_py",
+      "name": "run_attack_cli.py",
+      "sourcePath": "third_party/pyrit_adapted/run_attack_cli.py",
+      "sourceType": "pyrit_executor_template",
+      "origin": "pyrit",
+      "tags": [],
+      "sha256": "02ed1cd2f122396059d91605ffc21be5e966eae330fa21e77cb9d4b6929bc062",
+      "byteLength": 31375,
+      "metadata": {
+        "relativePath": "run_attack_cli.py"
+      }
+    }
+  ]
+}

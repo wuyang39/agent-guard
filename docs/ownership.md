@@ -56,6 +56,19 @@ configs/red_team_scenarios.json
 configs/supervision_policy_templates.json
 configs/pyrit_attack_library.json
 configs/pyrit_jailbreak_template_index.json
+configs/resource_seeds.json
+configs/attack_seeds.json
+configs/user_prompt_seeds.json
+configs/tool_response_seeds.json
+configs/mutation_operators.json
+configs/attack_generation_profiles.json
+configs/corpus_run_profiles.json
+configs/pyrit_seed_dataset_index.json
+configs/pyrit_executor_template_index.json
+configs/pyrit_scorer_template_index.json
+configs/aig_strategy_index.json
+generated/a-line/**
+backend/src/modules/corpus/**
 backend/src/modules/config/**
 backend/src/modules/sandbox/**
 backend/src/modules/mcp-server/tools/**
@@ -66,9 +79,12 @@ packages/contracts/src/types/sandbox.ts
 packages/contracts/src/types/test.ts
 packages/contracts/src/types/scenario.ts
 packages/contracts/src/types/attackLibrary.ts
+packages/contracts/src/types/corpus.ts
 docs/A/**
 third_party/pyrit_adapted/**
 scripts/generate-pyrit-template-index.ts
+scripts/generate-a-corpus.ts
+scripts/verify-a-corpus.ts
 scripts/verify-a-pyrit-library.ts
 scripts/verify-pyrit-bridge-smoke.ts
 ```
@@ -84,6 +100,12 @@ RedTeamScenarioSet
 PolicyTemplate[]
 PyritAttackLibrary
 PyritJailbreakTemplateIndex
+ResourceSeed[]
+AttackSeed[]
+ToolResponseSeed[]
+MutationOperatorSpec[]
+CorpusManifest
+CorpusRunProfile[]
 ```
 
 可协作区域:

@@ -22,3 +22,5 @@ outputs/exports/**
 !outputs/traces/.gitkeep
 !outputs/reports/.gitkeep
 !outputs/exports/.gitkeep
+generated/a-line/tmp/
+generated/a-line/*.tmp.json

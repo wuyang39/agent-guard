@@ -111,6 +111,21 @@ pyrit mapped samples: 5
 pyrit jailbreak template refs: 165
 ```
 
+2026-06-18 首批 P3-A 实施已经把该基线推进为 generated corpus 生产链:
+
+```txt
+resource seeds: 159
+attack/user prompt seeds: 239 + 239
+tool response seeds: 213
+mutation operators: 52
+generated prompts: 1200
+generated test cases: 1200
+generated oracles: 1200
+run profiles: smoke / openclaw / regression / full-corpus
+```
+
+该实现仍遵守 P3 总口径: A 线产物是测试输入、来源索引和覆盖率材料，不是运行时风险结论；默认 demo 不自动运行 full corpus。
+
 P3-A 不能继续停留在“少量手工 case + 一些 converter”的状态。最后一轮应把 A 线升级为 PyRIT 驱动的攻击库生产系统:
 
 ```txt

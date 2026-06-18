@@ -1,0 +1,1878 @@
+{
+  "schemaVersion": "mvp-1",
+  "indexId": "aig_strategy_index.p3_a",
+  "generatedAt": "2026-06-18T15:23:42.328Z",
+  "sourceRoot": "../AIG",
+  "strategies": [
+    {
+      "sourceId": "aig_strategy.agent_scan_prompt_skills_authorization_bypass_detection_skill_md",
+      "name": "SKILL.md",
+      "sourcePath": "../AIG/agent-scan/prompt/skills/authorization-bypass-detection/SKILL.md",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt",
+        "auth"
+      ],
+      "sha256": "39195321250b34efaaf7da404ff695b8687ca44dc9ea1a006185fff7576ffabf",
+      "byteLength": 3065,
+      "metadata": {
+        "relativePath": "agent-scan/prompt/skills/authorization-bypass-detection/SKILL.md"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.agent_scan_prompt_skills_data_leakage_detection_skill_md",
+      "name": "SKILL.md",
+      "sourcePath": "../AIG/agent-scan/prompt/skills/data-leakage-detection/SKILL.md",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt",
+        "leak"
+      ],
+      "sha256": "eb8b3540f104773b70d1eeb36abb52f39a608b78b7603b4624d6209869d89f86",
+      "byteLength": 3838,
+      "metadata": {
+        "relativePath": "agent-scan/prompt/skills/data-leakage-detection/SKILL.md"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.agent_scan_prompt_skills_indirect_injection_detection_skill_md",
+      "name": "SKILL.md",
+      "sourcePath": "../AIG/agent-scan/prompt/skills/indirect-injection-detection/SKILL.md",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "2c6bd306084d2373e681e236b36ea00d6419c2fe2bfc1897c84a1c551dfb14cc",
+      "byteLength": 4478,
+      "metadata": {
+        "relativePath": "agent-scan/prompt/skills/indirect-injection-detection/SKILL.md"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.agent_scan_prompt_skills_owasp_asi_skill_md",
+      "name": "SKILL.md",
+      "sourcePath": "../AIG/agent-scan/prompt/skills/owasp-asi/SKILL.md",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "c182849b17b7f2feae3db5c05226c47b37aa84569e39c253b00225ebad304964",
+      "byteLength": 3220,
+      "metadata": {
+        "relativePath": "agent-scan/prompt/skills/owasp-asi/SKILL.md"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.agent_scan_prompt_skills_tool_abuse_detection_skill_md",
+      "name": "SKILL.md",
+      "sourcePath": "../AIG/agent-scan/prompt/skills/tool-abuse-detection/SKILL.md",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt",
+        "tool"
+      ],
+      "sha256": "260310d188fc0a9268a0dd53722b91cf2ef470470c88850f94aa4569be5388e0",
+      "byteLength": 6139,
+      "metadata": {
+        "relativePath": "agent-scan/prompt/skills/tool-abuse-detection/SKILL.md"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.mcp_scan_redteam_attacker_py",
+      "name": "attacker.py",
+      "sourcePath": "../AIG/mcp-scan/redteam/attacker.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "redteam"
+      ],
+      "sha256": "3d2516cf447785f8951697ba39d85063585b5d2f383f6607708ce2cd4e8a254e",
+      "byteLength": 4572,
+      "metadata": {
+        "relativePath": "mcp-scan/redteam/attacker.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.mcp_scan_redteam_evaluator_py",
+      "name": "evaluator.py",
+      "sourcePath": "../AIG/mcp-scan/redteam/evaluator.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "redteam"
+      ],
+      "sha256": "21f8e676c2842bfdff4304a7055855fce2da7a9efc28af790b0a8853d30a6814",
+      "byteLength": 4112,
+      "metadata": {
+        "relativePath": "mcp-scan/redteam/evaluator.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.mcp_scan_redteam_orchestrator_py",
+      "name": "orchestrator.py",
+      "sourcePath": "../AIG/mcp-scan/redteam/orchestrator.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "redteam"
+      ],
+      "sha256": "6c32638f5cc3b87eaeff2dcb211398e2ad50ae3a4d869d540cadbc60d481a881",
+      "byteLength": 11348,
+      "metadata": {
+        "relativePath": "mcp-scan/redteam/orchestrator.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.mcp_scan_redteam_readme_md",
+      "name": "README.md",
+      "sourcePath": "../AIG/mcp-scan/redteam/README.md",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "redteam"
+      ],
+      "sha256": "3453e70d23ec01e1d1f1b8ed18784419aeafcd22ee3375a97a1038943414304d",
+      "byteLength": 4993,
+      "metadata": {
+        "relativePath": "mcp-scan/redteam/README.md"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.mcp_scan_redteam_report_py",
+      "name": "report.py",
+      "sourcePath": "../AIG/mcp-scan/redteam/report.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "redteam"
+      ],
+      "sha256": "6c3bd966109de454a4fe551c21ff757f36b29a43648b6ef44b175f95a485b4a2",
+      "byteLength": 4487,
+      "metadata": {
+        "relativePath": "mcp-scan/redteam/report.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.mcp_scan_redteam_strategy_py",
+      "name": "strategy.py",
+      "sourcePath": "../AIG/mcp-scan/redteam/strategy.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "redteam"
+      ],
+      "sha256": "b2c0bb703d257ee4c5347816c71058077dd939438db60600a51a0dff269fb693",
+      "byteLength": 6236,
+      "metadata": {
+        "relativePath": "mcp-scan/redteam/strategy.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.mcp_scan_redteam_target_py",
+      "name": "target.py",
+      "sourcePath": "../AIG/mcp-scan/redteam/target.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "redteam"
+      ],
+      "sha256": "c1b59de091d14cc9d61b221b781dd3d73ae890320b53a0b07e451e4609c13289",
+      "byteLength": 5756,
+      "metadata": {
+        "relativePath": "mcp-scan/redteam/target.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.mcp_scan_redteam_init_py",
+      "name": "__init__.py",
+      "sourcePath": "../AIG/mcp-scan/redteam/__init__.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "redteam"
+      ],
+      "sha256": "4785aa3cc760912167bc793a7c370072839a67c391595920bb564b9cd9f66d9f",
+      "byteLength": 1376,
+      "metadata": {
+        "relativePath": "mcp-scan/redteam/__init__.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.mcp_scan_testcase_case1_main1_py",
+      "name": "main1.py",
+      "sourcePath": "../AIG/mcp-scan/testcase/case1/main1.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [],
+      "sha256": "1abebd7f741d3c51d7271038081da7238bbf6fa52acb8274dc10c2380b897bbc",
+      "byteLength": 7867,
+      "metadata": {
+        "relativePath": "mcp-scan/testcase/case1/main1.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_attacks_attack_simulator_attack_simulator_py",
+      "name": "attack_simulator.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/attacks/attack_simulator/attack_simulator.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "de5265f2f673ecab7a8a6c5162eb72da663cdcdd26208ca2d660e8c0a54017eb",
+      "byteLength": 31560,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/attacks/attack_simulator/attack_simulator.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_attacks_attack_simulator_schema_py",
+      "name": "schema.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/attacks/attack_simulator/schema.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "7cf30d6e102b5638d014c5056842b06f6f78d7f8b97fd2a969ca2a8006c5aa52",
+      "byteLength": 1003,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/attacks/attack_simulator/schema.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_attacks_attack_simulator_template_py",
+      "name": "template.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/attacks/attack_simulator/template.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "da78b6e41abf62dec2ef7608eb58baf601bc23f140f4a02e402609f8ac58e0d1",
+      "byteLength": 6272,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/attacks/attack_simulator/template.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_attacks_attack_simulator_utils_py",
+      "name": "utils.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/attacks/attack_simulator/utils.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "2e376549778ea140e301f2b39250a70bf41584c4baf224c680397bf305878994",
+      "byteLength": 3036,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/attacks/attack_simulator/utils.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_attacks_attack_simulator_init_py",
+      "name": "__init__.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/attacks/attack_simulator/__init__.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "339f6c2c5d809c0fffb4bd6c85ed4b0778678b61e53711933c4ade02a1801274",
+      "byteLength": 894,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/attacks/attack_simulator/__init__.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_attacks_base_attack_py",
+      "name": "base_attack.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/attacks/base_attack.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "5aad6d06df91b679ef6466c09ca5de5e9207035f4a50f6ad2e9c59bd256d3f24",
+      "byteLength": 1331,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/attacks/base_attack.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_attacks_multi_turn_types_py",
+      "name": "types.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/attacks/multi_turn/types.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "4e87590ea49441526d41eb2764bf3e2a0871a88505980cc07a85ef1a929196a0",
+      "byteLength": 896,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/attacks/multi_turn/types.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_attacks_multi_turn_init_py",
+      "name": "__init__.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/attacks/multi_turn/__init__.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "ce1401e767a41a1d287ac691d786aaef73598f36ab1f4907bd5a6f8b7e8a6b12",
+      "byteLength": 831,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/attacks/multi_turn/__init__.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_attacks_single_turn_encoding_a1z26_py",
+      "name": "a1z26.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/attacks/single_turn/encoding/a1z26.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "encoding",
+        "prompt"
+      ],
+      "sha256": "ba4c91489aa59db47f46fa18c475963ce398586f80be4eba89fab3398e6abdd4",
+      "byteLength": 1592,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/attacks/single_turn/encoding/a1z26.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_attacks_single_turn_encoding_affine_py",
+      "name": "affine.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/attacks/single_turn/encoding/affine.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "encoding",
+        "prompt"
+      ],
+      "sha256": "b023915621462aad12916110c10e3bff57b34cb32574ed6fae3dc57237451614",
+      "byteLength": 1663,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/attacks/single_turn/encoding/affine.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_attacks_single_turn_encoding_ascii_smuggling_py",
+      "name": "ascii_smuggling.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/attacks/single_turn/encoding/ascii_smuggling.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "encoding",
+        "prompt"
+      ],
+      "sha256": "99028ba83c8d590c8ec844defa2d46eb4d7b20f5f55e21719f710949deaebe0f",
+      "byteLength": 3594,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/attacks/single_turn/encoding/ascii_smuggling.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_attacks_single_turn_encoding_aurebesh_py",
+      "name": "aurebesh.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/attacks/single_turn/encoding/aurebesh.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "encoding",
+        "prompt"
+      ],
+      "sha256": "ae5f2b3b5e44fe96689c044ff6b8762981fe4c35b1538a2fc9137724f81e7017",
+      "byteLength": 2028,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/attacks/single_turn/encoding/aurebesh.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_attacks_single_turn_encoding_caesar_py",
+      "name": "caesar.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/attacks/single_turn/encoding/caesar.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "encoding",
+        "prompt"
+      ],
+      "sha256": "3afc042c98b72736de361d187b0f7e291c1cf6a1078f0f60e377872c919447d1",
+      "byteLength": 1638,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/attacks/single_turn/encoding/caesar.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_attacks_single_turn_encoding_leetspeak_py",
+      "name": "leetspeak.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/attacks/single_turn/encoding/leetspeak.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "encoding",
+        "prompt"
+      ],
+      "sha256": "dc0c40e5a933dace82d02533da510c5307477dabba75ffa02902fc82285fb612",
+      "byteLength": 1546,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/attacks/single_turn/encoding/leetspeak.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_attacks_single_turn_encoding_mirror_py",
+      "name": "mirror.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/attacks/single_turn/encoding/mirror.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "encoding",
+        "prompt"
+      ],
+      "sha256": "1fbd868e680386b1309dc7d92fea81742329032d7a2ec1f465062e40dea80d9b",
+      "byteLength": 1043,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/attacks/single_turn/encoding/mirror.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_attacks_single_turn_encoding_ogham_py",
+      "name": "ogham.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/attacks/single_turn/encoding/ogham.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "encoding",
+        "prompt"
+      ],
+      "sha256": "1c7a8b2fc1e04d68d2c3ecf3cbd828ba01e5b1d05ba73da76ed219a8f55e5319",
+      "byteLength": 1804,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/attacks/single_turn/encoding/ogham.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_attacks_single_turn_encoding_vaporwave_py",
+      "name": "vaporwave.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/attacks/single_turn/encoding/vaporwave.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "encoding",
+        "prompt"
+      ],
+      "sha256": "4daa94237450be3444c2b71f0694cfc39ed65b57563eb17a76167b51fa1bd56e",
+      "byteLength": 1046,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/attacks/single_turn/encoding/vaporwave.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_attacks_single_turn_encoding_zalgo_py",
+      "name": "zalgo.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/attacks/single_turn/encoding/zalgo.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "encoding",
+        "prompt"
+      ],
+      "sha256": "d89e10256ac4c643e789221a54a6ad3a5eaeb25945cf64dd7ed8195e7f044549",
+      "byteLength": 1218,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/attacks/single_turn/encoding/zalgo.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_attacks_single_turn_encoding_init_py",
+      "name": "__init__.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/attacks/single_turn/encoding/__init__.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "encoding",
+        "prompt"
+      ],
+      "sha256": "4d9cfc615db286edb704d7ce73b93d402c0482ac9d216211fc107efd3daa4654",
+      "byteLength": 1144,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/attacks/single_turn/encoding/__init__.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_attacks_single_turn_raw_raw_py",
+      "name": "raw.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/attacks/single_turn/raw/raw.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "55558cdce1bf2c49d15766d43b8bb82642f281313559de772c92dc72dcede30c",
+      "byteLength": 1137,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/attacks/single_turn/raw/raw.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_attacks_single_turn_raw_init_py",
+      "name": "__init__.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/attacks/single_turn/raw/__init__.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "3585b9b873d54060b4924d464e09c6b8f6428975064621be82f7b3968799f5f1",
+      "byteLength": 852,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/attacks/single_turn/raw/__init__.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_attacks_single_turn_stego_schema_py",
+      "name": "schema.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/attacks/single_turn/stego/schema.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "5b552450bf9131f709cd5e2ba333f1e93c83b0d84d978cc66288c413dc959346",
+      "byteLength": 924,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/attacks/single_turn/stego/schema.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_attacks_single_turn_stego_stego_py",
+      "name": "stego.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/attacks/single_turn/stego/stego.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "49128f10b1fa88e4b02fedf22432faad1d7fc910d8d2383a3f6f99f3e25bebb0",
+      "byteLength": 5703,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/attacks/single_turn/stego/stego.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_attacks_single_turn_stego_template_py",
+      "name": "template.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/attacks/single_turn/stego/template.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "71e3fd098f88c3347ea821c19df4091e86d5730e63854c6481823edb106952fe",
+      "byteLength": 7596,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/attacks/single_turn/stego/template.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_attacks_single_turn_stego_init_py",
+      "name": "__init__.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/attacks/single_turn/stego/__init__.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "b8f9ba3003ac6954ea335b9788712ad7b7440adae82c61eab590c7791d036570",
+      "byteLength": 855,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/attacks/single_turn/stego/__init__.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_attacks_single_turn_stratasword_acrostic_poem_py",
+      "name": "acrostic_poem.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/attacks/single_turn/stratasword/acrostic_poem.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "c81fc7f6b127c030c45af3d60b20ef4d7e1d739633a28d033ad2a25561845b14",
+      "byteLength": 1356,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/attacks/single_turn/stratasword/acrostic_poem.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_attacks_single_turn_stratasword_ascii_drawing_py",
+      "name": "ascii_drawing.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/attacks/single_turn/stratasword/ascii_drawing.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "eedb131b1f67f58c0b6cc5a80225cd2e426c5c9ec5a6bde3f189be8bed6a2c14",
+      "byteLength": 1461,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/attacks/single_turn/stratasword/ascii_drawing.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_attacks_single_turn_stratasword_chaizi_json",
+      "name": "chaizi.json",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/attacks/single_turn/stratasword/chaizi.json",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "05e6e12bccab8d3d40607dad1247b7009d2f3f5ed6937324d06eb0232f785934",
+      "byteLength": 2350124,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/attacks/single_turn/stratasword/chaizi.json"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_attacks_single_turn_stratasword_character_split_py",
+      "name": "character_split.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/attacks/single_turn/stratasword/character_split.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "8d147d8b352da9a6667418f9e258fab692706ea59190df58d2afd75441e32e04",
+      "byteLength": 1617,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/attacks/single_turn/stratasword/character_split.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_attacks_single_turn_stratasword_code_attack_py",
+      "name": "code_attack.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/attacks/single_turn/stratasword/code_attack.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "000ab344ef3678a37418df99a252686925b4f1f4d7d010beff4b82ec9bef7745",
+      "byteLength": 1256,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/attacks/single_turn/stratasword/code_attack.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_attacks_single_turn_stratasword_contradictory_py",
+      "name": "contradictory.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/attacks/single_turn/stratasword/contradictory.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "181312bdcc0ce2978021bfaf10aa4e6f4df617a3d078f042537ed82a917de3e2",
+      "byteLength": 1396,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/attacks/single_turn/stratasword/contradictory.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_attacks_single_turn_stratasword_drattack_py",
+      "name": "drattack.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/attacks/single_turn/stratasword/drattack.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "134eb8c0d66dc09a59eb5b74cafde335a43b63d15dbf43f46a99ca00fab9e440",
+      "byteLength": 1190,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/attacks/single_turn/stratasword/drattack.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_attacks_single_turn_stratasword_lantern_riddle_py",
+      "name": "lantern_riddle.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/attacks/single_turn/stratasword/lantern_riddle.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "2115be32320dca39e3e133ffaf84376a5efab4c4c654689c4f6f23173d38f09e",
+      "byteLength": 1201,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/attacks/single_turn/stratasword/lantern_riddle.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_attacks_single_turn_stratasword_long_text_py",
+      "name": "long_text.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/attacks/single_turn/stratasword/long_text.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "98718bb68a684150b87ed7339e7f929f23e0f8b9db1a00e54ef26f7919d6b0f6",
+      "byteLength": 1383,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/attacks/single_turn/stratasword/long_text.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_attacks_single_turn_stratasword_opposing_py",
+      "name": "opposing.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/attacks/single_turn/stratasword/opposing.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "13dcb3039999000837cb8c17b20dfcedc43f1e3e3ee7c150dd956cb38199996c",
+      "byteLength": 1799,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/attacks/single_turn/stratasword/opposing.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_attacks_single_turn_stratasword_script_template_py",
+      "name": "script_template.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/attacks/single_turn/stratasword/script_template.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "3d9cf3bafb852b3c736bea4bfd821592b090cd95dbc223b7bda98c9e164aabff",
+      "byteLength": 1467,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/attacks/single_turn/stratasword/script_template.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_attacks_single_turn_stratasword_shuffle_py",
+      "name": "shuffle.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/attacks/single_turn/stratasword/shuffle.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "554bf190d862b2bfd519baa4409571e4fbd86e4bdcce3b2e78bc4e99f3d264fa",
+      "byteLength": 1790,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/attacks/single_turn/stratasword/shuffle.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_attacks_single_turn_stratasword_strata_sword_py",
+      "name": "strata_sword.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/attacks/single_turn/stratasword/strata_sword.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "76df3eaf743eb921ccea6b2af65ba557c37b3cf1ccc79c2d8d69238a23e51bcc",
+      "byteLength": 6375,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/attacks/single_turn/stratasword/strata_sword.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_attacks_single_turn_stratasword_template_py",
+      "name": "template.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/attacks/single_turn/stratasword/template.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "a86bea26bb66907ec4aeb2205090f808bc06897788d5016faea664f9c84a00c0",
+      "byteLength": 69077,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/attacks/single_turn/stratasword/template.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_attacks_single_turn_stratasword_init_py",
+      "name": "__init__.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/attacks/single_turn/stratasword/__init__.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "b544b583dac23613ea73bdc7eb6e8a3c0e4308607d430364709c103d2fb06d0d",
+      "byteLength": 1240,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/attacks/single_turn/stratasword/__init__.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_attacks_single_turn_init_py",
+      "name": "__init__.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/attacks/single_turn/__init__.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "f83aa5f5025a113849507c85a78d6382dc9ec2ef2242407ed2828e0bb66af487",
+      "byteLength": 927,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/attacks/single_turn/__init__.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_attacks_init_py",
+      "name": "__init__.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/attacks/__init__.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "21dd88d23edbaf2b8b1f822b4c9850449a826513fb011eeeec16208352df6ce9",
+      "byteLength": 998,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/attacks/__init__.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_base_vulnerability_py",
+      "name": "base_vulnerability.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/base_vulnerability.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt",
+        "vulnerability"
+      ],
+      "sha256": "3e67e50c9918f8a3901f82c1c28dcc2ac71e13f49e91f86f14c7fc8a8d9ecdb1",
+      "byteLength": 1937,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/base_vulnerability.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_bias_bias_py",
+      "name": "bias.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/bias/bias.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "c836df10cd9d622caae51473439198f5a30727a68c7627b573aa3ad82db1f133",
+      "byteLength": 1522,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/bias/bias.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_bias_template_py",
+      "name": "template.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/bias/template.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "5d27df137783fb27d3bafc7d977819903e82dd3bf948daecb62cb48749a021f2",
+      "byteLength": 13280,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/bias/template.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_bias_types_py",
+      "name": "types.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/bias/types.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "4201682073ac287955cbe932298570a6a40e761900b086cfdc2b1e6b598fb95a",
+      "byteLength": 1131,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/bias/types.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_bias_init_py",
+      "name": "__init__.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/bias/__init__.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "43c215f7500d3c8a9e6ec1b7d9bd31cf48168f33834ea899338e2a111ab867ad",
+      "byteLength": 894,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/bias/__init__.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_competition_competition_py",
+      "name": "competition.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/competition/competition.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "8f7ee520f65c1f3c27ce235e162150d1bb103c0e75aecd07fb35f51b030d5961",
+      "byteLength": 1646,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/competition/competition.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_competition_template_py",
+      "name": "template.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/competition/template.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "5b48336b6caa6ef216f59ed5aab347def09cdedc76fc1a25b515f2ecf03dd172",
+      "byteLength": 14327,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/competition/template.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_competition_types_py",
+      "name": "types.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/competition/types.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "82b8b518a6c263d910d6cc074e13a62c69e5faf9a74e6b0b11b25976a8bd5f73",
+      "byteLength": 1317,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/competition/types.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_competition_init_py",
+      "name": "__init__.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/competition/__init__.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "0865419133ca5ed7b9864137e46a1f9f43da3f495f51ea411578e8be499cd0c5",
+      "byteLength": 908,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/competition/__init__.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_custom_custom_py",
+      "name": "custom.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/custom/custom.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "fc52b29780d4f9996dc17c02da9f0c76d574e6e0d4ed639f56b5363b794956d8",
+      "byteLength": 1909,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/custom/custom.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_custom_custom_types_py",
+      "name": "custom_types.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/custom/custom_types.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "07e8f0b6e4349874086b358dc58b207688bfd162b5cf126f53dad52c374ff33a",
+      "byteLength": 984,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/custom/custom_types.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_custom_template_py",
+      "name": "template.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/custom/template.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "78a72a6765e1443c1022bc24f216733a37254e2f93ee5a77cdd0cc6db8b452f5",
+      "byteLength": 4274,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/custom/template.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_custom_init_py",
+      "name": "__init__.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/custom/__init__.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "6c034001c50860e41a4ef19fa073580547654e2c09b2844a8003d8f254242c65",
+      "byteLength": 971,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/custom/__init__.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_custom_prompt_custom_prompt_py",
+      "name": "custom_prompt.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/custom_prompt/custom_prompt.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "ea66b616399e200a834d41f53b81391184c051ce1e67e03cbb73bd84e3d97aee",
+      "byteLength": 8063,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/custom_prompt/custom_prompt.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_custom_prompt_types_py",
+      "name": "types.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/custom_prompt/types.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "5552de89467df5075cd68150c54d6cea90135c761d7bbe1384b70f6ff4ea1733",
+      "byteLength": 963,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/custom_prompt/types.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_custom_prompt_init_py",
+      "name": "__init__.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/custom_prompt/__init__.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "02720514886d9777487ff3c39348443a2d48a1295dd3adbf336e331722b4c25d",
+      "byteLength": 867,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/custom_prompt/__init__.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_excessive_agency_excessive_agency_py",
+      "name": "excessive_agency.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/excessive_agency/excessive_agency.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "95357120a2ded4d2635d65fa9062fc8f54f0ea160b53a1e5af8c0817c094252d",
+      "byteLength": 1607,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/excessive_agency/excessive_agency.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_excessive_agency_template_py",
+      "name": "template.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/excessive_agency/template.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "ca3dcf5ceedba2c65d724f1dc37191148b1db4b8c8d86336c4a449bf5f2c07f8",
+      "byteLength": 5835,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/excessive_agency/template.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_excessive_agency_types_py",
+      "name": "types.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/excessive_agency/types.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "2422c46c11b485086b33359969eb1208a58942cdcfd21c801948c89f38d2109f",
+      "byteLength": 1173,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/excessive_agency/types.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_excessive_agency_init_py",
+      "name": "__init__.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/excessive_agency/__init__.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "9ded91f85ba50e8db6612ba495a5352bdf9fe0773171ccb79639846a623893cb",
+      "byteLength": 916,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/excessive_agency/__init__.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_graphic_content_graphic_content_py",
+      "name": "graphic_content.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/graphic_content/graphic_content.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "df1755159a6c1de1602afcf6d9e3883b8fc54f42eaf913257082153cb58a72ed",
+      "byteLength": 1621,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/graphic_content/graphic_content.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_graphic_content_template_py",
+      "name": "template.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/graphic_content/template.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "dccec6ca60e8791c57be92620e82406201d3aea9b99aa28954d1bff8126912de",
+      "byteLength": 10561,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/graphic_content/template.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_graphic_content_types_py",
+      "name": "types.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/graphic_content/types.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "7f532c796e91b3e6efae4e00ae587c1256b1ad7086d2dd816adc31897b00764c",
+      "byteLength": 1219,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/graphic_content/types.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_graphic_content_init_py",
+      "name": "__init__.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/graphic_content/__init__.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "1d4fb1925af7baf89b07049e11648d4433b3e661d4e5558166d7bdfe93720f1f",
+      "byteLength": 914,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/graphic_content/__init__.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_illegal_activity_illegal_activity_py",
+      "name": "illegal_activity.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/illegal_activity/illegal_activity.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "83d54ae2800a32f743d5ccd62efe13b0b39cf6c052edd532035bef6d4c8193cb",
+      "byteLength": 1711,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/illegal_activity/illegal_activity.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_illegal_activity_template_py",
+      "name": "template.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/illegal_activity/template.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "3b357e6d415262a5e87968db81f981234fe34d18b2d5890b4ac09362097b9829",
+      "byteLength": 22603,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/illegal_activity/template.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_illegal_activity_types_py",
+      "name": "types.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/illegal_activity/types.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "d31a337e25dbdb386f994a4f7bf524433c5c837ea3b062ae0455d169de166e5f",
+      "byteLength": 1509,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/illegal_activity/types.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_illegal_activity_init_py",
+      "name": "__init__.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/illegal_activity/__init__.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "732060450edf5acf3675834f63d4ec14a5f7f86cc73e08b673329521d2377243",
+      "byteLength": 916,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/illegal_activity/__init__.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_intellectual_property_intellectual_property_py",
+      "name": "intellectual_property.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/intellectual_property/intellectual_property.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "3d58b9451d6a5352b1f58f7d5d0724b2baff0474cc4888abb76de71e7e688ed9",
+      "byteLength": 1714,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/intellectual_property/intellectual_property.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_intellectual_property_template_py",
+      "name": "template.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/intellectual_property/template.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "d632e606c8c58f61751c231151957e01429530aece882b09bcdceaaa38f9c9a0",
+      "byteLength": 13142,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/intellectual_property/template.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_intellectual_property_types_py",
+      "name": "types.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/intellectual_property/types.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "2f628bb2466b5d252ed4b4abbc7b25bb06740ba43a5b4be8111fad31d8b385e0",
+      "byteLength": 1353,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/intellectual_property/types.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_intellectual_property_init_py",
+      "name": "__init__.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/intellectual_property/__init__.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "bbe329e7c90de64b7b1f030e94cd5887c9991481f548ef04b584fba0846640d7",
+      "byteLength": 926,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/intellectual_property/__init__.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_misinformation_misinformation_py",
+      "name": "misinformation.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/misinformation/misinformation.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "9134de4217e69558d8139270e37fdae4520225c11a724a58712e81bb819361d9",
+      "byteLength": 1630,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/misinformation/misinformation.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_misinformation_template_py",
+      "name": "template.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/misinformation/template.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "f179cb0732b8e90a8a3d72e931630e01f71527881093028e02f178a0e109bcdb",
+      "byteLength": 10973,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/misinformation/template.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_misinformation_types_py",
+      "name": "types.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/misinformation/types.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "c033628308479a9299072f1c174ae5d1d7a7e17748bb31791c7c62980b5f0879",
+      "byteLength": 1249,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/misinformation/types.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_misinformation_init_py",
+      "name": "__init__.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/misinformation/__init__.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "c6265724003345534e6caed4c5cccfc42bbe6b03d23ab5a074cd905f35dea849",
+      "byteLength": 914,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/misinformation/__init__.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_multi_dataset_multi_dataset_py",
+      "name": "multi_dataset.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/multi_dataset/multi_dataset.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "6e455754dc3e8e0d4a9f768c7a58f0e45764df82f10eb87bfff06ba077581999",
+      "byteLength": 17531,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/multi_dataset/multi_dataset.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_multi_dataset_types_py",
+      "name": "types.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/multi_dataset/types.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "3dfb18a769c175c5cb9b990a8752f22be8f4ff04bc891cf0e7c9ef65b86dacdf",
+      "byteLength": 1056,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/multi_dataset/types.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_multi_dataset_init_py",
+      "name": "__init__.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/multi_dataset/__init__.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "8df2bf19bb19891d446e688539ffe18842501f28729a3d47ddc6aec687928c2a",
+      "byteLength": 880,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/multi_dataset/__init__.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_personal_safety_personal_safety_py",
+      "name": "personal_safety.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/personal_safety/personal_safety.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "8ed23e482f98eff3835acfcc6f85bc33e617302c0bac081de06a6b8f32dd59e6",
+      "byteLength": 1658,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/personal_safety/personal_safety.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_personal_safety_template_py",
+      "name": "template.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/personal_safety/template.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "c067eba91b3f51bf6441a427f08c96d26889c7ee5d633701ade0da48a551351a",
+      "byteLength": 17100,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/personal_safety/template.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_personal_safety_types_py",
+      "name": "types.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/personal_safety/types.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "258ba4696a0ad53078aad2546236375228c9e2dad58fa55b05913953c0110258",
+      "byteLength": 1337,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/personal_safety/types.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_personal_safety_init_py",
+      "name": "__init__.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/personal_safety/__init__.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "04ffc606e450b4c51c9971b77ad889753f2af7a252ceadc2709085195f86c7b1",
+      "byteLength": 914,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/personal_safety/__init__.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_pii_leakage_pii_leakage_py",
+      "name": "pii_leakage.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/pii_leakage/pii_leakage.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt",
+        "leak"
+      ],
+      "sha256": "80ed55ca5d9a380c99ad6a9d32568148d03d3130be6ac0fb56ba6dcf452a0149",
+      "byteLength": 1628,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/pii_leakage/pii_leakage.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_pii_leakage_template_py",
+      "name": "template.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/pii_leakage/template.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt",
+        "leak"
+      ],
+      "sha256": "ca4da51ff45d19f4b6be7ad6ee5ca4e3a08b303be5b611d3880c51ce8d0c70c4",
+      "byteLength": 12651,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/pii_leakage/template.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_pii_leakage_types_py",
+      "name": "types.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/pii_leakage/types.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt",
+        "leak"
+      ],
+      "sha256": "c60976ac2a0d6f5ad7f373f5f3a2f791f6b681decf8a88d991ef6934f7e56869",
+      "byteLength": 1264,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/pii_leakage/types.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_pii_leakage_init_py",
+      "name": "__init__.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/pii_leakage/__init__.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt",
+        "leak"
+      ],
+      "sha256": "d2f4e1d731ccb676e20feaecb84fe210c909bdfc8e6dfe3142722dc6ab64b151",
+      "byteLength": 906,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/pii_leakage/__init__.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_prompt_leakage_prompt_leakage_py",
+      "name": "prompt_leakage.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/prompt_leakage/prompt_leakage.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt",
+        "leak"
+      ],
+      "sha256": "f230eca9f0b8ecd708af337903febd8118475e9675f7132f4c4d4e43140f56cb",
+      "byteLength": 1651,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/prompt_leakage/prompt_leakage.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_prompt_leakage_template_py",
+      "name": "template.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/prompt_leakage/template.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt",
+        "leak"
+      ],
+      "sha256": "230dfaf67814c9ddd91f1297cb2c776dfbb6151a14f5dccb3ed729b8e19a1819",
+      "byteLength": 12534,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/prompt_leakage/template.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_prompt_leakage_types_py",
+      "name": "types.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/prompt_leakage/types.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt",
+        "leak"
+      ],
+      "sha256": "2660e043e46c6444501bc6da71b99030ba774bd84dc8379034256644c3c72849",
+      "byteLength": 1317,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/prompt_leakage/types.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_prompt_leakage_init_py",
+      "name": "__init__.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/prompt_leakage/__init__.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt",
+        "leak"
+      ],
+      "sha256": "9fb6cd1cf8e3f7753e4c53632065d9333405fd70640b5c1bc675399ecf393ad5",
+      "byteLength": 912,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/prompt_leakage/__init__.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_robustness_robustness_py",
+      "name": "robustness.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/robustness/robustness.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "a151919abd030e096a2a0efed91492c518e28b37a06d5163ffaa72eb59bb219a",
+      "byteLength": 1555,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/robustness/robustness.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_robustness_template_py",
+      "name": "template.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/robustness/template.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "1e86c7aa242d20e94ce200d0cabbf4490d5a731b063468c42ae9b2bfe9e30409",
+      "byteLength": 6879,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/robustness/template.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_robustness_types_py",
+      "name": "types.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/robustness/types.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "2c0f99c89c981acd46334c1b8a4fa430e0af1487b503c5d2b57126f779ac11ef",
+      "byteLength": 1091,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/robustness/types.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_robustness_init_py",
+      "name": "__init__.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/robustness/__init__.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "59308938743b92a987882842f43698e035149883284caacbd8f52e8859717f83",
+      "byteLength": 906,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/robustness/__init__.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_toxicity_template_py",
+      "name": "template.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/toxicity/template.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "e3abd3dff35f16071829338f235bc02b5f9bf71112a76735776d8d0813cc3994",
+      "byteLength": 12250,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/toxicity/template.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_toxicity_toxicity_py",
+      "name": "toxicity.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/toxicity/toxicity.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "6ee4a20e3461f41c41175b6daf6bd2a3f0008f2566575224e7f04f425c69e10f",
+      "byteLength": 1550,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/toxicity/toxicity.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_toxicity_types_py",
+      "name": "types.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/toxicity/types.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "84d27b97fef377644227811dfbc9a9a518d7b2f35c6246b3361981b4b1118948",
+      "byteLength": 1167,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/toxicity/types.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_toxicity_init_py",
+      "name": "__init__.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/toxicity/__init__.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "f63e4498d2b44567a168318ea58ebc6b61e728bb53f737d673f7cfe2d9269c6d",
+      "byteLength": 902,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/toxicity/__init__.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_types_py",
+      "name": "types.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/types.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "81a06173575c85b44e060f09eafc6d5751d451d874328050dfc176f619696508",
+      "byteLength": 3958,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/types.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_unauthorized_access_template_py",
+      "name": "template.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/unauthorized_access/template.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt",
+        "auth"
+      ],
+      "sha256": "2b9736979a4859cc97729209d65a8d9018030fb07939c1b3bb538a1c2b828eaa",
+      "byteLength": 15887,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/unauthorized_access/template.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_unauthorized_access_types_py",
+      "name": "types.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/unauthorized_access/types.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt",
+        "auth"
+      ],
+      "sha256": "41f163d52e914884cd11bf227bf1f81fb55444a9a0b230dd339819fc75216c97",
+      "byteLength": 1440,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/unauthorized_access/types.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_unauthorized_access_unauthorized_access_py",
+      "name": "unauthorized_access.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/unauthorized_access/unauthorized_access.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt",
+        "auth"
+      ],
+      "sha256": "5f1615774827c5338a64c57af4be8010a77e0830115b2f5ababfdd9331ca6c60",
+      "byteLength": 1701,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/unauthorized_access/unauthorized_access.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_unauthorized_access_init_py",
+      "name": "__init__.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/unauthorized_access/__init__.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt",
+        "auth"
+      ],
+      "sha256": "fd7316648aad761887005fe9c9711f896769e9fb459359b0770fa8a081018e95",
+      "byteLength": 922,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/unauthorized_access/__init__.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_utils_py",
+      "name": "utils.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/utils.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "1208bfaa7126f7bc8b7bfd7d39237e3788325527625a09f190f76040b8b25b75",
+      "byteLength": 3081,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/utils.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_deepteam_vulnerabilities_init_py",
+      "name": "__init__.py",
+      "sourcePath": "../AIG/AIG-PromptSecurity/deepteam/vulnerabilities/__init__.py",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "d79632e6c3dfec7e5eb2a4fa7fd4ff3d9eab3c6534f2cbf6c0bdb403d78a0f9e",
+      "byteLength": 1771,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/deepteam/vulnerabilities/__init__.py"
+      }
+    },
+    {
+      "sourceId": "aig_strategy.aig_promptsecurity_utils_strategy_map_json",
+      "name": "strategy_map.json",
+      "sourcePath": "../AIG/AIG-PromptSecurity/utils/strategy_map.json",
+      "sourceType": "aig_strategy",
+      "origin": "aig",
+      "tags": [
+        "prompt"
+      ],
+      "sha256": "cdcb27cb6e1018067ebb13136271cd40245a0dad4b91b770c0d338539e1025f6",
+      "byteLength": 2346,
+      "metadata": {
+        "relativePath": "AIG-PromptSecurity/utils/strategy_map.json"
+      }
+    }
+  ]
+}

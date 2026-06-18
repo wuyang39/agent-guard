@@ -51,6 +51,13 @@ configs/red_team_scenarios.json
 configs/supervision_policy_templates.json
 configs/pyrit_attack_library.json
 configs/pyrit_jailbreak_template_index.json
+configs/resource_seeds.json
+configs/attack_seeds.json
+configs/user_prompt_seeds.json
+configs/tool_response_seeds.json
+configs/mutation_operators.json
+configs/corpus_run_profiles.json
+generated/a-line/**
 AgentUnderTest
 ```
 
@@ -62,6 +69,8 @@ RedTeamScenarioSet
 PolicyTemplate[]
 PyritAttackLibrary
 PyritJailbreakTemplateIndex
+CorpusManifest
+CorpusRunProfile[]
 ```
 
 输出给 C:
@@ -94,6 +103,10 @@ TestOracle
 `PyritAttackLibrary` 是 A 线 P2 新增的攻击库目录对象，用于描述 vendored PyRIT 来源、converter catalog、attack family 和 sample 到 case 的映射。它不是运行时风险结论，不能替代 `InteractionTrace` 或 C 线报告。
 
 `PyritJailbreakTemplateIndex` 是 A 线 P2 新增的 PyRIT jailbreak 模板元数据索引。它只保存路径、分组、参数、作者、哈希和大小，不保存模板全文；前端和报告只能把它作为来源说明或覆盖率统计。
+
+`CorpusManifest` 是 A 线 P3 generated corpus 的来源和覆盖率索引。B 线可按 `CorpusRunProfile` 显式选择 generated case；C 线可用 `CorpusManifest` 展示来源、覆盖率和样本分层。`CorpusManifest` 不包含风险结论，不能替代 `InteractionTrace`、`RiskReport` 或 `DefenseReport`。
+
+`generated/a-line/test_oracles.generated.json` 只用于离线验收和 corpus 质量检查，不进入运行时 `TestContext`，也不得作为 C 线风险判定证据。
 
 其中 `sandbox` 必须包含:
 

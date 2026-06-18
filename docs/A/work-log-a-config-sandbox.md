@@ -722,3 +722,90 @@ P3-A 规划方向:
 - A 线不直接生成 `AgentRiskProfile`、`SupervisionPolicyPack` 或 `DefenseReport`。
 - `TestOracle` 不进入运行时 `TestContext`。
 - OpenClaw 默认 demo 只运行稳定 profile，不默认跑 full corpus。
+
+## 15. 2026-06-18 P3-A 开发执行计划审阅稿
+
+分支: `a/p3-a-corpus-implementation-plan`
+
+本轮按用户要求切到新的 A 线开发规划分支，并基于最新 `main` 审阅总体文档、A 线历史文档、B/C/OpenClaw/前端接口文档、当前配置加载代码、PyRIT/AIG 本地参考目录和现有验证脚本。
+
+新增文档:
+
+```txt
+docs/A/p3-a-corpus-implementation-plan.md
+```
+
+审计要点:
+
+- 当前已提交配置仍是 P2 体量: 12 个 case、9 个 resource、10 个 prompt、9 个 tool response。
+- 本地 `configs/resources.json` 末尾存在用户补充的权限级别和 tool response 表格草稿，当前不是合法 JSON；后续必须先清洗为 seed 文件，不能直接进入运行配置。
+- `loadConfigRepository()` 默认读取 `configs/*.json` 并生成 `TestContext`，因此 P3-A 需要新增 seed/generated/profile 分层，不能默认把 full corpus 塞进运行时。
+- `generated/a-line/**` 和 `backend/src/modules/corpus/**` 当前尚不存在，是下一步实现的主要新增落点。
+- A 线继续只负责测试输入、sandbox、攻击库、oracle、manifest、coverage 和验证脚本，不直接生成风险画像、策略包或防御报告。
+
+计划中的下一步:
+
+- 恢复/重建合法 `configs/resources.json`，把用户补充表格导入 `resource_seeds`、`user_prompt_seeds`、`tool_response_seeds`。
+- 新增 corpus 类型、seed loader、PyRIT/AIG source index、mutation operators、corpus generator 和 manifest validator。
+- 生成 1000+ prompt/case/oracle，并通过 smoke/openclaw/regression/full-corpus profile 分层供 B/C 消费。
+- 新增 `verify:a-corpus`，检查 JSON、schema、引用、sourcePath、生成规模、来源占比、oracle 对齐和密钥脱敏。
+
+## 16. 2026-06-18 P3-A 首批语料工程实现
+
+分支: `a/p3-a-corpus-implementation-plan`
+
+本轮开始按 P3-A 执行计划实施 A 线重构和补充。核心变化是把 A 线从少量 demo fixture 扩展为 seed -> source index -> mutation operator -> generated corpus -> manifest -> profile -> verifier 的完整离线语料生产链。
+
+已完成:
+
+- 恢复 `configs/resources.json` 为合法 JSON，用户粘贴在末尾的 P0-P7 权限表格已转入 `user_supplied` seed 生成链路。
+- 新增 `packages/contracts/src/types/corpus.ts`，定义 `ResourceSeed`、`AttackSeed`、`ToolResponseSeed`、`MutationOperatorSpec`、`CorpusRunProfile`、PyRIT/AIG source index 和 `CorpusManifest`。
+- 新增 `backend/src/modules/corpus/**`，包含 seed factory、PyRIT/AIG source scanner、deterministic mutation operators、corpus generator、profile loader 和 validator。
+- 新增 `scripts/generate-a-corpus.ts`、`scripts/verify-a-corpus.ts`、`scripts/index-pyrit-seed-datasets.ts`、`scripts/index-aig-strategies.ts`。
+- 新增 `configs/resource_seeds.json`、`configs/attack_seeds.json`、`configs/user_prompt_seeds.json`、`configs/tool_response_seeds.json`、`configs/mutation_operators.json`、`configs/corpus_run_profiles.json`、`configs/*_index.json`。
+- 新增 `generated/a-line/**`，产出首批 generated corpus。
+
+当前规模:
+
+```txt
+resource seeds: 159
+attack seeds: 239
+user prompt seeds: 239
+tool response seeds: 213
+mutation operators: 52
+generated resources: 159
+generated prompts: 1200
+generated tool responses: 213
+generated test cases: 1200
+generated test oracles: 1200
+profile summary: smoke=30, openclaw=80, regression=400, full-corpus=1200
+```
+
+来源与迁移:
+
+- PyRIT 是主生成来源，占 generated manifest 大多数条目；使用了 seed dataset、executor、converter、jailbreak/scorer/evaluator 相关文件的 metadata index，并实现了 37 个 PyRIT 风格 deterministic operator。
+- AIG 是补充策略来源；索引 `agent-scan/prompt/skills`、`mcp-scan/redteam`、`mcp-scan/testcase`、`AIG-PromptSecurity/deepteam`，并实现 indirect document、RAG source confusion、tool rug pull、memory poison、debug override、ascii smuggling、zalgo、stratasword 等增强器。
+- 用户补充表格作为 `user_supplied` source，拆分为 permission prompt、resource seed 和 tool response seed。
+
+验证结果:
+
+```powershell
+npm run typecheck
+npm run verify:a-config-sandbox
+npm run verify:a-pyrit-library
+npm run verify:a-corpus
+```
+
+结果:
+
+- `typecheck` 通过。
+- `verify:a-config-sandbox` 通过，旧配置加载与 sandbox 未破坏。
+- `verify:a-pyrit-library` 通过，PyRIT adapted library 检查未破坏。
+- `verify:a-corpus` 通过，检查 seed 数量、generated 数量、case/oracle 对齐、引用完整性、PyRIT 来源比例、profile 覆盖和明显真实密钥形态。
+
+后续注意:
+
+- 默认 `loadConfigRepository()` 仍只加载稳定 `configs/*.json`；full corpus 必须显式通过 corpus profile 加载。
+- `generated/a-line/test_oracles.generated.json` 仍只用于离线验收和 corpus 质量检查，不得进入运行时 `TestContext`。
+- B 线可使用 `loadGeneratedCorpusProfile()` 按 `smoke/openclaw/regression/full-corpus` 选择 case；不需要理解 PyRIT/AIG 内部结构。
+- C 线只能把 `CorpusManifest` 用于来源、覆盖率和样本分层展示，不得把 oracle 或 generated corpus 当风险结论。

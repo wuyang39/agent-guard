@@ -1,0 +1,881 @@
+[
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "pyrit.converter.base64",
+    "name": "Base64 encoding",
+    "family": "encoding",
+    "executionMode": "native_ts_adapter",
+    "source": {
+      "origin": "pyrit",
+      "sourcePath": "third_party/pyrit_adapted"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "base64"
+    ],
+    "description": "Base64 encoding mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "pyrit.converter.rot13",
+    "name": "ROT13 encoding",
+    "family": "encoding",
+    "executionMode": "native_ts_adapter",
+    "source": {
+      "origin": "pyrit",
+      "sourcePath": "third_party/pyrit_adapted"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "rot13"
+    ],
+    "description": "ROT13 encoding mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "pyrit.converter.caesar_3",
+    "name": "Caesar shift 3",
+    "family": "encoding",
+    "executionMode": "native_ts_adapter",
+    "source": {
+      "origin": "pyrit",
+      "sourcePath": "third_party/pyrit_adapted"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "caesar"
+    ],
+    "description": "Caesar shift 3 mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "pyrit.converter.caesar_7",
+    "name": "Caesar shift 7",
+    "family": "encoding",
+    "executionMode": "native_ts_adapter",
+    "source": {
+      "origin": "pyrit",
+      "sourcePath": "third_party/pyrit_adapted"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "caesar"
+    ],
+    "description": "Caesar shift 7 mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "pyrit.converter.atbash",
+    "name": "Atbash substitution",
+    "family": "encoding",
+    "executionMode": "native_ts_adapter",
+    "source": {
+      "origin": "pyrit",
+      "sourcePath": "third_party/pyrit_adapted"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "atbash"
+    ],
+    "description": "Atbash substitution mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "pyrit.converter.binary_8",
+    "name": "Binary 8-bit encoding",
+    "family": "encoding",
+    "executionMode": "native_ts_adapter",
+    "source": {
+      "origin": "pyrit",
+      "sourcePath": "third_party/pyrit_adapted"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "binary"
+    ],
+    "description": "Binary 8-bit encoding mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "pyrit.converter.hex",
+    "name": "Hex encoding",
+    "family": "encoding",
+    "executionMode": "native_ts_adapter",
+    "source": {
+      "origin": "pyrit",
+      "sourcePath": "third_party/pyrit_adapted"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "hex"
+    ],
+    "description": "Hex encoding mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "pyrit.converter.url_encode",
+    "name": "URL encoding",
+    "family": "encoding",
+    "executionMode": "native_ts_adapter",
+    "source": {
+      "origin": "pyrit",
+      "sourcePath": "third_party/pyrit_adapted"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "url"
+    ],
+    "description": "URL encoding mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "pyrit.converter.morse",
+    "name": "Morse encoding",
+    "family": "encoding",
+    "executionMode": "native_ts_adapter",
+    "source": {
+      "origin": "pyrit",
+      "sourcePath": "third_party/pyrit_adapted"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "morse"
+    ],
+    "description": "Morse encoding mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "pyrit.converter.leetspeak",
+    "name": "Leetspeak substitution",
+    "family": "obfuscation",
+    "executionMode": "native_ts_adapter",
+    "source": {
+      "origin": "pyrit",
+      "sourcePath": "third_party/pyrit_adapted"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "leet"
+    ],
+    "description": "Leetspeak substitution mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "pyrit.converter.zero_width",
+    "name": "Zero width join",
+    "family": "unicode",
+    "executionMode": "native_ts_adapter",
+    "source": {
+      "origin": "pyrit",
+      "sourcePath": "third_party/pyrit_adapted"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "unicode"
+    ],
+    "description": "Zero width join mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "pyrit.converter.unicode_confusable",
+    "name": "Unicode confusable",
+    "family": "unicode",
+    "executionMode": "native_ts_adapter",
+    "source": {
+      "origin": "pyrit",
+      "sourcePath": "third_party/pyrit_adapted"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "unicode"
+    ],
+    "description": "Unicode confusable mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "pyrit.converter.character_space",
+    "name": "Character spacing",
+    "family": "obfuscation",
+    "executionMode": "native_ts_adapter",
+    "source": {
+      "origin": "pyrit",
+      "sourcePath": "third_party/pyrit_adapted"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "spacing"
+    ],
+    "description": "Character spacing mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "pyrit.converter.string_join_dash",
+    "name": "Dash string join",
+    "family": "obfuscation",
+    "executionMode": "native_ts_adapter",
+    "source": {
+      "origin": "pyrit",
+      "sourcePath": "third_party/pyrit_adapted"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "join"
+    ],
+    "description": "Dash string join mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "pyrit.converter.string_join_slash",
+    "name": "Slash string join",
+    "family": "obfuscation",
+    "executionMode": "native_ts_adapter",
+    "source": {
+      "origin": "pyrit",
+      "sourcePath": "third_party/pyrit_adapted"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "join"
+    ],
+    "description": "Slash string join mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "pyrit.converter.flip",
+    "name": "Reverse prompt",
+    "family": "obfuscation",
+    "executionMode": "native_ts_adapter",
+    "source": {
+      "origin": "pyrit",
+      "sourcePath": "third_party/pyrit_adapted"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "flip"
+    ],
+    "description": "Reverse prompt mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "pyrit.converter.random_capitals",
+    "name": "Deterministic random capitals",
+    "family": "obfuscation",
+    "executionMode": "native_ts_adapter",
+    "source": {
+      "origin": "pyrit",
+      "sourcePath": "third_party/pyrit_adapted"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "case"
+    ],
+    "description": "Deterministic random capitals mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "pyrit.converter.insert_punctuation",
+    "name": "Insert punctuation",
+    "family": "obfuscation",
+    "executionMode": "native_ts_adapter",
+    "source": {
+      "origin": "pyrit",
+      "sourcePath": "third_party/pyrit_adapted"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "punctuation"
+    ],
+    "description": "Insert punctuation mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "pyrit.converter.markdown_quote",
+    "name": "Markdown quote frame",
+    "family": "format",
+    "executionMode": "template_render",
+    "source": {
+      "origin": "pyrit",
+      "sourcePath": "third_party/pyrit_adapted"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "markdown"
+    ],
+    "description": "Markdown quote frame mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "pyrit.converter.html_comment",
+    "name": "HTML comment frame",
+    "family": "format",
+    "executionMode": "template_render",
+    "source": {
+      "origin": "pyrit",
+      "sourcePath": "third_party/pyrit_adapted"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "html"
+    ],
+    "description": "HTML comment frame mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "pyrit.converter.code_fence",
+    "name": "Code fence frame",
+    "family": "format",
+    "executionMode": "template_render",
+    "source": {
+      "origin": "pyrit",
+      "sourcePath": "third_party/pyrit_adapted"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "code"
+    ],
+    "description": "Code fence frame mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "pyrit.converter.json_string",
+    "name": "JSON string frame",
+    "family": "format",
+    "executionMode": "template_render",
+    "source": {
+      "origin": "pyrit",
+      "sourcePath": "third_party/pyrit_adapted"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "json"
+    ],
+    "description": "JSON string frame mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "pyrit.converter.yaml_block",
+    "name": "YAML block frame",
+    "family": "format",
+    "executionMode": "template_render",
+    "source": {
+      "origin": "pyrit",
+      "sourcePath": "third_party/pyrit_adapted"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "yaml"
+    ],
+    "description": "YAML block frame mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "pyrit.converter.sql_comment",
+    "name": "SQL comment smuggling",
+    "family": "format",
+    "executionMode": "template_render",
+    "source": {
+      "origin": "pyrit",
+      "sourcePath": "third_party/pyrit_adapted"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "sql"
+    ],
+    "description": "SQL comment smuggling mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "pyrit.converter.powershell_join",
+    "name": "PowerShell string join",
+    "family": "format",
+    "executionMode": "template_render",
+    "source": {
+      "origin": "pyrit",
+      "sourcePath": "third_party/pyrit_adapted"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "powershell"
+    ],
+    "description": "PowerShell string join mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "pyrit.converter.python_chr_join",
+    "name": "Python chr join",
+    "family": "format",
+    "executionMode": "template_render",
+    "source": {
+      "origin": "pyrit",
+      "sourcePath": "third_party/pyrit_adapted"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "python"
+    ],
+    "description": "Python chr join mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "pyrit.converter.ask_to_decode",
+    "name": "Ask target to decode",
+    "family": "roleplay",
+    "executionMode": "template_render",
+    "source": {
+      "origin": "pyrit",
+      "sourcePath": "third_party/pyrit_adapted"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "decode"
+    ],
+    "description": "Ask target to decode mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "pyrit.executor.context_compliance",
+    "name": "Context compliance frame",
+    "family": "roleplay",
+    "executionMode": "template_render",
+    "source": {
+      "origin": "pyrit",
+      "sourcePath": "third_party/pyrit_adapted"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "context_compliance"
+    ],
+    "description": "Context compliance frame mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "pyrit.executor.role_play",
+    "name": "Role play frame",
+    "family": "roleplay",
+    "executionMode": "template_render",
+    "source": {
+      "origin": "pyrit",
+      "sourcePath": "third_party/pyrit_adapted"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "role_play"
+    ],
+    "description": "Role play frame mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "pyrit.executor.skeleton_key",
+    "name": "Skeleton key frame",
+    "family": "roleplay",
+    "executionMode": "template_render",
+    "source": {
+      "origin": "pyrit",
+      "sourcePath": "third_party/pyrit_adapted"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "skeleton_key"
+    ],
+    "description": "Skeleton key frame mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "pyrit.executor.crescendo_probe",
+    "name": "Crescendo probe step",
+    "family": "multi_turn",
+    "executionMode": "template_render",
+    "source": {
+      "origin": "pyrit",
+      "sourcePath": "third_party/pyrit_adapted"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "crescendo"
+    ],
+    "description": "Crescendo probe step mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "pyrit.executor.crescendo_escalate",
+    "name": "Crescendo escalation step",
+    "family": "multi_turn",
+    "executionMode": "template_render",
+    "source": {
+      "origin": "pyrit",
+      "sourcePath": "third_party/pyrit_adapted"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "crescendo"
+    ],
+    "description": "Crescendo escalation step mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "pyrit.executor.crescendo_exfiltrate",
+    "name": "Crescendo exfiltration step",
+    "family": "multi_turn",
+    "executionMode": "template_render",
+    "source": {
+      "origin": "pyrit",
+      "sourcePath": "third_party/pyrit_adapted"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "crescendo"
+    ],
+    "description": "Crescendo exfiltration step mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "pyrit.executor.tap_variant",
+    "name": "Tree of attacks branch",
+    "family": "multi_turn",
+    "executionMode": "template_render",
+    "source": {
+      "origin": "pyrit",
+      "sourcePath": "third_party/pyrit_adapted"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "tap"
+    ],
+    "description": "Tree of attacks branch mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "pyrit.executor.many_shot_template",
+    "name": "Many-shot jailbreak frame",
+    "family": "multi_turn",
+    "executionMode": "template_render",
+    "source": {
+      "origin": "pyrit",
+      "sourcePath": "third_party/pyrit_adapted"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "many_shot"
+    ],
+    "description": "Many-shot jailbreak frame mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "pyrit.executor.renellm_rewrite",
+    "name": "ReneLLM rewrite metadata frame",
+    "family": "language",
+    "executionMode": "metadata_only",
+    "source": {
+      "origin": "pyrit",
+      "sourcePath": "third_party/pyrit_adapted"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "renellm"
+    ],
+    "description": "ReneLLM rewrite metadata frame mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "pyrit.executor.flip_attack_goal",
+    "name": "Flip attack goal frame",
+    "family": "roleplay",
+    "executionMode": "template_render",
+    "source": {
+      "origin": "pyrit",
+      "sourcePath": "third_party/pyrit_adapted"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "flip_attack"
+    ],
+    "description": "Flip attack goal frame mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "aig.encoding.ascii_smuggling",
+    "name": "AIG ASCII smuggling tags",
+    "family": "unicode",
+    "executionMode": "native_ts_adapter",
+    "source": {
+      "origin": "aig",
+      "sourcePath": "../AIG"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "ascii_smuggling"
+    ],
+    "description": "AIG ASCII smuggling tags mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "aig.encoding.zalgo_light",
+    "name": "AIG light zalgo",
+    "family": "unicode",
+    "executionMode": "native_ts_adapter",
+    "source": {
+      "origin": "aig",
+      "sourcePath": "../AIG"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "zalgo"
+    ],
+    "description": "AIG light zalgo mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "aig.stratasword.character_split",
+    "name": "AIG character split",
+    "family": "instruction_split",
+    "executionMode": "template_render",
+    "source": {
+      "origin": "aig",
+      "sourcePath": "../AIG"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "stratasword"
+    ],
+    "description": "AIG character split mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "aig.stratasword.code_attack",
+    "name": "AIG code attack frame",
+    "family": "format",
+    "executionMode": "template_render",
+    "source": {
+      "origin": "aig",
+      "sourcePath": "../AIG"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "stratasword"
+    ],
+    "description": "AIG code attack frame mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "aig.stratasword.acrostic",
+    "name": "AIG acrostic frame",
+    "family": "instruction_split",
+    "executionMode": "template_render",
+    "source": {
+      "origin": "aig",
+      "sourcePath": "../AIG"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "stratasword"
+    ],
+    "description": "AIG acrostic frame mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "aig.strategy.indirect_doc",
+    "name": "AIG indirect document instruction",
+    "family": "context_poison",
+    "executionMode": "template_render",
+    "source": {
+      "origin": "aig",
+      "sourcePath": "../AIG"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "indirect"
+    ],
+    "description": "AIG indirect document instruction mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "aig.strategy.rag_source_confusion",
+    "name": "AIG RAG source confusion",
+    "family": "context_poison",
+    "executionMode": "template_render",
+    "source": {
+      "origin": "aig",
+      "sourcePath": "../AIG"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "rag"
+    ],
+    "description": "AIG RAG source confusion mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "aig.strategy.tool_response_rug_pull",
+    "name": "AIG tool response rug pull",
+    "family": "tool_response",
+    "executionMode": "template_render",
+    "source": {
+      "origin": "aig",
+      "sourcePath": "../AIG"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "rug_pull"
+    ],
+    "description": "AIG tool response rug pull mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "aig.strategy.memory_poison",
+    "name": "AIG memory poisoning note",
+    "family": "context_poison",
+    "executionMode": "template_render",
+    "source": {
+      "origin": "aig",
+      "sourcePath": "../AIG"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "memory"
+    ],
+    "description": "AIG memory poisoning note mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "aig.strategy.debug_override",
+    "name": "AIG debug override",
+    "family": "roleplay",
+    "executionMode": "template_render",
+    "source": {
+      "origin": "aig",
+      "sourcePath": "../AIG"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "debug"
+    ],
+    "description": "AIG debug override mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "manual.frame.incident_response",
+    "name": "Incident response frame",
+    "family": "roleplay",
+    "executionMode": "template_render",
+    "source": {
+      "origin": "manual"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "manual"
+    ],
+    "description": "Incident response frame mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "manual.frame.compliance_exception",
+    "name": "Compliance exception frame",
+    "family": "roleplay",
+    "executionMode": "template_render",
+    "source": {
+      "origin": "manual"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "manual"
+    ],
+    "description": "Compliance exception frame mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "manual.frame.safe_fixture",
+    "name": "Safe fixture marker frame",
+    "family": "format",
+    "executionMode": "template_render",
+    "source": {
+      "origin": "manual"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "manual"
+    ],
+    "description": "Safe fixture marker frame mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "user_supplied.permission_prompt",
+    "name": "User permission draft frame",
+    "family": "format",
+    "executionMode": "template_render",
+    "source": {
+      "origin": "user_supplied"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "permission"
+    ],
+    "description": "User permission draft frame mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "operatorId": "user_supplied.tool_result_echo",
+    "name": "User tool result echo frame",
+    "family": "tool_response",
+    "executionMode": "template_render",
+    "source": {
+      "origin": "user_supplied"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "permission"
+    ],
+    "description": "User tool result echo frame mutation operator for Agent Guard P3-A corpus."
+  }
+]

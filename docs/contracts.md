@@ -932,6 +932,36 @@ P2 新增的 `configs/pyrit_attack_library.json` 用于维护迁入 PyRIT 攻击
 
 P2 新增的 `configs/pyrit_jailbreak_template_index.json` 用于维护迁入 PyRIT jailbreak YAML 模板的元数据索引。它不得包含模板全文或 `value` 字段，只能包含路径、分组、参数、作者、哈希、大小和安全说明。
 
+P3-A 新增配置与生成物:
+
+```txt
+configs/resource_seeds.json
+configs/attack_seeds.json
+configs/user_prompt_seeds.json
+configs/tool_response_seeds.json
+configs/mutation_operators.json
+configs/attack_generation_profiles.json
+configs/corpus_run_profiles.json
+configs/pyrit_seed_dataset_index.json
+configs/pyrit_executor_template_index.json
+configs/pyrit_scorer_template_index.json
+configs/aig_strategy_index.json
+generated/a-line/resources.generated.json
+generated/a-line/prompts.generated.json
+generated/a-line/tool_responses.generated.json
+generated/a-line/test_cases.generated.json
+generated/a-line/test_oracles.generated.json
+generated/a-line/red_team_scenarios.generated.json
+generated/a-line/corpus_manifest.json
+generated/a-line/corpus_stats.json
+```
+
+P3-A seed 文件是生成输入，不直接进入默认 `TestContext`。`generated/a-line/**` 是可复现的测试输入和覆盖率材料，只能通过显式 run profile 被 B 线加载。默认 `loadConfigRepository()` 继续读取稳定 `configs/*.json`，不得默认加载 full corpus。
+
+`CorpusManifest` 是 P3-A generated corpus 的来源索引和覆盖率对象，记录 PyRIT/AIG/manual/user_supplied/synthetic 来源、seed、operator、profile、case/prompt/oracle 映射和 coverage。它不是风险判定结果，不能替代 `InteractionTrace`、`RiskReport`、`RuntimeSupervisionRecord[]` 或 `DefenseReport`。
+
+`configs/test_oracles.json` 和 `generated/a-line/test_oracles.generated.json` 都只用于验收测试、回归测试、corpus 质量检查和覆盖率统计，不得进入运行时 `TestContext`，也不得作为 C 线风险判定或防御效果证据。
+
 P1 配置对象:
 
 ```ts

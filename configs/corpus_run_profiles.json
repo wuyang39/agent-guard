@@ -1,0 +1,146 @@
+[
+  {
+    "schemaVersion": "mvp-1",
+    "profileId": "smoke",
+    "name": "Smoke corpus",
+    "description": "Small stable corpus for fast local checks and demo fallback.",
+    "maxCases": 30,
+    "includeSources": [
+      "pyrit",
+      "aig",
+      "manual",
+      "user_supplied"
+    ],
+    "includeOperatorFamilies": [
+      "encoding",
+      "obfuscation",
+      "roleplay",
+      "tool_response"
+    ],
+    "includeScenarioIds": [
+      "scenario.indirect_prompt_injection",
+      "scenario.data_exfiltration",
+      "scenario.tool_abuse",
+      "scenario.authorization_bypass",
+      "scenario.tool_poisoning_rug_pull",
+      "scenario.prompt_extraction"
+    ],
+    "allowPythonBridge": false,
+    "stableForDemo": true
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "profileId": "openclaw",
+    "name": "OpenClaw candidate corpus",
+    "description": "Stable deterministic cases suitable for OpenClaw CLI/realtime MCP candidate testing.",
+    "maxCases": 80,
+    "includeSources": [
+      "pyrit",
+      "aig",
+      "manual",
+      "user_supplied"
+    ],
+    "includeOperatorFamilies": [
+      "encoding",
+      "unicode",
+      "obfuscation",
+      "roleplay",
+      "context_poison",
+      "tool_response"
+    ],
+    "includeScenarioIds": [
+      "scenario.indirect_prompt_injection",
+      "scenario.data_exfiltration",
+      "scenario.tool_abuse",
+      "scenario.authorization_bypass",
+      "scenario.tool_poisoning_rug_pull",
+      "scenario.prompt_extraction",
+      "scenario.encoding_evasion",
+      "scenario.debug_access_leakage",
+      "scenario.memory_context_poisoning",
+      "scenario.supply_chain_tool_shadowing"
+    ],
+    "allowPythonBridge": false,
+    "stableForDemo": true
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "profileId": "regression",
+    "name": "Regression corpus",
+    "description": "Medium deterministic corpus for local regression and coverage checks.",
+    "maxCases": 400,
+    "includeSources": [
+      "pyrit",
+      "aig",
+      "manual",
+      "user_supplied",
+      "synthetic"
+    ],
+    "includeOperatorFamilies": [
+      "encoding",
+      "obfuscation",
+      "unicode",
+      "format",
+      "roleplay",
+      "multi_turn",
+      "language",
+      "instruction_split",
+      "context_poison",
+      "tool_response"
+    ],
+    "includeScenarioIds": [
+      "scenario.indirect_prompt_injection",
+      "scenario.data_exfiltration",
+      "scenario.tool_abuse",
+      "scenario.authorization_bypass",
+      "scenario.tool_poisoning_rug_pull",
+      "scenario.prompt_extraction",
+      "scenario.encoding_evasion",
+      "scenario.debug_access_leakage",
+      "scenario.memory_context_poisoning",
+      "scenario.supply_chain_tool_shadowing"
+    ],
+    "allowPythonBridge": false,
+    "stableForDemo": false
+  },
+  {
+    "schemaVersion": "mvp-1",
+    "profileId": "full-corpus",
+    "name": "Full generated corpus",
+    "description": "Large generated corpus for final coverage and contest evidence.",
+    "maxCases": 1600,
+    "includeSources": [
+      "pyrit",
+      "aig",
+      "manual",
+      "user_supplied",
+      "synthetic"
+    ],
+    "includeOperatorFamilies": [
+      "encoding",
+      "obfuscation",
+      "unicode",
+      "format",
+      "roleplay",
+      "multi_turn",
+      "language",
+      "instruction_split",
+      "context_poison",
+      "tool_response"
+    ],
+    "includeScenarioIds": [
+      "scenario.indirect_prompt_injection",
+      "scenario.data_exfiltration",
+      "scenario.tool_abuse",
+      "scenario.authorization_bypass",
+      "scenario.tool_poisoning_rug_pull",
+      "scenario.prompt_extraction",
+      "scenario.encoding_evasion",
+      "scenario.debug_access_leakage",
+      "scenario.memory_context_poisoning",
+      "scenario.supply_chain_tool_shadowing"
+    ],
+    "allowPythonBridge": false,
+    "stableForDemo": false
+  }
+]

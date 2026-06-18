@@ -27,6 +27,7 @@
 - `A/p2-built-in-test-data-guide.md`: A 线 P2 内置 case、OpenClaw/fallback 分层、AIG/PyRIT 来源和答辩说明。
 - `A/p2-pyrit-python-bridge-contract.md`: 可选 PyRIT Python bridge 的输入输出、边界、烟测和后续接入约束。
 - `A/p2-openclaw-project-runtime-test.md`: 项目隔离 OpenClaw runtime 的本机部署、DeepSeek 模型映射和 required 验证结果。
+- `A/p3-a-corpus-implementation-plan.md`: A 线 P3 攻击库、资源种子、PyRIT/AIG 迁移、千级 generated corpus、run profile 和验证脚本的实现前执行计划。
 - `B/p1-b-runtime-supervision-work-plan.md`: B 线 P1 运行时监督实现计划。
 - `B/superpowers/**`: B 线历史设计规格和实现计划。
 - `p1-supervision-defense-plan.md`: P1 检测画像驱动的 Agent 运行时监督、策略包生成和防御报告规划。

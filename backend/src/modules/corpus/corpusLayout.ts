@@ -3,7 +3,6 @@ import { join } from "node:path";
 export const corpusSeedFiles = {
   resources: "resource_seeds.json",
   attacks: "attack_seeds.json",
-  userPrompts: "user_prompt_seeds.json",
   toolResponses: "tool_response_seeds.json",
 } as const;
 

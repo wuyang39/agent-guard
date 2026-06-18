@@ -28,7 +28,7 @@
       "scenario.debug_access_leakage"
     ],
     "allowPythonBridge": false,
-    "stableForDemo": true
+    "stableForAutomation": true
   },
   {
     "schemaVersion": "mvp-1",
@@ -78,7 +78,7 @@
       "scenario.safe_control_regression"
     ],
     "allowPythonBridge": false,
-    "stableForDemo": true
+    "stableForAutomation": true
   },
   {
     "schemaVersion": "mvp-1",
@@ -133,7 +133,7 @@
       "scenario.safe_control_regression"
     ],
     "allowPythonBridge": false,
-    "stableForDemo": false
+    "stableForAutomation": true
   },
   {
     "schemaVersion": "mvp-1",
@@ -188,6 +188,6 @@
       "scenario.safe_control_regression"
     ],
     "allowPythonBridge": false,
-    "stableForDemo": false
+    "stableForAutomation": false
   }
 ]

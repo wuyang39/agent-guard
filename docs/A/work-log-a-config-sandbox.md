@@ -703,7 +703,7 @@ docs/P3plan.md
 
 审计结论:
 
-- 当前 A 线结构已经打通，但仍是 MVP 体量: 12 个 case、9 个 resource、10 个 prompt、9 个 tool response。
+- 当时 A 线结构已经打通，但仍停留在早期小体量基线: 12 个 case、9 个 resource、10 个 prompt、9 个 tool response。
 - PyRIT 已迁入并索引 165 个 jailbreak template，但尚未展开为大规模 runnable corpus。
 - AIG 的 `agent-scan/prompt/skills`、`mcp-scan/redteam` 和 `AIG-PromptSecurity/deepteam` 仍有大量可迁移策略、模板和 enhancer。
 - 用户补充的权限级别、示例 prompt 和 tool response 表格应作为 seed 草案清洗整理；不要直接追加在 `configs/resources.json` 末尾，否则会破坏配置加载。
@@ -721,7 +721,7 @@ P3-A 规划方向:
 
 - A 线不直接生成 `AgentRiskProfile`、`SupervisionPolicyPack` 或 `DefenseReport`。
 - `TestOracle` 不进入运行时 `TestContext`。
-- OpenClaw 默认 demo 只运行稳定 profile，不默认跑 full corpus。
+- generated corpus 后续必须通过显式 profile 加载，避免把 full corpus 误接到默认运行链路。
 
 ## 15. 2026-06-18 P3-A 开发执行计划审阅稿
 
@@ -745,7 +745,7 @@ docs/A/p3-a-corpus-implementation-plan.md
 
 计划中的下一步:
 
-- 恢复/重建合法 `configs/resources.json`，把用户补充表格导入 `resource_seeds`、`user_prompt_seeds`、`tool_response_seeds`。
+- 恢复/重建合法 `configs/resources.json`，把用户补充表格导入 resource、attack 和 tool response seed。
 - 新增 corpus 类型、seed loader、PyRIT/AIG source index、mutation operators、corpus generator 和 manifest validator。
 - 生成 1000+ prompt/case/oracle，并通过 smoke/openclaw/regression/full-corpus profile 分层供 B/C 消费。
 - 新增 `verify:a-corpus`，检查 JSON、schema、引用、sourcePath、生成规模、来源占比、oracle 对齐和密钥脱敏。
@@ -764,7 +764,7 @@ docs/A/p3-a-corpus-implementation-plan.md
 - 新增 `packages/contracts/src/types/corpus.ts`，定义 `ResourceSeed`、`AttackSeed`、`ToolResponseSeed`、`MutationOperatorSpec`、`CorpusRunProfile`、PyRIT/AIG source index 和 `CorpusManifest`。
 - 新增 `backend/src/modules/corpus/**`，包含 seed factory、PyRIT/AIG source scanner、deterministic mutation operators、corpus generator、profile loader 和 validator。
 - 新增 `scripts/generate-a-corpus.ts`、`scripts/verify-a-corpus.ts`、`scripts/index-pyrit-seed-datasets.ts`、`scripts/index-aig-strategies.ts`。
-- 新增 `configs/a-line/corpus/seeds/resource_seeds.json`、`configs/a-line/corpus/seeds/attack_seeds.json`、`configs/a-line/corpus/seeds/user_prompt_seeds.json`、`configs/a-line/corpus/seeds/tool_response_seeds.json`、`configs/a-line/corpus/operators/mutation_operators.json`、`configs/a-line/corpus/profiles/corpus_run_profiles.json`、`configs/a-line/sources/*_index.json`。
+- 新增 `configs/a-line/corpus/seeds/resource_seeds.json`、`configs/a-line/corpus/seeds/attack_seeds.json`、`configs/a-line/corpus/seeds/tool_response_seeds.json`、`configs/a-line/corpus/operators/mutation_operators.json`、`configs/a-line/corpus/profiles/corpus_run_profiles.json`、`configs/a-line/sources/*_index.json`。
 - 新增 `generated/a-line/**`，产出首批 generated corpus。
 
 当前规模:
@@ -772,7 +772,7 @@ docs/A/p3-a-corpus-implementation-plan.md
 ```txt
 resource seeds: 159
 attack seeds: 239
-user prompt seeds: 239
+canonical user prompts: 239 (embedded in attack seeds)
 tool response seeds: 213
 mutation operators: 52
 generated resources: 159
@@ -878,8 +878,7 @@ PyRIT 仍是主来源和主生成底座；AIG 只作为 Agent/MCP 策略、OWASP
 
 ```txt
 resource seeds: 687
-attack seeds: 839
-user prompt seeds: 839
+attack seeds with canonical userPrompt: 839
 tool response seeds: 309
 mutation operators: 76
 generated resources: 687
@@ -949,4 +948,56 @@ $env:OPENCLAW_CLI=(Resolve-Path '..\openclaw-runtime\openclaw-local.cmd').Path; 
 
 - 当前 A 线 P3 语料工厂重构没有破坏 P2 API demo 基线。
 - 本机 OpenClaw runtime 可用，但普通命令默认不会自动设置 `OPENCLAW_CLI`、`OPENCLAW_HOME`、`OPENCLAW_WORKSPACE`。后续 demo 启动仍建议使用 `scripts/start-agent-guard-openclaw.ps1` 或显式设置这三个变量。
-- A 线后续不应为了默认 demo 简化 full corpus；demo 应继续选择 `smoke/openclaw` profile 或稳定 P2 case。
+- A 线后续不应为了单机展示或快速回归简化 full corpus；运行链路必须显式选择 `smoke/openclaw/regression/full-corpus` profile。
+
+## 19. 2026-06-19 P3-A 去 MVP 化与 seed 入口收口
+
+分支: `a/p3-a-corpus-implementation-plan`
+
+本轮按用户要求重新审阅 A 线项目、框架和文档，把仍带有 demo/MVP 妥协口径或重复入口的部分继续收口。核心调整:
+
+- 删除独立 prompt seed 文件。该文件只是 `attack_seeds.json` 的重复投影，会导致攻击目标和用户 prompt 在两套 seed 中漂移。
+- `AttackSeed.userPrompt` 现在是 canonical prompt seed。A 线 seed 入口统一为 `resource_seeds.json`、`attack_seeds.json`、`tool_response_seeds.json`、`mutation_operators.json` 和 run profiles。
+- 契约字段从展示稳定标记改为 `stableForAutomation`。`smoke/openclaw/regression` 是自动化稳定档位，`full-corpus` 是完整覆盖档位；profile 是工程运行控制，不是 demo 分层。
+- `verify:a-corpus` 改为直接要求 `attackSeeds >= 800`，不再把 attack seed 与独立 prompt seed 相加凑数。
+- `README.md`、`configs/a-line/README.md`、`docs/P3plan.md`、`docs/A/p3-a-corpus-implementation-plan.md`、`docs/architecture.md`、`docs/contracts.md`、`docs/interfaces.md` 和 `docs/ownership.md` 已同步当前结构。
+
+当前有效 A 线结构:
+
+```txt
+configs/a-line/
+  sources/
+    pyrit_attack_library.json
+    pyrit_jailbreak_template_index.json
+    pyrit_seed_dataset_index.json
+    pyrit_executor_template_index.json
+    pyrit_scorer_template_index.json
+    aig_strategy_index.json
+  corpus/
+    seeds/
+      resource_seeds.json
+      attack_seeds.json
+      tool_response_seeds.json
+    operators/
+      mutation_operators.json
+    profiles/
+      attack_generation_profiles.json
+      corpus_run_profiles.json
+
+generated/a-line/
+  resources.generated.json
+  prompts.generated.json
+  tool_responses.generated.json
+  test_cases.generated.json
+  test_oracles.generated.json
+  red_team_scenarios.generated.json
+  corpus_manifest.json
+  corpus_stats.json
+```
+
+后续维护要求:
+
+- 新增 user prompt 不再新建文件，必须作为 `AttackSeed.userPrompt` 写入攻击 seed。
+- 新增资源/攻击/响应/operator 后先运行 `npm run a:generate-corpus`，再运行 `npm run verify:a-corpus`。
+- 涉及 B/C 交接或共享契约时，同步 `docs/contracts.md`、`docs/interfaces.md`、`docs/ownership.md` 和本工作日志。
+- 不因为 demo/OpenClaw 单机联调状态回退 A 线 full corpus 规模或目录结构。

@@ -2,13 +2,13 @@
 
 文档版本: p3-a-implementation-1  
 生成日期: 2026-06-18  
-状态: P3-A 语料工厂重构已完成首轮实现
+状态: P3-A 语料工厂重构已完成首轮实现，当前进入最终工程口径收口
 分支: `a/p3-a-corpus-implementation-plan`  
 适用范围: A 线 P3 攻击库、资源种子、PyRIT/AIG 迁移、生成语料、sandbox/profile 接入和验证脚本
 
 ## 1. 本轮目标
 
-本轮不是继续补几个 demo case，而是把 A 线从“少量内置夹具”升级为“可生成、可追溯、可分层运行的 Agent-MCP 攻击语料生产系统”。
+本轮不是继续补几个展示 case，而是把 A 线从“少量内置夹具”升级为“可生成、可追溯、可按 profile 运行的 Agent-MCP 攻击语料生产系统”。
 
 目标链路:
 
@@ -18,7 +18,7 @@
   -> mutation operators / attack generation profiles
   -> generated/a-line/** 大规模语料
   -> corpus manifest / corpus stats
-  -> 按 smoke / openclaw / regression / full-corpus profile 加载
+  -> 按 smoke / openclaw / regression / full-corpus profile 显式加载
   -> B 线运行 TestContext
   -> C 线按 CorpusManifest 展示来源、覆盖率和证据追溯
 ```
@@ -26,14 +26,14 @@
 完成后，A 线应能提供:
 
 - 100+ resource seeds。
-- 200+ attack/user prompt seeds。
+- 800+ attack seeds，每条 `AttackSeed.userPrompt` 是 canonical prompt seed。
 - 80+ tool response seeds。
 - 45+ mutation operators。
 - 2000+ generated prompts。
 - 2000+ generated test cases，当前实现为 2400 级 full corpus。
 - generated oracles 数量等于 generated test cases。
 - PyRIT 生成来源占比不低于 70%。
-- smoke / openclaw / regression / full-corpus 四类运行 profile。
+- smoke / openclaw / regression / full-corpus 四类工程运行 profile。
 
 ## 2. 当前审计基线
 
@@ -43,8 +43,7 @@
 
 ```txt
 resource seeds: 687
-attack seeds: 839
-user prompt seeds: 839
+attack seeds with canonical userPrompt: 839
 tool response seeds: 309
 mutation operators: 76
 generated resources: 687
@@ -69,11 +68,11 @@ configs/a-line/**
 generated/a-line/**
 ```
 
-当前配置目录已完成分层: `configs/` 根目录只保留稳定运行基线，A 线攻击库、seed、operator、profile 和 PyRIT/AIG source index 全部迁入 `configs/a-line/**`。默认 `loadConfigRepository()` 仍不会加载 full corpus；大规模 generated corpus 通过显式 profile 和 `CorpusManifest` 被 B/C 线消费。
+当前配置目录已完成分层: `configs/` 根目录只保留稳定运行基线，A 线攻击库、seed、operator、profile 和 PyRIT/AIG source index 全部迁入 `configs/a-line/**`。`loadConfigRepository()` 仍只读取根目录稳定基线；大规模 generated corpus 通过显式 profile 和 `CorpusManifest` 被 B/C 线消费。
 
 ### 2.1 当前配置体量
 
-基于当前 `main` 已提交版本统计:
+历史 P2 稳定基线统计:
 
 ```txt
 tools.json: 8
@@ -91,24 +90,23 @@ pyrit_jailbreak_template_index.json: groups=20, templates=165
 判断:
 
 - A 线 P1/P2 已经打通 config -> sandbox -> case -> oracle -> PyRIT metadata。
-- 当前仍是 MVP 体量，不能支撑“项目级攻击库”或“覆盖率证明”。
-- PyRIT 模板和 converter 已有入口，但没有形成完整生成流水线。
-- AIG 已经做过策略审阅，但大部分还停留在规划和少量手工 case。
+- P2 稳定基线继续用于根目录 `configs/*.json` 和快速回归。
+- P3-A 已新增 `configs/a-line/**` 与 `generated/a-line/**`，作为项目级攻击库和覆盖率证明来源。
+- PyRIT 模板、converter、executor/scorer 索引和 AIG 策略索引已经进入语料生产链路。
 
-### 2.2 当前工作区注意事项
+### 2.2 当前有效入口
 
-当前本地 `configs/resources.json` 末尾有用户补充的权限级别、example 和 tool response 表格草稿。该草稿不是合法 JSON，不能直接进入配置加载链路。
-
-处理规则:
+用户补充的权限级别、example 和 tool response 表格已经清洗进 A 线 seed 工厂。当前有效入口为:
 
 ```txt
-不要继续把表格追加到 configs/resources.json。
-先把它清洗成 seed draft。
-再分别落入 resource_seeds / user_prompt_seeds / tool_response_seeds。
-最后由 generator 生成正式 ResourceDefinition / PromptDefinition / ToolResponseTemplate。
+configs/a-line/corpus/seeds/resource_seeds.json
+configs/a-line/corpus/seeds/attack_seeds.json
+configs/a-line/corpus/seeds/tool_response_seeds.json
+configs/a-line/corpus/operators/mutation_operators.json
+configs/a-line/corpus/profiles/corpus_run_profiles.json
 ```
 
-这一步必须优先做，否则 `loadConfigRepository()`、`verify:a-config-sandbox` 和后续 demo 都会被无效 JSON 阻断。
+`attack_seeds.json` 同时保存攻击目标和原始用户 prompt，`AttackSeed.userPrompt` 就是 canonical prompt seed。不要再新增独立 prompt seed 文件，也不要把草稿表格追加到 `configs/resources.json`。
 
 ## 3. 已审阅文档约束
 
@@ -132,7 +130,7 @@ pyrit_jailbreak_template_index.json: groups=20, templates=165
 - A 线不编造 `RuntimeSupervisionRecord[]`。
 - `TestOracle` 只用于离线验收、回归和 corpus 质量检查。
 - `generated/a-line/**` 是测试输入和覆盖率依据，不是风险结论。
-- OpenClaw 默认 demo 不跑 full corpus，只跑稳定 profile。
+- generated corpus 必须通过显式 profile 加载。`smoke/openclaw/regression` 是自动化稳定档位，`full-corpus` 是完整覆盖档位。
 
 ## 4. 外部素材使用边界
 
@@ -194,7 +192,6 @@ P3-A 使用方式:
 ```txt
 configs/a-line/corpus/seeds/resource_seeds.json
 configs/a-line/corpus/seeds/attack_seeds.json
-configs/a-line/corpus/seeds/user_prompt_seeds.json
 configs/a-line/corpus/seeds/tool_response_seeds.json
 configs/a-line/corpus/operators/mutation_operators.json
 configs/a-line/corpus/profiles/attack_generation_profiles.json
@@ -208,6 +205,7 @@ configs/a-line/sources/aig_strategy_index.json
 说明:
 
 - seed 文件是生成输入，不直接进入运行时 `TestContext`。
+- `AttackSeed.userPrompt` 是唯一 prompt seed 来源，避免攻击目标和用户 prompt 在两套文件中漂移。
 - `configs/resources.json` 等旧文件继续作为 smoke/openclaw 稳定夹具入口。
 - 新 seed schema 应先以 contracts 或 corpus module 类型固化，再写 JSON。
 
@@ -306,6 +304,7 @@ type ResourceSeed = {
     | "filesystem"
     | "cloud"
     | "identity"
+    | "api"
     | "crm"
     | "support"
     | "finance"
@@ -318,12 +317,12 @@ type ResourceSeed = {
   injectionMarkers: string[];
   secretMarkers: string[];
   allowedUseCases: string[];
-  riskTags: string[];
+  riskTagIds: string[];
   source: SeedSource;
 };
 ```
 
-### 6.2 AttackSeed / UserPromptSeed
+### 6.2 AttackSeed
 
 ```ts
 type AttackSeed = {
@@ -349,8 +348,11 @@ type AttackSeed = {
     scorerTemplateIds: string[];
   };
   source: SeedSource;
+  metadata?: JsonObject;
 };
 ```
+
+说明: 不再定义独立用户 prompt seed 类型。`AttackSeed.userPrompt` 是用户 prompt seed 的唯一来源。
 
 ### 6.3 ToolResponseSeed
 
@@ -369,8 +371,9 @@ type ToolResponseSeed = {
     | "debug_leak"
     | "auth_bypass"
     | "tool_rug_pull";
-  riskTags: string[];
+  riskTagIds: string[];
   source: SeedSource;
+  metadata?: JsonObject;
 };
 ```
 
@@ -400,6 +403,9 @@ type MutationOperatorSpec = {
   source: SeedSource;
   deterministic: boolean;
   maxFanout: number;
+  tags: string[];
+  description: string;
+  metadata?: JsonObject;
 };
 ```
 
@@ -454,14 +460,14 @@ type CorpusManifest = {
 - 从当前本地 `configs/resources.json` 末尾表格草稿提取权限级别、example、tool_response_1/2/3。
 - 清洗成:
   - `configs/a-line/corpus/seeds/resource_seeds.json`
-  - `configs/a-line/corpus/seeds/user_prompt_seeds.json`
+  - `configs/a-line/corpus/seeds/attack_seeds.json`
   - `configs/a-line/corpus/seeds/tool_response_seeds.json`
-- 补充手工 seed，使 resource seeds 达到 100+，attack/user prompt seeds 达到 200+。
+- 补充手工 seed，使 resource seeds 达到 100+，attack seeds 达到 800+。
 
 清洗规则:
 
 - P0/P1/P2/P3/P4/P5/P6/P7 权限级别映射成 tool side effect、riskTags、scenarioTags。
-- example 进入 user prompt seed 或 attack seed，不进入 resource content。
+- example 进入 `AttackSeed.userPrompt`，不进入 resource content。
 - tool_response_x 进入 tool response seed，不进入 resource content。
 - 包含 `sk_`、private key、token 等示例时统一替换为 demo marker。
 
@@ -730,23 +736,20 @@ C 线不得:
 
 | 风险 | 处理 |
 | --- | --- |
-| full corpus 过大拖慢 demo | 默认只加载 smoke/openclaw profile |
-| 用户表格草稿破坏 JSON | 先导入 seed 文件，再恢复/重建合法 `resources.json` |
+| full corpus 被误当默认运行输入 | 所有 generated corpus 都必须通过显式 profile 加载，常规 `loadConfigRepository()` 只读根目录稳定基线 |
+| 用户表格草稿破坏 JSON | 用户补充内容已导入 seed 工厂；后续新增素材只能进入 seed/source/profile 文件，不得追加到根目录 JSON |
 | PyRIT bridge 引入网络或模型依赖 | 默认关闭，offline profile 单独启用 |
 | 复制 AIG/PyRIT 长 prompt 或密钥样例 | 只索引 metadata，长文本进入安全 fixture 时必须脱敏 |
 | A 线越界生成策略包或防御报告 | 只输出 seed、case、oracle、manifest 和策略模板建议 |
 | generated artifacts 难以审查 | manifest 记录 source chain、hash、profile 和 coverage |
 | contracts 频繁变化影响 B/C | 先新增可选字段或 A 线私有 corpus 类型，跨线字段再进入 contracts |
 
-## 11. 本轮审阅后的直接下一步
+## 11. 当前收口后的维护顺序
 
-如果本计划审阅通过，下一步开发顺序为:
+P3-A 语料工厂已经进入工程化维护阶段，后续改动按以下顺序执行:
 
-1. 处理当前 `configs/resources.json` 中的无效表格草稿，抽取为 seed draft，并恢复合法 JSON。
-2. 新增 corpus 类型、seed schema 和 seed loader。
-3. 清洗并扩容 resource/user prompt/tool response seed。
-4. 索引 PyRIT/AIG 来源。
-5. 实现 deterministic generator 和 `verify:a-corpus`。
-6. 已生成 2400 级 full corpus，并通过 `verify:a-corpus` 验证。
-7. 接入 run profile，不改变默认 demo 行为。
-8. 更新工作日志和 B/C 交接说明。
+1. 新增素材先进入 `backend/src/modules/corpus/seedFactory.ts` 或受控 seed/source/profile 文件，不直接改根目录运行基线。
+2. 攻击目标和用户 prompt 统一写入 `AttackSeed.userPrompt`，不得恢复独立 prompt seed 文件。
+3. 资源、攻击、工具响应和 operator 扩容后运行 `npm run a:generate-corpus`。
+4. 生成后运行 `npm run verify:a-corpus`，再按影响范围运行 `npm run typecheck` 和 `npm run verify:all`。
+5. 涉及跨线交接时同步 `docs/contracts.md`、`docs/interfaces.md`、`docs/ownership.md` 和本工作日志。

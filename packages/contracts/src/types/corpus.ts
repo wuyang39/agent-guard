@@ -96,8 +96,6 @@ export type AttackSeed = {
   metadata?: JsonObject;
 };
 
-export type UserPromptSeed = AttackSeed;
-
 export type ToolResponseSeed = {
   schemaVersion: SchemaVersion;
   seedId: string;
@@ -151,7 +149,7 @@ export type CorpusRunProfile = {
   includeOperatorFamilies: MutationOperatorSpec["family"][];
   includeScenarioIds: string[];
   allowPythonBridge: boolean;
-  stableForDemo: boolean;
+  stableForAutomation: boolean;
 };
 
 export type SourceIndexEntry = {

@@ -11,7 +11,6 @@ import type {
   RiskCategory,
   SourceIndexEntry,
   ToolResponseSeed,
-  UserPromptSeed,
 } from "@agent-guard/contracts";
 import { createHash } from "node:crypto";
 import { readdir, readFile, stat } from "node:fs/promises";
@@ -579,7 +578,6 @@ export function buildCorpusSeeds(): CorpusSeedBundle {
   return {
     resourceSeeds: buildResourceSeeds(),
     attackSeeds: buildAttackSeeds(),
-    userPromptSeeds: buildUserPromptSeeds(),
     toolResponseSeeds: buildToolResponseSeeds(),
     mutationOperators: allMutationOperators,
     runProfiles: buildRunProfiles(),
@@ -786,14 +784,6 @@ function buildAttackSeeds(): AttackSeed[] {
   return seeds;
 }
 
-function buildUserPromptSeeds(): UserPromptSeed[] {
-  return buildAttackSeeds().map((seed) => ({
-    ...seed,
-    seedId: seed.seedId.replace("attack_seed.", "user_prompt_seed."),
-    name: seed.name.replace("seed", "user prompt seed"),
-  }));
-}
-
 function buildToolResponseSeeds(): ToolResponseSeed[] {
   const seeds: ToolResponseSeed[] = [];
   const responseClasses: ToolResponseSeed["responseClass"][] = [
@@ -879,7 +869,7 @@ function buildRunProfiles(): CorpusRunProfile[] {
       includeOperatorFamilies: ["encoding", "obfuscation", "roleplay", "tool_response"],
       includeScenarioIds: allAttackCategories.slice(0, 8).map((item) => item.scenarioId),
       allowPythonBridge: false,
-      stableForDemo: true,
+      stableForAutomation: true,
     },
     {
       schemaVersion,
@@ -891,7 +881,7 @@ function buildRunProfiles(): CorpusRunProfile[] {
       includeOperatorFamilies: ["encoding", "unicode", "obfuscation", "roleplay", "context_poison", "tool_response"],
       includeScenarioIds: allAttackCategories.map((item) => item.scenarioId),
       allowPythonBridge: false,
-      stableForDemo: true,
+      stableForAutomation: true,
     },
     {
       schemaVersion,
@@ -903,7 +893,7 @@ function buildRunProfiles(): CorpusRunProfile[] {
       includeOperatorFamilies: mutationFamilies(),
       includeScenarioIds: allAttackCategories.map((item) => item.scenarioId),
       allowPythonBridge: false,
-      stableForDemo: false,
+      stableForAutomation: true,
     },
     {
       schemaVersion,
@@ -915,7 +905,7 @@ function buildRunProfiles(): CorpusRunProfile[] {
       includeOperatorFamilies: mutationFamilies(),
       includeScenarioIds: allAttackCategories.map((item) => item.scenarioId),
       allowPythonBridge: false,
-      stableForDemo: false,
+      stableForAutomation: false,
     },
   ];
 }

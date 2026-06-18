@@ -47,7 +47,7 @@ P3 C 线报告/前端主线:
 - `ReportBundle` 是 P3 C 线报告聚合对象，必须引用 `DefenseReport`、`RuntimeSupervisionRecord[]`、`SupervisionPolicyPack`、`DetectionReport`、`RiskReport`、`InteractionTrace` 和 `TestContextView`。
 - `CorpusManifest` 是 P3 A 线攻击库生成结果索引，必须记录 PyRIT/AIG/manual/user_supplied 来源、生成方法、run tier、caseId/promptId/oracleId 映射和 coverage 统计。
 - `TestOracle` 仍只用于 A 线离线验证和 corpus 质量检查，不得进入运行时 `TestContext`、风险判定、报告结论或前端业务推导。
-- P3-A 生成的千级攻击库默认按 profile 分层加载；OpenClaw 默认 demo 只运行稳定 profile，不默认运行 full corpus。
+- P3-A 生成的千级攻击库必须按 profile 显式加载；`smoke/openclaw/regression` 是自动化稳定档位，`full-corpus` 是完整覆盖档位。
 
 ### 0.3 前端统一规则
 
@@ -69,7 +69,7 @@ P3 C 线报告/前端主线:
 
 ```txt
 P3-A0 PyRIT 生成链路契约、seed schema、CorpusManifest 和 run profile 冻结
-P3-A1 ResourceSeed / AttackSeed / ToolResponseSeed / UserPromptSeed 大规模整理
+P3-A1 ResourceSeed / AttackSeed.userPrompt / ToolResponseSeed 大规模整理
 P3-A2 PyRIT template/converter/attack executor/seed dataset 驱动生成 1000+ corpus
 P3-A3 AIG 策略库、PromptSecurity enhancer 和 OWASP ASI 映射作为补充增强源
 P3-B0 TestContextView 契约/API/前端正式化
@@ -115,7 +115,7 @@ pyrit jailbreak template refs: 165
 
 ```txt
 resource seeds: 687
-attack/user prompt seeds: 839 + 839
+attack seeds with canonical userPrompt: 839
 tool response seeds: 309
 mutation operators: 76
 generated prompts: 2400
@@ -127,7 +127,7 @@ run profiles: smoke / openclaw / regression / full-corpus
 
 同时配置目录已完成分层: `configs/` 根目录只保留稳定运行基线；A 线攻击库元数据、PyRIT/AIG source index、seed、operator 和 profile 统一迁入 `configs/a-line/**`；生成物继续位于 `generated/a-line/**`。
 
-该实现仍遵守 P3 总口径: A 线产物是测试输入、来源索引和覆盖率材料，不是运行时风险结论；默认 demo 不自动运行 full corpus。
+该实现仍遵守 P3 总口径: A 线产物是测试输入、来源索引和覆盖率材料，不是运行时风险结论；generated corpus 必须按 profile 显式加载。
 
 P3-A 不能继续停留在“少量手工 case + 一些 converter”的状态。最后一轮应把 A 线升级为 PyRIT 驱动的攻击库生产系统:
 
@@ -146,7 +146,7 @@ P3-A 完成后必须形成项目级攻击库:
 
 ```txt
 resource seeds:        >= 100
-attack/user prompt seeds: >= 200
+attack seeds with canonical userPrompt: >= 800
 tool response seeds:   >= 80
 mutation operators:    >= 45
 pyrit generated prompts: >= 1000
@@ -270,7 +270,6 @@ PyRIT SeedDataset / SeedPrompt / SeedObjective
 
 ```txt
 configs/a-line/corpus/seeds/attack_seeds.json
-configs/a-line/corpus/seeds/user_prompt_seeds.json
 configs/a-line/corpus/seeds/tool_response_seeds.json
 configs/a-line/sources/pyrit_seed_dataset_index.json
 configs/a-line/sources/pyrit_executor_template_index.json
@@ -420,7 +419,7 @@ P3-A 的 generated corpus 必须可复现、可分层、可抽样。
 生成流程:
 
 ```txt
-1. 读取 ResourceSeed / AttackSeed / UserPromptSeed / ToolResponseSeed
+1. 读取 ResourceSeed / AttackSeed.userPrompt / ToolResponseSeed
 2. 读取 PyRIT dataset/template/executor/scorer index
 3. 读取 AIG strategy/enhancer index
 4. 按 AttackGenerationProfile 选择 PyRIT 生成方式
@@ -557,7 +556,7 @@ npm run inspect:a-corpus-stats
 P3-A 完成标准:
 
 1. PyRIT dataset/template/converter/executor/scorer 均进入可追溯 index。
-2. 100+ resource seeds 和 200+ attack/user prompt seeds 已保存。
+2. 100+ resource seeds 和 800+ attack seeds 已保存，每条 `AttackSeed.userPrompt` 是 canonical prompt seed。
 3. 45+ mutation operators 可用于 native/template 生成。
 4. generated corpus 至少 2000 个 case，当前实现为 2400 个 case，且 PyRIT 攻击生成项占比不低于 70%。
 5. smoke/openclaw/regression/full-corpus 四层 profile 清楚。

@@ -28,14 +28,16 @@ generated/a-line/
 - `sources/pyrit_executor_template_index.json`: PyRIT executor、attack strategy 和 promptgen 模板索引。
 - `sources/pyrit_scorer_template_index.json`: PyRIT scorer、metric 和 evaluator 相关素材索引。
 - `sources/aig_strategy_index.json`: AIG strategy、skill、testcase、PromptSecurity enhancer 索引。
-- `corpus/seeds/*.json`: A 线种子库，是生成输入，不直接进入默认 `TestContext`。
+- `corpus/seeds/resource_seeds.json`: 资源、权限边界、上下文污染和敏感数据的结构化种子。
+- `corpus/seeds/attack_seeds.json`: 攻击目标和原始用户 prompt 的唯一入口，`userPrompt` 字段就是 prompt seed，不再维护独立 prompt seed 文件。
+- `corpus/seeds/tool_response_seeds.json`: 工具响应注入、secret 泄露、debug 泄露和 benign control 种子。
 - `corpus/operators/mutation_operators.json`: native/template/metadata operator 目录。
-- `corpus/profiles/*.json`: 生成比例和 `smoke/openclaw/regression/full-corpus` 分层。
+- `corpus/profiles/*.json`: 生成比例和 `smoke/openclaw/regression/full-corpus` 工程运行档位。`smoke/openclaw/regression` 是自动化稳定档位，`full-corpus` 是完整覆盖档位。
 
 ## 维护规则
 
 1. 不要把 seed、operator、source index、profile 文件放回 `configs/` 根目录。
-2. 默认 demo 和常规 `loadConfigRepository()` 只消费根目录稳定基线，full corpus 必须显式按 profile 加载。
+2. 常规 `loadConfigRepository()` 只消费根目录稳定基线，generated corpus 必须显式按 profile 加载。
 3. `generated/a-line/test_oracles.generated.json` 只用于离线验证和质量检查，不进入运行时风险判定。
 4. PyRIT 是 A 线攻击库主底座；AIG 只作为 Agent/MCP 策略和 enhancer 补充来源。
 5. 运行 `npm run a:generate-corpus` 后必须运行 `npm run verify:a-corpus`，再按影响范围运行全量验证。

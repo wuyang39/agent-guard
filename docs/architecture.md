@@ -322,7 +322,6 @@ agent-guard/
         seeds/
           resource_seeds.json
           attack_seeds.json
-          user_prompt_seeds.json
           tool_response_seeds.json
         operators/
           mutation_operators.json
@@ -403,8 +402,8 @@ agent-guard/
 - `frontend/src/lib/`: 前端 API Client、hook、视图模型和格式化函数。
 - `packages/contracts/`: 前后端共享契约唯一来源，禁止承载运行时业务逻辑。
 - `configs/`: 系统内置稳定运行基线配置。根目录只保留默认 `loadConfigRepository()` 读取的 tools、resources、prompts、tool responses、rules、cases、oracles、scenarios、policy templates 和 demo 分层文件。
-- `configs/a-line/`: A 线攻击库和语料工厂配置。`sources/` 保存 PyRIT/AIG 来源索引和攻击库元数据；`corpus/seeds/`、`corpus/operators/`、`corpus/profiles/` 保存生成输入。该目录不被默认 demo 自动展开为 full corpus。
-- `generated/a-line/`: A 线 P3 deterministic generated corpus。该目录保存可复现测试输入、oracle、manifest 和 stats；默认 demo 不自动加载 full corpus。
+- `configs/a-line/`: A 线攻击库和语料工厂配置。`sources/` 保存 PyRIT/AIG 来源索引和攻击库元数据；`corpus/seeds/`、`corpus/operators/`、`corpus/profiles/` 保存生成输入。该目录必须通过显式 profile 加载。
+- `generated/a-line/`: A 线 P3 deterministic generated corpus。该目录保存可复现测试输入、oracle、manifest 和 stats；运行链路必须显式选择 `smoke`、`openclaw`、`regression` 或 `full-corpus` profile。
 - `scenarios/`: 红队场景说明、对抗样本和攻击动作序列。
 - `third_party/`: 受控迁入的外部或本地参考源码。当前 `third_party/pyrit_adapted` 由 A 线维护，用于 PyRIT 攻击库、jailbreak、converter 和后续 Python bridge 溯源；默认 TS 主链路不得直接执行未经适配的 third-party runtime。
 - `outputs/`: 测试运行产物，包含 runs、traces、reports 和 exports。

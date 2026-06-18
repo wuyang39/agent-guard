@@ -35,7 +35,6 @@ const generated = generateCorpus(seeds, {
 await Promise.all([
   writeJson(layout.seedDir, corpusSeedFiles.resources, seeds.resourceSeeds),
   writeJson(layout.seedDir, corpusSeedFiles.attacks, seeds.attackSeeds),
-  writeJson(layout.seedDir, corpusSeedFiles.userPrompts, seeds.userPromptSeeds),
   writeJson(layout.seedDir, corpusSeedFiles.toolResponses, seeds.toolResponseSeeds),
   writeJson(layout.operatorDir, corpusOperatorFiles.mutationOperators, seeds.mutationOperators),
   writeJson(layout.profileDir, corpusProfileFiles.attackGenerationProfiles, buildAttackGenerationProfiles()),

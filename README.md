@@ -1,6 +1,6 @@
 # Agent Guard
 
-Agent Guard is an MVP framework for evaluating the behavior safety of an Agent inside a system-provided MCP test environment.
+Agent Guard is a project-level framework for evaluating and supervising the behavior safety of an Agent inside a system-provided MCP test environment.
 
 The only tested object is the Agent. MCP Server, Tool, Resource, Prompt, Tool Response templates, risk rules, and test cases are internal test fixtures.
 
@@ -30,7 +30,7 @@ See `docs/README.md` for the documentation index and source-of-truth rules.
 
 `packages/contracts` is the only shared interface package between backend and frontend. Frontend code must not import `backend/src/**`, and backend runtime modules must not place business logic in the contracts package.
 
-## MVP Pipeline
+## Core Pipeline
 
 ```txt
 AgentUnderTest

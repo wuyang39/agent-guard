@@ -53,7 +53,6 @@ configs/a-line/sources/pyrit_attack_library.json
 configs/a-line/sources/pyrit_jailbreak_template_index.json
 configs/a-line/corpus/seeds/resource_seeds.json
 configs/a-line/corpus/seeds/attack_seeds.json
-configs/a-line/corpus/seeds/user_prompt_seeds.json
 configs/a-line/corpus/seeds/tool_response_seeds.json
 configs/a-line/corpus/operators/mutation_operators.json
 configs/a-line/corpus/profiles/corpus_run_profiles.json
@@ -105,6 +104,8 @@ TestOracle
 `PyritJailbreakTemplateIndex` 是 A 线 P2 新增的 PyRIT jailbreak 模板元数据索引。它只保存路径、分组、参数、作者、哈希和大小，不保存模板全文；前端和报告只能把它作为来源说明或覆盖率统计。
 
 `CorpusManifest` 是 A 线 P3 generated corpus 的来源和覆盖率索引。B 线可按 `CorpusRunProfile` 显式选择 generated case；C 线可用 `CorpusManifest` 展示来源、覆盖率和样本分层。`CorpusManifest` 不包含风险结论，不能替代 `InteractionTrace`、`RiskReport` 或 `DefenseReport`。
+
+`configs/a-line/corpus/seeds/attack_seeds.json` 是攻击目标和原始用户 prompt 的唯一 seed 入口。`AttackSeed.userPrompt` 即 prompt seed，不再维护独立 prompt seed 文件，避免同一攻击目标在两套 seed 文件中漂移。
 
 `generated/a-line/test_oracles.generated.json` 只用于离线验收和 corpus 质量检查，不进入运行时 `TestContext`，也不得作为 C 线风险判定证据。
 

@@ -33,7 +33,7 @@
 - `p2-real-agent-api-frontend-plan.md`: P2 以 OpenClaw 为核心演示 Agent 的正式 API、运行历史和前端演示系统规划。
 - `p2-unfinished-abc-responsibility-plan.md`: P2 剩余缺口、A/B/C 分工、OpenClaw 正确路线和并行约束收尾稿。
 - `p2-api-contract-plan.md`: P2 并行开发前必须冻结的前后端 API 草案。
-- `P3plan.md`: P3 合并规划，统一 OpenClaw 外部工具实时监督网关与 C 线报告生成、前端展示、证据复核和导出路线。
+- `P3plan.md`: P3 统一总规划，合并 A 线 PyRIT 驱动千级攻击库、B 线 OpenClaw 外部工具实时监督网关、C 线报告生成/前端展示/证据复核和导出路线。
 - `C/frontend-d-handoff.md`: C 线前端 Web Console 的开工边界、页面优先级、API Client 和联调检查点。文件名保留历史入口，职责已归入 C。
 
 ## 3. 唯一来源规则

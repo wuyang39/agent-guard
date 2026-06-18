@@ -690,3 +690,35 @@ npm run verify:p2:api-e2e
 - Agent Guard 的 OpenClaw adapter 会把 Windows npm shim 解析成 `node openclaw.mjs`，所以联调时必须同时设置 `OPENCLAW_CLI` 和 `OPENCLAW_HOME`。
 - 此前失败点不是 A 线攻击库或 sandbox 配置问题，也不是 OpenClaw CLI 路径问题，而是当时本地 OpenClaw 尚未配置模型 provider 凭证。
 - 补充 provider key 后，required 模式已确认真实 OpenClaw CLI 检测不再 skip。
+
+## 14. 2026-06-17 P3-A 攻击库规模化规划
+
+分支: `a/p2.5-corpus-expansion-plan`
+
+本轮按用户要求重新审阅 A 线配置、接口文档、AIG 目录和本地定制 PyRIT 目录。最初形成的 P2.5 单独规划已合并进统一 P3 总规划，不再保留独立文档入口:
+
+```txt
+docs/P3plan.md
+```
+
+审计结论:
+
+- 当前 A 线结构已经打通，但仍是 MVP 体量: 12 个 case、9 个 resource、10 个 prompt、9 个 tool response。
+- PyRIT 已迁入并索引 165 个 jailbreak template，但尚未展开为大规模 runnable corpus。
+- AIG 的 `agent-scan/prompt/skills`、`mcp-scan/redteam` 和 `AIG-PromptSecurity/deepteam` 仍有大量可迁移策略、模板和 enhancer。
+- 用户补充的权限级别、示例 prompt 和 tool response 表格应作为 seed 草案清洗整理；不要直接追加在 `configs/resources.json` 末尾，否则会破坏配置加载。
+
+P3-A 规划方向:
+
+- 新增 `resource_seeds.json`、`attack_seeds.json`、`mutation_operators.json`、`attack_generation_profiles.json`、`corpus_run_profiles.json`。
+- 新增 `generated/a-line/**`，把上千条 prompt/case/oracle/scenario 作为生成物管理。
+- 新增 `backend/src/modules/corpus/**` 和 `scripts/generate-a-corpus.ts`。
+- 以 PyRIT 为主生成攻击库: seed/objective、jailbreak template、executor template、converter、scorer 和可选 Python bridge 均进入 Agent Guard 生成流水线。
+- AIG indirect/data/tool/auth skill、Crescendo/TAP、多种 encoding/stratasword enhancer 作为补充策略源，不替代 PyRIT 主生成链路。
+- 构造 Agent-MCP 专项 user prompt/objective，再通过 PyRIT template/converter/attack executor 生成，目标 1000+ 攻击样例且 PyRIT 生成占比不低于 70%。
+
+后续实施必须继续遵守:
+
+- A 线不直接生成 `AgentRiskProfile`、`SupervisionPolicyPack` 或 `DefenseReport`。
+- `TestOracle` 不进入运行时 `TestContext`。
+- OpenClaw 默认 demo 只运行稳定 profile，不默认跑 full corpus。

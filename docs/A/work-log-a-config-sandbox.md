@@ -908,3 +908,45 @@ npm run verify:a-pyrit-library
 npm run verify:all
 git diff --check
 ```
+
+## 18. 2026-06-19 P3-A 最终工程化口径
+
+分支: `a/p3-a-corpus-implementation-plan`
+
+本轮根据用户要求明确 A 线后续不再以 demo/MVP 体量为约束，而按 P3 最终项目级交付模式继续设计和开发。当前原则:
+
+- A 线优先保证攻击库、语料工厂、source index、seed/operator/profile、manifest 和验证链路的完整性。
+- `configs/` 根目录只保留稳定运行基线；A 线攻击库和生成输入统一放在 `configs/a-line/**`。
+- `generated/a-line/**` 是大规模离线语料和覆盖率材料，不应因为 demo 展示简化而回退规模或结构。
+- PyRIT 是主底座，可以继续深度利用其 seed dataset、jailbreak template、converter、executor、scorer/evaluator 和定制攻击实现。
+- AIG 保持补充定位，迁移其 Agent/MCP 策略、OWASP ASI 分类和 PromptSecurity enhancer 思想，不作为主运行框架。
+- demo/OpenClaw 连通性可以验证，但若失败且原因来自其他线、运行时环境或本机 OpenClaw 状态，不应反向削弱 A 线最终架构。
+- 后续每批 P3-A 改动继续记录在本工作日志，并同步 `docs/P3plan.md`、`docs/architecture.md`、`docs/contracts.md`、`docs/interfaces.md`、`docs/ownership.md` 中受影响的边界。
+
+全局记忆已追加 `2026-06-19-agent-guard-p3a-final-mode.md`，记录该最终模式口径。
+
+### 18.1 Demo / OpenClaw 连通性检查
+
+本轮按“验证但不为 demo 妥协”的原则检查了 demo/OpenClaw 相关链路:
+
+```powershell
+npm run verify:openclaw:realtime
+npm run verify:p2:api-e2e
+$env:OPENCLAW_CLI=(Resolve-Path '..\openclaw-runtime\openclaw-local.cmd').Path; `
+  $env:OPENCLAW_HOME=(Resolve-Path '..\openclaw-runtime\home').Path; `
+  $env:OPENCLAW_WORKSPACE=(Resolve-Path '..\openclaw-runtime\workspace').Path; `
+  $env:VERIFY_OPENCLAW_REQUIRED='1'; `
+  npm run verify:p2:api-e2e
+```
+
+结果:
+
+- `verify:openclaw:realtime` 通过，覆盖 initialize、tools/list、deny、ask、redact、supervision query、trace query 和 realtime events stream。
+- 普通 `verify:p2:api-e2e` 通过 mock/http_sample/API/report/supervision 链路，OpenClaw CLI adapter 因未注入 `OPENCLAW_CLI` 被 optional skip。
+- 注入项目隔离 OpenClaw 环境变量后，`VERIFY_OPENCLAW_REQUIRED=1 npm run verify:p2:api-e2e` 通过，13 个 required 全部通过、0 optional skipped。
+
+判断:
+
+- 当前 A 线 P3 语料工厂重构没有破坏 P2 API demo 基线。
+- 本机 OpenClaw runtime 可用，但普通命令默认不会自动设置 `OPENCLAW_CLI`、`OPENCLAW_HOME`、`OPENCLAW_WORKSPACE`。后续 demo 启动仍建议使用 `scripts/start-agent-guard-openclaw.ps1` 或显式设置这三个变量。
+- A 线后续不应为了默认 demo 简化 full corpus；demo 应继续选择 `smoke/openclaw` profile 或稳定 P2 case。

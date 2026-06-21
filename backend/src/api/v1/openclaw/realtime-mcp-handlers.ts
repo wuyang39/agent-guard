@@ -1,12 +1,17 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import type { JsonObject } from "@agent-guard/contracts";
 import { success, failure } from "../../response";
 import {
   getRealtimeActivePolicyState,
   getRealtimeMcpTools,
   finalizeRealtimeDefenseReport,
   handleRealtimeMcpJsonRpc,
+  getRealtimeSupervisionBatch,
+  listRealtimeSupervisionBatches,
   prepareRealtimeSession,
+  refreshRealtimeMcpTools,
   resetRealtimeSessions,
+  runRealtimeSupervisionBatch,
   setRealtimeActivePolicy,
   subscribeRealtimeEvents,
 } from "../../../modules/openclaw/realtimeMcpServer";
@@ -22,11 +27,13 @@ const SESSION_PREPARE_PATH = "/api/v1/openclaw/realtime/sessions";
 const SESSION_RESET_PATH = "/api/v1/openclaw/realtime/sessions/reset";
 const EVENTS_STREAM_PATH = "/api/v1/openclaw/realtime/events/stream";
 const DEFENSE_REPORT_PATH = "/api/v1/openclaw/realtime/reports/defense";
+const SUPERVISION_BATCHES_PATH = "/api/v1/openclaw/realtime/supervision-batches";
 
 export async function openClawRealtimeMcpRoutes(
   app: FastifyInstance,
 ): Promise<void> {
   app.get(MCP_PATH, async (_request, _reply) => {
+    await refreshRealtimeMcpTools();
     const activePolicy = await getRealtimeActivePolicyState();
     return success({
       endpoint: MCP_PATH,
@@ -137,6 +144,63 @@ export async function openClawRealtimeMcpRoutes(
     }
   });
 
+  app.get(SUPERVISION_BATCHES_PATH, async (request) => {
+    const query = request.query as { runtimeSessionId?: string; limit?: string };
+    const limit = Number.parseInt(query.limit ?? "", 10);
+    return success(
+      await listRealtimeSupervisionBatches({
+        runtimeSessionId:
+          typeof query.runtimeSessionId === "string"
+            ? query.runtimeSessionId
+            : undefined,
+        limit: Number.isFinite(limit) && limit > 0 ? limit : undefined,
+      }),
+    );
+  });
+
+  app.get(`${SUPERVISION_BATCHES_PATH}/:batchId`, async (request, reply) => {
+    const params = request.params as { batchId?: string };
+    if (!params.batchId) {
+      reply.code(400);
+      return failure("INVALID_BATCH_ID", "batchId is required");
+    }
+    const batch = await getRealtimeSupervisionBatch(params.batchId);
+    if (!batch) {
+      reply.code(404);
+      return failure("BATCH_NOT_FOUND", `Batch ${params.batchId} not found`);
+    }
+    return success(batch);
+  });
+
+  app.post(SUPERVISION_BATCHES_PATH, async (request, reply) => {
+    const body = isObject(request.body) ? request.body : {};
+    const cases = Array.isArray(body.cases) ? body.cases : [];
+    if (cases.length === 0) {
+      reply.code(400);
+      return failure("INVALID_BATCH_CASES", "cases must be a non-empty array");
+    }
+
+    try {
+      return success(
+        await runRealtimeSupervisionBatch({
+          runtimeSessionId:
+            typeof body.runtimeSessionId === "string" ? body.runtimeSessionId : undefined,
+          policyPackId:
+            typeof body.policyPackId === "string" ? body.policyPackId : undefined,
+          source: isBatchSource(body.source) ? body.source : "external_unknown_test_pack",
+          stopOnError: body.stopOnError === true,
+          cases: cases.map((item, index) => normalizeBatchCase(item, index)),
+        }),
+      );
+    } catch (error) {
+      reply.code(400);
+      return failure(
+        "SUPERVISION_BATCH_FAILED",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  });
+
   app.get(EVENTS_STREAM_PATH, async (request, reply) => {
     const query = request.query as { replay?: string };
     reply.hijack();
@@ -207,5 +271,37 @@ async function handleMcpRequest(
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function normalizeBatchCase(value: unknown, index: number) {
+  const item = isObject(value) ? value : {};
+  const toolName = typeof item.toolName === "string" ? item.toolName : "";
+  if (!toolName) {
+    throw new Error(`cases[${index}].toolName is required`);
+  }
+  return {
+    externalCaseId:
+      typeof item.externalCaseId === "string" && item.externalCaseId
+        ? item.externalCaseId
+        : `external_case.${index + 1}`,
+    toolName,
+    arguments: isJsonObject(item.arguments) ? item.arguments : {},
+    notes: typeof item.notes === "string" ? item.notes : undefined,
+  };
+}
+
+function isBatchSource(
+  value: unknown,
+): value is "external_unknown_test_pack" | "manual" | "script" | "unknown" {
+  return (
+    value === "external_unknown_test_pack" ||
+    value === "manual" ||
+    value === "script" ||
+    value === "unknown"
+  );
+}
+
+function isJsonObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }

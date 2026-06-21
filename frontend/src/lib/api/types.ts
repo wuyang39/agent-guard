@@ -237,6 +237,66 @@ export type RealtimePreparedSession = {
   startedAt: string;
 };
 
+export type RuntimeLlmMode = "disabled" | "mock" | "openai_compatible";
+
+export type RuntimeLlmConfig = {
+  enabled: boolean;
+  mode: RuntimeLlmMode;
+  endpoint?: string;
+  model?: string;
+  timeoutMs: number;
+  source: "runtime" | "env" | "default";
+  hasApiKey: boolean;
+};
+
+export type RuntimeLlmConfigInput = {
+  enabled: boolean;
+  mode: RuntimeLlmMode;
+  endpoint?: string;
+  apiKey?: string;
+  model?: string;
+  timeoutMs: number;
+};
+
+export type RuntimeDownstreamMcpConfig = {
+  enabled: boolean;
+  providerId: string;
+  providerName: string;
+  endpointUrl?: string;
+  timeoutMs: number;
+  source: "runtime" | "env" | "default";
+};
+
+export type RuntimeDownstreamMcpConfigInput = {
+  enabled: boolean;
+  providerId: string;
+  providerName: string;
+  endpointUrl?: string;
+  timeoutMs: number;
+};
+
+export type RuntimeConfigSnapshot = {
+  schemaVersion: "mvp-1";
+  llm: RuntimeLlmConfig;
+  downstreamMcp: RuntimeDownstreamMcpConfig;
+  updatedAt: string;
+};
+
+export type RuntimeConfigCheckResult = {
+  available: boolean;
+  provider?: string;
+  model?: string;
+  providerId?: string;
+  providerName?: string;
+  toolCount?: number;
+  tools?: {
+    name: string;
+    canonicalToolId: string;
+    description: string;
+  }[];
+  detail: string;
+};
+
 export type DetectionDetailView = {
   detectionReport: DetectionReport;
   riskProfile: AgentRiskProfile;

@@ -601,6 +601,74 @@ pre {
   min-height: 360px;
 }
 
+.runtime-config-workspace .workspace-main {
+  align-content: start;
+}
+
+.config-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.config-actions {
+  margin-top: 4px;
+}
+
+.config-note {
+  margin-top: 0;
+}
+
+.config-toggle-field {
+  align-content: start;
+}
+
+.config-toggle-field input[type="checkbox"] {
+  width: 22px;
+  min-height: 22px;
+  padding: 0;
+}
+
+.config-check-result {
+  border: 1px solid #dde5ef;
+  border-radius: 8px;
+  padding: 12px;
+  background: #fbfcfe;
+}
+
+.config-check-result.is-ok {
+  border-color: #b7e4ce;
+  background: #f4fcf8;
+}
+
+.config-check-result.is-warn {
+  border-color: #f1d29b;
+  background: #fffaf0;
+}
+
+.config-check-result p {
+  margin: 0;
+  color: #526274;
+}
+
+.tool-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.tool-chip-list span {
+  max-width: 100%;
+  border: 1px solid #d4deea;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #25405e;
+  font-family: Consolas, "SFMono-Regular", Menlo, monospace;
+  font-size: 12px;
+  padding: 4px 8px;
+  overflow-wrap: anywhere;
+}
+
 .evidence-panel {
   display: grid;
   gap: 12px;
@@ -783,6 +851,12 @@ p {
   border-color: #70849c;
 }
 
+.compact-button {
+  min-height: 30px;
+  padding: 5px 9px;
+  font-size: 12px;
+}
+
 .badge {
   display: inline-flex;
   align-items: center;
@@ -897,6 +971,12 @@ p {
 .field textarea:focus {
   border-color: #0f766e;
   box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.12);
+}
+
+.field-note {
+  color: #687789;
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .wide-field {

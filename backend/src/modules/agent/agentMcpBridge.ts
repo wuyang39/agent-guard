@@ -1,5 +1,6 @@
 import type {
   JsonObject,
+  GatewayRuntimeContext,
   PromptLoadPayload,
   ResourceAccessPayload,
   ToolResultPayload,
@@ -9,6 +10,7 @@ export type ToolCallRequest = {
   toolId: string;
   toolName?: string;
   parameters: JsonObject;
+  gateway?: GatewayRuntimeContext;
 };
 
 export interface AgentMcpBridge {

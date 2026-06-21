@@ -82,6 +82,8 @@ P3-C2 Frontend Gateway 监督展示 + Report Workspace
 P3-C3 Markdown / HTML / PDF export 与 P3 验证脚本
 ```
 
+P3-B 的具体开发流程、可选多 agent 协作方式和审核模板见 `docs/B/p3-b-workflow.md`。B 线每个阶段完成后必须进入审核，审核阻断项关闭前不得合并。
+
 ---
 
 ## 第一部分: A 线 PyRIT 驱动攻击库与资源种子库规划

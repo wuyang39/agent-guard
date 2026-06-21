@@ -801,6 +801,204 @@ type SupervisionPolicy = {
 
 `SupervisionPolicy.match` 可以复用 `RuleMatchCondition` 与 `FieldMatcher`，但语义不同: `RiskRule` 用于检测归因，`SupervisionPolicy` 用于运行时动作判定。二者不得混用。
 
+#### P3 Gateway 工具画像扩展
+
+P3-B 引入外部工具 Gateway 后，所有接入工具必须先注册并生成工具能力画像。工具画像用于运行时监督、实时事件和报告解释，不替代 `SupervisionPolicyPack`。
+
+```ts
+type ToolProviderType =
+  | "agent_guard"
+  | "mcp"
+  | "openclaw"
+  | "custom"
+  | "unknown"
+
+type ToolSurface =
+  | "tool"
+  | "resource"
+  | "code"
+  | "network"
+  | "communication"
+  | "memory"
+  | "browser"
+  | "database"
+  | "model"
+  | "unknown"
+
+type ToolOperation =
+  | "read"
+  | "write"
+  | "execute"
+  | "send"
+  | "query"
+  | "search"
+  | "delete"
+  | "update"
+  | "list"
+  | "navigate"
+  | "transform"
+  | "unknown"
+
+type ToolCapabilityProfile = {
+  schemaVersion: "mvp-1"
+  originalToolName: string
+  canonicalToolId: string
+  providerType: ToolProviderType
+  surfaces: ToolSurface[]
+  operations: ToolOperation[]
+  capabilityTags: string[]
+  riskTags: string[]
+  sideEffect: "none" | "read" | "write" | "external" | "destructive" | "unknown"
+  dataClasses: string[]
+  authScopes: string[]
+  networkReachability: "none" | "internal" | "external" | "unknown"
+  sensitiveFields: string[]
+  confidence: "low" | "medium" | "high"
+  profileSource: "rule" | "llm" | "manual" | "mixed"
+  llmAssisted: boolean
+  llmMetadata?: LlmProfileMetadata
+}
+
+type LlmProfileMetadata = {
+  provider: string
+  model?: string
+  promptVersion: string
+  rationale?: string
+  generatedAt: string
+}
+```
+
+```ts
+type ExternalToolRegistration = {
+  schemaVersion: "mvp-1"
+  registrationId: string
+  providerId: string
+  providerName: string
+  providerType: ToolProviderType
+  originalToolName: string
+  exposedToolName: string
+  canonicalToolId: string
+  description: string
+  inputSchema: JsonObject
+  outputSchema?: JsonObject
+  capabilityProfile: ToolCapabilityProfile
+  enabled: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+type GatewayRuntimeContext = {
+  providerId: string
+  providerName: string
+  providerType: ToolProviderType
+  originalToolName: string
+  exposedToolName: string
+  canonicalToolId: string
+  capabilityProfileSnapshot: ToolCapabilityProfile
+  decisionSource?: "policy" | "platform_guardrail" | "default"
+  batch?: GatewayBatchContext
+}
+
+type GatewayBatchContext = {
+  batchId: string
+  externalCaseId?: string
+  source?: "external_unknown_test_pack" | "manual" | "script" | "unknown"
+}
+```
+
+约束:
+
+- `ToolCapabilityProfile` 可以由规则、人工或 LLM 辅助生成，但最终监督动作仍由 `SupervisionPolicyPack` 和 platform guardrail 决定。
+- `llmMetadata` 只用于审计 LLM 辅助画像的来源，不得作为运行时阻断动作依据。
+- `ExternalToolRegistration.exposedToolName` 是暴露给 OpenClaw 的工具名，`originalToolName` 保留 provider 原始工具名，`canonicalToolId` 用于策略和证据链。
+- `GatewayRuntimeContext.capabilityProfileSnapshot` 必须保存调用当时的画像快照，避免后续画像变化导致证据链不可复核。
+- `GatewayRuntimeContext.batch` 用于把监督批测中的每个外部 case 关联到真实运行时记录。
+- 未知工具不得静默放行，当前 Gateway 默认使用 `platform.guardrail.unknown_external_tool` 阻断并写入运行时记录。
+
+P3-B 监督批测对象用于表达“外部未知测试包对监督环节的批量验证结果”。它不得参与风险画像或策略包生成，只能复用当前 `SupervisionPolicyPack` 和 Gateway 监督链路。
+
+```ts
+type SupervisionBatchCase = {
+  externalCaseId: string
+  toolName: string
+  arguments: JsonObject
+  notes?: string
+}
+
+type SupervisionBatchCaseResult = {
+  externalCaseId: string
+  toolName: string
+  status: "completed" | "blocked" | "failed"
+  blocked: boolean
+  recordIds: string[]
+  actionCounts: Record<string, number>
+  gateway?: GatewayRuntimeContext
+  result?: JsonValue
+  error?: string
+}
+
+type SupervisionBatchCaseExplanation = {
+  externalCaseId: string
+  toolName: string
+  outcome:
+    | "policy_blocked"
+    | "policy_supervised"
+    | "platform_guardrail_blocked"
+    | "executed"
+    | "downstream_failed"
+  explanation: string
+  recordIds: string[]
+}
+
+type SupervisionBatchExplanationDraft = {
+  schemaVersion: "mvp-1"
+  explanationId: string
+  batchId: string
+  runtimeSessionId: string
+  policyPackId: string
+  source: GatewayBatchContext["source"]
+  summary: string
+  keyFindings: string[]
+  caseExplanations: SupervisionBatchCaseExplanation[]
+  limitations: string[]
+  llmAssisted: boolean
+  llmMetadata?: LlmProfileMetadata
+  generatedAt: string
+}
+
+type SupervisionBatchResult = {
+  schemaVersion: "mvp-1"
+  batchId: string
+  runtimeSessionId: string
+  policyPackId: string
+  source: GatewayBatchContext["source"]
+  externalCaseCount: number
+  supervisedToolCallCount: number
+  policyHitCount: number
+  guardrailHitCount: number
+  blockedCount: number
+  askCount: number
+  warnedCount: number
+  redactedCount: number
+  allowedCount: number
+  recordIds: string[]
+  cases: SupervisionBatchCaseResult[]
+  explanationDraft?: SupervisionBatchExplanationDraft
+  startedAt: string
+  endedAt: string
+}
+```
+
+批测约束:
+
+- `SupervisionBatchResult.recordIds` 必须能在对应 `RuntimeSupervisionRecord[]` 中找到。
+- 每条批测产生的 `RuntimeSupervisionRecord.gateway.batch.batchId` 必须等于当前 `batchId`。
+- 批测样本不得回流到 `DetectionReport`、`AgentRiskProfile` 或 `SupervisionPolicyPack`。
+- 批测命中的 platform guardrail 必须通过 `guardrailHitCount` 与策略包命中区分。
+- `SupervisionBatchExplanationDraft` 是 B 线对批测监督结果的解释草案，不是最终 `DefenseReport` 结论。
+- `SupervisionBatchExplanationDraft.caseExplanations[].recordIds` 必须来自同一个 `SupervisionBatchResult.recordIds`，LLM 不得生成或改写证据 ID。
+- LLM 只能辅助生成 `summary`、`keyFindings`、`limitations` 等解释文本，不得改变 case outcome、动作计数、策略命中或阻断结论。
+
 ### 10.4 RuntimeSupervisionRecord
 
 `RuntimeSupervisionRecord` 是 B 交给 C 的运行时监督事实。防御报告只能基于该对象证明告警、阻断、询问、脱敏等防御效果。
@@ -819,6 +1017,7 @@ type RuntimeSupervisionRecord = {
   targetId?: string
   inputEventId?: string
   outputEventId?: string
+  gateway?: GatewayRuntimeContext
   createdAt: string
 }
 ```
@@ -895,6 +1094,7 @@ P1 报告约束:
 - `AgentRiskProfile` 必须能追溯到一个 `DetectionReport`
 - `SupervisionPolicyPack` 必须能追溯到一个 `AgentRiskProfile`
 - `RuntimeSupervisionRecord.policyId` 必须存在于对应 `SupervisionPolicyPack.policies`
+- 例外: 当 `RuntimeSupervisionRecord.gateway.decisionSource === "platform_guardrail"` 时，`policyId` 可以使用 `platform.guardrail.*`，但防御报告不得把它统计为 C 线策略包命中。
 - `DefenseReport` 中的告警和阻断必须来自真实 `RuntimeSupervisionRecord[]`
 - 防御报告模块不得编造运行时阻断记录
 - 前端不得直接读取策略模板配置来解释策略命中

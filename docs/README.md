@@ -28,6 +28,8 @@
 - `A/p2-pyrit-python-bridge-contract.md`: 可选 PyRIT Python bridge 的输入输出、边界、烟测和后续接入约束。
 - `A/p2-openclaw-project-runtime-test.md`: 项目隔离 OpenClaw runtime 的本机部署、DeepSeek 模型映射和 required 验证结果。
 - `B/p1-b-runtime-supervision-work-plan.md`: B 线 P1 运行时监督实现计划。
+- `B/p3-b-workflow.md`: P3-B OpenClaw 外部工具实时监督网关的开发流程、多 agent 协作方式、阶段验收和审核模板。
+- `B/p3-b-llm-integration-plan.md`: P3-B LLM 接入计划，限定在工具语义画像增强、未知工具解释和批测解释辅助，不接管运行时监督决策。
 - `B/superpowers/**`: B 线历史设计规格和实现计划。
 - `p1-supervision-defense-plan.md`: P1 检测画像驱动的 Agent 运行时监督、策略包生成和防御报告规划。
 - `p2-real-agent-api-frontend-plan.md`: P2 以 OpenClaw 为核心演示 Agent 的正式 API、运行历史和前端演示系统规划。

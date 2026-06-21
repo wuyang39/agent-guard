@@ -5,12 +5,17 @@ import type {
   AgentUnderTest,
   AgentRiskProfile,
   DetectionReport,
+  ExternalToolRegistration,
+  GatewayBatchContext,
+  GatewayRuntimeContext,
   JsonObject,
   JsonValue,
   ReportArtifact,
   RiskCategory,
   RiskReport,
   RuntimeSupervisionRecord,
+  SupervisionBatchCase,
+  SupervisionBatchResult,
   SupervisionPolicyPack,
   ToolDefinition,
   ToolResultPayload,
@@ -23,6 +28,20 @@ import { TraceRecorder } from "../monitor/traceRecorder";
 import { createMCPMonitor } from "../monitor/mcpMonitor";
 import { createAgentSupervisor } from "../supervisor/agentSupervisor";
 import { createSupervisionBridge } from "../supervisor/supervisionBridge";
+import type { DownstreamMcpProvider } from "../gateway/downstreamMcpProvider";
+import {
+  buildExternalCanonicalToolId,
+  createEnvDownstreamMcpProviders,
+} from "../gateway/downstreamMcpProvider";
+import { createGatewayExecutionBridge } from "../gateway/gatewayExecutionBridge";
+import { buildSupervisionBatchExplanationDraft } from "../gateway/llmBatchExplainer";
+import { buildRuleBasedToolCapabilityProfile } from "../gateway/toolCapabilityProfiler";
+import { ExternalToolRegistry } from "../gateway/toolRegistry";
+import { createSandboxDownstreamProvider } from "../gateway/staticDownstreamProvider";
+import {
+  createConfiguredLlmClient,
+  loadLlmClientConfig,
+} from "../llm/llmClient";
 import { buildDefenseReport } from "../defense/defenseReportBuilder";
 import {
   exportDefenseHtmlReport,
@@ -36,6 +55,11 @@ import {
   saveRunGroup,
   saveSessionRecords,
 } from "../../storage/fileRunStore";
+import {
+  getSupervisionBatch,
+  listSupervisionBatches,
+  saveSupervisionBatch,
+} from "../../storage/fileSupervisionBatchStore";
 import { resolveInsideDirectory } from "../../storage/pathSafety";
 
 const CONFIGS_DIR = path.resolve(process.cwd(), "configs");
@@ -50,6 +74,7 @@ const REALTIME_TOOL_IDS = [
   "tool.call_api",
   "tool.send_request",
 ] as const;
+const STATIC_DOWNSTREAM_PROVIDER_ENABLED = true;
 
 const TOOL_NAME_BY_ID: Record<(typeof REALTIME_TOOL_IDS)[number], string> = {
   "tool.read_file": "agent_guard_read_file",
@@ -79,6 +104,12 @@ type JsonRpcResponse =
       error: { code: number; message: string; data?: JsonValue };
     };
 
+type RealtimeMcpOptions = {
+  sessionId?: string;
+  policyPackId?: string;
+  batch?: GatewayBatchContext;
+};
+
 type RealtimeSession = {
   runtimeSessionId: string;
   runGroupId: string;
@@ -103,6 +134,10 @@ export type RealtimeEvent = {
     | "tool_call_started"
     | "supervision_decision"
     | "tool_call_result"
+    | "provider_tools_refreshed"
+    | "provider_refresh_failed"
+    | "supervision_batch_started"
+    | "supervision_batch_completed"
     | "defense_report_generated";
   timestamp: string;
   runtimeSessionId?: string;
@@ -129,8 +164,15 @@ export type RealtimeActivePolicyState = {
 const sessions = new Map<string, RealtimeSession>();
 const realtimeEvents = new EventEmitter();
 const eventHistory: RealtimeEvent[] = [];
+const realtimeToolRegistry = new ExternalToolRegistry();
+const realtimeDownstreamProviders = new Map<string, DownstreamMcpProvider>();
+let activeRuntimeSessionId: string | undefined;
 let activePolicyPackId: string | undefined;
 let activePolicyUpdatedAt: string | undefined;
+let realtimeToolRegistryInitialized = false;
+let realtimeExternalProvidersInitialized = false;
+let realtimeExternalProviderRefresh: Promise<void> | undefined;
+let realtimeRegisteredExternalProviderIds = new Set<string>();
 const MAX_EVENT_HISTORY = 200;
 
 export type FinalizeRealtimeDefenseResult = {
@@ -162,7 +204,35 @@ export type PreparedRealtimeSession = {
 };
 
 export function getRealtimeMcpTools(): ReturnType<typeof toolToMcpTool>[] {
-  return getRealtimeToolDefinitions().map(toolToMcpTool);
+  return getRealtimeToolRegistrations().map(toolToMcpTool);
+}
+
+export async function refreshRealtimeMcpTools(): Promise<void> {
+  ensureRealtimeToolRegistry();
+  if (realtimeExternalProvidersInitialized) {
+    if (realtimeExternalProviderRefresh) {
+      await realtimeExternalProviderRefresh;
+    }
+    return;
+  }
+
+  realtimeExternalProvidersInitialized = true;
+  realtimeExternalProviderRefresh = refreshExternalMcpProviders();
+  await realtimeExternalProviderRefresh;
+}
+
+export async function reloadRealtimeMcpTools(): Promise<{
+  toolCount: number;
+  externalProviderCount: number;
+}> {
+  ensureRealtimeToolRegistry();
+  realtimeExternalProvidersInitialized = false;
+  realtimeExternalProviderRefresh = undefined;
+  await refreshRealtimeMcpTools();
+  return {
+    toolCount: getRealtimeMcpTools().length,
+    externalProviderCount: realtimeDownstreamProviders.size,
+  };
 }
 
 export async function finalizeRealtimeDefenseReport(
@@ -322,6 +392,7 @@ export async function prepareRealtimeSession(
 ): Promise<PreparedRealtimeSession> {
   const runtimeSessionId = opts.runtimeSessionId ?? createId("session");
   const session = await getOrCreateSession(runtimeSessionId, opts.policyPackId);
+  activeRuntimeSessionId = session.runtimeSessionId;
   return {
     runtimeSessionId: session.runtimeSessionId,
     runGroupId: session.runGroupId,
@@ -331,6 +402,174 @@ export async function prepareRealtimeSession(
     agentId: session.agentId,
     startedAt: session.startedAt,
   };
+}
+
+export type RunRealtimeSupervisionBatchInput = {
+  runtimeSessionId?: string;
+  policyPackId?: string;
+  source?: GatewayBatchContext["source"];
+  stopOnError?: boolean;
+  cases: SupervisionBatchCase[];
+};
+
+export async function runRealtimeSupervisionBatch(
+  input: RunRealtimeSupervisionBatchInput,
+): Promise<SupervisionBatchResult> {
+  if (!Array.isArray(input.cases) || input.cases.length === 0) {
+    throw new Error("Batch cases are required.");
+  }
+  if (input.cases.length > 100) {
+    throw new Error("Batch cases exceed the maximum of 100.");
+  }
+
+  const batchId = createId("batch");
+  const startedAt = nowIso();
+  const source = input.source ?? "external_unknown_test_pack";
+  const runtimeSessionId = input.runtimeSessionId ?? createId("session");
+  const session = await getOrCreateSession(runtimeSessionId, input.policyPackId);
+
+  emitRealtimeEvent({
+    type: "supervision_batch_started",
+    runtimeSessionId: session.runtimeSessionId,
+    policyPackId: session.policyPack.policyPackId,
+    traceId: session.traceId,
+    message: `Supervision batch ${batchId} started.`,
+    detail: {
+      batchId,
+      source,
+      externalCaseCount: input.cases.length,
+    },
+  });
+
+  const caseResults: SupervisionBatchResult["cases"] = [];
+
+  for (const [index, batchCase] of input.cases.entries()) {
+    const externalCaseId = batchCase.externalCaseId || `external_case.${index + 1}`;
+    const beforeRecordIds = new Set(session.bridge.getRecords().map((record) => record.recordId));
+    const args: Record<string, JsonValue> = {
+      ...batchCase.arguments,
+      _agentGuardSessionId: session.runtimeSessionId,
+    };
+
+    try {
+      const response = await handleToolCall(
+        {
+          name: batchCase.toolName,
+          arguments: args as JsonObject,
+        },
+        {
+          sessionId: session.runtimeSessionId,
+          policyPackId: session.policyPack.policyPackId,
+          batch: { batchId, externalCaseId, source },
+        },
+      );
+      const envelope = parseMcpToolEnvelope(response);
+      const newRecords = session.bridge
+        .getRecords()
+        .filter((record) => !beforeRecordIds.has(record.recordId));
+      caseResults.push({
+        externalCaseId,
+        toolName: batchCase.toolName,
+        status: envelope.blocked ? "blocked" : "completed",
+        blocked: envelope.blocked,
+        recordIds: newRecords.map((record) => record.recordId),
+        actionCounts: countRecordActions(newRecords),
+        gateway: envelope.gateway,
+        result: envelope.result,
+      });
+    } catch (error) {
+      const newRecords = session.bridge
+        .getRecords()
+        .filter((record) => !beforeRecordIds.has(record.recordId));
+      caseResults.push({
+        externalCaseId,
+        toolName: batchCase.toolName,
+        status: "failed",
+        blocked: false,
+        recordIds: newRecords.map((record) => record.recordId),
+        actionCounts: countRecordActions(newRecords),
+        error: error instanceof Error ? error.message : String(error),
+      });
+      if (input.stopOnError) break;
+    }
+  }
+
+  const allRecords = session.bridge
+    .getRecords()
+    .filter((record) => record.gateway?.batch?.batchId === batchId);
+  const actionCounts = countRecordActions(allRecords);
+  const baseResult: SupervisionBatchResult = {
+    schemaVersion: "mvp-1",
+    batchId,
+    runtimeSessionId: session.runtimeSessionId,
+    policyPackId: session.policyPack.policyPackId,
+    source,
+    externalCaseCount: input.cases.length,
+    supervisedToolCallCount: caseResults.length,
+    policyHitCount: allRecords.filter(
+      (record) => record.gateway?.decisionSource !== "platform_guardrail",
+    ).length,
+    guardrailHitCount: allRecords.filter(
+      (record) => record.gateway?.decisionSource === "platform_guardrail",
+    ).length,
+    blockedCount: actionCounts.deny ?? 0,
+    askCount: actionCounts.ask ?? 0,
+    warnedCount: actionCounts.warn ?? 0,
+    redactedCount: actionCounts.redact ?? 0,
+    allowedCount: actionCounts.allow ?? 0,
+    recordIds: allRecords.map((record) => record.recordId),
+    cases: caseResults,
+    startedAt,
+    endedAt: nowIso(),
+  };
+
+  const llmConfig = loadLlmClientConfig();
+  const explanationDraft = await buildSupervisionBatchExplanationDraft(baseResult, {
+    llmClient: createConfiguredLlmClient(llmConfig),
+    timeoutMs: llmConfig.timeoutMs,
+  });
+  const result: SupervisionBatchResult = {
+    ...baseResult,
+    explanationDraft,
+  };
+
+  await saveSupervisionBatch(result);
+  emitRealtimeEvent({
+    type: "supervision_batch_completed",
+    runtimeSessionId: session.runtimeSessionId,
+    policyPackId: session.policyPack.policyPackId,
+    traceId: session.traceId,
+    message: `Supervision batch ${batchId} completed.`,
+    detail: {
+      batchId,
+      source,
+      externalCaseCount: result.externalCaseCount,
+      supervisedToolCallCount: result.supervisedToolCallCount,
+      policyHitCount: result.policyHitCount,
+      guardrailHitCount: result.guardrailHitCount,
+      blockedCount: result.blockedCount,
+      askCount: result.askCount,
+      warnedCount: result.warnedCount,
+      redactedCount: result.redactedCount,
+      explanationId: explanationDraft.explanationId,
+      llmAssisted: explanationDraft.llmAssisted,
+    },
+  });
+
+  return result;
+}
+
+export async function getRealtimeSupervisionBatch(
+  batchId: string,
+): Promise<SupervisionBatchResult | undefined> {
+  return getSupervisionBatch(batchId);
+}
+
+export async function listRealtimeSupervisionBatches(opts: {
+  runtimeSessionId?: string;
+  limit?: number;
+} = {}): Promise<SupervisionBatchResult[]> {
+  return listSupervisionBatches(opts);
 }
 
 export async function getRealtimeActivePolicyState(
@@ -395,9 +634,13 @@ export function resetRealtimeSessions(runtimeSessionId?: string): number {
   let resetCount = 0;
   if (runtimeSessionId) {
     resetCount = sessions.delete(runtimeSessionId) ? 1 : 0;
+    if (activeRuntimeSessionId === runtimeSessionId) {
+      activeRuntimeSessionId = undefined;
+    }
   } else {
     resetCount = sessions.size;
     sessions.clear();
+    activeRuntimeSessionId = undefined;
   }
 
   emitRealtimeEvent({
@@ -428,7 +671,7 @@ export function subscribeRealtimeEvents(
 
 export async function handleRealtimeMcpJsonRpc(
   request: JsonRpcRequest | JsonRpcRequest[],
-  opts: { sessionId?: string; policyPackId?: string } = {},
+  opts: RealtimeMcpOptions = {},
 ): Promise<JsonRpcResponse | JsonRpcResponse[] | undefined> {
   if (Array.isArray(request)) {
     const responses = await Promise.all(
@@ -461,9 +704,11 @@ export async function handleRealtimeMcpJsonRpc(
         return rpcResult(id, {});
 
       case "tools/list":
+        await refreshRealtimeMcpTools();
         return rpcResult(id, { tools: getRealtimeMcpTools() });
 
       case "tools/call":
+        await refreshRealtimeMcpTools();
         return rpcResult(id, await handleToolCall(request.params ?? {}, opts));
 
       default:
@@ -480,15 +725,22 @@ export async function handleRealtimeMcpJsonRpc(
 
 async function handleToolCall(
   params: JsonObject,
-  opts: { sessionId?: string; policyPackId?: string },
+  opts: RealtimeMcpOptions,
 ): Promise<JsonObject> {
   const rawName = typeof params.name === "string" ? params.name : "";
-  const toolId = normalizeRealtimeToolId(rawName);
-  if (!toolId) {
-    throw new Error(`Unknown Agent Guard MCP tool: ${rawName || "(missing)"}`);
-  }
-
   const rawArgs = params.arguments;
+  const registration = resolveRealtimeToolRegistration(rawName);
+  if (!registration) {
+    return handleUnknownToolCall(
+      rawName,
+      isJsonObject(rawArgs) ? rawArgs : {},
+      opts,
+    );
+  }
+  const toolId = registration.canonicalToolId;
+  const toolName = registration.originalToolName;
+  const gateway = buildGatewayRuntimeContext(registration, opts.batch);
+
   const args = normalizeToolArguments(
     toolId,
     isJsonObject(rawArgs) ? rawArgs : {},
@@ -496,10 +748,11 @@ async function handleToolCall(
   const sessionId =
     typeof args._agentGuardSessionId === "string"
       ? args._agentGuardSessionId
-      : opts.sessionId ?? createId("session");
+      : opts.sessionId ?? activeRuntimeSessionId ?? createId("session");
   delete args._agentGuardSessionId;
 
   const session = await getOrCreateSession(sessionId, opts.policyPackId);
+  activeRuntimeSessionId = session.runtimeSessionId;
   const beforeRecords = session.bridge.getRecords();
   emitRealtimeEvent({
     type: "tool_call_started",
@@ -507,39 +760,54 @@ async function handleToolCall(
     policyPackId: session.policyPack.policyPackId,
     traceId: session.traceId,
     toolId,
-    toolName: rawName || TOOL_NAME_BY_ID[toolId],
+    toolName,
     message: `Tool call started: ${toolId}.`,
-    detail: { parameters: args },
+    detail: {
+      parameters: args,
+      gateway: gateway as unknown as JsonObject,
+    },
   });
 
-  const result = await session.bridge.handleToolCall({
-    toolId,
-    toolName: rawName || TOOL_NAME_BY_ID[toolId],
-    parameters: args,
-  });
+  let result: ToolResultPayload | undefined;
+  let bridgeError: unknown;
+  try {
+    result = await session.bridge.handleToolCall({
+      toolId,
+      toolName,
+      parameters: args,
+      gateway,
+    });
+  } catch (error) {
+    bridgeError = error;
+  }
+
   const afterRecords = session.bridge.getRecords();
   const newRecords = afterRecords.slice(beforeRecords.length);
 
   await persistRealtimeSession(session);
+  emitSupervisionDecisionEvents(session, newRecords, toolId, toolName);
 
-  for (const record of newRecords) {
+  if (bridgeError) {
     emitRealtimeEvent({
-      type: "supervision_decision",
+      type: "tool_call_result",
       runtimeSessionId: session.runtimeSessionId,
-      policyPackId: record.policyPackId,
+      policyPackId: session.policyPack.policyPackId,
       traceId: session.traceId,
       toolId,
-      toolName: rawName || TOOL_NAME_BY_ID[toolId],
-      action: record.action,
-      targetType: record.targetType,
-      message: `[${record.action.toUpperCase()}] ${record.targetType}/${record.targetId}: ${record.decisionReason}`,
-      detail: compactJsonObject({
-        recordId: record.recordId,
-        policyId: record.policyId,
-        targetId: record.targetId,
-        decisionReason: record.decisionReason,
-      }),
+      toolName,
+      blocked: true,
+      message: `Tool call failed after supervision: ${toolId}.`,
+      detail: {
+        error: bridgeError instanceof Error ? bridgeError.message : String(bridgeError),
+        newRecordCount: newRecords.length,
+        gateway: gateway as unknown as JsonObject,
+      },
     });
+    throw bridgeError;
+  }
+
+  if (!result) {
+    throw new Error(`Tool call ${toolId} returned no result.`);
   }
 
   emitRealtimeEvent({
@@ -548,12 +816,13 @@ async function handleToolCall(
     policyPackId: session.policyPack.policyPackId,
     traceId: session.traceId,
     toolId,
-    toolName: rawName || TOOL_NAME_BY_ID[toolId],
+    toolName,
     blocked: isBlockedToolResult(result),
     message: `Tool call ${isBlockedToolResult(result) ? "blocked" : "completed"}: ${toolId}.`,
     detail: {
       callId: result.callId,
       newRecordCount: newRecords.length,
+      gateway: gateway as unknown as JsonObject,
     },
   });
 
@@ -561,11 +830,195 @@ async function handleToolCall(
     content: [
       {
         type: "text",
-        text: JSON.stringify(toMcpToolResult(result, session), null, 2),
+        text: JSON.stringify(toMcpToolResult(result, session, gateway), null, 2),
       },
     ],
     isError: Boolean(isBlockedToolResult(result)),
   };
+}
+
+async function handleUnknownToolCall(
+  rawName: string,
+  rawArgs: JsonObject,
+  opts: RealtimeMcpOptions,
+): Promise<JsonObject> {
+  const args: Record<string, JsonValue> = { ...rawArgs };
+  const sessionId =
+    typeof args._agentGuardSessionId === "string"
+      ? args._agentGuardSessionId
+      : opts.sessionId ?? activeRuntimeSessionId ?? createId("session");
+  delete args._agentGuardSessionId;
+
+  const gateway = buildUnknownGatewayRuntimeContext(rawName, opts.batch);
+  const session = await getOrCreateSession(sessionId, opts.policyPackId);
+  activeRuntimeSessionId = session.runtimeSessionId;
+
+  emitRealtimeEvent({
+    type: "tool_call_started",
+    runtimeSessionId: session.runtimeSessionId,
+    policyPackId: session.policyPack.policyPackId,
+    traceId: session.traceId,
+    toolId: gateway.canonicalToolId,
+    toolName: gateway.originalToolName,
+    message: `Unknown external tool call blocked: ${gateway.originalToolName}.`,
+    detail: {
+      parameters: args as JsonObject,
+      gateway: gateway as unknown as JsonObject,
+    },
+  });
+
+  const record = session.bridge.recordPlatformGuardrail({
+    policyId: "platform.guardrail.unknown_external_tool",
+    action: "deny",
+    reason: `Platform guardrail: unknown external tool "${gateway.originalToolName}" is not registered with Agent Guard Gateway.`,
+    targetType: "tool_call",
+    targetId: gateway.canonicalToolId,
+    payload: {
+      toolId: gateway.canonicalToolId,
+      toolName: gateway.originalToolName,
+      parameters: args as JsonObject,
+    },
+    gateway,
+    riskLevel: "high",
+  });
+
+  session.recorder.record("system_error", "system", {
+    code: "PLATFORM_GUARDRAIL_UNKNOWN_EXTERNAL_TOOL",
+    message: record.decisionReason,
+    detail: {
+      policyId: record.policyId,
+      policyPackId: record.policyPackId,
+      targetId: record.targetId ?? gateway.canonicalToolId,
+    },
+  });
+
+  const result: ToolResultPayload = {
+    callId: createId("call"),
+    toolId: gateway.canonicalToolId,
+    result: {
+      blocked: true,
+      reason: "PLATFORM_GUARDRAIL_UNKNOWN_EXTERNAL_TOOL",
+      policyId: record.policyId,
+      toolName: gateway.originalToolName,
+    },
+    containsInjection: false,
+    riskTagIds: ["unknown_behavior"],
+  };
+
+  await persistRealtimeSession(session);
+
+  emitRealtimeEvent({
+    type: "supervision_decision",
+    runtimeSessionId: session.runtimeSessionId,
+    policyPackId: record.policyPackId,
+    traceId: session.traceId,
+    toolId: gateway.canonicalToolId,
+    toolName: gateway.originalToolName,
+    action: record.action,
+    targetType: record.targetType,
+    message: `[${record.action.toUpperCase()}] ${record.targetType}/${record.targetId}: ${record.decisionReason}`,
+    detail: compactJsonObject({
+      recordId: record.recordId,
+      policyId: record.policyId,
+      targetId: record.targetId,
+      decisionReason: record.decisionReason,
+      gateway: record.gateway as unknown as JsonObject,
+    }),
+  });
+
+  emitRealtimeEvent({
+    type: "tool_call_result",
+    runtimeSessionId: session.runtimeSessionId,
+    policyPackId: session.policyPack.policyPackId,
+    traceId: session.traceId,
+    toolId: gateway.canonicalToolId,
+    toolName: gateway.originalToolName,
+    blocked: true,
+    message: `Tool call blocked by platform guardrail: ${gateway.originalToolName}.`,
+    detail: {
+      callId: result.callId,
+      newRecordCount: 1,
+      gateway: gateway as unknown as JsonObject,
+    },
+  });
+
+  return {
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify(toMcpToolResult(result, session, gateway), null, 2),
+      },
+    ],
+    isError: true,
+  };
+}
+
+function emitSupervisionDecisionEvents(
+  session: RealtimeSession,
+  records: RuntimeSupervisionRecord[],
+  toolId: string,
+  toolName: string,
+): void {
+  for (const record of records) {
+    emitRealtimeEvent({
+      type: "supervision_decision",
+      runtimeSessionId: session.runtimeSessionId,
+      policyPackId: record.policyPackId,
+      traceId: session.traceId,
+      toolId,
+      toolName,
+      action: record.action,
+      targetType: record.targetType,
+      message: `[${record.action.toUpperCase()}] ${record.targetType}/${record.targetId}: ${record.decisionReason}`,
+      detail: compactJsonObject({
+        recordId: record.recordId,
+        policyId: record.policyId,
+        targetId: record.targetId,
+        decisionReason: record.decisionReason,
+        gateway: record.gateway as unknown as JsonObject,
+      }),
+    });
+  }
+}
+
+function parseMcpToolEnvelope(response: JsonObject): {
+  blocked: boolean;
+  gateway?: GatewayRuntimeContext;
+  result?: JsonValue;
+} {
+  const content = response.content;
+  if (!Array.isArray(content)) {
+    return { blocked: false };
+  }
+  const textItem = content.find(
+    (item) =>
+      isJsonObject(item) &&
+      item.type === "text" &&
+      typeof item.text === "string",
+  );
+  if (!isJsonObject(textItem) || typeof textItem.text !== "string") {
+    return { blocked: false };
+  }
+  try {
+    const parsed = JSON.parse(textItem.text) as JsonObject;
+    return {
+      blocked: parsed.blocked === true,
+      gateway: isJsonObject(parsed.gateway)
+        ? (parsed.gateway as unknown as GatewayRuntimeContext)
+        : undefined,
+      result: parsed.result,
+    };
+  } catch {
+    return { blocked: false };
+  }
+}
+
+function countRecordActions(records: RuntimeSupervisionRecord[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const record of records) {
+    counts[record.action] = (counts[record.action] ?? 0) + 1;
+  }
+  return counts;
 }
 
 async function getOrCreateSession(
@@ -592,6 +1045,7 @@ async function getOrCreateSession(
   }
 
   const repository = await loadConfigRepository(CONFIGS_DIR);
+  await refreshRealtimeMcpTools();
   const sandboxProfile = buildSandboxProfile(repository);
   const {
     policyPack,
@@ -613,8 +1067,13 @@ async function getOrCreateSession(
   const recorder = new TraceRecorder({ traceId, runId, contextId, caseId });
   const monitor = createMCPMonitor(sandbox, recorder);
   const supervisor = createAgentSupervisor(policyPack);
+  const gatewayExecutionBridge = createGatewayExecutionBridge({
+    fallbackBridge: monitor.createBridge(),
+    providers: getRealtimeDownstreamProviders(),
+    recorder,
+  });
   const bridge = createSupervisionBridge({
-    baseBridge: monitor.createBridge(),
+    baseBridge: gatewayExecutionBridge,
     supervisor,
     recorder,
     runtimeSessionId,
@@ -1025,11 +1484,167 @@ function getRealtimeToolDefinitions(): ToolDefinition[] {
   }));
 }
 
-function toolToMcpTool(tool: ToolDefinition): JsonObject {
+function getRealtimeToolRegistrations(): ExternalToolRegistration[] {
+  ensureRealtimeToolRegistry();
+  return realtimeToolRegistry.list();
+}
+
+function getRealtimeDownstreamProviders(): DownstreamMcpProvider[] {
+  return [...realtimeDownstreamProviders.values()];
+}
+
+function ensureRealtimeToolRegistry(): void {
+  if (realtimeToolRegistryInitialized) return;
+
+  const realtimeTools = getRealtimeToolDefinitions();
+  for (const tool of realtimeTools) {
+    const originalToolName =
+      TOOL_NAME_BY_ID[tool.toolId as (typeof REALTIME_TOOL_IDS)[number]] ?? tool.name;
+    realtimeToolRegistry.register({
+      providerId: "agent_guard_realtime",
+      providerName: "Agent Guard Realtime MCP",
+      providerType: "agent_guard",
+      originalToolName,
+      exposedToolName: originalToolName,
+      canonicalToolId: tool.toolId,
+      description: tool.description,
+      inputSchema: tool.schema,
+    });
+  }
+
+  if (STATIC_DOWNSTREAM_PROVIDER_ENABLED) {
+    const sandboxProvider = createSandboxDownstreamProvider(realtimeTools);
+    for (const tool of sandboxProvider.listTools()) {
+      realtimeToolRegistry.register({
+        providerId: sandboxProvider.providerId,
+        providerName: sandboxProvider.providerName,
+        providerType: "mcp",
+        originalToolName: tool.originalToolName,
+        canonicalToolId: tool.canonicalToolId,
+        description: tool.description,
+        inputSchema: tool.inputSchema,
+      });
+    }
+  }
+
+  realtimeToolRegistryInitialized = true;
+}
+
+async function refreshExternalMcpProviders(): Promise<void> {
+  for (const providerId of realtimeRegisteredExternalProviderIds) {
+    realtimeToolRegistry.removeProvider(providerId);
+  }
+  realtimeRegisteredExternalProviderIds = new Set<string>();
+  realtimeDownstreamProviders.clear();
+
+  const providers = createEnvDownstreamMcpProviders();
+  const llmConfig = loadLlmClientConfig();
+  const llmClient = createConfiguredLlmClient(llmConfig);
+  for (const provider of providers) {
+    try {
+      const tools = await provider.listTools();
+      realtimeDownstreamProviders.set(provider.providerId, provider);
+      realtimeRegisteredExternalProviderIds.add(provider.providerId);
+      for (const tool of tools) {
+        await realtimeToolRegistry.registerWithLlm({
+          providerId: provider.providerId,
+          providerName: provider.providerName,
+          providerType: provider.providerType,
+          originalToolName: tool.originalToolName,
+          canonicalToolId: tool.canonicalToolId,
+          description: tool.description,
+          inputSchema: tool.inputSchema,
+        }, {
+          llmClient,
+          llmTimeoutMs: llmConfig.timeoutMs,
+        });
+      }
+      emitRealtimeEvent({
+        type: "provider_tools_refreshed",
+        message: `External MCP provider ${provider.providerId} registered ${tools.length} tools.`,
+        detail: {
+          providerId: provider.providerId,
+          providerName: provider.providerName,
+          toolCount: tools.length,
+        },
+      });
+    } catch (error) {
+      emitRealtimeEvent({
+        type: "provider_refresh_failed",
+        message:
+          error instanceof Error
+            ? error.message
+            : `External MCP provider ${provider.providerId} refresh failed.`,
+        detail: {
+          providerId: provider.providerId,
+          providerName: provider.providerName,
+        },
+      });
+    }
+  }
+}
+
+function resolveRealtimeToolRegistration(
+  name: string,
+): ExternalToolRegistration | undefined {
+  ensureRealtimeToolRegistry();
+
+  const direct = realtimeToolRegistry.getByExposedName(name);
+  if (direct) return direct;
+
+  const canonicalToolId = normalizeRealtimeToolId(name);
+  return canonicalToolId
+    ? realtimeToolRegistry.getByCanonicalId(canonicalToolId)
+    : undefined;
+}
+
+function buildGatewayRuntimeContext(
+  registration: ExternalToolRegistration,
+  batch?: GatewayBatchContext,
+): GatewayRuntimeContext {
   return {
-    name: TOOL_NAME_BY_ID[tool.toolId as (typeof REALTIME_TOOL_IDS)[number]] ?? tool.name,
+    providerId: registration.providerId,
+    providerName: registration.providerName,
+    providerType: registration.providerType,
+    originalToolName: registration.originalToolName,
+    exposedToolName: registration.exposedToolName,
+    canonicalToolId: registration.canonicalToolId,
+    capabilityProfileSnapshot: registration.capabilityProfile,
+    decisionSource: "policy",
+    batch,
+  };
+}
+
+function buildUnknownGatewayRuntimeContext(
+  rawName: string,
+  batch?: GatewayBatchContext,
+): GatewayRuntimeContext {
+  const originalToolName = rawName || "(missing)";
+  const canonicalToolId = buildExternalCanonicalToolId("unknown", originalToolName);
+  return {
+    providerId: "unknown",
+    providerName: "Unknown external provider",
+    providerType: "unknown",
+    originalToolName,
+    exposedToolName: rawName || "unknown_external_tool",
+    canonicalToolId,
+    capabilityProfileSnapshot: buildRuleBasedToolCapabilityProfile({
+      originalToolName,
+      canonicalToolId,
+      providerType: "unknown",
+      description: "Unregistered external tool call observed at Agent Guard Gateway.",
+      inputSchema: {},
+    }),
+    decisionSource: "platform_guardrail",
+    batch,
+  };
+}
+
+function toolToMcpTool(tool: ExternalToolRegistration): JsonObject {
+  return {
+    name: tool.exposedToolName,
     description: tool.description,
-    inputSchema: tool.schema,
+    inputSchema: tool.inputSchema,
   };
 }
 
@@ -1134,6 +1749,7 @@ function normalizeToolArguments(
 function toMcpToolResult(
   result: ToolResultPayload,
   session: RealtimeSession,
+  gateway: GatewayRuntimeContext,
 ): JsonObject {
   return {
     runtimeSessionId: session.runtimeSessionId,
@@ -1141,6 +1757,7 @@ function toMcpToolResult(
     policyPackId: session.policyPack.policyPackId,
     toolId: result.toolId,
     callId: result.callId,
+    gateway: gateway as unknown as JsonObject,
     result: result.result,
     blocked: isBlockedToolResult(result),
     supervisionRecords: session.bridge.getRecords().slice(-5),

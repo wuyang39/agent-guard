@@ -1,4 +1,5 @@
 import type { JsonObject, RiskLevel, SchemaVersion } from "./common";
+import type { GatewayRuntimeContext } from "./gateway";
 import type { SupervisionAction, SupervisionTargetType } from "./policy";
 
 export type RuntimeSupervisionRecord = {
@@ -14,6 +15,7 @@ export type RuntimeSupervisionRecord = {
   targetId?: string;
   inputEventId?: string;
   outputEventId?: string;
+  gateway?: GatewayRuntimeContext;
   createdAt: string;
 };
 
@@ -90,4 +92,5 @@ export type SupervisionRuntimeAction = {
   targetId?: string;
   payload: RuntimeActionPayload;
   inputEventId?: string;
+  gateway?: GatewayRuntimeContext;
 };

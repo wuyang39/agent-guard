@@ -24,6 +24,7 @@ export function recordSupervisionDecision(
     targetType: action.targetType,
     targetId: action.targetId,
     inputEventId: action.inputEventId,
+    gateway: action.gateway,
     createdAt: nowIso(),
   };
 }

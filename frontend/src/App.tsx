@@ -23,12 +23,14 @@ import {
   EvidenceCenterPage,
   type EvidenceTabKey,
 } from "./pages/EvidenceCenter/EvidenceCenterPage";
+import { RuntimeConfigPage } from "./pages/RuntimeConfig/RuntimeConfigPage";
 import { LiveSupervisionPage } from "./pages/Supervision/LiveSupervisionPage";
 
 type ViewKey =
   | "agent"
   | "dashboard"
   | "supervision"
+  | "runtime-config"
   | "defense"
   | "evidence";
 
@@ -328,6 +330,12 @@ export function App() {
           <button className={view === "supervision" ? "active" : ""} onClick={() => setView("supervision")}>
             实时监督
           </button>
+          <button
+            className={view === "runtime-config" ? "active" : ""}
+            onClick={() => setView("runtime-config")}
+          >
+            运行配置
+          </button>
           <button className={view === "defense" ? "active" : ""} onClick={() => setView("defense")}>
             防御报告
           </button>
@@ -362,6 +370,7 @@ export function App() {
             onReportGenerated={acceptRealtimeDefenseReport}
           />
         ) : null}
+        {view === "runtime-config" ? <RuntimeConfigPage /> : null}
         {view === "defense" ? (
           <DefenseReportPage
             onGoDetection={() => openEvidence("detection")}

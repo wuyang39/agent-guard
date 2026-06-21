@@ -1,6 +1,7 @@
 import { agentsApi } from "./agents";
 import { realtimeApi } from "./realtime";
 import { reportsApi } from "./reports";
+import { runtimeConfigApi } from "./runtimeConfig";
 import { runsApi } from "./runs";
 import { systemApi } from "./system";
 
@@ -12,4 +13,5 @@ export const agentGuardApi = {
   ...runsApi,
   ...reportsApi,
   ...realtimeApi,
+  ...runtimeConfigApi,
 };

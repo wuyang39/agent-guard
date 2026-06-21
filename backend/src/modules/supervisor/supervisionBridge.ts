@@ -22,6 +22,7 @@ import type { TraceRecorder } from "../monitor/traceRecorder";
 import type { AgentSupervisor } from "./agentSupervisor";
 import { findMatchingPolicies } from "./policyEngine";
 import { askChannel, getAskTimeoutConfig } from "./askChannel";
+import { recordSupervisionDecision } from "./supervisionRecorder";
 
 export type SupervisionBridgeOptions = {
   baseBridge: AgentMcpBridge;
@@ -29,6 +30,21 @@ export type SupervisionBridgeOptions = {
   recorder: TraceRecorder;
   runtimeSessionId: string;
   agentId: string;
+};
+
+export type PlatformGuardrailDecisionInput = Omit<
+  SupervisionRuntimeAction,
+  "runtimeSessionId" | "agentId"
+> & {
+  policyId: string;
+  action: SupervisionPolicy["action"];
+  reason: string;
+  riskLevel?: SupervisionPolicy["riskLevel"];
+};
+
+export type SupervisionBridgeRuntime = AgentMcpBridge & {
+  getRecords(): RuntimeSupervisionRecord[];
+  recordPlatformGuardrail(input: PlatformGuardrailDecisionInput): RuntimeSupervisionRecord;
 };
 
 const ACTION_PRIORITY: Record<string, number> = {
@@ -48,7 +64,30 @@ function highestAction(
   );
 }
 
-function mapTargetTypeForToolCall(toolId: string): SupervisionTargetType {
+function mapTargetTypeForToolCall(request: ToolCallRequest): SupervisionTargetType {
+  const profile = request.gateway?.capabilityProfileSnapshot;
+  const capabilityTags = new Set(profile?.capabilityTags ?? []);
+  const surfaces = new Set(profile?.surfaces ?? []);
+  const operations = new Set(profile?.operations ?? []);
+
+  if (capabilityTags.has("shell.execute") || operations.has("execute") || surfaces.has("code")) {
+    return "code_execution";
+  }
+  if (capabilityTags.has("email.send") || surfaces.has("communication")) {
+    return "email_send";
+  }
+  if (
+    capabilityTags.has("network.http") ||
+    surfaces.has("network") ||
+    surfaces.has("browser")
+  ) {
+    return "api_call";
+  }
+  if (capabilityTags.has("filesystem.write")) {
+    return "file_write";
+  }
+
+  const toolId = request.toolId;
   switch (toolId) {
     case "tool.write_file":
       return "file_write";
@@ -206,7 +245,7 @@ function resolveRequestParameterKey(
 
 export function createSupervisionBridge(
   opts: SupervisionBridgeOptions,
-): AgentMcpBridge & { getRecords(): RuntimeSupervisionRecord[] } {
+): SupervisionBridgeRuntime {
   const { baseBridge, supervisor, recorder, runtimeSessionId, agentId } = opts;
   const allRecords: RuntimeSupervisionRecord[] = [];
 
@@ -222,8 +261,38 @@ export function createSupervisionBridge(
       return [...allRecords];
     },
 
+    recordPlatformGuardrail(input): RuntimeSupervisionRecord {
+      const record = recordSupervisionDecision(
+        supervisor.policyPack.policyPackId,
+        {
+          policyId: input.policyId,
+          sourceWeaknessIds: [],
+          name: "Platform guardrail",
+          description: input.reason,
+          targetType: input.targetType,
+          action: input.action,
+          riskLevel: input.riskLevel ?? "high",
+          match: { relation: "all", matchers: [] },
+          reason: input.reason,
+        },
+        {
+          runtimeSessionId,
+          agentId,
+          targetType: input.targetType,
+          targetId: input.targetId,
+          payload: input.payload,
+          inputEventId: input.inputEventId,
+          gateway: input.gateway
+            ? { ...input.gateway, decisionSource: "platform_guardrail" }
+            : undefined,
+        },
+      );
+      allRecords.push(record);
+      return record;
+    },
+
     async handleToolCall(request: ToolCallRequest): Promise<ToolResultPayload> {
-      const targetType = mapTargetTypeForToolCall(request.toolId);
+      const targetType = mapTargetTypeForToolCall(request);
       const runtimePayload = buildRuntimePayload(targetType, request);
 
       const action: SupervisionRuntimeAction = {
@@ -232,6 +301,7 @@ export function createSupervisionBridge(
         targetType,
         targetId: request.toolId,
         payload: runtimePayload,
+        gateway: request.gateway,
       };
 
       const records = supervisor.preCheck(action);

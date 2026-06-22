@@ -1051,3 +1051,39 @@ generated/a-line/**
 - 同一攻击方式允许多次变异运行，优先通过多个 `UserPromptSeed.persona` 和多个 PyRIT roleplay operator 扩展。
 - 新增资源/攻击/user prompt/响应/operator 后先运行 `npm run a:generate-corpus`，再运行 `npm run verify:a-corpus`。
 - 不因为 demo/OpenClaw 单机联调状态回退 A 线 full corpus 规模或目录结构。
+
+## 21. 2026-06-22 P3-A PyRIT operator 库升级与 p3-a-1 语料版本
+
+分支: `a/p3-a-corpus-implementation-plan`
+
+本轮根据用户要求继续去掉 A 线的 demo/MVP 约束，把 operator、source metadata、seed 和 generated corpus 统一推进到 P3-A 最终语料工程口径。根目录运行时对象仍可继续用 `mvp-1` 作为 B/C 线兼容域，但 `configs/a-line/**` 与 `generated/a-line/**` 已切到 `schemaVersion: "p3-a-1"`。
+
+实现要点:
+
+- `SchemaVersion` 扩展为 `"mvp-1" | "p3-a-1"`；A 线 corpus generator、seed factory、run profile、source index 和 generated stats 使用 `p3-a-1`。
+- `mutation_operators.json` 从 85 个扩展到 162 个，其中 PyRIT 来源 140 个，覆盖 encoding、unicode/token smuggling、obfuscation、format carrier、roleplay、multi-turn、language/tone/persuasion、XPIA 和 prompt fuzzer。
+- `mutationOperators.ts` 新增 deterministic TS 实现，避免只增加空 JSON 条目。新增实现包括 Base32/Base85/ROT47/Vigenere、HTML entity、double URL encode、keyboard shift、char swap、word shuffle、diacritic/zalgo、variation selector、sneaky bits、ASCII box、CSV/TOML/INI/XML/HTTP/MIME/logfmt/diff/Mermaid/Markdown table、math obfuscation、chunked request 等。
+- `UserPromptSeed` 扩展到 889 条，新增 chunked handoff、XPIA external content、delegated evidence bundle、audit board、tabletop incident、token smuggling hint、multimodal fixture、document review misread、fuzzer campaign 和 policy training contrast 等材料层。
+- `ResourceSeed` 扩展到 1143 条，新增 MCP tool manifest、OAuth consent、browser cookie、intranet preview、vector store collision、outdated policy chunk、phishing-like approval、payment run approval 等资源面。
+- `validateCorpus()` 的 operator 数量门槛从 45 提升到 150，防止后续退回薄 operator 库。
+- `configs/a-line/README.md`、`docs/P3plan.md`、`docs/contracts.md`、`docs/interfaces.md`、`docs/architecture.md` 和本工作日志已同步“最终语料域 + 共享运行时兼容域”的边界。
+
+当前规模:
+
+```txt
+resource seeds: 1143
+attack seeds: 839
+user prompt seeds: 889
+tool response seeds: 309
+mutation operators: 162
+generated resources: 1143
+generated prompts: 2400
+generated test cases: 2400
+generated test oracles: 2400
+```
+
+维护要求:
+
+- 新增 PyRIT operator 时，必须同时更新 operator spec 和 `mutationOperators.ts` 的 deterministic/template 实现。
+- `UserPromptSeed` 必须继续作为变异前材料层参与 `AttackSeed + UserPromptSeed -> operator` 流程，不能删除或并回 `AttackSeed`。
+- `smoke/openclaw/regression` 只是从最终语料库抽样出来的检查/联调/回归视图，不再作为 A 线规模上限。

@@ -1,12 +1,12 @@
 # A 线配置目录说明
 
-本目录只存放 A 线攻击库和语料工厂配置。`configs/` 根目录保留稳定运行基线配置，例如 `tools.json`、`resources.json`、`test_cases.json`、`risk_rules.json` 和 `supervision_policy_templates.json`。
+本目录只存放 A 线攻击库和语料工厂配置。A 线配置与生成物使用 `schemaVersion: "p3-a-1"`，不再按 demo/MVP 体量妥协；`configs/` 根目录中的 `tools.json`、`resources.json`、`test_cases.json`、`risk_rules.json` 和 `supervision_policy_templates.json` 仅作为跨线共享运行时 fixture 与兼容入口。
 
 ## 目录分层
 
 ```txt
 configs/
-  *.json                         # 稳定运行基线，由 loadConfigRepository() 默认加载
+  *.json                         # 跨线共享运行时 fixture，由 loadConfigRepository() 默认加载
   a-line/
     sources/                     # PyRIT/AIG 来源索引和攻击库元数据
     corpus/
@@ -32,14 +32,15 @@ generated/a-line/
 - `corpus/seeds/attack_seeds.json`: 攻击目标、目标工具/资源、风险类别和基础 objective/user prompt。
 - `corpus/seeds/user_prompt_seeds.json`: 进入 PyRIT/operator 变异前的用户 prompt 材料层，覆盖直接请求、歧义请求、委托授权、多轮铺垫、roleplay persona 和 benign control。
 - `corpus/seeds/tool_response_seeds.json`: 工具响应注入、secret 泄露、debug 泄露和 benign control 种子。
-- `corpus/operators/mutation_operators.json`: native/template/metadata operator 目录。
-- `corpus/profiles/*.json`: 生成比例和 `smoke/openclaw/regression/full-corpus` 工程运行档位。`smoke/openclaw/regression` 是自动化稳定档位，`full-corpus` 是完整覆盖档位。
+- `corpus/operators/mutation_operators.json`: PyRIT 为主、AIG/手工/用户补充为辅的 native/template/metadata operator 目录。
+- `corpus/profiles/*.json`: 生成比例和 `smoke/openclaw/regression/full-corpus` 工程视图。`smoke/openclaw/regression` 是从最终语料库抽样出来的检查/联调/回归视图，`full-corpus` 是完整覆盖视图，不代表 A 线目标被 demo 缩减。
 
 ## 维护规则
 
 1. 不要把 seed、operator、source index、profile 文件放回 `configs/` 根目录。
-2. 常规 `loadConfigRepository()` 只消费根目录稳定基线，generated corpus 必须显式按 profile 加载。
+2. 常规 `loadConfigRepository()` 只消费根目录共享运行时 fixture，generated corpus 必须显式按 profile 加载。
 3. `generated/a-line/test_oracles.generated.json` 只用于离线验证和质量检查，不进入运行时风险判定。
 4. PyRIT 是 A 线攻击库主底座；AIG 只作为 Agent/MCP 策略和 enhancer 补充来源。
 5. `user_prompt_seeds.json` 必须是非重复材料库，不得退化为 `attack_seeds.json` 的机械复制。
-6. 运行 `npm run a:generate-corpus` 后必须运行 `npm run verify:a-corpus`，再按影响范围运行全量验证。
+6. 新增 operator 必须有 `mutationOperators.ts` 的确定性实现或明确的 template/metadata 语义，不能只增加空 JSON 条目。
+7. 运行 `npm run a:generate-corpus` 后必须运行 `npm run verify:a-corpus`，再按影响范围运行全量验证。

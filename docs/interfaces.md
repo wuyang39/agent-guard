@@ -287,7 +287,7 @@ TestContext + InteractionTrace
 
 每次联调前检查:
 
-- 所有共享对象都有 `schemaVersion: "mvp-1"`
+- 运行时共享对象仍可使用 `schemaVersion: "mvp-1"`；A 线 corpus/source/generated 对象使用 `schemaVersion: "p3-a-1"`，跨线联调时不得把 full corpus 默认注入运行时。
 - `TestContext.caseId` 与 `InteractionTrace.caseId` 一致
 - `TestContext.contextId` 与 `InteractionTrace.contextId` 一致
 - `InteractionTrace.events` 按 `sequence` 单调递增

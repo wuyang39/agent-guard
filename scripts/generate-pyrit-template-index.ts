@@ -71,7 +71,7 @@ async function main(): Promise<void> {
 
   const groups = buildGroups(templates);
   const payload = {
-    schemaVersion: "mvp-1",
+    schemaVersion: "p3-a-1",
     indexId: "pyrit.jailbreak_templates.p2",
     name: "PyRIT jailbreak template metadata index",
     description:

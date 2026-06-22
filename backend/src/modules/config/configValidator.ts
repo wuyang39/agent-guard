@@ -15,6 +15,7 @@ export type ValidationResult = {
 };
 
 const schemaVersion = "mvp-1";
+const aLineSchemaVersion = "p3-a-1";
 const matcherOperators = new Set([
   "exists",
   "equals",
@@ -477,11 +478,11 @@ function validatePyritAttackLibrary(
   },
 ): void {
   const library = repository.pyritAttackLibrary;
-  if (library.schemaVersion !== schemaVersion) {
+  if (library.schemaVersion !== aLineSchemaVersion) {
     issues.push({
       severity: "error",
       code: "invalid_schema_version",
-      message: `PyRIT attack library "${library.libraryId}" must use schemaVersion "${schemaVersion}".`,
+      message: `PyRIT attack library "${library.libraryId}" must use schemaVersion "${aLineSchemaVersion}".`,
       path: "pyritAttackLibrary.schemaVersion",
     });
   }
@@ -610,11 +611,11 @@ function validatePyritJailbreakTemplateIndex(
   repository: ConfigRepository,
 ): void {
   const index = repository.pyritJailbreakTemplateIndex;
-  if (index.schemaVersion !== schemaVersion) {
+  if (index.schemaVersion !== aLineSchemaVersion) {
     issues.push({
       severity: "error",
       code: "invalid_schema_version",
-      message: `PyRIT jailbreak template index "${index.indexId}" must use schemaVersion "${schemaVersion}".`,
+      message: `PyRIT jailbreak template index "${index.indexId}" must use schemaVersion "${aLineSchemaVersion}".`,
       path: "pyritJailbreakTemplateIndex.schemaVersion",
     });
   }

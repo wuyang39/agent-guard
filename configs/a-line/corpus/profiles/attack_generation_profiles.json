@@ -1,6 +1,6 @@
 [
   {
-    "schemaVersion": "mvp-1",
+    "schemaVersion": "p3-a-1",
     "profileId": "generation.pyrit_primary",
     "name": "PyRIT primary generation",
     "description": "Use PyRIT dataset/template/converter/executor metadata as the main generator source.",
@@ -12,7 +12,7 @@
     "maxMutationPerSeed": 6
   },
   {
-    "schemaVersion": "mvp-1",
+    "schemaVersion": "p3-a-1",
     "profileId": "generation.aig_enhanced",
     "name": "AIG strategy enhanced generation",
     "description": "Use AIG skills, redteam strategies, and PromptSecurity enhancers as supplemental coverage.",

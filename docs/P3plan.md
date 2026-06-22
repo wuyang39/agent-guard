@@ -95,7 +95,7 @@ P3-C3 Markdown / HTML / PDF export 与 P3 验证脚本
 
 ## 1. 最终判断
 
-当前 A 线已经完成配置加载、sandbox profile、AIG 场景映射、PyRIT 迁入、jailbreak template index、TS mutator 和少量可运行 case，但体量仍是 MVP:
+当前 A 线已经完成配置加载、sandbox profile、AIG 场景映射、PyRIT 迁入、jailbreak template index、TS mutator、UserPromptSeed 变异材料层和 P3-A generated corpus。根目录仍有少量运行时 fixture，但它们只作为跨线兼容入口，不再代表 A 线目标体量:
 
 ```txt
 tools: 8
@@ -111,14 +111,14 @@ pyrit mapped samples: 5
 pyrit jailbreak template refs: 165
 ```
 
-2026-06-18 P3-A 实施已经把该基线推进为分层 generated corpus 生产链:
+2026-06-22 P3-A 实施已经把 A 线推进为最终语料工程生产链:
 
 ```txt
-resource seeds: 687
+resource seeds: 1143
 attack seeds: 839
-user prompt seeds: 639
+user prompt seeds: 889
 tool response seeds: 309
-mutation operators: 85
+mutation operators: 162
 generated prompts: 2400
 generated test cases: 2400
 generated oracles: 2400
@@ -126,7 +126,7 @@ red team scenarios: 25
 run profiles: smoke / openclaw / regression / full-corpus
 ```
 
-同时配置目录已完成分层: `configs/` 根目录只保留稳定运行基线；A 线攻击库元数据、PyRIT/AIG source index、seed、operator 和 profile 统一迁入 `configs/a-line/**`；生成物继续位于 `generated/a-line/**`。
+同时配置目录已完成分层: `configs/` 根目录只保留跨线共享运行时 fixture；A 线攻击库元数据、PyRIT/AIG source index、seed、operator 和 profile 统一迁入 `configs/a-line/**` 并使用 `schemaVersion: "p3-a-1"`；生成物继续位于 `generated/a-line/**`。
 
 该实现仍遵守 P3 总口径: A 线产物是测试输入、来源索引和覆盖率材料，不是运行时风险结论；generated corpus 必须按 profile 显式加载。
 
@@ -146,11 +146,11 @@ Agent Guard 本地 generator 只负责编排、校验、分层和输出契约对
 P3-A 完成后必须形成项目级攻击库:
 
 ```txt
-resource seeds:        >= 100
+resource seeds:        >= 1000
 attack seeds:          >= 800
 user prompt seeds:     >= 500
 tool response seeds:   >= 80
-mutation operators:    >= 45
+mutation operators:    >= 150
 pyrit generated prompts: >= 1000
 generated test cases:  >= 2000
 generated oracles:     >= generated test cases
@@ -177,21 +177,20 @@ PyRIT generated 包括:
 
 ## 3. Resource 种子库重构
 
-当前 `configs/resources.json` 仍只保存 9 个资源。P3-A 要把资源从“运行夹具数组”升级为“资源种子库 + 生成资源定义”。
+当前 `configs/resources.json` 仍只保存少量跨线共享运行时 fixture。P3-A 已把资源从“运行夹具数组”升级为 `configs/a-line/corpus/seeds/resource_seeds.json` 和 `generated/a-line/resources.generated.json` 组成的资源种子库与生成资源定义。
 
 新增文件:
 
 ```txt
 configs/a-line/corpus/seeds/resource_seeds.json
 generated/a-line/resources.generated.json
-generated/a-line/resource_seed_manifest.json
 ```
 
 `ResourceSeed` 建议字段:
 
 ```ts
 type ResourceSeed = {
-  schemaVersion: "mvp-1";
+  schemaVersion: "p3-a-1";
   seedId: string;
   name: string;
   resourceType:
@@ -291,7 +290,7 @@ generated/a-line/corpus_stats.json
 
 ```ts
 type AttackSeed = {
-  schemaVersion: "mvp-1";
+  schemaVersion: "p3-a-1";
   seedId: string;
   name: string;
   objective: string;
@@ -503,7 +502,7 @@ qualityChecks
 交付:
 
 - 吸收用户补充资源。
-- 手工补齐 100+ resource seeds。
+- 手工补齐 1000+ resource seeds。
 - 资源池覆盖 secret、PII、多租户、RAG、web/browser、memory、devops、internal API、benign controls。
 
 ### P3-A-2 PyRIT 索引和生成器
@@ -514,7 +513,7 @@ qualityChecks
 - PyRIT executor template index。
 - PyRIT scorer template index。
 - PyRIT template renderer。
-- Native TS converter 扩到 45+。
+- Native/template/metadata mutation operators 扩到 150+，并覆盖 PyRIT converter、executor、prompt fuzzer、XPIA 和 token smuggling 类别。
 - 可选 Python bridge 生成入口。
 
 ### P3-A-3 千级 generated corpus
@@ -542,9 +541,8 @@ qualityChecks
 交付:
 
 ```txt
+npm run a:generate-corpus
 npm run verify:a-corpus
-npm run verify:a-corpus-scale
-npm run inspect:a-corpus-stats
 ```
 
 检查:
@@ -561,11 +559,11 @@ npm run inspect:a-corpus-stats
 P3-A 完成标准:
 
 1. PyRIT dataset/template/converter/executor/scorer 均进入可追溯 index。
-2. 100+ resource seeds、800+ attack seeds 和 500+ user prompt seeds 已保存；`UserPromptSeed` 覆盖歧义请求、roleplay、多轮铺垫、委托授权和 benign control。
-3. 45+ mutation operators 可用于 native/template 生成。
+2. 1000+ resource seeds、800+ attack seeds 和 500+ user prompt seeds 已保存；`UserPromptSeed` 覆盖歧义请求、roleplay、多轮铺垫、委托授权和 benign control。
+3. 150+ mutation operators 可用于 native/template/metadata 生成，且新增 operator 需要有确定性实现或明确 template 语义。
 4. generated corpus 至少 2000 个 case，当前实现为 2400 个 case，且 PyRIT 攻击生成项占比不低于 70%。
 5. smoke/openclaw/regression/full-corpus 四层 profile 清楚。
-6. `verify:a-corpus` 和 `verify:a-corpus-scale` 通过。
+6. `npm run a:generate-corpus` 和 `npm run verify:a-corpus` 通过。
 7. B 线能按 profile 加载 case，不需要读取 PyRIT 私有结构。
 8. C 线能用 `CorpusManifest` 展示覆盖率和来源，不把 oracle 当风险证据。
 
@@ -576,7 +574,6 @@ npm run typecheck
 npm run verify:a-config-sandbox
 npm run verify:a-pyrit-library
 npm run verify:a-corpus
-npm run verify:a-corpus-scale
 git diff --check
 ```
 

@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "mvp-1",
+  "schemaVersion": "p3-a-1",
   "scenarioSetId": "scenario_set.generated.p3_a",
   "name": "P3-A generated red team scenario set",
   "description": "Generated scenario grouping for P3-A corpus profiles.",

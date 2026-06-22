@@ -12,6 +12,7 @@ import type {
   RedTeamScenarioSet,
   ResourceDefinition,
   ResourceSeed,
+  SchemaVersion,
   TestCase,
   TestOracle,
   ToolResponseSeed,
@@ -47,7 +48,7 @@ export type GeneratedCorpus = {
 };
 
 export type CorpusStats = {
-  schemaVersion: "mvp-1";
+  schemaVersion: SchemaVersion;
   corpusId: string;
   generatedAt: string;
   totalResources: number;

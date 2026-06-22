@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "mvp-1",
+  "schemaVersion": "p3-a-1",
   "indexId": "pyrit.jailbreak_templates.p2",
   "name": "PyRIT jailbreak template metadata index",
   "description": "Metadata-only index of vendored PyRIT jailbreak templates. The full template text stays only in third_party/pyrit_adapted and is not copied into this config.",

@@ -25,11 +25,11 @@
 
 完成后，A 线应能提供:
 
-- 100+ resource seeds。
+- 1000+ resource seeds，当前实现为 1143 条。
 - 800+ attack seeds。
 - 500+ user prompt seeds，覆盖歧义请求、roleplay persona、多轮铺垫、委托授权和 benign control。
 - 80+ tool response seeds。
-- 45+ mutation operators。
+- 150+ mutation operators，当前实现为 162 个 PyRIT/AIG/native operator。
 - 2000+ generated prompts。
 - 2000+ generated test cases，当前实现为 2400 级 full corpus。
 - generated oracles 数量等于 generated test cases。
@@ -43,12 +43,12 @@
 本分支已完成 P3-A 语料工厂分层重构和工程化落地:
 
 ```txt
-resource seeds: 687
+resource seeds: 1143
 attack seeds: 839
-user prompt seeds: 639
+user prompt seeds: 889
 tool response seeds: 309
-mutation operators: 85
-generated resources: 687
+mutation operators: 162
+generated resources: 1143
 generated prompts: 2400
 generated tool responses: 309
 generated test cases: 2400
@@ -70,7 +70,7 @@ configs/a-line/**
 generated/a-line/**
 ```
 
-当前配置目录已完成分层: `configs/` 根目录只保留稳定运行基线，A 线攻击库、seed、operator、profile 和 PyRIT/AIG source index 全部迁入 `configs/a-line/**`。`loadConfigRepository()` 仍只读取根目录稳定基线；大规模 generated corpus 通过显式 profile 和 `CorpusManifest` 被 B/C 线消费。
+当前配置目录已完成分层: `configs/` 根目录只保留跨线共享运行时 fixture，A 线攻击库、seed、operator、profile 和 PyRIT/AIG source index 全部迁入 `configs/a-line/**` 并使用 `schemaVersion: "p3-a-1"`。`loadConfigRepository()` 仍只读取根目录运行时 fixture；大规模 generated corpus 通过显式 profile 和 `CorpusManifest` 被 B/C 线消费。
 
 ### 2.1 当前配置体量
 
@@ -133,7 +133,7 @@ configs/a-line/corpus/profiles/corpus_run_profiles.json
 - A 线不编造 `RuntimeSupervisionRecord[]`。
 - `TestOracle` 只用于离线验收、回归和 corpus 质量检查。
 - `generated/a-line/**` 是测试输入和覆盖率依据，不是风险结论。
-- generated corpus 必须通过显式 profile 加载。`smoke/openclaw/regression` 是自动化稳定档位，`full-corpus` 是完整覆盖档位。
+- generated corpus 必须通过显式 profile 加载。`smoke/openclaw/regression` 是从最终语料库抽样出来的检查、联调和回归视图，`full-corpus` 是完整覆盖视图，不代表 A 线目标被 demo 缩减。
 
 ## 4. 外部素材使用边界
 
@@ -286,7 +286,7 @@ scripts/index-aig-strategies.ts
 
 ```ts
 type ResourceSeed = {
-  schemaVersion: "mvp-1";
+  schemaVersion: "p3-a-1";
   seedId: string;
   name: string;
   resourceType:
@@ -331,7 +331,7 @@ type ResourceSeed = {
 
 ```ts
 type AttackSeed = {
-  schemaVersion: "mvp-1";
+  schemaVersion: "p3-a-1";
   seedId: string;
   name: string;
   objective: string;
@@ -361,7 +361,7 @@ type AttackSeed = {
 
 ```ts
 type UserPromptSeed = {
-  schemaVersion: "mvp-1";
+  schemaVersion: "p3-a-1";
   seedId: string;
   name: string;
   promptTemplate: string;
@@ -392,7 +392,7 @@ type UserPromptSeed = {
 
 ```ts
 type ToolResponseSeed = {
-  schemaVersion: "mvp-1";
+  schemaVersion: "p3-a-1";
   seedId: string;
   toolId: string;
   name: string;
@@ -415,7 +415,7 @@ type ToolResponseSeed = {
 
 ```ts
 type MutationOperatorSpec = {
-  schemaVersion: "mvp-1";
+  schemaVersion: "p3-a-1";
   operatorId: string;
   name: string;
   family:
@@ -447,7 +447,7 @@ type MutationOperatorSpec = {
 
 ```ts
 type CorpusManifest = {
-  schemaVersion: "mvp-1";
+  schemaVersion: "p3-a-1";
   corpusId: string;
   generatedAt: string;
   generatorVersion: string;
@@ -565,7 +565,7 @@ type CorpusManifest = {
 
 目标:
 
-- 扩展 native TS mutation operators 至 45+。
+- 扩展 native/template/metadata mutation operators 至 150+，以 PyRIT converter/executor 为主，AIG 策略为辅。
 - 实现 `corpusGenerator`，把 seed、PyRIT template、AIG strategy 和 profile 组合成 generated objects。
 - 实现 deterministic ID、hash、source chain 和去重。
 
@@ -623,9 +623,9 @@ full-corpus:
 
 目标:
 
-- 默认 `loadConfigRepository()` 行为不变，继续加载稳定 `configs/*.json`。
+- 默认 `loadConfigRepository()` 行为不变，继续加载根目录共享运行时 fixture；A 线 full corpus 不被默认注入运行时。
 - 新增 profile-aware loader 或 corpus selection 工具，让 B 线可以显式选择 generated profile。
-- P2/P3 demo 默认只使用 smoke/openclaw profile。
+- 本地快速检查和 OpenClaw 联调可以只使用 smoke/openclaw profile；这只是抽样视图，不是 A 线规模目标。
 
 建议接口:
 
@@ -640,7 +640,7 @@ async function loadGeneratedCorpusProfile(
 
 验收:
 
-- 已完成首批。不影响现有 P2 demo 默认配置加载。
+- 已完成首批。A 线 full corpus 不默认注入运行时，其他线需要通过显式 profile 选择语料视图。
 - 已完成首批。`loadGeneratedCorpusProfile()` 支持 B 线按 profile 获取 generated corpus selection。
 - 已完成首批。C 线可以通过 `generated/a-line/corpus_manifest.json` 读取 coverage metadata。
 
@@ -770,7 +770,7 @@ C 线不得:
 
 | 风险 | 处理 |
 | --- | --- |
-| full corpus 被误当默认运行输入 | 所有 generated corpus 都必须通过显式 profile 加载，常规 `loadConfigRepository()` 只读根目录稳定基线 |
+| full corpus 被误当默认运行输入 | 所有 generated corpus 都必须通过显式 profile 加载，常规 `loadConfigRepository()` 只读根目录共享运行时 fixture |
 | 用户表格草稿破坏 JSON | 用户补充内容已导入 seed 工厂；后续新增素材只能进入 seed/source/profile 文件，不得追加到根目录 JSON |
 | PyRIT bridge 引入网络或模型依赖 | 默认关闭，offline profile 单独启用 |
 | 复制 AIG/PyRIT 长 prompt 或密钥样例 | 只索引 metadata，长文本进入安全 fixture 时必须脱敏 |

@@ -53,7 +53,7 @@ export function validateCorpus(input: CorpusValidationInput): CorpusValidationIs
   assertMin(issues, input.attackSeeds.length, 800, "attackSeeds", "attack_seed_count");
   assertMin(issues, input.userPromptSeeds.length, 500, "userPromptSeeds", "user_prompt_seed_count");
   assertMin(issues, input.toolResponseSeeds.length, 80, "toolResponseSeeds", "tool_response_seed_count");
-  assertMin(issues, input.mutationOperators.length, 45, "mutationOperators", "mutation_operator_count");
+  assertMin(issues, input.mutationOperators.length, 150, "mutationOperators", "mutation_operator_count");
   assertMin(issues, input.prompts.length, 2000, "generated.prompts", "generated_prompt_count");
   assertMin(issues, input.testCases.length, 2000, "generated.testCases", "generated_case_count");
 

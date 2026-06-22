@@ -28,7 +28,7 @@ const seeds = buildCorpusSeeds();
 const indexes = await buildCorpusSourceIndexes(projectRoot);
 const generated = generateCorpus(seeds, {
   generatedAt: "2026-06-18T00:00:00.000Z",
-  generatorVersion: "p3-a-generator-2",
+  generatorVersion: "p3-a-generator-3",
   maxCases: 2400,
 });
 
@@ -86,7 +86,7 @@ async function writeJson(dir: string, fileName: string, value: unknown): Promise
 function buildAttackGenerationProfiles(): unknown[] {
   return [
     {
-      schemaVersion: "mvp-1",
+      schemaVersion: "p3-a-1",
       profileId: "generation.pyrit_primary",
       name: "PyRIT primary generation",
       description: "Use PyRIT dataset/template/converter/executor metadata as the main generator source.",
@@ -94,7 +94,7 @@ function buildAttackGenerationProfiles(): unknown[] {
       maxMutationPerSeed: 6,
     },
     {
-      schemaVersion: "mvp-1",
+      schemaVersion: "p3-a-1",
       profileId: "generation.aig_enhanced",
       name: "AIG strategy enhanced generation",
       description: "Use AIG skills, redteam strategies, and PromptSecurity enhancers as supplemental coverage.",

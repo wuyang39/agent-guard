@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "mvp-1",
+  "schemaVersion": "p3-a-1",
   "libraryId": "pyrit_adapted.p2",
   "name": "A-line P2 PyRIT adapted attack library",
   "description": "Vendored and adapted PyRIT attack assets used by Agent Guard A-line P2 for jailbreak, encoding evasion, multi-turn induction, leakage, authorization bypass, and memory/context poisoning coverage.",

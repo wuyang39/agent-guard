@@ -1,4 +1,4 @@
-export type SchemaVersion = "mvp-1";
+export type SchemaVersion = "mvp-1" | "p3-a-1";
 
 export type RiskLevel = "low" | "medium" | "high" | "critical";
 

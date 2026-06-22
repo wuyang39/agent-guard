@@ -24,7 +24,7 @@ import type {
 } from "./corpusTypes";
 import { applyMutationOperator } from "./mutationOperators";
 
-const schemaVersion = "mvp-1" as const;
+const schemaVersion = "p3-a-1" as const;
 const defaultGeneratedAt = "2026-06-18T00:00:00.000Z";
 
 export function generateCorpus(
@@ -32,7 +32,7 @@ export function generateCorpus(
   options: CorpusGenerationOptions = {},
 ): GeneratedCorpus {
   const generatedAt = options.generatedAt ?? defaultGeneratedAt;
-  const generatorVersion = options.generatorVersion ?? "p3-a-generator-2";
+  const generatorVersion = options.generatorVersion ?? "p3-a-generator-3";
   const maxCases = options.maxCases ?? 2400;
   const resources = seeds.resourceSeeds.map((seed, index) => resourceFromSeed(seed, index));
   const toolResponses = seeds.toolResponseSeeds.map((seed, index) => toolResponseFromSeed(seed, index));

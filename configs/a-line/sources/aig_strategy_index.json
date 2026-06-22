@@ -1,7 +1,7 @@
 {
-  "schemaVersion": "mvp-1",
+  "schemaVersion": "p3-a-1",
   "indexId": "aig_strategy_index.p3_a",
-  "generatedAt": "2026-06-18T15:47:54.103Z",
+  "generatedAt": "2026-06-22T05:25:46.075Z",
   "sourceRoot": "../AIG",
   "strategies": [
     {

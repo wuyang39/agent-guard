@@ -1,9 +1,9 @@
 [
   {
-    "schemaVersion": "mvp-1",
+    "schemaVersion": "p3-a-1",
     "profileId": "smoke",
     "name": "Smoke corpus",
-    "description": "Small stable corpus for fast local checks and demo fallback.",
+    "description": "Small deterministic sample for fast local checks against the final A-line corpus factory.",
     "maxCases": 30,
     "includeSources": [
       "pyrit",
@@ -31,10 +31,10 @@
     "stableForAutomation": true
   },
   {
-    "schemaVersion": "mvp-1",
+    "schemaVersion": "p3-a-1",
     "profileId": "openclaw",
     "name": "OpenClaw candidate corpus",
-    "description": "Stable deterministic cases suitable for OpenClaw CLI/realtime MCP candidate testing.",
+    "description": "Deterministic OpenClaw integration sample selected from the final A-line corpus factory.",
     "maxCases": 80,
     "includeSources": [
       "pyrit",
@@ -81,10 +81,10 @@
     "stableForAutomation": true
   },
   {
-    "schemaVersion": "mvp-1",
+    "schemaVersion": "p3-a-1",
     "profileId": "regression",
     "name": "Regression corpus",
-    "description": "Medium deterministic corpus for local regression and coverage checks.",
+    "description": "Medium deterministic slice for regression and coverage checks.",
     "maxCases": 400,
     "includeSources": [
       "pyrit",
@@ -136,7 +136,7 @@
     "stableForAutomation": true
   },
   {
-    "schemaVersion": "mvp-1",
+    "schemaVersion": "p3-a-1",
     "profileId": "full-corpus",
     "name": "Full generated corpus",
     "description": "Large generated corpus for final coverage and contest evidence.",

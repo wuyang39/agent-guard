@@ -30,7 +30,7 @@ ruleVersion: "mvp-1"
 ## 2. 通用类型
 
 ```ts
-type SchemaVersion = "mvp-1"
+type SchemaVersion = "mvp-1" | "p3-a-1"
 
 type RiskLevel = "low" | "medium" | "high" | "critical"
 
@@ -956,7 +956,7 @@ generated/a-line/corpus_manifest.json
 generated/a-line/corpus_stats.json
 ```
 
-P3-A seed 文件是生成输入，不直接进入默认 `TestContext`。`attack_seeds.json` 保存攻击目标、目标工具/资源和风险类别；`user_prompt_seeds.json` 保存进入 PyRIT/operator 变异前的用户 prompt 材料，包括歧义 user prompt、roleplay persona、多轮铺垫和委托授权。生成器先组合 `AttackSeed + UserPromptSeed`，再应用 PyRIT/AIG/operator 变异。`generated/a-line/**` 是可复现的测试输入和覆盖率材料，只能通过显式 run profile 被 B 线加载。默认 `loadConfigRepository()` 继续读取稳定 `configs/*.json`，不得默认加载 full corpus。
+P3-A seed 文件是生成输入，不直接进入默认 `TestContext`。A 线 corpus/source/generated 对象使用 `schemaVersion: "p3-a-1"`；根目录运行时 fixture 和现有 B/C 线运行时对象仍可继续使用 `schemaVersion: "mvp-1"` 作为兼容域。`attack_seeds.json` 保存攻击目标、目标工具/资源和风险类别；`user_prompt_seeds.json` 保存进入 PyRIT/operator 变异前的用户 prompt 材料，包括歧义 user prompt、roleplay persona、多轮铺垫和委托授权。生成器先组合 `AttackSeed + UserPromptSeed`，再应用 PyRIT/AIG/operator 变异。`generated/a-line/**` 是可复现的测试输入和覆盖率材料，只能通过显式 run profile 被 B 线加载。默认 `loadConfigRepository()` 继续读取根目录共享运行时 fixture，不得默认加载 full corpus。
 
 `CorpusManifest` 是 P3-A generated corpus 的来源索引和覆盖率对象，记录 PyRIT/AIG/manual/user_supplied/synthetic 来源、seed、operator、profile、case/prompt/oracle 映射和 coverage。它不是风险判定结果，不能替代 `InteractionTrace`、`RiskReport`、`RuntimeSupervisionRecord[]` 或 `DefenseReport`。
 
@@ -996,7 +996,7 @@ type PolicyTemplate = {
 }
 
 type PyritAttackLibrary = {
-  schemaVersion: "mvp-1"
+  schemaVersion: "p3-a-1"
   libraryId: string
   name: string
   description: string
@@ -1056,7 +1056,7 @@ type PyritAttackSample = {
 }
 
 type PyritJailbreakTemplateIndex = {
-  schemaVersion: "mvp-1"
+  schemaVersion: "p3-a-1"
   indexId: string
   name: string
   description: string

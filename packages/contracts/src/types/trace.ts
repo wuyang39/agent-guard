@@ -5,6 +5,7 @@ export type TestRun = {
   runId: string;
   contextId: string;
   caseId: string;
+  selectionPlanId?: string;
   agentId: string;
   sandboxId: string;
   status: RunStatus;
@@ -19,6 +20,7 @@ export type InteractionTrace = {
   runId: string;
   contextId: string;
   caseId: string;
+  selectionPlanId?: string;
   agentId: string;
   sandboxId: string;
   events: TraceEvent[];

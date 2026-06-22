@@ -20,6 +20,7 @@ import { createAgentSupervisor } from "../supervisor/agentSupervisor";
 export type RunTestCaseOptions = {
   supervisionPolicyPack?: SupervisionPolicyPack;
   runtimeSessionId?: string;
+  selectionPlanId?: string;
   /** 自定义 adapter（如 http_sample / openclaw）。不传则默认 Api + Mock adapters。 */
   customAdapter?: AgentAdapter;
 };
@@ -47,6 +48,7 @@ export async function runTestCase(
     runId,
     contextId,
     caseId,
+    selectionPlanId: options?.selectionPlanId,
     agentId,
     sandboxId,
     status: "running",
@@ -166,6 +168,7 @@ export async function runTestCase(
       runId,
       contextId,
       caseId,
+      selectionPlanId: options?.selectionPlanId,
       agentId,
       sandboxId,
       status: testRun.status,

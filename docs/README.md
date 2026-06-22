@@ -8,7 +8,7 @@
 
 本目录中的文档以当前系统规划作为初始规范基线。文档版本统一为 `initial-1`，用于表示文本规范状态。
 
-重要提醒: A 线真实 PyRIT runtime 运行前必须先看 `A/p3-a-pyrit-runtime-usage.md`。`OPENAI_CHAT_MODEL` 当前统一使用 `deepseek-v4-pro`，`OPENAI_CHAT_KEY` 或 provider key 由协作者本机环境提供，`OPENAI_CHAT_ENDPOINT` 默认使用 Agent Guard PyRIT/OpenClaw shim: `http://127.0.0.1:3100/api/v1/pyrit/openclaw/v1`。不得填 Agent Guard realtime MCP endpoint。
+重要提醒: A/B 两线共享统一 LLM 配置，优先使用 `AGENT_GUARD_LLM_ENDPOINT`、`AGENT_GUARD_LLM_MODEL`、`AGENT_GUARD_LLM_API_KEY`。A 线真实 PyRIT runtime 运行前必须先看 `A/p3-a-pyrit-runtime-usage.md`，系统会把统一配置映射到 `OPENAI_CHAT_*` 兼容名。PyRIT/OpenClaw shim 默认地址是 `http://127.0.0.1:3100/api/v1/pyrit/openclaw/v1`。不得填 Agent Guard realtime MCP endpoint。
 
 系统最终目标是设计并实现一个可用于信息安全作品赛、具备国一竞争力的 Agent-MCP 交互安全测评系统。当前文档中的 `mvp-1` 表示 P0 垂直闭环阶段的运行时契约版本，不代表最终系统目标只停留在简单 MVP。
 

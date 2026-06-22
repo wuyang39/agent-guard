@@ -42,6 +42,7 @@ function Test-TcpPort {
 $defaultPyritOpenClawEndpoint = "http://127.0.0.1:3100/api/v1/pyrit/openclaw/v1"
 $resolvedEndpoint = First-NonEmpty @(
   $Endpoint,
+  $env:AGENT_GUARD_LLM_ENDPOINT,
   $env:OPENAI_CHAT_ENDPOINT,
   $env:AGENT_GUARD_PYRIT_OPENAI_CHAT_ENDPOINT,
   $env:AGENT_GUARD_PYRIT_OPENCLAW_CHAT_ENDPOINT,
@@ -65,6 +66,8 @@ if ($resolvedEndpoint -match "/api/v1/openclaw/realtime/mcp/?$") {
 
 $resolvedKey = First-NonEmpty @(
   $(if ($KeyEnvName) { [Environment]::GetEnvironmentVariable($KeyEnvName) } else { "" }),
+  $env:AGENT_GUARD_LLM_API_KEY,
+  $env:AGENT_GUARD_LLM_KEY,
   $env:OPENAI_CHAT_KEY,
   $env:AGENT_GUARD_PYRIT_OPENAI_CHAT_KEY,
   $env:DEEPSEEK_API_KEY,
@@ -79,17 +82,24 @@ if ([string]::IsNullOrWhiteSpace($resolvedKey)) {
   Write-Warning $message
 } else {
   $env:OPENAI_CHAT_KEY = $resolvedKey
+  $env:AGENT_GUARD_LLM_API_KEY = $resolvedKey
   if ($OpenClawProviderKeyEnvName -and -not [Environment]::GetEnvironmentVariable($OpenClawProviderKeyEnvName)) {
     Set-Item -Path "env:$OpenClawProviderKeyEnvName" -Value $resolvedKey
   }
 }
 
+$env:AGENT_GUARD_LLM_ENABLED = "1"
+$env:AGENT_GUARD_LLM_MODE = "openai_compatible"
+$env:AGENT_GUARD_LLM_ENDPOINT = $resolvedEndpoint
 $env:OPENAI_CHAT_ENDPOINT = $resolvedEndpoint
 $env:AGENT_GUARD_PYRIT_OPENCLAW_CHAT_ENDPOINT = $resolvedEndpoint
+$env:AGENT_GUARD_LLM_MODEL = $Model
 $env:OPENAI_CHAT_MODEL = $Model
 $env:DEEPSEEK_MODEL = $Model
 
 Write-Host "Agent Guard PyRIT runtime env prepared for this PowerShell process."
+Write-Host "AGENT_GUARD_LLM_ENDPOINT=$resolvedEndpoint"
+Write-Host "AGENT_GUARD_LLM_MODEL=$Model"
 Write-Host "OPENAI_CHAT_ENDPOINT=$resolvedEndpoint"
 Write-Host "OPENAI_CHAT_MODEL=$Model"
 Write-Host ("OPENAI_CHAT_KEY=" + ($(if ([string]::IsNullOrWhiteSpace($resolvedKey)) { "missing" } else { "set" })))

@@ -192,15 +192,22 @@ Agent 工具面摘要
 已有风险画像摘要
 ```
 
-B 线正式接入 LLM 时使用以下环境变量名。A 线 AB-0/AB-1 只声明输入约定并生成安全 catalog，不调用模型做正式选择:
+B 线正式接入 LLM 时使用统一运行时 LLM 配置；A 线 PyRIT/OpenAI-compatible runtime 会自动复用同一组配置，并映射到 `OPENAI_CHAT_*` 兼容名:
 
 ```txt
+AGENT_GUARD_LLM_ENABLED=1
+AGENT_GUARD_LLM_MODE=openai_compatible
 AGENT_GUARD_LLM_ENDPOINT
 AGENT_GUARD_LLM_MODEL=deepseek-v4-pro
-AGENT_GUARD_LLM_KEY
+AGENT_GUARD_LLM_API_KEY
+
+# A 线兼容别名，可由系统脚本或运行配置页等价生成
+OPENAI_CHAT_ENDPOINT=$AGENT_GUARD_LLM_ENDPOINT
+OPENAI_CHAT_MODEL=$AGENT_GUARD_LLM_MODEL
+OPENAI_CHAT_KEY=$AGENT_GUARD_LLM_API_KEY
 ```
 
-个人本机变量如 `DeepSeek_API_2` 只能作为开发者自己的兼容示例，不是团队默认变量名，也不得写入配置文件或提交到仓库。
+`AGENT_GUARD_LLM_KEY` 仍作为历史兼容别名保留；个人本机变量如 `DeepSeek_API_2` 只能作为开发者自己的兼容示例，不是团队默认变量名，也不得写入配置文件或提交到仓库。
 
 不允许发送给 LLM:
 

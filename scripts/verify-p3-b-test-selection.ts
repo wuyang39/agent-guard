@@ -103,6 +103,10 @@ async function main(): Promise<void> {
     console.log("2. selection plan query ok");
     passed++;
 
+    await verifyInvalidManifestRejected(app);
+    console.log("3. invalid manifestId rejection ok");
+    passed++;
+
     const llmResp = await injectJson(app, "POST", "/api/v1/test-selection/plans", {
       schemaVersion: "mvp-1",
       agentId: "agent.verify.selection",
@@ -118,15 +122,15 @@ async function main(): Promise<void> {
     assert(llmPlan.llmAudit?.enabled === true, "LLM audit missing");
     assert(llmPlan.llmAudit.provider === "mock", "LLM provider should be mock");
     assert(llmPlan.coverageSnapshot.attackFamilyCount >= 3, "LLM plan missing coverage");
-    console.log(`3. mock LLM-assisted plan ok (${llmPlan.selectionPlanId})`);
+    console.log(`4. mock LLM-assisted plan ok (${llmPlan.selectionPlanId})`);
     passed++;
 
     await verifyInvalidLlmCaseIdRejected();
-    console.log("4. invalid LLM caseId rejection ok");
+    console.log("5. invalid LLM caseId rejection ok");
     passed++;
 
     await verifyLlmCoverageFallback();
-    console.log("5. LLM coverage fallback to rule-only ok");
+    console.log("6. LLM coverage fallback to rule-only ok");
     passed++;
 
     const budgetPlan = await createSelectionPlan({
@@ -141,7 +145,7 @@ async function main(): Promise<void> {
     });
     assert(budgetPlan.status === "draft", "insufficient time budget should produce a draft plan");
     assert(budgetPlan.selectedCaseIds.length <= 2, "time budget should limit selected cases");
-    console.log("6. time budget enforcement ok");
+    console.log("7. time budget enforcement ok");
     passed++;
 
     const runResp = await injectJson(app, "POST", "/api/v1/test-runs/e2e", {
@@ -159,7 +163,17 @@ async function main(): Promise<void> {
       "runGroup caseIds should match selection plan",
     );
     assert(Array.isArray(runGroup.traceIds) && runGroup.traceIds.length > 0, "traceIds missing");
-    console.log(`7. selectionPlanId -> e2e run ok (${runGroup.runGroupId})`);
+    const traceResp = await injectJson(
+      app,
+      "GET",
+      `/api/v1/traces/${(runGroup.traceIds as string[])[0]}`,
+    );
+    const trace = dataRecord(traceResp).trace as Record<string, unknown>;
+    assert(
+      trace.selectionPlanId === rulePlan.selectionPlanId,
+      "trace selectionPlanId should match selection plan",
+    );
+    console.log(`8. selectionPlanId -> e2e run + trace ok (${runGroup.runGroupId})`);
     passed++;
 
     const getCompletedPlan = await injectJson(
@@ -173,7 +187,7 @@ async function main(): Promise<void> {
       completedPlan.runGroupIds?.includes(runGroup.runGroupId as string),
       "selection plan should record runGroupId",
     );
-    console.log("8. selection plan status linkage ok");
+    console.log("9. selection plan status linkage ok");
     passed++;
 
     const asyncInvalid = await injectJson(
@@ -194,13 +208,39 @@ async function main(): Promise<void> {
       "failed",
     );
     assert(failedAsyncRun.status === "failed", "invalid async selection should fail runGroup");
-    console.log("9. invalid async selection failure state ok");
+    console.log("10. invalid async selection failure state ok");
     passed++;
 
     console.log(`\nP3-B TEST SELECTION VERIFIED (${passed} passed)`);
   } finally {
     await app.close();
   }
+}
+
+async function verifyInvalidManifestRejected(app: FastifyInstance): Promise<void> {
+  const res = await app.inject({
+    method: "POST",
+    url: "/api/v1/test-selection/plans",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      schemaVersion: "mvp-1",
+      agentId: "agent.verify.selection",
+      manifestId: "corpus.manifest.does_not_exist",
+      targetProfile: "openclaw",
+      selectionMode: "rule_only",
+      maxCaseCount: 3,
+      minCaseCount: 3,
+    }),
+  });
+  const parsed = JSON.parse(res.body) as Record<string, unknown>;
+  assert(res.statusCode === 400, `invalid manifest should return 400, got ${res.statusCode}`);
+  assert(parsed.ok === false, "invalid manifest response should be failure");
+  assert(
+    parsed.error &&
+      typeof parsed.error === "object" &&
+      (parsed.error as Record<string, unknown>).code === "CANDIDATE_CASE_LOAD_FAILED",
+    "invalid manifest should return CANDIDATE_CASE_LOAD_FAILED",
+  );
 }
 
 async function verifyLlmCoverageFallback(): Promise<void> {

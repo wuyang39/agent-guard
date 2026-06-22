@@ -12,6 +12,7 @@ import { spawn } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { getResolvedRuntimeLlmSettings } from "../runtime/runtimeSettings";
 
 const schemaVersion = "p3-a-1" as const;
 const bridgeVersion = "p3-a-pyrit-bridge-1" as const;
@@ -310,14 +311,22 @@ function resolvePythonCommand(projectRoot: string, explicitCommand?: string): Py
 
 function normalizePyritModelEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const normalized: NodeJS.ProcessEnv = { ...env };
-  normalized.OPENAI_CHAT_ENDPOINT ||= normalized.AGENT_GUARD_PYRIT_OPENAI_CHAT_ENDPOINT
+  const sharedLlm = getResolvedRuntimeLlmSettings(normalized);
+  const sharedEndpoint = sharedLlm.mode === "openai_compatible" ? sharedLlm.endpoint : undefined;
+  const sharedKey = sharedLlm.mode === "openai_compatible" ? sharedLlm.apiKey : undefined;
+  const sharedModel = sharedLlm.mode === "openai_compatible" ? sharedLlm.model : undefined;
+
+  normalized.OPENAI_CHAT_ENDPOINT ||= sharedEndpoint
+    || normalized.AGENT_GUARD_PYRIT_OPENAI_CHAT_ENDPOINT
     || normalized.AGENT_GUARD_PYRIT_OPENCLAW_CHAT_ENDPOINT
     || normalized.OPENCLAW_CHAT_ENDPOINT
     || normalized.DEEPSEEK_ENDPOINT;
-  normalized.OPENAI_CHAT_KEY ||= normalized.AGENT_GUARD_PYRIT_OPENAI_CHAT_KEY
+  normalized.OPENAI_CHAT_KEY ||= sharedKey
+    || normalized.AGENT_GUARD_PYRIT_OPENAI_CHAT_KEY
     || normalized.DEEPSEEK_API_KEY
     || normalized.DeepSeek_API_2;
-  normalized.OPENAI_CHAT_MODEL ||= normalized.AGENT_GUARD_PYRIT_OPENAI_CHAT_MODEL
+  normalized.OPENAI_CHAT_MODEL ||= sharedModel
+    || normalized.AGENT_GUARD_PYRIT_OPENAI_CHAT_MODEL
     || normalized.DEEPSEEK_MODEL
     || defaultPyritChatModel;
   return normalized;

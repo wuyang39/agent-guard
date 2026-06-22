@@ -88,23 +88,42 @@ export function getResolvedRuntimeLlmSettings(
     return normalizeRuntimeLlmSettings(runtimeLlmOverride, "runtime");
   }
 
-  const enabled =
-    env.AGENT_GUARD_LLM_ENABLED === "1" ||
-    env.AGENT_GUARD_LLM_ENABLED === "true";
+  const endpoint = resolveEnvLlmEndpoint(env);
+  const apiKey = resolveEnvLlmApiKey(env);
+  const model = resolveEnvLlmModel(env);
+  const hasCompleteOpenAiCompatibleEnv = Boolean(endpoint && apiKey && model);
+  const explicitEnabled = parseOptionalBoolean(env.AGENT_GUARD_LLM_ENABLED);
+  const enabled = explicitEnabled ?? hasCompleteOpenAiCompatibleEnv;
+  const explicitMode = parseOptionalLlmMode(env.AGENT_GUARD_LLM_MODE);
+  const mode = enabled
+    ? explicitMode ?? (hasCompleteOpenAiCompatibleEnv ? "openai_compatible" : "mock")
+    : "disabled";
   const hasEnv =
     env.AGENT_GUARD_LLM_ENABLED !== undefined ||
     env.AGENT_GUARD_LLM_MODE !== undefined ||
     env.AGENT_GUARD_LLM_ENDPOINT !== undefined ||
+    env.AGENT_GUARD_LLM_KEY !== undefined ||
     env.AGENT_GUARD_LLM_API_KEY !== undefined ||
-    env.AGENT_GUARD_LLM_MODEL !== undefined;
+    env.AGENT_GUARD_LLM_MODEL !== undefined ||
+    env.OPENAI_CHAT_ENDPOINT !== undefined ||
+    env.OPENAI_CHAT_KEY !== undefined ||
+    env.OPENAI_CHAT_MODEL !== undefined ||
+    env.AGENT_GUARD_PYRIT_OPENAI_CHAT_ENDPOINT !== undefined ||
+    env.AGENT_GUARD_PYRIT_OPENAI_CHAT_KEY !== undefined ||
+    env.AGENT_GUARD_PYRIT_OPENAI_CHAT_MODEL !== undefined ||
+    env.AGENT_GUARD_PYRIT_OPENCLAW_CHAT_ENDPOINT !== undefined ||
+    env.OPENCLAW_CHAT_ENDPOINT !== undefined ||
+    env.DEEPSEEK_ENDPOINT !== undefined ||
+    env.DEEPSEEK_API_KEY !== undefined ||
+    env.DEEPSEEK_MODEL !== undefined;
 
   return normalizeRuntimeLlmSettings(
     {
       enabled,
-      mode: enabled ? parseLlmMode(env.AGENT_GUARD_LLM_MODE) : "disabled",
-      endpoint: env.AGENT_GUARD_LLM_ENDPOINT,
-      apiKey: env.AGENT_GUARD_LLM_API_KEY,
-      model: env.AGENT_GUARD_LLM_MODEL,
+      mode,
+      endpoint,
+      apiKey,
+      model,
       timeoutMs: parsePositiveInt(env.AGENT_GUARD_LLM_TIMEOUT_MS),
     },
     hasEnv ? "env" : "default",
@@ -258,6 +277,58 @@ function parseLlmMode(value: unknown): RuntimeLlmMode {
     return value;
   }
   return "mock";
+}
+
+function parseOptionalLlmMode(value: unknown): RuntimeLlmMode | undefined {
+  return value === "mock" || value === "openai_compatible" || value === "disabled"
+    ? value
+    : undefined;
+}
+
+function parseOptionalBoolean(value: string | undefined): boolean | undefined {
+  if (value === undefined) return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return undefined;
+}
+
+function resolveEnvLlmEndpoint(env: NodeJS.ProcessEnv): string | undefined {
+  return firstClean(
+    env.AGENT_GUARD_LLM_ENDPOINT,
+    env.OPENAI_CHAT_ENDPOINT,
+    env.AGENT_GUARD_PYRIT_OPENAI_CHAT_ENDPOINT,
+    env.AGENT_GUARD_PYRIT_OPENCLAW_CHAT_ENDPOINT,
+    env.OPENCLAW_CHAT_ENDPOINT,
+    env.DEEPSEEK_ENDPOINT,
+  );
+}
+
+function resolveEnvLlmApiKey(env: NodeJS.ProcessEnv): string | undefined {
+  return firstClean(
+    env.AGENT_GUARD_LLM_API_KEY,
+    env.AGENT_GUARD_LLM_KEY,
+    env.OPENAI_CHAT_KEY,
+    env.AGENT_GUARD_PYRIT_OPENAI_CHAT_KEY,
+    env.DEEPSEEK_API_KEY,
+  );
+}
+
+function resolveEnvLlmModel(env: NodeJS.ProcessEnv): string | undefined {
+  return firstClean(
+    env.AGENT_GUARD_LLM_MODEL,
+    env.OPENAI_CHAT_MODEL,
+    env.AGENT_GUARD_PYRIT_OPENAI_CHAT_MODEL,
+    env.DEEPSEEK_MODEL,
+  );
+}
+
+function firstClean(...values: Array<string | undefined>): string | undefined {
+  for (const value of values) {
+    const cleaned = cleanOptional(value);
+    if (cleaned) return cleaned;
+  }
+  return undefined;
 }
 
 function parsePositiveInt(value: string | undefined): number | undefined {

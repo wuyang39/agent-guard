@@ -142,6 +142,7 @@ export async function runE2E(
 
     let selectedCaseIdsFromPlan: string[] | undefined;
     let selectionPlanAgentId: string | undefined;
+    let selectionPlanCorpusManifestId: string | undefined;
     if (request.selectionPlanId) {
       try {
         const plan = await getRequiredSelectionPlan(request.selectionPlanId);
@@ -160,6 +161,7 @@ export async function runE2E(
           );
         }
         selectionPlanAgentId = plan.agentId;
+        selectionPlanCorpusManifestId = plan.corpusManifestId;
         selectedCaseIdsFromPlan = plan.selectedCaseIds;
       } catch (error) {
         if (error instanceof TestSelectionError) {
@@ -206,7 +208,12 @@ export async function runE2E(
     runGroup.phase = "detecting";
     await saveRunGroup(runGroup);
 
-    const { contexts, repository } = await loadTestContexts(CONFIGS_DIR, agent);
+    const requiresGeneratedALineCorpus =
+      selectionPlanCorpusManifestId === "corpus.p3_a.generated" ||
+      Boolean(selectedCaseIdsFromPlan?.some((caseId) => caseId.startsWith("case.generated.")));
+    const { contexts, repository } = await loadTestContexts(CONFIGS_DIR, agent, {
+      requireGeneratedALineCorpus: requiresGeneratedALineCorpus,
+    });
     const selectedCaseIds = selectedCaseIdsFromPlan?.length
       ? selectedCaseIdsFromPlan
       : request.caseIds?.length
@@ -247,7 +254,10 @@ export async function runE2E(
         agent,
         adapterConfig,
         context,
-        { customAdapter },
+        {
+          customAdapter,
+          selectionPlanId: runGroup.selectionPlanId,
+        },
       );
 
       runGroup.testRunIds.push(testRun.runId);
@@ -325,6 +335,7 @@ export async function runE2E(
             supervisionPolicyPack: policyPack,
             runtimeSessionId,
             customAdapter,
+            selectionPlanId: runGroup.selectionPlanId,
           },
         );
 

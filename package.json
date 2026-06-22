@@ -38,6 +38,7 @@
     "verify:p3:b-gateway": "node --import tsx scripts/verify-p3-b-gateway.ts",
     "verify:p3:b-llm-profiler": "node --import tsx scripts/verify-p3-b-llm-profiler.ts",
     "verify:p3:b-test-selection": "node --import tsx scripts/verify-p3-b-test-selection.ts",
+    "verify:shared-llm-config": "node --import tsx scripts/verify-shared-llm-config.ts",
     "api:start": "node --import tsx backend/src/server.ts",
     "api:dev": "node --watch --import tsx backend/src/server.ts"
   },

@@ -34,6 +34,10 @@ export type LoadTestContextResult = {
   repository: LoadedConfigRepository;
 };
 
+export type LoadTestContextOptions = {
+  requireGeneratedALineCorpus?: boolean;
+};
+
 export class ConfigLoadError extends Error {
   constructor(message: string) {
     super(message);
@@ -53,6 +57,7 @@ export class ConfigValidationError extends Error {
 
 export async function loadConfigRepository(
   configDir: string,
+  options: LoadTestContextOptions = {},
 ): Promise<LoadedConfigRepository> {
   const root = resolve(configDir);
   const repository: LoadedConfigRepository = {
@@ -83,7 +88,11 @@ export async function loadConfigRepository(
     throw new ConfigValidationError(validation.issues);
   }
 
-  await appendGeneratedALineCorpus(repository, root);
+  await appendGeneratedALineCorpus(
+    repository,
+    root,
+    Boolean(options.requireGeneratedALineCorpus),
+  );
 
   return repository;
 }
@@ -91,8 +100,9 @@ export async function loadConfigRepository(
 export async function loadTestContexts(
   configDir: string,
   agent: AgentUnderTest,
+  options: LoadTestContextOptions = {},
 ): Promise<LoadTestContextResult> {
-  const repository = await loadConfigRepository(configDir);
+  const repository = await loadConfigRepository(configDir, options);
   const index = buildConfigIndex(repository);
   const sandbox = buildSandboxProfile(repository);
   const contexts = repository.testCases
@@ -155,6 +165,7 @@ async function readJsonValue(
 async function appendGeneratedALineCorpus(
   repository: LoadedConfigRepository,
   configRoot: string,
+  required: boolean,
 ): Promise<void> {
   const generatedDir = resolve(configRoot, "..", "generated", "a-line");
   try {
@@ -197,7 +208,13 @@ async function appendGeneratedALineCorpus(
         "scenarioId",
       ),
     };
-  } catch {
+  } catch (error) {
+    if (required) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new ConfigLoadError(
+        `A-line generated corpus is required for this selection plan but could not be loaded: ${detail}`,
+      );
+    }
     // A-line generated corpus is optional in older branches and local smoke tests.
   }
 }

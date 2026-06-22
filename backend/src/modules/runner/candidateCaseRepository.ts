@@ -23,6 +23,13 @@ export type CandidateCaseLoadResult = {
 const DEFAULT_MANIFEST_ID = "corpus_manifest.derived.local_config";
 const GENERATED_A_LINE_DIR = path.resolve(process.cwd(), "generated", "a-line");
 
+export class CandidateCaseLoadError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CandidateCaseLoadError";
+  }
+}
+
 export class CandidateCaseRepository {
   constructor(
     private readonly opts: {
@@ -58,36 +65,47 @@ export class CandidateCaseRepository {
 async function loadGeneratedAttackCards(
   request: CandidateCaseLoadRequest,
 ): Promise<CandidateCaseLoadResult | undefined> {
+  let manifest: CorpusManifest;
+  let cards: AttackCaseCard[];
   try {
-    const [manifest, cards] = await Promise.all([
+    [manifest, cards] = await Promise.all([
       readJson<CorpusManifest>(GENERATED_A_LINE_DIR, "corpus_manifest.json"),
       readJson<AttackCaseCard[]>(
         GENERATED_A_LINE_DIR,
         "attack_case_cards.generated.json",
       ),
     ]);
-
-    if (request.manifestId && request.manifestId !== manifest.corpusId) {
-      return undefined;
-    }
-
-    const candidates = cards
-      .map(mapAttackCardToCandidate)
-      .filter((candidate) => candidate.enabled)
-      .filter(
-        (candidate) =>
-          request.targetProfile === "full-corpus" ||
-          candidate.runProfiles.includes(request.targetProfile),
+  } catch (error) {
+    if (request.manifestId) {
+      throw new CandidateCaseLoadError(
+        `Requested manifestId ${request.manifestId}, but A-line generated selection assets could not be loaded: ${formatError(error)}.`,
       );
-
-    if (candidates.length === 0) return undefined;
-    return {
-      corpusManifestId: manifest.corpusId,
-      candidates,
-    };
-  } catch {
+    }
     return undefined;
   }
+
+  if (request.manifestId && request.manifestId !== manifest.corpusId) {
+    throw new CandidateCaseLoadError(
+      `Requested manifestId ${request.manifestId} does not match generated A-line corpus ${manifest.corpusId}.`,
+    );
+  }
+
+  await assertGeneratedRuntimeCorpusAvailable();
+
+  const candidates = cards
+    .map(mapAttackCardToCandidate)
+    .filter((candidate) => candidate.enabled)
+    .filter(
+      (candidate) =>
+        request.targetProfile === "full-corpus" ||
+        candidate.runProfiles.includes(request.targetProfile),
+    );
+
+  if (candidates.length === 0) return undefined;
+  return {
+    corpusManifestId: manifest.corpusId,
+    candidates,
+  };
 }
 
 function mapAttackCardToCandidate(card: AttackCaseCard): CandidateCaseCard {
@@ -120,6 +138,27 @@ function normalizeQualityScore(value: number): number {
 
 async function readJson<T>(dir: string, fileName: string): Promise<T> {
   return JSON.parse(await readFile(path.join(dir, fileName), "utf8")) as T;
+}
+
+async function assertGeneratedRuntimeCorpusAvailable(): Promise<void> {
+  try {
+    await Promise.all([
+      readJson(GENERATED_A_LINE_DIR, "resources.generated.json"),
+      readJson(GENERATED_A_LINE_DIR, "prompts.generated.json"),
+      readJson(GENERATED_A_LINE_DIR, "tool_responses.generated.json"),
+      readJson(GENERATED_A_LINE_DIR, "test_cases.generated.json"),
+      readJson(GENERATED_A_LINE_DIR, "test_oracles.generated.json"),
+      readJson(GENERATED_A_LINE_DIR, "red_team_scenarios.generated.json"),
+    ]);
+  } catch (error) {
+    throw new CandidateCaseLoadError(
+      `A-line attack cards are present, but generated runtime corpus is incomplete: ${formatError(error)}.`,
+    );
+  }
+}
+
+function formatError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 export function deriveCandidateCase(context: TestContext): CandidateCaseCard {

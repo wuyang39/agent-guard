@@ -10,7 +10,10 @@ import type {
   TestSelectionRequest,
 } from "@agent-guard/contracts";
 import { createId, nowIso } from "../../shared";
-import { CandidateCaseRepository } from "./candidateCaseRepository";
+import {
+  CandidateCaseLoadError,
+  CandidateCaseRepository,
+} from "./candidateCaseRepository";
 import {
   applySelectionBudget,
   fillCoverageGaps,
@@ -53,11 +56,19 @@ export async function createSelectionPlan(
     configDir: path.resolve(process.cwd(), "configs"),
     agent,
   });
-  const { corpusManifestId, candidates: loadedCandidates } =
-    await repository.loadCandidateCases({
-    targetProfile: request.targetProfile,
-    manifestId: request.manifestId,
-  });
+  let loaded;
+  try {
+    loaded = await repository.loadCandidateCases({
+      targetProfile: request.targetProfile,
+      manifestId: request.manifestId,
+    });
+  } catch (error) {
+    if (error instanceof CandidateCaseLoadError) {
+      throw new TestSelectionError("CANDIDATE_CASE_LOAD_FAILED", error.message);
+    }
+    throw error;
+  }
+  const { corpusManifestId, candidates: loadedCandidates } = loaded;
   const candidates =
     request.includeExternalTools === false
       ? loadedCandidates.filter((candidate) => !candidate.requiresExternalTool)

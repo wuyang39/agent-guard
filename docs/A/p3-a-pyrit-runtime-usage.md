@@ -8,15 +8,15 @@
 
 运行 `npm run verify:a-pyrit-runtime` 或 `npm run a:pyrit-runtime` 前，先确认本文档的模型参数。不要把 Agent Guard realtime MCP 地址填到 `OPENAI_CHAT_ENDPOINT`，它不是模型 endpoint。
 
-`DeepSeek_API_2` 只是当前开发者本机使用过的示例环境变量名，不是项目规范。协作者应优先使用 `OPENAI_CHAT_KEY`、`AGENT_GUARD_PYRIT_OPENAI_CHAT_KEY` 或 provider 原生变量，例如 `DEEPSEEK_API_KEY`；如果本机已有其他变量名，可通过 `-KeyEnvName` 显式传入。
+`DeepSeek_API_2` 只是当前开发者本机使用过的示例环境变量名，不是项目规范。协作者应优先使用统一运行时变量 `AGENT_GUARD_LLM_API_KEY`，A 线会自动映射为 `OPENAI_CHAT_KEY`；也可继续使用 `OPENAI_CHAT_KEY`、`AGENT_GUARD_PYRIT_OPENAI_CHAT_KEY` 或 provider 原生变量，例如 `DEEPSEEK_API_KEY`。如果本机已有其他变量名，可通过 `-KeyEnvName` 显式传入。
 
 ## 1. 三类地址不要混用
 
 | 参数 | 用途 | 当前建议 |
 | --- | --- | --- |
-| `OPENAI_CHAT_ENDPOINT` | PyRIT `OpenAIChatTarget` 使用的 OpenAI-compatible chat base URL | 默认使用 Agent Guard 提供的 PyRIT/OpenClaw shim: `http://127.0.0.1:3100/api/v1/pyrit/openclaw/v1` |
-| `OPENAI_CHAT_MODEL` | PyRIT 真实模型攻击使用的模型名 | `deepseek-v4-pro` |
-| `OPENAI_CHAT_KEY` | PyRIT OpenAI SDK 客户端需要的 API key | 推荐使用 `OPENAI_CHAT_KEY` 或 `AGENT_GUARD_PYRIT_OPENAI_CHAT_KEY`；使用本项目 OpenClaw shim 时服务端不会持久化该值 |
+| `AGENT_GUARD_LLM_ENDPOINT` / `OPENAI_CHAT_ENDPOINT` | 统一 LLM 配置与 PyRIT `OpenAIChatTarget` 使用的 OpenAI-compatible chat base URL | 默认使用 Agent Guard 提供的 PyRIT/OpenClaw shim: `http://127.0.0.1:3100/api/v1/pyrit/openclaw/v1` |
+| `AGENT_GUARD_LLM_MODEL` / `OPENAI_CHAT_MODEL` | B 线 LLM 能力与 PyRIT 真实模型攻击使用的模型名 | `deepseek-v4-pro` |
+| `AGENT_GUARD_LLM_API_KEY` / `OPENAI_CHAT_KEY` | 统一 API key；A 线会映射给 PyRIT OpenAI SDK 客户端 | 推荐使用 `AGENT_GUARD_LLM_API_KEY`；使用本项目 OpenClaw shim 时服务端不会持久化该值 |
 | `DEEPSEEK_API_KEY` | OpenClaw CLI 调用 DeepSeek provider 所需的 provider key | 如果使用 DeepSeek 模型，Agent Guard API/OpenClaw 进程需要该变量；也可通过脚本从本机示例变量映射 |
 | `http://127.0.0.1:3100/api/v1/openclaw/realtime/mcp` | Agent Guard 暴露给 OpenClaw 的 realtime MCP endpoint | 只给 OpenClaw/MCP 客户端使用，不能作为 `OPENAI_CHAT_ENDPOINT` |
 | `http://127.0.0.1:18789` | 项目隔离 OpenClaw local gateway/control plane | 已知不是传统 OpenAI-compatible REST `/v1`；不要把它当成 PyRIT endpoint |

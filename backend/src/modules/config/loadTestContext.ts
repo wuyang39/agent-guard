@@ -4,11 +4,15 @@ import type {
   AgentUnderTest,
   JsonObject,
   JsonValue,
+  PromptDefinition,
   PyritAttackLibrary,
   PyritJailbreakTemplateIndex,
   RedTeamScenarioSet,
+  ResourceDefinition,
   TestContext,
+  TestCase,
   TestOracle,
+  ToolResponseTemplate,
 } from "@agent-guard/contracts";
 import { createId } from "../../shared/ids";
 import { SCHEMA_VERSION } from "../../shared/schemaVersion";
@@ -79,6 +83,8 @@ export async function loadConfigRepository(
     throw new ConfigValidationError(validation.issues);
   }
 
+  await appendGeneratedALineCorpus(repository, root);
+
   return repository;
 }
 
@@ -144,6 +150,87 @@ async function readJsonValue(
     const detail = error instanceof Error ? error.message : String(error);
     throw new ConfigLoadError(`Failed to read ${fileName}: ${detail}`);
   }
+}
+
+async function appendGeneratedALineCorpus(
+  repository: LoadedConfigRepository,
+  configRoot: string,
+): Promise<void> {
+  const generatedDir = resolve(configRoot, "..", "generated", "a-line");
+  try {
+    const [
+      resources,
+      prompts,
+      toolResponses,
+      testCases,
+      testOracles,
+      redTeamScenarios,
+    ] = await Promise.all([
+      readJsonArrayFromDir<ResourceDefinition>(generatedDir, "resources.generated.json"),
+      readJsonArrayFromDir<PromptDefinition>(generatedDir, "prompts.generated.json"),
+      readJsonArrayFromDir<ToolResponseTemplate>(
+        generatedDir,
+        "tool_responses.generated.json",
+      ),
+      readJsonArrayFromDir<TestCase>(generatedDir, "test_cases.generated.json"),
+      readJsonArrayFromDir<TestOracle>(generatedDir, "test_oracles.generated.json"),
+      readJsonObjectFromDir<RedTeamScenarioSet>(
+        generatedDir,
+        "red_team_scenarios.generated.json",
+      ),
+    ]);
+
+    repository.resources = mergeById(repository.resources, resources, "resourceId");
+    repository.prompts = mergeById(repository.prompts, prompts, "promptId");
+    repository.toolResponseTemplates = mergeById(
+      repository.toolResponseTemplates,
+      toolResponses,
+      "responseTemplateId",
+    );
+    repository.testCases = mergeById(repository.testCases, testCases, "caseId");
+    repository.testOracles = mergeById(repository.testOracles, testOracles, "caseId");
+    repository.redTeamScenarioSet = {
+      ...repository.redTeamScenarioSet,
+      scenarios: mergeById(
+        repository.redTeamScenarioSet.scenarios,
+        redTeamScenarios.scenarios,
+        "scenarioId",
+      ),
+    };
+  } catch {
+    // A-line generated corpus is optional in older branches and local smoke tests.
+  }
+}
+
+async function readJsonArrayFromDir<T>(dir: string, fileName: string): Promise<T[]> {
+  const parsed = await readJsonValue(dir, fileName);
+
+  if (!Array.isArray(parsed)) {
+    throw new ConfigLoadError(`Config file ${fileName} must contain a JSON array.`);
+  }
+
+  return parsed as T[];
+}
+
+async function readJsonObjectFromDir<T>(dir: string, fileName: string): Promise<T> {
+  const parsed = await readJsonValue(dir, fileName);
+
+  if (!isJsonObject(parsed)) {
+    throw new ConfigLoadError(`Config file ${fileName} must contain a JSON object.`);
+  }
+
+  return parsed as T;
+}
+
+function mergeById<T extends Record<string, unknown>, K extends keyof T & string>(
+  base: T[],
+  next: T[],
+  key: K,
+): T[] {
+  const merged = new Map<string, T>();
+  for (const item of base) merged.set(String(item[key]), item);
+  for (const item of next) merged.set(String(item[key]), item);
+  return [...merged.values()];
 }
 
 function isJsonObject(value: JsonValue): value is JsonObject {

@@ -71,7 +71,15 @@ async function main(): Promise<void> {
     });
     const rulePlan = dataRecord(ruleResp).plan as TestSelectionPlan;
     assert(rulePlan.status === "ready", `rule plan should be ready, got ${rulePlan.status}`);
+    assert(
+      rulePlan.corpusManifestId === "corpus.p3_a.generated",
+      `rule plan should use A-line generated corpus, got ${rulePlan.corpusManifestId}`,
+    );
     assert(rulePlan.selectedCaseIds.length >= 3, "rule plan selected too few cases");
+    assert(
+      rulePlan.selectedCaseIds.some((caseId) => caseId.startsWith("case.generated.")),
+      "rule plan should select generated A-line cases",
+    );
     assert(rulePlan.coverageSnapshot.attackFamilyCount >= 3, "rule plan missing attack family coverage");
     assert(rulePlan.selectionRunSummary.ready === true, "selection run summary should be ready");
     assert(rulePlan.evalStyleResult.status === "ready", "eval-style result should be ready");

@@ -1,7 +1,10 @@
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type {
   AgentUnderTest,
+  AttackCaseCard,
   CandidateCaseCard,
+  CorpusManifest,
   TestContext,
   TestSelectionProfile,
 } from "@agent-guard/contracts";
@@ -18,6 +21,7 @@ export type CandidateCaseLoadResult = {
 };
 
 const DEFAULT_MANIFEST_ID = "corpus_manifest.derived.local_config";
+const GENERATED_A_LINE_DIR = path.resolve(process.cwd(), "generated", "a-line");
 
 export class CandidateCaseRepository {
   constructor(
@@ -30,6 +34,9 @@ export class CandidateCaseRepository {
   async loadCandidateCases(
     request: CandidateCaseLoadRequest,
   ): Promise<CandidateCaseLoadResult> {
+    const generated = await loadGeneratedAttackCards(request);
+    if (generated) return generated;
+
     const configDir = this.opts.configDir ?? path.resolve(process.cwd(), "configs");
     const { contexts } = await loadTestContexts(configDir, this.opts.agent);
     const candidates = contexts
@@ -46,6 +53,73 @@ export class CandidateCaseRepository {
       candidates,
     };
   }
+}
+
+async function loadGeneratedAttackCards(
+  request: CandidateCaseLoadRequest,
+): Promise<CandidateCaseLoadResult | undefined> {
+  try {
+    const [manifest, cards] = await Promise.all([
+      readJson<CorpusManifest>(GENERATED_A_LINE_DIR, "corpus_manifest.json"),
+      readJson<AttackCaseCard[]>(
+        GENERATED_A_LINE_DIR,
+        "attack_case_cards.generated.json",
+      ),
+    ]);
+
+    if (request.manifestId && request.manifestId !== manifest.corpusId) {
+      return undefined;
+    }
+
+    const candidates = cards
+      .map(mapAttackCardToCandidate)
+      .filter((candidate) => candidate.enabled)
+      .filter(
+        (candidate) =>
+          request.targetProfile === "full-corpus" ||
+          candidate.runProfiles.includes(request.targetProfile),
+      );
+
+    if (candidates.length === 0) return undefined;
+    return {
+      corpusManifestId: manifest.corpusId,
+      candidates,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function mapAttackCardToCandidate(card: AttackCaseCard): CandidateCaseCard {
+  return {
+    schemaVersion: "mvp-1",
+    caseId: card.caseId,
+    caseName: card.caseName,
+    enabled: card.enabled,
+    runProfiles: [...card.runProfiles],
+    attackFamilies: [...card.attackFamilies],
+    targetSurfaces: [...card.targetSurfaces],
+    targetToolHints: [...card.targetToolHints],
+    sensitivityTags: [...card.sensitivityTags],
+    estimatedDurationMs: card.estimatedDurationMs,
+    requiresExternalTool: card.requiresExternalTool,
+    requiresOpenClaw: card.requiresOpenClaw,
+    sourceOrigin: card.sourceOrigin,
+    promptSummary: card.promptSummary,
+    payloadRiskSummary: card.payloadRiskSummary,
+    expectedSafeBehaviorSummary: card.expectedSafeBehaviorSummary,
+    qualityScore: normalizeQualityScore(card.qualityScore),
+  };
+}
+
+function normalizeQualityScore(value: number): number {
+  if (!Number.isFinite(value)) return 0.5;
+  if (value > 1) return Math.max(0, Math.min(1, value / 100));
+  return Math.max(0, Math.min(1, value));
+}
+
+async function readJson<T>(dir: string, fileName: string): Promise<T> {
+  return JSON.parse(await readFile(path.join(dir, fileName), "utf8")) as T;
 }
 
 export function deriveCandidateCase(context: TestContext): CandidateCaseCard {

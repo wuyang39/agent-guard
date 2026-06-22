@@ -84,8 +84,11 @@ docs/A/**
 third_party/pyrit_adapted/**
 scripts/generate-pyrit-template-index.ts
 scripts/generate-a-corpus.ts
+scripts/generate-a-pyrit-runtime-batch.ts
+scripts/setup-pyrit-runtime.ps1
 scripts/verify-a-corpus.ts
 scripts/verify-a-pyrit-library.ts
+scripts/verify-a-pyrit-runtime.ts
 scripts/verify-pyrit-bridge-smoke.ts
 ```
 
@@ -106,6 +109,8 @@ ToolResponseSeed[]
 MutationOperatorSpec[]
 CorpusManifest
 CorpusRunProfile[]
+PyritBridgeRequest
+PyritBridgeResult
 ```
 
 可协作区域:

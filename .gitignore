@@ -1,4 +1,6 @@
 node_modules/
+.venv/
+third_party/pyrit_adapted/*.egg-info/
 openclaw-runtime/
 dist/
 coverage/

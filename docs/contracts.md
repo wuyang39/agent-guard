@@ -960,6 +960,8 @@ P3-A seed 文件是生成输入，不直接进入默认 `TestContext`。A 线 co
 
 `CorpusManifest` 是 P3-A generated corpus 的来源索引和覆盖率对象，记录 PyRIT/AIG/manual/user_supplied/synthetic 来源、seed、operator、profile、case/prompt/oracle 映射和 coverage。它不是风险判定结果，不能替代 `InteractionTrace`、`RiskReport`、`RuntimeSupervisionRecord[]` 或 `DefenseReport`。
 
+`PyritBridgeRequest` / `PyritBridgeResult` 是 P3-A PyRIT Python runtime bridge 的输入输出对象。它用于显式调用 vendored PyRIT `run_attack_cli.py` 或 converter runtime，结果写入 `outputs/pyrit-runs/**`。模型环境未配置时必须返回 `modelConfigured: false` 与 `status: "skipped"`；只有 `runtimeUsed: "pyrit"` 且 `status: "ok"` 才代表真实 PyRIT runtime 完成。该对象不进入默认 `TestContext`，不得替代 B 线 `InteractionTrace` 或 C 线风险结论。
+
 `configs/test_oracles.json` 和 `generated/a-line/test_oracles.generated.json` 都只用于验收测试、回归测试、corpus 质量检查和覆盖率统计，不得进入运行时 `TestContext`，也不得作为 C 线风险判定或防御效果证据。
 
 P1 配置对象:
@@ -1088,6 +1090,85 @@ type PyritJailbreakTemplateRef = {
   isGeneralTechnique?: boolean
   byteLength: number
   sha256: string
+}
+
+type PyritBridgeMode = "converter_batch" | "attack_cli"
+
+type PyritBridgeRuntimeUsed = "pyrit" | "fallback" | "not_executed"
+
+type PyritBridgeItemStatus = "ok" | "unsupported" | "error" | "skipped"
+
+type PyritAttackMethod =
+  | "prompt_sending"
+  | "flip"
+  | "red_teaming"
+  | "crescendo"
+  | "context_compliance"
+  | "role_play"
+  | "many_shot_jailbreak"
+  | "renellm"
+
+type PyritBridgeRequestItem = {
+  itemId: string
+  operatorId: string
+  input: string
+  inputType?: "text"
+  method?: PyritAttackMethod
+  objective?: string
+  maxTurns?: number
+  renellmMaxRounds?: number
+  renellmRewriteStyle?: string
+  evaluatorSync?: boolean
+  metadata?: JsonObject
+}
+
+type PyritBridgeRequest = {
+  schemaVersion: "p3-a-1"
+  bridgeVersion: string
+  requestId: string
+  mode: PyritBridgeMode
+  generatedAt: string
+  items: PyritBridgeRequestItem[]
+  options?: JsonObject
+}
+
+type PyritBridgeResultItem = {
+  itemId: string
+  operatorId: string
+  status: PyritBridgeItemStatus
+  input: string
+  output?: string
+  outputType?: string
+  converterClass?: string
+  method?: PyritAttackMethod
+  objective?: string
+  outputJsonPath?: string
+  executedTurns?: number
+  outcome?: string
+  outcomeReason?: string
+  lastScore?: JsonObject
+  lastResponsePreview?: string
+  runtimeUsed: PyritBridgeRuntimeUsed
+  notes: string[]
+  error?: string
+  metadata?: JsonObject
+}
+
+type PyritBridgeResult = {
+  schemaVersion: "p3-a-1"
+  bridgeVersion: string
+  requestId: string
+  mode: PyritBridgeMode
+  generatedAt: string
+  startedAt: string
+  endedAt: string
+  pythonExecutable?: string
+  pyritAvailable: boolean
+  modelConfigured?: boolean
+  fallbackAllowed: boolean
+  items: PyritBridgeResultItem[]
+  errors: string[]
+  metadata?: JsonObject
 }
 ```
 

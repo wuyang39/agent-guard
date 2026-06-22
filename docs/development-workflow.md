@@ -120,7 +120,7 @@ docs: 固化开发工作流规范
 | 文档、忽略规则 | `git diff --check` |
 | 共享类型、TS 逻辑 | `npm run typecheck` |
 | A 线配置和 sandbox | `npm run verify:a-config-sandbox`、`npm run verify:a-pyrit-library` |
-| PyRIT bridge | `npm run pyrit:bridge-smoke` |
+| PyRIT bridge | `npm run pyrit:bridge-smoke`、`npm run verify:a-pyrit-runtime` |
 | P1 检测/监督 | `npm run verify:p1:detection-policy`、`npm run verify:p1:supervision-defense` |
 | P2 API/E2E | `npm run verify:p2:api-e2e` |
 | OpenClaw required sign-off | `VERIFY_OPENCLAW_REQUIRED=1 npm run verify:p2:api-e2e` |
@@ -168,6 +168,7 @@ git push origin main
 
 - OpenClaw 本体、workspace、状态库和模型凭证属于本地 runtime，不进入 `agent-guard` 仓库。
 - 本机可使用项目隔离 runtime，例如 `E:\XinAnProject\openclaw-runtime`，但只提交启动脚本、runbook 和忽略规则。
+- PyRIT Python runtime 使用项目内 `.venv/pyrit`，通过 `npm run pyrit:setup-runtime` 安装；`.venv/`、editable install 产物和 `outputs/pyrit-runs/**` 不进入提交。
 - provider key 只能来自用户环境变量或本地未提交配置，不写入文档、命令行明文、提交记录或 `AgentAdapterConfig`。
 - 如果需要把用户环境变量映射成 OpenClaw 识别的变量，只能在当前进程内完成，并避免打印 key 值。
 

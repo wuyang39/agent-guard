@@ -18,6 +18,11 @@ generated/a-line/
   *.generated.json               # 由 npm run a:generate-corpus 生成的运行输入
   corpus_manifest.json           # 来源、profile、coverage 和 ID 追溯
   corpus_stats.json              # 统计摘要
+
+outputs/pyrit-runs/
+  */bridge_request.json           # 显式 PyRIT runtime bridge 请求
+  */bridge_result.json            # PyRIT runtime bridge 结构化结果
+  */*.json                        # run_attack_cli.py 单项输出
 ```
 
 ## 文件角色
@@ -34,6 +39,30 @@ generated/a-line/
 - `corpus/seeds/tool_response_seeds.json`: 工具响应注入、secret 泄露、debug 泄露和 benign control 种子。
 - `corpus/operators/mutation_operators.json`: PyRIT 为主、AIG/手工/用户补充为辅的 native/template/metadata operator 目录。
 - `corpus/profiles/*.json`: 生成比例和 `smoke/openclaw/regression/full-corpus` 工程视图。`smoke/openclaw/regression` 是从最终语料库抽样出来的检查/联调/回归视图，`full-corpus` 是完整覆盖视图，不代表 A 线目标被 demo 缩减。
+- `generated/a-line/**`: 大规模可追溯输入层，不代表已经真实调用模型。
+- `outputs/pyrit-runs/**`: 真实 PyRIT Python runtime 执行层，只有 `runtimeUsed: "pyrit"` 且 `status: "ok"` 的条目才代表实际调用了 vendored PyRIT。
+
+## PyRIT Runtime Bridge
+
+A 线现在有两条明确链路:
+
+```txt
+离线输入层:
+  configs/a-line/** -> npm run a:generate-corpus -> generated/a-line/**
+
+真实 PyRIT 执行层:
+  generated/a-line/profile selection -> npm run a:pyrit-runtime -> outputs/pyrit-runs/**
+```
+
+运行时 bridge 使用项目隔离 Python:
+
+```powershell
+npm run pyrit:setup-runtime
+npm run verify:a-pyrit-runtime
+npm run a:pyrit-runtime
+```
+
+真实模型调用需要 `OPENAI_CHAT_ENDPOINT`、`OPENAI_CHAT_KEY`、`OPENAI_CHAT_MODEL`。其中 key 可由 `DeepSeek_API_2` 映射，endpoint/model 仍需显式提供。模型未配置时，bridge 必须返回 `skipped`，不得用模板或 fallback 冒充真实攻击。
 
 ## 维护规则
 
@@ -43,4 +72,5 @@ generated/a-line/
 4. PyRIT 是 A 线攻击库主底座；AIG 只作为 Agent/MCP 策略和 enhancer 补充来源。
 5. `user_prompt_seeds.json` 必须是非重复材料库，不得退化为 `attack_seeds.json` 的机械复制。
 6. 新增 operator 必须有 `mutationOperators.ts` 的确定性实现或明确的 template/metadata 语义，不能只增加空 JSON 条目。
-7. 运行 `npm run a:generate-corpus` 后必须运行 `npm run verify:a-corpus`，再按影响范围运行全量验证。
+7. PyRIT executor 类 operator 应标记 `executionMode: "pyrit_python_bridge"`；离线 generated corpus 可以保留预览文本，但真实执行结果必须来自 `outputs/pyrit-runs/**`。
+8. 运行 `npm run a:generate-corpus` 后必须运行 `npm run verify:a-corpus`，再按影响范围运行全量验证。

@@ -139,7 +139,7 @@ AIG 是策略、扫描思路、增强器和分类体系补充来源。
 Agent Guard 本地 generator 只负责编排、校验、分层和输出契约对象。
 ```
 
-这意味着 P3-A 攻击库的大部分样例必须来自 PyRIT 的 seed dataset、jailbreak template、converter、executor template、attack strategy 和可选 Python bridge 生成，而不是简单地把少量 seed 做笛卡尔组合。组合只用于受控采样、分层和补齐覆盖，不作为主要创新点。
+这意味着 P3-A 攻击库的大部分样例必须来自 PyRIT 的 seed dataset、jailbreak template、converter、executor template、attack strategy 和 PyRIT Python runtime bridge，而不是简单地把少量 seed 做笛卡尔组合。组合只用于受控采样、分层和补齐覆盖，不作为主要创新点。
 
 ## 2. P3-A 总目标
 
@@ -172,7 +172,7 @@ PyRIT generated 包括:
 - PyRIT prompt converters 变异。
 - PyRIT local seed datasets 导入。
 - PyRIT executor templates 固定化生成。
-- PyRIT custom `run_attack_cli.py` / attack executor 可选离线 bridge 生成。
+- PyRIT custom `run_attack_cli.py` / attack executor 通过显式 Python runtime bridge 真实执行。
 - PyRIT evaluator/scorer metadata 进入 coverage 和质量统计。
 
 ## 3. Resource 种子库重构
@@ -371,29 +371,40 @@ template_segment_jailbreak, pyrit_text_jailbreak
 执行模式:
 
 ```txt
-native_ts_adapter: 默认 CI 可跑
-pyrit_template_rendered: 默认 CI 可跑
-python_bridge_offline: 手动启用
-llm_assisted: 手动启用
+native_ts_adapter: TypeScript 可复现变异实现，默认 CI 可跑
+template_render: 离线模板/格式载体渲染，默认 CI 可跑
+pyrit_python_bridge: 显式调用 vendored PyRIT Python runtime，可真实调用模型
 metadata_only: 只做来源和覆盖统计
 ```
 
-### 5.3 PyRIT Python bridge
+### 5.3 PyRIT Python runtime bridge
 
-P3-A 可以引入可选 Python bridge，用于真实运行定制 PyRIT 的 `run_attack_cli.py`、executor/attack 和 evaluator 逻辑。
+P3-A 已引入 Python runtime bridge，用于真实运行定制 PyRIT 的 `run_attack_cli.py`、executor/attack 和 evaluator 逻辑。它不是模板化生成的替代描述，而是 A 线 runtime 执行层: generated corpus 负责提供 objective/profile，bridge 负责把选中的 objective 交给 PyRIT attack executor。
 
 约束:
 
 - 不进入默认 CI。
 - 有超时、最大输出长度和 JSON schema。
-- 生成物必须标记 `executionMode: "python_bridge_offline"`。
-- 不写入真实 key，不使用生产环境凭证。
-- bridge 失败不影响 native TS corpus 生成。
+- PyRIT executor operator 必须标记 `executionMode: "pyrit_python_bridge"`。
+- 不写入真实 key，不使用生产环境凭证；key 只能来自环境变量。
+- 模型环境未配置时必须结构化 `skipped`，不能伪造成功。
+- bridge 失败不影响 generated corpus 生成，但会影响显式 runtime 批测验收。
 
-建议命令:
+当前命令:
 
 ```txt
-npm run pyrit:bridge-generate -- --profile offline --max-cases 300
+npm run pyrit:setup-runtime
+npm run pyrit:bridge-smoke
+npm run verify:a-pyrit-runtime
+npm run a:pyrit-runtime
+```
+
+模型配置:
+
+```txt
+OPENAI_CHAT_ENDPOINT
+OPENAI_CHAT_KEY       # 可由 DeepSeek_API_2 或 AGENT_GUARD_PYRIT_OPENAI_CHAT_KEY 映射
+OPENAI_CHAT_MODEL     # 例如 deepseek-v4-flash
 ```
 
 ## 6. AIG 补充迁移
@@ -427,7 +438,7 @@ P3-A 的 generated corpus 必须可复现、可分层、可抽样。
 2. 读取 PyRIT dataset/template/executor/scorer index
 3. 读取 AIG strategy/enhancer index
 4. 按 AttackGenerationProfile 选择 PyRIT 生成方式
-5. 渲染 PyRIT template 或调用 native converter / optional bridge
+5. 渲染 PyRIT template、调用 native converter，或显式触发 PyRIT Python runtime bridge
 6. 生成 PromptDefinition / ToolResponseTemplate / TestCase / TestOracle
 7. 去重、长度限制、secret-like pattern 扫描、引用校验
 8. 输出 generated/a-line/** 和 CorpusManifest
@@ -514,7 +525,7 @@ qualityChecks
 - PyRIT scorer template index。
 - PyRIT template renderer。
 - Native/template/metadata mutation operators 扩到 150+，并覆盖 PyRIT converter、executor、prompt fuzzer、XPIA 和 token smuggling 类别。
-- 可选 Python bridge 生成入口。
+- PyRIT Python runtime bridge 生成入口和验证脚本。
 
 ### P3-A-3 千级 generated corpus
 
@@ -1146,7 +1157,7 @@ A 负责 PyRIT 驱动攻击库、资源种子和策略模板输入:
 
 1. 以 PyRIT 为主生成内置画像样本、OpenClaw 候选样本、外部监督批测样本和 full-corpus 样本。
 2. 扩展资源种子库，覆盖 secret、PII、多租户业务数据、RAG、web/browser、memory、devops、internal API 和 benign controls。
-3. 迁移 PyRIT seed dataset、jailbreak template、executor template、converter、scorer 和可选 Python bridge 生成能力。
+3. 迁移 PyRIT seed dataset、jailbreak template、executor template、converter、scorer 和 Python runtime bridge 生成能力。
 4. 迁移 AIG indirect/data/tool/auth skill、mcp-scan Crescendo/TAP 和 PromptSecurity enhancer 作为补充策略源。
 5. 维护 `CorpusManifest`、run profile、case source metadata 和策略模板与 capabilityTags/riskTags 的映射建议。
 6. 提供工具能力画像的人工校验样本，以及 B/C 可追溯的 caseId、promptId、oracleId 和 source origin。

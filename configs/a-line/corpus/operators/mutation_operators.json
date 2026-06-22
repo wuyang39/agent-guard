@@ -463,7 +463,7 @@
     "operatorId": "pyrit.executor.context_compliance",
     "name": "Context compliance frame",
     "family": "roleplay",
-    "executionMode": "template_render",
+    "executionMode": "pyrit_python_bridge",
     "source": {
       "origin": "pyrit",
       "sourcePath": "third_party/pyrit_adapted"
@@ -480,7 +480,7 @@
     "operatorId": "pyrit.executor.role_play",
     "name": "Role play frame",
     "family": "roleplay",
-    "executionMode": "template_render",
+    "executionMode": "pyrit_python_bridge",
     "source": {
       "origin": "pyrit",
       "sourcePath": "third_party/pyrit_adapted"
@@ -497,7 +497,7 @@
     "operatorId": "pyrit.executor.role_play.security_auditor",
     "name": "Role play as security auditor",
     "family": "roleplay",
-    "executionMode": "template_render",
+    "executionMode": "pyrit_python_bridge",
     "source": {
       "origin": "pyrit",
       "sourcePath": "third_party/pyrit_adapted"
@@ -515,7 +515,7 @@
     "operatorId": "pyrit.executor.role_play.game_master",
     "name": "Role play as game master",
     "family": "roleplay",
-    "executionMode": "template_render",
+    "executionMode": "pyrit_python_bridge",
     "source": {
       "origin": "pyrit",
       "sourcePath": "third_party/pyrit_adapted"
@@ -533,7 +533,7 @@
     "operatorId": "pyrit.executor.role_play.video_game",
     "name": "Role play as video game quest",
     "family": "roleplay",
-    "executionMode": "template_render",
+    "executionMode": "pyrit_python_bridge",
     "source": {
       "origin": "pyrit",
       "sourcePath": "third_party/pyrit_adapted"
@@ -551,7 +551,7 @@
     "operatorId": "pyrit.executor.role_play.trivia_game",
     "name": "Role play as trivia game",
     "family": "roleplay",
-    "executionMode": "template_render",
+    "executionMode": "pyrit_python_bridge",
     "source": {
       "origin": "pyrit",
       "sourcePath": "third_party/pyrit_adapted"
@@ -569,7 +569,7 @@
     "operatorId": "pyrit.executor.role_play.movie_script",
     "name": "Role play as movie script",
     "family": "roleplay",
-    "executionMode": "template_render",
+    "executionMode": "pyrit_python_bridge",
     "source": {
       "origin": "pyrit",
       "sourcePath": "third_party/pyrit_adapted"
@@ -587,7 +587,7 @@
     "operatorId": "pyrit.executor.role_play.persuasion_script",
     "name": "Role play as persuasion script",
     "family": "roleplay",
-    "executionMode": "template_render",
+    "executionMode": "pyrit_python_bridge",
     "source": {
       "origin": "pyrit",
       "sourcePath": "third_party/pyrit_adapted"
@@ -605,7 +605,7 @@
     "operatorId": "pyrit.executor.role_play.compliance_reviewer",
     "name": "Role play as compliance reviewer",
     "family": "roleplay",
-    "executionMode": "template_render",
+    "executionMode": "pyrit_python_bridge",
     "source": {
       "origin": "pyrit",
       "sourcePath": "third_party/pyrit_adapted"
@@ -623,7 +623,7 @@
     "operatorId": "pyrit.executor.role_play.support_operator",
     "name": "Role play as support operator",
     "family": "roleplay",
-    "executionMode": "template_render",
+    "executionMode": "pyrit_python_bridge",
     "source": {
       "origin": "pyrit",
       "sourcePath": "third_party/pyrit_adapted"
@@ -641,7 +641,7 @@
     "operatorId": "pyrit.executor.role_play.developer_debugger",
     "name": "Role play as developer debugger",
     "family": "roleplay",
-    "executionMode": "template_render",
+    "executionMode": "pyrit_python_bridge",
     "source": {
       "origin": "pyrit",
       "sourcePath": "third_party/pyrit_adapted"
@@ -659,7 +659,7 @@
     "operatorId": "pyrit.executor.skeleton_key",
     "name": "Skeleton key frame",
     "family": "roleplay",
-    "executionMode": "template_render",
+    "executionMode": "pyrit_python_bridge",
     "source": {
       "origin": "pyrit",
       "sourcePath": "third_party/pyrit_adapted"
@@ -676,7 +676,7 @@
     "operatorId": "pyrit.executor.crescendo_probe",
     "name": "Crescendo probe step",
     "family": "multi_turn",
-    "executionMode": "template_render",
+    "executionMode": "pyrit_python_bridge",
     "source": {
       "origin": "pyrit",
       "sourcePath": "third_party/pyrit_adapted"
@@ -693,7 +693,7 @@
     "operatorId": "pyrit.executor.crescendo_escalate",
     "name": "Crescendo escalation step",
     "family": "multi_turn",
-    "executionMode": "template_render",
+    "executionMode": "pyrit_python_bridge",
     "source": {
       "origin": "pyrit",
       "sourcePath": "third_party/pyrit_adapted"
@@ -710,7 +710,7 @@
     "operatorId": "pyrit.executor.crescendo_exfiltrate",
     "name": "Crescendo exfiltration step",
     "family": "multi_turn",
-    "executionMode": "template_render",
+    "executionMode": "pyrit_python_bridge",
     "source": {
       "origin": "pyrit",
       "sourcePath": "third_party/pyrit_adapted"
@@ -727,7 +727,7 @@
     "operatorId": "pyrit.executor.tap_variant",
     "name": "Tree of attacks branch",
     "family": "multi_turn",
-    "executionMode": "template_render",
+    "executionMode": "pyrit_python_bridge",
     "source": {
       "origin": "pyrit",
       "sourcePath": "third_party/pyrit_adapted"
@@ -744,7 +744,7 @@
     "operatorId": "pyrit.executor.many_shot_template",
     "name": "Many-shot jailbreak frame",
     "family": "multi_turn",
-    "executionMode": "template_render",
+    "executionMode": "pyrit_python_bridge",
     "source": {
       "origin": "pyrit",
       "sourcePath": "third_party/pyrit_adapted"
@@ -759,9 +759,9 @@
   {
     "schemaVersion": "p3-a-1",
     "operatorId": "pyrit.executor.renellm_rewrite",
-    "name": "ReneLLM rewrite metadata frame",
+    "name": "ReneLLM rewrite runtime frame",
     "family": "language",
-    "executionMode": "metadata_only",
+    "executionMode": "pyrit_python_bridge",
     "source": {
       "origin": "pyrit",
       "sourcePath": "third_party/pyrit_adapted"
@@ -771,14 +771,14 @@
     "tags": [
       "renellm"
     ],
-    "description": "ReneLLM rewrite metadata frame mutation operator for Agent Guard P3-A corpus."
+    "description": "ReneLLM rewrite runtime frame mutation operator for Agent Guard P3-A corpus."
   },
   {
     "schemaVersion": "p3-a-1",
     "operatorId": "pyrit.executor.flip_attack_goal",
     "name": "Flip attack goal frame",
     "family": "roleplay",
-    "executionMode": "template_render",
+    "executionMode": "pyrit_python_bridge",
     "source": {
       "origin": "pyrit",
       "sourcePath": "third_party/pyrit_adapted"
@@ -1237,7 +1237,7 @@
     "operatorId": "pyrit.executor.red_team_objective",
     "name": "Red-team objective executor frame",
     "family": "roleplay",
-    "executionMode": "template_render",
+    "executionMode": "pyrit_python_bridge",
     "source": {
       "origin": "pyrit",
       "sourcePath": "third_party/pyrit_adapted"
@@ -1254,7 +1254,7 @@
     "operatorId": "pyrit.executor.context_switch",
     "name": "Context switch executor frame",
     "family": "roleplay",
-    "executionMode": "template_render",
+    "executionMode": "pyrit_python_bridge",
     "source": {
       "origin": "pyrit",
       "sourcePath": "third_party/pyrit_adapted"
@@ -1271,7 +1271,7 @@
     "operatorId": "pyrit.executor.pair_attacker",
     "name": "PAIR attacker prompt frame",
     "family": "multi_turn",
-    "executionMode": "template_render",
+    "executionMode": "pyrit_python_bridge",
     "source": {
       "origin": "pyrit",
       "sourcePath": "third_party/pyrit_adapted"
@@ -1288,7 +1288,7 @@
     "operatorId": "pyrit.executor.tree_reflection",
     "name": "Tree-of-attacks reflection frame",
     "family": "multi_turn",
-    "executionMode": "template_render",
+    "executionMode": "pyrit_python_bridge",
     "source": {
       "origin": "pyrit",
       "sourcePath": "third_party/pyrit_adapted"
@@ -1306,7 +1306,7 @@
     "operatorId": "pyrit.executor.simulated_target_compliance",
     "name": "Simulated target compliance frame",
     "family": "roleplay",
-    "executionMode": "template_render",
+    "executionMode": "pyrit_python_bridge",
     "source": {
       "origin": "pyrit",
       "sourcePath": "third_party/pyrit_adapted"
@@ -2591,7 +2591,7 @@
     "operatorId": "pyrit.executor.chunked_request",
     "name": "Chunked request executor",
     "family": "instruction_split",
-    "executionMode": "template_render",
+    "executionMode": "pyrit_python_bridge",
     "source": {
       "origin": "pyrit",
       "sourcePath": "third_party/pyrit_adapted"
@@ -2608,7 +2608,7 @@
     "operatorId": "pyrit.executor.multi_prompt_sending",
     "name": "Multi-prompt sending executor",
     "family": "multi_turn",
-    "executionMode": "template_render",
+    "executionMode": "pyrit_python_bridge",
     "source": {
       "origin": "pyrit",
       "sourcePath": "third_party/pyrit_adapted"
@@ -2625,7 +2625,7 @@
     "operatorId": "pyrit.executor.red_teaming_persuasion",
     "name": "Red teaming persuasion executor",
     "family": "roleplay",
-    "executionMode": "template_render",
+    "executionMode": "pyrit_python_bridge",
     "source": {
       "origin": "pyrit",
       "sourcePath": "third_party/pyrit_adapted"
@@ -2643,7 +2643,7 @@
     "operatorId": "pyrit.executor.red_teaming_deception",
     "name": "Red teaming deception executor",
     "family": "roleplay",
-    "executionMode": "template_render",
+    "executionMode": "pyrit_python_bridge",
     "source": {
       "origin": "pyrit",
       "sourcePath": "third_party/pyrit_adapted"
@@ -2661,7 +2661,7 @@
     "operatorId": "pyrit.executor.anecdoctor_fewshot",
     "name": "Anecdote Doctor few-shot executor",
     "family": "multi_turn",
-    "executionMode": "template_render",
+    "executionMode": "pyrit_python_bridge",
     "source": {
       "origin": "pyrit",
       "sourcePath": "third_party/pyrit_adapted"
@@ -2679,7 +2679,7 @@
     "operatorId": "pyrit.executor.xpia_workflow",
     "name": "XPIA workflow executor",
     "family": "context_poison",
-    "executionMode": "template_render",
+    "executionMode": "pyrit_python_bridge",
     "source": {
       "origin": "pyrit",
       "sourcePath": "third_party/pyrit_adapted"
@@ -2697,7 +2697,7 @@
     "operatorId": "pyrit.executor.fuzzer_generator",
     "name": "Prompt fuzzer generator executor",
     "family": "multi_turn",
-    "executionMode": "template_render",
+    "executionMode": "pyrit_python_bridge",
     "source": {
       "origin": "pyrit",
       "sourcePath": "third_party/pyrit_adapted"
@@ -2715,7 +2715,7 @@
     "operatorId": "pyrit.executor.role_play.courtroom",
     "name": "Role play as courtroom cross-examination",
     "family": "roleplay",
-    "executionMode": "template_render",
+    "executionMode": "pyrit_python_bridge",
     "source": {
       "origin": "pyrit",
       "sourcePath": "third_party/pyrit_adapted"
@@ -2733,7 +2733,7 @@
     "operatorId": "pyrit.executor.role_play.newsroom",
     "name": "Role play as newsroom assignment",
     "family": "roleplay",
-    "executionMode": "template_render",
+    "executionMode": "pyrit_python_bridge",
     "source": {
       "origin": "pyrit",
       "sourcePath": "third_party/pyrit_adapted"
@@ -2751,7 +2751,7 @@
     "operatorId": "pyrit.executor.role_play.audit_board",
     "name": "Role play as audit board review",
     "family": "roleplay",
-    "executionMode": "template_render",
+    "executionMode": "pyrit_python_bridge",
     "source": {
       "origin": "pyrit",
       "sourcePath": "third_party/pyrit_adapted"
@@ -2769,7 +2769,7 @@
     "operatorId": "pyrit.executor.role_play.tabletop_incident",
     "name": "Role play as tabletop incident drill",
     "family": "roleplay",
-    "executionMode": "template_render",
+    "executionMode": "pyrit_python_bridge",
     "source": {
       "origin": "pyrit",
       "sourcePath": "third_party/pyrit_adapted"
@@ -2787,7 +2787,7 @@
     "operatorId": "pyrit.executor.context_compliance.strict_json",
     "name": "Strict JSON compliance executor",
     "family": "format",
-    "executionMode": "template_render",
+    "executionMode": "pyrit_python_bridge",
     "source": {
       "origin": "pyrit",
       "sourcePath": "third_party/pyrit_adapted"

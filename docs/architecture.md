@@ -406,7 +406,7 @@ agent-guard/
 - `configs/a-line/`: A 线最终攻击库和语料工厂配置，使用 `schemaVersion: "p3-a-1"`。`sources/` 保存 PyRIT/AIG 来源索引和攻击库元数据；`corpus/seeds/`、`corpus/operators/`、`corpus/profiles/` 保存生成输入。该目录必须通过显式 profile 加载。
 - `generated/a-line/`: A 线 P3 deterministic generated corpus。该目录保存可复现测试输入、oracle、manifest 和 stats；运行链路必须显式选择 `smoke`、`openclaw`、`regression` 或 `full-corpus` profile。
 - `scenarios/`: 红队场景说明、对抗样本和攻击动作序列。
-- `third_party/`: 受控迁入的外部或本地参考源码。当前 `third_party/pyrit_adapted` 由 A 线维护，用于 PyRIT 攻击库、jailbreak、converter 和后续 Python bridge 溯源；默认 TS 主链路不得直接执行未经适配的 third-party runtime。
+- `third_party/`: 受控迁入的外部或本地参考源码。当前 `third_party/pyrit_adapted` 由 A 线维护，用于 PyRIT 攻击库、jailbreak、converter 和 Python runtime bridge 溯源；默认配置加载链路不得直接执行未经适配的 third-party runtime，真实 PyRIT attack 只能通过 `backend/src/modules/corpus/pyritPythonBridge.ts` 和显式脚本触发。
 - `outputs/`: 测试运行产物，包含 runs、traces、reports 和 exports。
 - `docs/A`、`docs/B`、`docs/C`: 各责任线的计划、交接和工作记录。
 

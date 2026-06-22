@@ -214,7 +214,7 @@ npm run verify:a-pyrit-library
 
 - 新增 `npm run verify:a-pyrit-library`。
 - 新增 `npm run pyrit:index-templates`。
-- 新增 `npm run pyrit:bridge-smoke`，作为可选 Python bridge 边界烟测。
+- P2 新增 `npm run pyrit:bridge-smoke`，当时作为可选 Python bridge 边界烟测；P3-A 已升级为显式 PyRIT Python runtime bridge，详见 `docs/A/p2-pyrit-python-bridge-contract.md` 和工作日志第 22 节。
 - `npm run verify:all` 已包含 PyRIT 迁移验证。
 - `verify:a-config-sandbox` 已覆盖新增 PyRIT debug 和 memory sandbox 行为。
 

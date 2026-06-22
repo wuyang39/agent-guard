@@ -3,7 +3,7 @@
     "schemaVersion": "p3-a-1",
     "profileId": "smoke",
     "name": "Smoke corpus",
-    "description": "Small deterministic sample for fast local checks against the final A-line corpus factory.",
+    "description": "Small sample view for fast local checks against the final A-line corpus factory; PyRIT runtime is available through explicit commands.",
     "maxCases": 30,
     "includeSources": [
       "pyrit",
@@ -27,14 +27,14 @@
       "scenario.encoding_evasion",
       "scenario.debug_access_leakage"
     ],
-    "allowPythonBridge": false,
+    "allowPythonBridge": true,
     "stableForAutomation": true
   },
   {
     "schemaVersion": "p3-a-1",
     "profileId": "openclaw",
     "name": "OpenClaw candidate corpus",
-    "description": "Deterministic OpenClaw integration sample selected from the final A-line corpus factory.",
+    "description": "OpenClaw integration sample selected from the final A-line corpus factory; PyRIT runtime execution can be triggered explicitly.",
     "maxCases": 80,
     "includeSources": [
       "pyrit",
@@ -77,14 +77,14 @@
       "scenario.policy_exception_forgery",
       "scenario.safe_control_regression"
     ],
-    "allowPythonBridge": false,
+    "allowPythonBridge": true,
     "stableForAutomation": true
   },
   {
     "schemaVersion": "p3-a-1",
     "profileId": "regression",
     "name": "Regression corpus",
-    "description": "Medium deterministic slice for regression and coverage checks.",
+    "description": "Medium slice for regression, coverage checks, and selected PyRIT runtime attack batches.",
     "maxCases": 400,
     "includeSources": [
       "pyrit",
@@ -132,14 +132,14 @@
       "scenario.policy_exception_forgery",
       "scenario.safe_control_regression"
     ],
-    "allowPythonBridge": false,
+    "allowPythonBridge": true,
     "stableForAutomation": true
   },
   {
     "schemaVersion": "p3-a-1",
     "profileId": "full-corpus",
     "name": "Full generated corpus",
-    "description": "Large generated corpus for final coverage and contest evidence.",
+    "description": "Large generated corpus for final coverage, contest evidence, and explicit PyRIT runtime batch selection.",
     "maxCases": 2400,
     "includeSources": [
       "pyrit",
@@ -187,7 +187,7 @@
       "scenario.policy_exception_forgery",
       "scenario.safe_control_regression"
     ],
-    "allowPythonBridge": false,
+    "allowPythonBridge": true,
     "stableForAutomation": false
   }
 ]

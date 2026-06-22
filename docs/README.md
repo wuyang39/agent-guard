@@ -25,7 +25,7 @@
 - `A/p2-pyrit-understanding-record.md`: A 线对本地定制 PyRIT 项目的结构审阅、可迁移能力、已迁入内容和已知限制。
 - `A/p2-a-line-pyrit-integration-plan.md`: A 线 P2 PyRIT 攻击库迁移、配置接入、sandbox 适配、验证和后续开发计划。
 - `A/p2-built-in-test-data-guide.md`: A 线 P2 内置 case、OpenClaw/fallback 分层、AIG/PyRIT 来源和答辩说明。
-- `A/p2-pyrit-python-bridge-contract.md`: 可选 PyRIT Python bridge 的输入输出、边界、烟测和后续接入约束。
+- `A/p2-pyrit-python-bridge-contract.md`: PyRIT Python runtime bridge 的输入输出、模型环境、验证命令、安全边界和 B/C 线对接约束。
 - `A/p2-openclaw-project-runtime-test.md`: 项目隔离 OpenClaw runtime 的本机部署、DeepSeek 模型映射和 required 验证结果。
 - `A/p3-a-corpus-implementation-plan.md`: A 线 P3 攻击库、资源种子、PyRIT/AIG 迁移、千级 generated corpus、run profile 和验证脚本的实现前执行计划。
 - `../configs/a-line/README.md`: A 线攻击库配置分层说明，解释 `sources/`、`corpus/seeds/`、`corpus/operators/`、`corpus/profiles/` 与 `generated/a-line/**` 的职责。

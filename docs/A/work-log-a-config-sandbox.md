@@ -1087,3 +1087,57 @@ generated test oracles: 2400
 - 新增 PyRIT operator 时，必须同时更新 operator spec 和 `mutationOperators.ts` 的 deterministic/template 实现。
 - `UserPromptSeed` 必须继续作为变异前材料层参与 `AttackSeed + UserPromptSeed -> operator` 流程，不能删除或并回 `AttackSeed`。
 - `smoke/openclaw/regression` 只是从最终语料库抽样出来的检查/联调/回归视图，不再作为 A 线规模上限。
+
+## 22. 2026-06-22 P3-A PyRIT Python Runtime Bridge 接入
+
+分支: `a/p3-a-corpus-implementation-plan`
+
+本轮根据用户要求修正 A 线 PyRIT 迁移方向: 不能只停留在“确定性离线变异 + 模板化编排 + 大规模结构化组合”。A 线现在保留 generated corpus 作为可追溯输入层，同时新增 PyRIT Python runtime bridge 作为显式执行层，用于真实调用 vendored PyRIT 的 `run_attack_cli.py`、attack executor 和 evaluator 逻辑。
+
+实现要点:
+
+- 项目隔离 runtime: 新增 `scripts/setup-pyrit-runtime.ps1` 和 `npm run pyrit:setup-runtime`，安装到 `.venv/pyrit`。`.venv/` 与 `third_party/pyrit_adapted/*.egg-info/` 已加入 `.gitignore`。
+- Python bridge: 新增 `third_party/pyrit_adapted/agent_guard_bridge.py`，支持 `converter_batch` 和 `attack_cli` 两种模式。
+- TS bridge: 新增 `backend/src/modules/corpus/pyritPythonBridge.ts`，负责选择 Python、规范环境变量映射、写入 bridge request、调用子进程、解析 bridge result。
+- 运行脚本: 新增 `scripts/generate-a-pyrit-runtime-batch.ts` 和 `npm run a:pyrit-runtime`，从 generated corpus profile 中选择 case/objective，调用 PyRIT runtime，并把结果写入 `outputs/pyrit-runs/**`。
+- 验证脚本: 新增 `scripts/verify-a-pyrit-runtime.ts` 和 `npm run verify:a-pyrit-runtime`，验证真实 PyRIT converter runtime 和 attack_cli 模型配置边界。
+- Contract: `packages/contracts/src/types/corpus.ts` 新增 `PyritBridgeRequest`、`PyritBridgeResult`、`PyritAttackMethod` 和相关 item/status/runtime 类型。
+- Operator 元数据: PyRIT executor 类 operator 的 `executionMode` 从 `template_render`/`metadata_only` 调整为 `pyrit_python_bridge`；离线 generated corpus 只作为预览和选样输入，真实执行结果以 `outputs/pyrit-runs/**` 为准。
+- Run profile: `smoke/openclaw/regression/full-corpus` 均允许 Python bridge，但 bridge 只通过显式命令触发，不进入默认配置加载。
+
+模型环境:
+
+```txt
+OPENAI_CHAT_ENDPOINT
+OPENAI_CHAT_KEY       # 可由 DeepSeek_API_2 或 AGENT_GUARD_PYRIT_OPENAI_CHAT_KEY 映射
+OPENAI_CHAT_MODEL     # 可由 DEEPSEEK_MODEL 或 AGENT_GUARD_PYRIT_OPENAI_CHAT_MODEL 映射
+```
+
+当前本机检查结果:
+
+- `DeepSeek_API_2` 可被识别为 key。
+- `OPENAI_CHAT_ENDPOINT` 缺失。
+- `OPENAI_CHAT_MODEL` 缺失。
+- 因此 `verify:a-pyrit-runtime` 当前按设计返回: bridge/runtime 安装可用，真实模型 attack 被结构化 `SKIP`，不是伪造成功。
+
+已验证:
+
+```powershell
+npm run typecheck
+npm run pyrit:bridge-smoke
+npm run verify:a-pyrit-runtime
+.venv\pyrit\Scripts\python.exe third_party\pyrit_adapted\agent_guard_bridge.py --self-test
+```
+
+结果:
+
+- TypeScript typecheck 通过。
+- `pyrit:bridge-smoke` 通过。
+- Python bridge self-test 通过，`Base64Converter` 和 `ROT13Converter` 均以 `runtimeUsed: "pyrit"` 执行。
+- `verify:a-pyrit-runtime` 通过安装和 bridge 验证；真实 attack 因 endpoint/model 未配置被跳过。
+
+后续方向:
+
+- 用户补齐 OpenAI-compatible endpoint 和模型名后，运行 `npm run a:pyrit-runtime` 执行真实 PyRIT attack batch。
+- 如需把结果进入报告，应由 C 线消费 `PyritBridgeResult` 和脱敏后的 `outputs/pyrit-runs/**` 摘要，不得把它直接当成 B 线 `InteractionTrace` 或 realtime `RuntimeSupervisionRecord[]`。
+- 后续可以继续把 PyRIT 的更多 attack executor 参数、scorer/evaluator 指标和 batch dataset 读取能力暴露到 bridge request options。

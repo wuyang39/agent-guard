@@ -71,6 +71,8 @@ PyritAttackLibrary
 PyritJailbreakTemplateIndex
 CorpusManifest
 CorpusRunProfile[]
+PyritBridgeRequest
+PyritBridgeResult
 ```
 
 输出给 C:
@@ -105,6 +107,8 @@ TestOracle
 `PyritJailbreakTemplateIndex` 是 A 线 P2 新增的 PyRIT jailbreak 模板元数据索引。它只保存路径、分组、参数、作者、哈希和大小，不保存模板全文；前端和报告只能把它作为来源说明或覆盖率统计。
 
 `CorpusManifest` 是 A 线 P3 generated corpus 的来源和覆盖率索引。B 线可按 `CorpusRunProfile` 显式选择 generated case；C 线可用 `CorpusManifest` 展示来源、覆盖率和样本分层。`CorpusManifest` 不包含风险结论，不能替代 `InteractionTrace`、`RiskReport` 或 `DefenseReport`。
+
+`PyritBridgeRequest` / `PyritBridgeResult` 是 A 线 P3 PyRIT Python runtime bridge 的执行契约。它用于把 generated corpus 中选出的 objective 交给 vendored PyRIT `run_attack_cli.py` 做真实模型攻击，并把结果写入 `outputs/pyrit-runs/**`。它不是 `TestContext` 的一部分，也不能替代 B 线 `InteractionTrace` 或 realtime `RuntimeSupervisionRecord[]`。
 
 `configs/a-line/corpus/seeds/attack_seeds.json` 是攻击目标、目标工具/资源、风险类别和基础 objective 的入口。`configs/a-line/corpus/seeds/user_prompt_seeds.json` 是进入 PyRIT/operator 变异前的用户 prompt 材料层，负责直接请求、歧义请求、委托授权、多轮铺垫、roleplay persona 和 benign control。生成器先组合 `AttackSeed + UserPromptSeed`，再应用 PyRIT/AIG/operator 变异；`UserPromptSeed` 不得退化为 `AttackSeed` 的机械复制。
 

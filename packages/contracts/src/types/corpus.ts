@@ -172,6 +172,92 @@ export type MutationOperatorSpec = {
   metadata?: JsonObject;
 };
 
+export type PyritBridgeMode = "converter_batch" | "attack_cli";
+
+export type PyritBridgeRuntimeUsed = "pyrit" | "fallback" | "not_executed";
+
+export type PyritBridgeItemStatus = "ok" | "unsupported" | "error" | "skipped";
+
+export type PyritAttackMethod =
+  | "prompt_sending"
+  | "flip"
+  | "red_teaming"
+  | "crescendo"
+  | "context_compliance"
+  | "role_play"
+  | "many_shot_jailbreak"
+  | "renellm";
+
+export type PyritBridgeRequestItem = {
+  itemId: string;
+  operatorId: string;
+  input: string;
+  inputType?: "text";
+  method?: PyritAttackMethod;
+  objective?: string;
+  maxTurns?: number;
+  renellmMaxRounds?: number;
+  renellmRewriteStyle?:
+    | "shorten_sentence"
+    | "misrewrite_sentence"
+    | "change_order"
+    | "add_char"
+    | "language_mix"
+    | "style_change"
+    | "random";
+  evaluatorSync?: boolean;
+  metadata?: JsonObject;
+};
+
+export type PyritBridgeRequest = {
+  schemaVersion: SchemaVersion;
+  bridgeVersion: string;
+  requestId: string;
+  mode: PyritBridgeMode;
+  generatedAt: string;
+  items: PyritBridgeRequestItem[];
+  options?: JsonObject;
+};
+
+export type PyritBridgeResultItem = {
+  itemId: string;
+  operatorId: string;
+  status: PyritBridgeItemStatus;
+  input: string;
+  output?: string;
+  outputType?: string;
+  converterClass?: string;
+  method?: PyritAttackMethod;
+  objective?: string;
+  outputJsonPath?: string;
+  executedTurns?: number;
+  outcome?: string;
+  outcomeReason?: string;
+  lastScore?: JsonObject;
+  lastResponsePreview?: string;
+  runtimeUsed: PyritBridgeRuntimeUsed;
+  notes: string[];
+  error?: string;
+  metadata?: JsonObject;
+};
+
+export type PyritBridgeResult = {
+  schemaVersion: SchemaVersion;
+  bridgeVersion: string;
+  requestId: string;
+  mode: PyritBridgeMode;
+  generatedAt: string;
+  startedAt: string;
+  endedAt: string;
+  pythonExecutable?: string;
+  pyritAvailable: boolean;
+  modelConfigured?: boolean;
+  fallbackAllowed: boolean;
+  items: PyritBridgeResultItem[];
+  errors: string[];
+  metadata?: JsonObject;
+};
+
 export type CorpusRunProfile = {
   schemaVersion: SchemaVersion;
   profileId: CorpusRunProfileId;

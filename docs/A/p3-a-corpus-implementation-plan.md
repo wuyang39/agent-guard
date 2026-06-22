@@ -2,7 +2,7 @@
 
 文档版本: p3-a-implementation-1  
 生成日期: 2026-06-18  
-状态: P3-A 语料工厂重构已完成首轮实现，当前进入最终工程口径收口
+状态: P3-A 语料工厂重构已完成首轮实现，当前接入 PyRIT Python runtime bridge
 分支: `a/p3-a-corpus-implementation-plan`  
 适用范围: A 线 P3 攻击库、资源种子、PyRIT/AIG 迁移、生成语料、sandbox/profile 接入和验证脚本
 
@@ -19,6 +19,7 @@
   -> generated/a-line/** 大规模语料
   -> corpus manifest / corpus stats
   -> 按 smoke / openclaw / regression / full-corpus profile 显式加载
+  -> 显式选择样本进入 PyRIT Python runtime bridge 做真实模型攻击
   -> B 线运行 TestContext
   -> C 线按 CorpusManifest 展示来源、覆盖率和证据追溯
 ```
@@ -66,8 +67,12 @@ scripts/generate-a-corpus.ts
 scripts/verify-a-corpus.ts
 scripts/index-pyrit-seed-datasets.ts
 scripts/index-aig-strategies.ts
+scripts/generate-a-pyrit-runtime-batch.ts
+scripts/verify-a-pyrit-runtime.ts
+scripts/setup-pyrit-runtime.ps1
 configs/a-line/**
 generated/a-line/**
+outputs/pyrit-runs/**
 ```
 
 当前配置目录已完成分层: `configs/` 根目录只保留跨线共享运行时 fixture，A 线攻击库、seed、operator、profile 和 PyRIT/AIG source index 全部迁入 `configs/a-line/**` 并使用 `schemaVersion: "p3-a-1"`。`loadConfigRepository()` 仍只读取根目录运行时 fixture；大规模 generated corpus 通过显式 profile 和 `CorpusManifest` 被 B/C 线消费。
@@ -156,9 +161,9 @@ agent-guard/third_party/pyrit_adapted
 P3-A 使用方式:
 
 - 优先迁移 PyRIT seed dataset、jailbreak template metadata、converter、executor template、scorer metadata 和 evaluator 输出字段。
-- 可选接入 Python bridge，但必须离线、可复现、超时可控、不发网络、不调用真实模型、不写入未受控数据库。
+- 接入 Python runtime bridge，显式调用 vendored PyRIT 的 `run_attack_cli.py`、attack executor 和 evaluator 逻辑。模型调用只在用户配置 `OPENAI_CHAT_ENDPOINT`、`OPENAI_CHAT_KEY`、`OPENAI_CHAT_MODEL` 或等价映射后发生；未配置时结构化 `skipped`，不能用模板结果冒充真实攻击结果。
 - 生成物必须带 `source.origin: "pyrit"`、sourcePath、templateId/converterId/executorId、mutation chain 和 hash。
-- 不把完整 PyRIT runtime 作为主 TS 链路依赖。
+- 不把完整 PyRIT runtime 混进默认 TS 配置加载链路；runtime 由项目隔离 `.venv/pyrit` 和显式 npm scripts 触发。
 
 ### 4.2 AIG
 

@@ -16,6 +16,8 @@ from typing import Any, Callable
 
 BRIDGE_VERSION = "p3-a-pyrit-bridge-1"
 SCHEMA_VERSION = "p3-a-1"
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 BASE_DIR = Path(__file__).resolve().parent
 if str(BASE_DIR) not in sys.path:
@@ -32,12 +34,26 @@ def now_iso() -> str:
 
 def safe_text(value: Any, max_len: int = 800) -> str:
     text = "" if value is None else str(value)
+    text = ANSI_ESCAPE_RE.sub("", text)
+    text = CONTROL_CHAR_RE.sub(" ", text)
     text = re.sub(r"sk-[A-Za-z0-9_\-]{12,}", "sk-redacted", text)
     text = re.sub(r"AKIA[A-Z0-9]{16}", "AKIA-redacted", text)
     text = " ".join(text.split())
     if len(text) > max_len:
         return text[:max_len] + "..."
     return text
+
+
+def summarize_cli_stdout(stdout: str, output_json: Path) -> str:
+    text = safe_text(stdout, 1200)
+    warning = ""
+    if "[agent-guard] warning:" in text:
+        warning = text.split("[agent-guard] warning:", 1)[1].strip()
+        warning = warning.split(" 已保存结果到:", 1)[0].strip()
+    parts = [f"run_attack_cli completed; outputJsonPath={output_json}"]
+    if warning:
+        parts.append(f"printerWarning={safe_text(warning, 240)}")
+    return "; ".join(parts)
 
 
 def build_converter(operator_id: str) -> tuple[Any, str]:
@@ -368,6 +384,8 @@ def method_for_item(item: dict[str, Any]) -> str:
 
 def build_attack_env() -> tuple[dict[str, str], list[str]]:
     env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
     mappings = {
         "OPENAI_CHAT_ENDPOINT": [
             "OPENAI_CHAT_ENDPOINT",
@@ -431,12 +449,14 @@ def attack_result_item(
     last_response = payload.get("last_response", {}) if isinstance(payload.get("last_response"), dict) else {}
     response_preview = safe_text(last_response.get("converted_value"), 900)
     original_objective = str(item.get("objective") or item.get("input") or "")
+    runtime_objective = objective
+    runtime_objective_changed = runtime_objective != original_objective
     result = {
         "itemId": str(item.get("itemId", "unknown")),
         "operatorId": str(item.get("operatorId", "")),
         "status": status,
         "method": method,
-        "objective": objective,
+        "objective": original_objective,
         "input": str(item.get("input", objective)),
         "output": response_preview,
         "outputType": "pyrit_attack_result",
@@ -452,7 +472,8 @@ def attack_result_item(
             "datasetInfo": payload.get("dataset_info"),
             "pyritMetadata": payload.get("metadata"),
             "originalObjectivePreview": safe_text(original_objective, 700),
-            "runtimeObjectiveChanged": objective != original_objective,
+            "runtimeObjectiveChanged": runtime_objective_changed,
+            "runtimeObjectivePayloadPreview": safe_text(runtime_objective, 700) if runtime_objective_changed else None,
             **(item.get("metadata") or {}),
         },
     }
@@ -561,11 +582,13 @@ async def run_attack_cli_batch(request: dict[str, Any]) -> dict[str, Any]:
                 env=env,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=timeout_ms / 1000,
             )
             payload = parse_attack_payload(output_json)
             if completed.returncode == 0:
-                notes.append(safe_text(completed.stdout, 700))
+                notes.append(summarize_cli_stdout(completed.stdout, output_json))
                 items.append(
                     attack_result_item(
                         item=item,
@@ -587,7 +610,7 @@ async def run_attack_cli_batch(request: dict[str, Any]) -> dict[str, Any]:
                         objective=runtime_objective,
                         output_json_path=output_json,
                         runtime_used="pyrit",
-                        notes=[safe_text(completed.stdout, 700)],
+                        notes=[summarize_cli_stdout(completed.stdout, output_json)],
                         payload=payload,
                         error=completed.stderr or completed.stdout or f"run_attack_cli exited {completed.returncode}",
                     )

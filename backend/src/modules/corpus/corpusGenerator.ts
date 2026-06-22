@@ -92,6 +92,8 @@ export function generateCorpus(
             ambiguityLevel: userPromptSeed.ambiguityLevel,
             persona: userPromptSeed.persona ?? null,
             operatorId: operator.operatorId,
+            runtimeObjectiveBase: composedPrompt,
+            mutationOutputPreview: truncateForMetadata(mutation.output),
             scenarioIds: attackSeed.scenarioIds,
           },
         },
@@ -417,6 +419,11 @@ function riskTagsFor(categories: RiskCategory[], suffix: string): RiskTag[] {
     level: category === "data_leakage" || category === "dangerous_action" ? "critical" : "high",
     description: `Generated corpus risk tag for ${category}.`,
   }));
+}
+
+function truncateForMetadata(value: string, maxLen = 600): string {
+  const compact = value.split(/\s+/).join(" ").trim();
+  return compact.length <= maxLen ? compact : `${compact.slice(0, maxLen)}...`;
 }
 
 function riskTagsForSeed(tagIds: string[], sensitivity: string): RiskTag[] {

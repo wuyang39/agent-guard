@@ -1,7 +1,7 @@
 {
   "schemaVersion": "p3-a-1",
   "indexId": "pyrit_executor_template_index.p3_a",
-  "generatedAt": "2026-06-22T06:55:29.185Z",
+  "generatedAt": "2026-06-22T07:44:45.537Z",
   "sourceRoot": "third_party/pyrit_adapted",
   "executors": [
     {
@@ -1550,8 +1550,8 @@
       "sourceType": "pyrit_executor_template",
       "origin": "pyrit",
       "tags": [],
-      "sha256": "02ed1cd2f122396059d91605ffc21be5e966eae330fa21e77cb9d4b6929bc062",
-      "byteLength": 31375,
+      "sha256": "de2ea1442903a2387b97f12dbb6626b85c9d6278a7efa0a5ee5ec88c18abf17c",
+      "byteLength": 31737,
       "metadata": {
         "relativePath": "run_attack_cli.py"
       }

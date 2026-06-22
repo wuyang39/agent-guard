@@ -131,6 +131,10 @@ deepseek-v4-pro
 - `converter_batch` 会真实调用 vendored PyRIT converter。当前 bridge 支持 Base64/Base32/Base85/Base2048、ROT13/Caesar/Atbash、Binary/BinAscii/Morse/NATO、Braille/Superscript、UnicodeConfusable/Replacement/Substitution、ZeroWidth、Ascii/Variation/SneakyBits smuggling、AsciiArt、AskToDecode、Emoji/Ecoji、CharSwap、Diacritic、Zalgo、Flip、Leetspeak、StringJoin、InsertPunctuation 等文本 converter。
 - `attack_cli` 会调用 vendored `run_attack_cli.py`。如果 selected case 的 `operatorId` 是 bridge 支持的 `pyrit.converter.*`，bridge 会先用真实 PyRIT converter 变换 objective，再把变换后的 objective 送入 attack executor。
 - `PYRIT_RUNTIME_METHODS` 显式设置后会对本批次所有选中样本生效；未设置时才按 case/operator 推断 `role_play`、`crescendo`、`context_compliance` 等方法。
+- `attack_cli` 的 request 使用 `runtimeObjectiveBase`，即变异前的可读攻击材料；真实 PyRIT converter 只在 Python bridge 内执行一次。这样避免 Base64/ROT/Unicode 等样本在 runtime 中被二次变异，导致 request/result 难以阅读。
+- bridge 临时 request/result 写入 `outputs/pyrit-bridge-tmp/**`，不再写入 `generated/a-line/tmp/**`。`generated/a-line/**` 只保留正式生成语料、manifest 和 stats。
+- bridge result 顶层 `objective` 保留可读原文；如果真实送入 PyRIT 的 runtime payload 被 converter 改写，会记录到 `metadata.runtimeObjectivePayloadPreview`。
+- Python bridge 会强制 UTF-8 子进程环境并压缩 stdout notes，避免 ANSI 控制符、Windows GBK 打印警告和长控制台日志污染 result。
 - 模型环境未配置完整时，attack item 必须返回 `status: "skipped"`，不能用离线模板冒充真实模型攻击。
 - `runtimeUsed: "pyrit"` 且 `status: "ok"` 才代表真实 PyRIT runtime 参与。
 
@@ -151,7 +155,7 @@ npm run a:pyrit-runtime         # smoke profile, 2 prompt_sending items
 - Agent Guard API shim `/api/v1/pyrit/openclaw/v1/chat/completions` 可触发 `runOpenClawSession()` 并返回 OpenAI-compatible chat completion。
 - `verify:a-pyrit-runtime` 在 required 模式下完成真实模型-backed PyRIT attack item。
 - `a:pyrit-runtime` 使用 smoke profile、2 条 `prompt_sending` 样本，输出 `status={"ok":2}`。
-- PyRIT console printer 在 Windows GBK 控制台中可能无法打印部分 Unicode 符号；`run_attack_cli.py` 已将 printer 变成非阻断路径，JSON 输出仍会保存并被 bridge 消费。
+- PyRIT console printer 在 Windows GBK 控制台中可能无法打印部分 Unicode 符号；`run_attack_cli.py` 已将 printer 变成非阻断路径，`agent_guard_bridge.py` 会摘要化 notes，JSON 输出仍会保存并被 bridge 消费。
 
 ## 6. 常见错误
 

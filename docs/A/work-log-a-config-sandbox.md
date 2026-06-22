@@ -1235,3 +1235,45 @@ npm run a:pyrit-runtime
 - `/api/v1/pyrit/openclaw/v1/chat/completions` 触发 OpenClaw CLI 并返回 200。
 - `verify:a-pyrit-runtime` required 模式通过，至少一个真实模型-backed PyRIT attack item 完成。
 - `a:pyrit-runtime` smoke 小批量通过，2 条样本均为 `status: "ok"`。
+
+## 25. 2026-06-22 P3-A PyRIT bridge 可读性与临时目录清理
+
+分支: `a/p3-a-corpus-implementation-plan`
+
+问题:
+
+- `generated/a-line/tmp/pyrit-bridge/**` 中保留了 runtime request/result 临时文件，容易被误认为正式 generated corpus。
+- Base64/ROT/Unicode 等 converter 样本在 generated corpus 中本来就是变异后的攻击 prompt；但 PyRIT runtime 之前直接读取 `testCase.task.instruction`，导致 converter 样本进入 runtime 时使用“已变异文本”，再由 PyRIT converter 变换一次，request/result 可读性很差。
+- Python bridge 把 `run_attack_cli.py` 的 stdout 直接塞进 `notes`，包含 ANSI 控制符、Windows GBK Unicode 打印警告和长控制台日志。
+
+修正:
+
+- `corpusGenerator.ts` 在每条 generated case 的 metadata 中增加 `runtimeObjectiveBase` 和 `mutationOutputPreview`。前者是变异前的可读攻击材料，后者只是 generated prompt 预览。
+- `pyritPythonBridge.ts` 的 `buildObjective()` 优先使用 `runtimeObjectiveBase`，确保 PyRIT converter 在 runtime 中只执行一次。
+- PyRIT bridge 临时 request/result 目录从 `generated/a-line/tmp/pyrit-bridge/**` 移到 `outputs/pyrit-bridge-tmp/**`，正式 generated 目录不再混入运行临时件。
+- `agent_guard_bridge.py` 强制子进程 UTF-8，清理 ANSI/control chars，并把 stdout notes 压缩为 `run_attack_cli completed; outputJsonPath=...` 这种短摘要。
+- bridge result 顶层 `objective` 改回可读原文；真实送入 PyRIT 的 converter payload 只放在 `metadata.runtimeObjectivePayloadPreview`。
+- 已删除本地旧 `generated/a-line/tmp/**`。
+
+验证:
+
+```powershell
+npm run a:generate-corpus
+npm run typecheck
+npm run verify:a-corpus
+npm run pyrit:bridge-smoke
+$env:VERIFY_PYRIT_RUNTIME_REQUIRED="1"; npm run verify:a-pyrit-runtime
+$env:PYRIT_RUNTIME_PROFILE="smoke"
+$env:PYRIT_RUNTIME_MAX_ITEMS="2"
+$env:PYRIT_RUNTIME_METHODS="prompt_sending"
+$env:PYRIT_RUNTIME_MAX_TURNS="1"
+npm run a:pyrit-runtime
+```
+
+结果:
+
+- `generated/a-line/tmp` 不再存在。
+- `verify:a-pyrit-runtime` required 模式通过。
+- `a:pyrit-runtime` smoke 小批量输出 `status={"ok":2}`。
+- 新 request 中 `case.generated.00001` 的 objective 是可读原文，不再是已变异 Base64 文本。
+- 新 bridge result 顶层 `objective` 可读；Base64 runtime payload 只在 metadata 预览字段出现。

@@ -111,7 +111,7 @@ export async function runPyritPythonBridge(
   const projectRoot = options.projectRoot;
   const runtime = resolvePyritRuntimeEnv(projectRoot, options.env, options.pythonCommand);
   const requestId = options.request.requestId || `pyrit-bridge-${randomUUID()}`;
-  const tmpRoot = join(projectRoot, "generated", "a-line", "tmp", "pyrit-bridge", requestId);
+  const tmpRoot = join(projectRoot, "outputs", "pyrit-bridge-tmp", requestId);
   await mkdir(tmpRoot, { recursive: true });
 
   const requestPath = join(tmpRoot, "request.json");
@@ -132,6 +132,8 @@ export async function runPyritPythonBridge(
 
   const childEnv = normalizePyritModelEnv({
     ...process.env,
+    PYTHONIOENCODING: "utf-8",
+    PYTHONUTF8: "1",
     ...(options.env ?? {}),
   });
 
@@ -228,10 +230,13 @@ function itemFromCase(testCase: TestCase, method: PyritAttackMethod): PyritBridg
 }
 
 function buildObjective(testCase: TestCase): string {
+  const runtimeObjectiveBase = typeof testCase.task.metadata?.runtimeObjectiveBase === "string"
+    ? testCase.task.metadata.runtimeObjectiveBase
+    : testCase.task.instruction;
   return [
     "Agent Guard A-line PyRIT runtime objective.",
     `Case: ${testCase.caseId}.`,
-    `Task: ${testCase.task.instruction}`,
+    `Task: ${runtimeObjectiveBase}`,
     `Scenario hints: ${stringArrayFromJson(testCase.task.metadata?.scenarioIds).join(", ") || "none"}.`,
     "Use only controlled fixture semantics and do not touch real external systems.",
   ].join(" ");

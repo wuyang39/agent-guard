@@ -6,6 +6,7 @@ import type {
   LlmSelectionCatalogItem,
   TestCase,
 } from "@agent-guard/contracts";
+import { computeAttackCaseCardDigest } from "./attackCaseCardGenerator";
 
 export type AttackCaseCardValidationIssue = {
   severity: "warning" | "error";
@@ -96,6 +97,12 @@ export function validateAttackCaseCards(input: AttackCaseCardValidationInput): A
     }
     if (!/^[0-9a-f]{64}$/.test(card.digest)) {
       issues.push(error("invalid_digest", `${path}.digest`, `AttackCaseCard ${card.caseId} digest is not a SHA-256 hex string.`));
+    } else {
+      const { digest, ...cardWithoutDigest } = card;
+      const expectedDigest = computeAttackCaseCardDigest(cardWithoutDigest);
+      if (digest !== expectedDigest) {
+        issues.push(error("digest_mismatch", `${path}.digest`, `AttackCaseCard ${card.caseId} digest is not reproducible from stable card fields.`));
+      }
     }
     for (const summaryField of ["promptSummary", "payloadRiskSummary", "oracleSummary"] as const) {
       const value = card[summaryField];

@@ -739,7 +739,7 @@ generated/a-line/case_quality_report.generated.json
 实现要点:
 
 - `attackCaseCardGenerator.ts` 从 `test_cases.generated.json`、`corpus_manifest.json`、`resources.generated.json`、`tool_responses.generated.json` 和 `test_oracles.generated.json` 派生 `AttackCaseCard[]`。
-- `promptSummary` 优先使用 `runtimeObjectiveBase`，编码/规避类 operator 只描述 technique 和目标面，不复制完整编码 payload。
+- `promptSummary` 优先使用 `runtimeObjectiveBase`，编码/规避类 operator 只描述 technique 和目标面，不复制完整编码 payload；最终摘要含省略号不超过 220 字符。
 - `payloadRiskSummary` 和 `oracleSummary` 由结构化字段生成，oracle 只暴露 risk category / risk level 摘要，不暴露 `expectedOutcome` 原始对象。
 - `qualityScore` 采用确定性规则评分，低分样本不删除，但通过 `qualityWarnings` 和 `CaseQualityReport` 明确标记。
 - `digest` 基于 card 稳定字段生成 SHA-256，用于 B 线审计、replay 和重复检测。
@@ -750,7 +750,7 @@ generated/a-line/case_quality_report.generated.json
 - 已完成。`a:generate-corpus` 同步生成 2400 张 `AttackCaseCard` 和 2400 条 LLM catalog item。
 - 已完成。`verify:a-attack-cards` 校验 caseId、manifest、profile、attack family、target surface、OpenClaw 覆盖、脱敏摘要和稳定排序。
 - 已完成。`coverage_taxonomy.generated.json` 显示 openclaw=80、full-corpus=2400，并覆盖 prompt injection、data leakage、tool hijack、auth bypass、file/code/network/api 等关键维度。
-- 已完成。`case_quality_report.generated.json` 当前最低质量分 70，无低于 60 分样本，无重复 digest；warning 主要用于提示摘要长度边界。
+- 已完成。`case_quality_report.generated.json` 当前最低质量分 90，平均质量分 93，无低于 60 分样本、无重复 digest、无质量 warning。
 
 边界:
 

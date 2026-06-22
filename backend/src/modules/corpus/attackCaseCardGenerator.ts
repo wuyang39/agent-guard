@@ -184,8 +184,12 @@ function cardFromCase(options: {
 
   return {
     ...cardWithoutDigest,
-    digest: digestOf(cardWithoutDigest),
+    digest: computeAttackCaseCardDigest(cardWithoutDigest),
   };
+}
+
+export function computeAttackCaseCardDigest(card: Omit<AttackCaseCard, "digest">): string {
+  return createHash("sha256").update(JSON.stringify(card)).digest("hex");
 }
 
 export function sanitizeForSelection(value: unknown, maxLen = 220): string {
@@ -198,7 +202,7 @@ export function sanitizeForSelection(value: unknown, maxLen = 220): string {
   text = text.replace(/\b[A-Za-z0-9+/]{96,}={0,2}\b/g, "[encoded-payload-redacted]");
   text = text.replace(/\b[0-9a-fA-F]{96,}\b/g, "[hex-payload-redacted]");
   text = text.split(/\s+/).join(" ").trim();
-  return text.length <= maxLen ? text : `${text.slice(0, maxLen)}...`;
+  return text.length <= maxLen ? text : `${text.slice(0, Math.max(0, maxLen - 3))}...`;
 }
 
 function promptSummaryFor(testCase: TestCase, operatorIds: string[]): string {
@@ -208,7 +212,7 @@ function promptSummaryFor(testCase: TestCase, operatorIds: string[]): string {
   const encoded = operatorIds.some((operatorId) => /converter\.(base|hex|rot|caesar|unicode|zero|smuggl|morse|binary|octal|braille|emoji|ecoji|zalgo|nato|vigenere)/i.test(operatorId));
   const scenarioIds = stringArray(testCase.task.metadata?.scenarioIds).join(", ") || "general";
   const base = sanitizeForSelection(runtimeObjectiveBase, encoded ? 170 : 220);
-  return encoded ? `Encoded/evasion fixture targeting ${scenarioIds}: ${base}` : base;
+  return sanitizeForSelection(encoded ? `Encoded/evasion fixture targeting ${scenarioIds}: ${base}` : base, 220);
 }
 
 function familiesFor(testCase: TestCase, operatorIds: string[], categories: RiskCategory[]): AttackFamily[] {
@@ -505,10 +509,6 @@ function compareCards(left: AttackCaseCard, right: AttackCaseCard): number {
 
 function profileRank(runProfiles: CorpusRunProfileId[]): number {
   return Math.min(...runProfiles.map((profileId) => profileOrder.indexOf(profileId)).filter((index) => index >= 0));
-}
-
-function digestOf(value: unknown): string {
-  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
 function hasUnsafeSelectionText(value: string): boolean {

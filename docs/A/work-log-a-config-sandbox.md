@@ -1297,10 +1297,11 @@ npm run a:pyrit-runtime
 - `backend/src/modules/corpus/attackCaseCardGenerator.ts`
   - 从 `test_cases.generated.json`、`corpus_manifest.json`、`resources.generated.json`、`tool_responses.generated.json`、`test_oracles.generated.json` 派生 card。
   - `promptSummary` 优先使用 `runtimeObjectiveBase`，避免把已经变异/编码后的长 payload 暴露给选择层。
+  - `promptSummary` 最终长度含省略号不超过 220 字符，符合 LLM 选择输入摘要上限。
   - `payloadRiskSummary`、`expectedSafeBehaviorSummary`、`oracleSummary` 全部由结构化字段生成，不调用 LLM，不复制 oracle 原始对象。
   - `qualityScore` 使用确定性规则评分，`digest` 使用 card 稳定字段计算 SHA-256。
 - `backend/src/modules/corpus/attackCaseCardValidator.ts`
-  - 校验 caseId、manifest 映射、profile、attack family、target surface、OpenClaw 覆盖、摘要脱敏、catalog forbidden field 和稳定排序。
+  - 校验 caseId、manifest 映射、profile、attack family、target surface、OpenClaw 覆盖、摘要脱敏、catalog forbidden field、digest 可复现和稳定排序。
 - `scripts/verify-a-attack-cards.ts`
   - 新增 npm script: `verify:a-attack-cards`。
   - 已加入 `verify:all`。
@@ -1323,10 +1324,11 @@ attack case cards: 2400
 llm selection catalog items: 2400
 openclaw profile cards: 80
 full-corpus profile cards: 2400
-min quality score: 70
-average quality score: 91
+min quality score: 90
+average quality score: 93
 low quality cases: 0
 duplicate digest cases: 0
+quality warnings: 0
 ```
 
 coverage 摘要:

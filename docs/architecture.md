@@ -322,6 +322,7 @@ agent-guard/
         seeds/
           resource_seeds.json
           attack_seeds.json
+          user_prompt_seeds.json
           tool_response_seeds.json
         operators/
           mutation_operators.json

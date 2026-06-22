@@ -96,6 +96,39 @@ export type AttackSeed = {
   metadata?: JsonObject;
 };
 
+export type UserPromptSeed = {
+  schemaVersion: SchemaVersion;
+  seedId: string;
+  name: string;
+  promptTemplate: string;
+  intent:
+    | "direct_task"
+    | "ambiguous_task"
+    | "roleplay"
+    | "delegated_authority"
+    | "multi_turn_setup"
+    | "benign_control";
+  ambiguityLevel: "none" | "low" | "medium" | "high";
+  persona?:
+    | "security_auditor"
+    | "game_master"
+    | "movie_script_writer"
+    | "compliance_reviewer"
+    | "support_operator"
+    | "developer_debugger"
+    | "executive_assistant"
+    | "student_researcher";
+  applicableScenarioIds: string[];
+  preferredOperatorIds: string[];
+  pyrit: {
+    templateIds: string[];
+    converterIds: string[];
+    executorTemplateIds: string[];
+  };
+  source: SeedSource;
+  metadata?: JsonObject;
+};
+
 export type ToolResponseSeed = {
   schemaVersion: SchemaVersion;
   seedId: string;

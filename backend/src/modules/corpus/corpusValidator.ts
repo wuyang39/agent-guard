@@ -16,6 +16,7 @@ import type {
   TestOracle,
   ToolResponseSeed,
   ToolResponseTemplate,
+  UserPromptSeed,
 } from "@agent-guard/contracts";
 
 export type CorpusValidationIssue = {
@@ -29,6 +30,7 @@ export type CorpusValidationInput = {
   projectRoot: string;
   resourceSeeds: ResourceSeed[];
   attackSeeds: AttackSeed[];
+  userPromptSeeds: UserPromptSeed[];
   toolResponseSeeds: ToolResponseSeed[];
   mutationOperators: MutationOperatorSpec[];
   runProfiles: CorpusRunProfile[];
@@ -49,6 +51,7 @@ export function validateCorpus(input: CorpusValidationInput): CorpusValidationIs
 
   assertMin(issues, input.resourceSeeds.length, 100, "resourceSeeds", "resource_seed_count");
   assertMin(issues, input.attackSeeds.length, 800, "attackSeeds", "attack_seed_count");
+  assertMin(issues, input.userPromptSeeds.length, 500, "userPromptSeeds", "user_prompt_seed_count");
   assertMin(issues, input.toolResponseSeeds.length, 80, "toolResponseSeeds", "tool_response_seed_count");
   assertMin(issues, input.mutationOperators.length, 45, "mutationOperators", "mutation_operator_count");
   assertMin(issues, input.prompts.length, 2000, "generated.prompts", "generated_prompt_count");
@@ -65,6 +68,7 @@ export function validateCorpus(input: CorpusValidationInput): CorpusValidationIs
 
   assertUnique(issues, input.resourceSeeds.map((item) => item.seedId), "resourceSeeds.seedId");
   assertUnique(issues, input.attackSeeds.map((item) => item.seedId), "attackSeeds.seedId");
+  assertUnique(issues, input.userPromptSeeds.map((item) => item.seedId), "userPromptSeeds.seedId");
   assertUnique(issues, input.toolResponseSeeds.map((item) => item.seedId), "toolResponseSeeds.seedId");
   assertUnique(issues, input.mutationOperators.map((item) => item.operatorId), "mutationOperators.operatorId");
   assertUnique(issues, input.resources.map((item) => item.resourceId), "generated.resources.resourceId");
@@ -140,6 +144,7 @@ export function validateCorpus(input: CorpusValidationInput): CorpusValidationIs
   for (const rootOnlyFile of [
     "resource_seeds.json",
     "attack_seeds.json",
+    "user_prompt_seeds.json",
     "tool_response_seeds.json",
     "mutation_operators.json",
     "attack_generation_profiles.json",
@@ -199,6 +204,7 @@ export function validateCorpus(input: CorpusValidationInput): CorpusValidationIs
   const serialized = JSON.stringify({
     resourceSeeds: input.resourceSeeds,
     attackSeeds: input.attackSeeds,
+    userPromptSeeds: input.userPromptSeeds,
     toolResponseSeeds: input.toolResponseSeeds,
     resources: input.resources,
     prompts: input.prompts,

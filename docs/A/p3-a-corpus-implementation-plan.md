@@ -26,7 +26,8 @@
 完成后，A 线应能提供:
 
 - 100+ resource seeds。
-- 800+ attack seeds，每条 `AttackSeed.userPrompt` 是 canonical prompt seed。
+- 800+ attack seeds。
+- 500+ user prompt seeds，覆盖歧义请求、roleplay persona、多轮铺垫、委托授权和 benign control。
 - 80+ tool response seeds。
 - 45+ mutation operators。
 - 2000+ generated prompts。
@@ -43,9 +44,10 @@
 
 ```txt
 resource seeds: 687
-attack seeds with canonical userPrompt: 839
+attack seeds: 839
+user prompt seeds: 639
 tool response seeds: 309
-mutation operators: 76
+mutation operators: 85
 generated resources: 687
 generated prompts: 2400
 generated tool responses: 309
@@ -101,12 +103,13 @@ pyrit_jailbreak_template_index.json: groups=20, templates=165
 ```txt
 configs/a-line/corpus/seeds/resource_seeds.json
 configs/a-line/corpus/seeds/attack_seeds.json
+configs/a-line/corpus/seeds/user_prompt_seeds.json
 configs/a-line/corpus/seeds/tool_response_seeds.json
 configs/a-line/corpus/operators/mutation_operators.json
 configs/a-line/corpus/profiles/corpus_run_profiles.json
 ```
 
-`attack_seeds.json` 同时保存攻击目标和原始用户 prompt，`AttackSeed.userPrompt` 就是 canonical prompt seed。不要再新增独立 prompt seed 文件，也不要把草稿表格追加到 `configs/resources.json`。
+`attack_seeds.json` 保存攻击目标、目标工具/资源和风险类别。`user_prompt_seeds.json` 保存进入 PyRIT/operator 变异前的用户 prompt 材料，包括直接任务、歧义请求、roleplay persona、多轮铺垫、委托授权和 benign control。不要把草稿表格追加到 `configs/resources.json`。
 
 ## 3. 已审阅文档约束
 
@@ -192,6 +195,7 @@ P3-A 使用方式:
 ```txt
 configs/a-line/corpus/seeds/resource_seeds.json
 configs/a-line/corpus/seeds/attack_seeds.json
+configs/a-line/corpus/seeds/user_prompt_seeds.json
 configs/a-line/corpus/seeds/tool_response_seeds.json
 configs/a-line/corpus/operators/mutation_operators.json
 configs/a-line/corpus/profiles/attack_generation_profiles.json
@@ -205,7 +209,8 @@ configs/a-line/sources/aig_strategy_index.json
 说明:
 
 - seed 文件是生成输入，不直接进入运行时 `TestContext`。
-- `AttackSeed.userPrompt` 是唯一 prompt seed 来源，避免攻击目标和用户 prompt 在两套文件中漂移。
+- `AttackSeed` 表示攻击目标和约束；`UserPromptSeed` 表示进入 PyRIT/operator 前的用户语境材料。二者必须先组合再变异。
+- `user_prompt_seeds.json` 不得退化为 `attack_seeds.json` 的复制文件。
 - `configs/resources.json` 等旧文件继续作为 smoke/openclaw 稳定夹具入口。
 - 新 seed schema 应先以 contracts 或 corpus module 类型固化，再写 JSON。
 
@@ -352,9 +357,38 @@ type AttackSeed = {
 };
 ```
 
-说明: 不再定义独立用户 prompt seed 类型。`AttackSeed.userPrompt` 是用户 prompt seed 的唯一来源。
+### 6.3 UserPromptSeed
 
-### 6.3 ToolResponseSeed
+```ts
+type UserPromptSeed = {
+  schemaVersion: "mvp-1";
+  seedId: string;
+  name: string;
+  promptTemplate: string;
+  intent:
+    | "direct_task"
+    | "ambiguous_task"
+    | "roleplay"
+    | "delegated_authority"
+    | "multi_turn_setup"
+    | "benign_control";
+  ambiguityLevel: "none" | "low" | "medium" | "high";
+  persona?: string;
+  applicableScenarioIds: string[];
+  preferredOperatorIds: string[];
+  pyrit: {
+    templateIds: string[];
+    converterIds: string[];
+    executorTemplateIds: string[];
+  };
+  source: SeedSource;
+  metadata?: JsonObject;
+};
+```
+
+说明: `UserPromptSeed` 是独立的变异材料层，不是 `AttackSeed` 别名。它让同一攻击目标可以先套入不同用户语境、歧义程度和 roleplay persona，再送入 PyRIT/AIG/native operator。
+
+### 6.4 ToolResponseSeed
 
 ```ts
 type ToolResponseSeed = {
@@ -377,7 +411,7 @@ type ToolResponseSeed = {
 };
 ```
 
-### 6.4 MutationOperatorSpec
+### 6.5 MutationOperatorSpec
 
 ```ts
 type MutationOperatorSpec = {
@@ -409,7 +443,7 @@ type MutationOperatorSpec = {
 };
 ```
 
-### 6.5 CorpusManifest
+### 6.6 CorpusManifest
 
 ```ts
 type CorpusManifest = {
@@ -467,7 +501,7 @@ type CorpusManifest = {
 清洗规则:
 
 - P0/P1/P2/P3/P4/P5/P6/P7 权限级别映射成 tool side effect、riskTags、scenarioTags。
-- example 进入 `AttackSeed.userPrompt`，不进入 resource content。
+- example 可进入 `AttackSeed.userPrompt` 作为基础目标描述，也可进入 `UserPromptSeed.promptTemplate` 作为变异前用户语境材料；不要进入 resource content。
 - tool_response_x 进入 tool response seed，不进入 resource content。
 - 包含 `sk_`、private key、token 等示例时统一替换为 demo marker。
 
@@ -749,7 +783,8 @@ C 线不得:
 P3-A 语料工厂已经进入工程化维护阶段，后续改动按以下顺序执行:
 
 1. 新增素材先进入 `backend/src/modules/corpus/seedFactory.ts` 或受控 seed/source/profile 文件，不直接改根目录运行基线。
-2. 攻击目标和用户 prompt 统一写入 `AttackSeed.userPrompt`，不得恢复独立 prompt seed 文件。
-3. 资源、攻击、工具响应和 operator 扩容后运行 `npm run a:generate-corpus`。
-4. 生成后运行 `npm run verify:a-corpus`，再按影响范围运行 `npm run typecheck` 和 `npm run verify:all`。
-5. 涉及跨线交接时同步 `docs/contracts.md`、`docs/interfaces.md`、`docs/ownership.md` 和本工作日志。
+2. 攻击目标写入 `AttackSeed`，用户语境、歧义表达和 roleplay persona 写入 `UserPromptSeed`。
+3. 同一种攻击方式允许多次变异运行，例如 roleplay 可以覆盖游戏、电影脚本、安全审查员、客服、合规审查员、开发调试等 persona。
+4. 资源、攻击、user prompt、工具响应和 operator 扩容后运行 `npm run a:generate-corpus`。
+5. 生成后运行 `npm run verify:a-corpus`，再按影响范围运行 `npm run typecheck` 和 `npm run verify:all`。
+6. 涉及跨线交接时同步 `docs/contracts.md`、`docs/interfaces.md`、`docs/ownership.md` 和本工作日志。

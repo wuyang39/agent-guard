@@ -937,6 +937,7 @@ P3-A 新增配置与生成物:
 ```txt
 configs/a-line/corpus/seeds/resource_seeds.json
 configs/a-line/corpus/seeds/attack_seeds.json
+configs/a-line/corpus/seeds/user_prompt_seeds.json
 configs/a-line/corpus/seeds/tool_response_seeds.json
 configs/a-line/corpus/operators/mutation_operators.json
 configs/a-line/corpus/profiles/attack_generation_profiles.json
@@ -955,7 +956,7 @@ generated/a-line/corpus_manifest.json
 generated/a-line/corpus_stats.json
 ```
 
-P3-A seed 文件是生成输入，不直接进入默认 `TestContext`。`attack_seeds.json` 同时保存攻击目标和原始 `userPrompt`，不再维护独立 prompt seed 文件。`generated/a-line/**` 是可复现的测试输入和覆盖率材料，只能通过显式 run profile 被 B 线加载。默认 `loadConfigRepository()` 继续读取稳定 `configs/*.json`，不得默认加载 full corpus。
+P3-A seed 文件是生成输入，不直接进入默认 `TestContext`。`attack_seeds.json` 保存攻击目标、目标工具/资源和风险类别；`user_prompt_seeds.json` 保存进入 PyRIT/operator 变异前的用户 prompt 材料，包括歧义 user prompt、roleplay persona、多轮铺垫和委托授权。生成器先组合 `AttackSeed + UserPromptSeed`，再应用 PyRIT/AIG/operator 变异。`generated/a-line/**` 是可复现的测试输入和覆盖率材料，只能通过显式 run profile 被 B 线加载。默认 `loadConfigRepository()` 继续读取稳定 `configs/*.json`，不得默认加载 full corpus。
 
 `CorpusManifest` 是 P3-A generated corpus 的来源索引和覆盖率对象，记录 PyRIT/AIG/manual/user_supplied/synthetic 来源、seed、operator、profile、case/prompt/oracle 映射和 coverage。它不是风险判定结果，不能替代 `InteractionTrace`、`RiskReport`、`RuntimeSupervisionRecord[]` 或 `DefenseReport`。
 

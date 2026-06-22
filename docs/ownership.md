@@ -58,6 +58,7 @@ configs/a-line/sources/pyrit_attack_library.json
 configs/a-line/sources/pyrit_jailbreak_template_index.json
 configs/a-line/corpus/seeds/resource_seeds.json
 configs/a-line/corpus/seeds/attack_seeds.json
+configs/a-line/corpus/seeds/user_prompt_seeds.json
 configs/a-line/corpus/seeds/tool_response_seeds.json
 configs/a-line/corpus/operators/mutation_operators.json
 configs/a-line/corpus/profiles/attack_generation_profiles.json

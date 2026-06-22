@@ -878,9 +878,10 @@ PyRIT 仍是主来源和主生成底座；AIG 只作为 Agent/MCP 策略、OWASP
 
 ```txt
 resource seeds: 687
-attack seeds with canonical userPrompt: 839
+attack seeds: 839
+user prompt seeds: 639
 tool response seeds: 309
-mutation operators: 76
+mutation operators: 85
 generated resources: 687
 generated prompts: 2400
 generated tool responses: 309
@@ -954,15 +955,15 @@ $env:OPENCLAW_CLI=(Resolve-Path '..\openclaw-runtime\openclaw-local.cmd').Path; 
 
 分支: `a/p3-a-corpus-implementation-plan`
 
-本轮按用户要求重新审阅 A 线项目、框架和文档，把仍带有 demo/MVP 妥协口径或重复入口的部分继续收口。核心调整:
+本轮按当时理解重新审阅 A 线项目、框架和文档，把仍带有 demo/MVP 妥协口径或重复入口的部分继续收口。后续第 20 节已修正: `UserPromptSeed` 不是重复入口，而是 PyRIT 变异前的独立 prompt material 层。第 19 节保留为历史记录。
 
 - 删除独立 prompt seed 文件。该文件只是 `attack_seeds.json` 的重复投影，会导致攻击目标和用户 prompt 在两套 seed 中漂移。
-- `AttackSeed.userPrompt` 现在是 canonical prompt seed。A 线 seed 入口统一为 `resource_seeds.json`、`attack_seeds.json`、`tool_response_seeds.json`、`mutation_operators.json` 和 run profiles。
+- 当时误认为 `AttackSeed.userPrompt` 应作为唯一 prompt seed。第 20 节已修正为独立 `UserPromptSeed` 材料层。
 - 契约字段从展示稳定标记改为 `stableForAutomation`。`smoke/openclaw/regression` 是自动化稳定档位，`full-corpus` 是完整覆盖档位；profile 是工程运行控制，不是 demo 分层。
 - `verify:a-corpus` 改为直接要求 `attackSeeds >= 800`，不再把 attack seed 与独立 prompt seed 相加凑数。
 - `README.md`、`configs/a-line/README.md`、`docs/P3plan.md`、`docs/A/p3-a-corpus-implementation-plan.md`、`docs/architecture.md`、`docs/contracts.md`、`docs/interfaces.md` 和 `docs/ownership.md` 已同步当前结构。
 
-当前有效 A 线结构:
+当时记录的 A 线结构:
 
 ```txt
 configs/a-line/
@@ -995,9 +996,58 @@ generated/a-line/
   corpus_stats.json
 ```
 
+第 19 节后续维护要求已被第 20 节替代。
+
+## 20. 2026-06-22 P3-A UserPromptSeed 变异材料层修正
+
+分支: `a/p3-a-corpus-implementation-plan`
+
+本轮根据用户指出的问题修正 A 线语料入口设计: 删除独立 prompt seed 的前提不成立。A 线需要在送入 PyRIT/operator 变异前，把用户 prompt 语境也作为材料输入，这样攻击样例才更有针对性。
+
+当前有效设计:
+
+- `AttackSeed`: 攻击目标、目标工具/资源、风险类别、场景归属和基础 objective。
+- `UserPromptSeed`: 用户 prompt 变异材料层，包含 `promptTemplate`、`intent`、`ambiguityLevel`、`persona`、`applicableScenarioIds` 和 `preferredOperatorIds`。
+- 生成器流程: `AttackSeed + UserPromptSeed -> composed prompt material -> PyRIT/AIG/native operator -> PromptDefinition/TestCase/TestOracle/CorpusManifest`。
+- `UserPromptSeed` 不能是 `AttackSeed` 的机械复制；它必须提供直接请求、歧义请求、委托授权、多轮铺垫、roleplay persona 和 benign control。
+
+本轮实现要点:
+
+- 恢复 `configs/a-line/corpus/seeds/user_prompt_seeds.json`，当前生成 639 条独立 user prompt seeds。
+- 新增 `UserPromptSeed` contract 字段: `intent`、`ambiguityLevel`、`persona`、`applicableScenarioIds`、`preferredOperatorIds`、`pyrit`。
+- `generateCorpus()` 现在按场景选择 `UserPromptSeed`，组合攻击目标和用户语境后再做 mutation。
+- roleplay 不再只有单一方式，新增 security auditor、game master、video game、trivia game、movie script、persuasion script、compliance reviewer、support operator、developer debugger 等 PyRIT 风格 operator。
+- 歧义 user prompt 已覆盖 fix-it、status check、inferred approval、read-or-act、policy exception、low-context、connector consent 等形态。
+- `verify:a-corpus` 现在要求 `userPromptSeeds >= 500`，并扫描该层是否含真实密钥形态。
+
+当前规模:
+
+```txt
+resource seeds: 687
+attack seeds: 839
+user prompt seeds: 639
+tool response seeds: 309
+mutation operators: 85
+generated prompts: 2400
+generated test cases: 2400
+generated test oracles: 2400
+```
+
+当前有效 A 线结构:
+
+```txt
+configs/a-line/corpus/seeds/resource_seeds.json
+configs/a-line/corpus/seeds/attack_seeds.json
+configs/a-line/corpus/seeds/user_prompt_seeds.json
+configs/a-line/corpus/seeds/tool_response_seeds.json
+configs/a-line/corpus/operators/mutation_operators.json
+configs/a-line/corpus/profiles/corpus_run_profiles.json
+generated/a-line/**
+```
+
 后续维护要求:
 
-- 新增 user prompt 不再新建文件，必须作为 `AttackSeed.userPrompt` 写入攻击 seed。
-- 新增资源/攻击/响应/operator 后先运行 `npm run a:generate-corpus`，再运行 `npm run verify:a-corpus`。
-- 涉及 B/C 交接或共享契约时，同步 `docs/contracts.md`、`docs/interfaces.md`、`docs/ownership.md` 和本工作日志。
+- 新增攻击目标写入 `AttackSeed`；新增用户表达、歧义语境、角色扮演或多轮铺垫写入 `UserPromptSeed`。
+- 同一攻击方式允许多次变异运行，优先通过多个 `UserPromptSeed.persona` 和多个 PyRIT roleplay operator 扩展。
+- 新增资源/攻击/user prompt/响应/operator 后先运行 `npm run a:generate-corpus`，再运行 `npm run verify:a-corpus`。
 - 不因为 demo/OpenClaw 单机联调状态回退 A 线 full corpus 规模或目录结构。

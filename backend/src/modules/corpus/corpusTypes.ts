@@ -16,11 +16,13 @@ import type {
   TestOracle,
   ToolResponseSeed,
   ToolResponseTemplate,
+  UserPromptSeed,
 } from "@agent-guard/contracts";
 
 export type CorpusSeedBundle = {
   resourceSeeds: ResourceSeed[];
   attackSeeds: AttackSeed[];
+  userPromptSeeds: UserPromptSeed[];
   toolResponseSeeds: ToolResponseSeed[];
   mutationOperators: MutationOperatorSpec[];
   runProfiles: CorpusRunProfile[];
@@ -56,6 +58,7 @@ export type CorpusStats = {
   totalMutationOperators: number;
   totalResourceSeeds: number;
   totalAttackSeeds: number;
+  totalUserPromptSeeds: number;
   totalToolResponseSeeds: number;
   sourceSummary: CorpusManifest["sourceSummary"];
   profileSummary: CorpusManifest["profileSummary"];

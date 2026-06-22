@@ -53,6 +53,7 @@ configs/a-line/sources/pyrit_attack_library.json
 configs/a-line/sources/pyrit_jailbreak_template_index.json
 configs/a-line/corpus/seeds/resource_seeds.json
 configs/a-line/corpus/seeds/attack_seeds.json
+configs/a-line/corpus/seeds/user_prompt_seeds.json
 configs/a-line/corpus/seeds/tool_response_seeds.json
 configs/a-line/corpus/operators/mutation_operators.json
 configs/a-line/corpus/profiles/corpus_run_profiles.json
@@ -105,7 +106,7 @@ TestOracle
 
 `CorpusManifest` 是 A 线 P3 generated corpus 的来源和覆盖率索引。B 线可按 `CorpusRunProfile` 显式选择 generated case；C 线可用 `CorpusManifest` 展示来源、覆盖率和样本分层。`CorpusManifest` 不包含风险结论，不能替代 `InteractionTrace`、`RiskReport` 或 `DefenseReport`。
 
-`configs/a-line/corpus/seeds/attack_seeds.json` 是攻击目标和原始用户 prompt 的唯一 seed 入口。`AttackSeed.userPrompt` 即 prompt seed，不再维护独立 prompt seed 文件，避免同一攻击目标在两套 seed 文件中漂移。
+`configs/a-line/corpus/seeds/attack_seeds.json` 是攻击目标、目标工具/资源、风险类别和基础 objective 的入口。`configs/a-line/corpus/seeds/user_prompt_seeds.json` 是进入 PyRIT/operator 变异前的用户 prompt 材料层，负责直接请求、歧义请求、委托授权、多轮铺垫、roleplay persona 和 benign control。生成器先组合 `AttackSeed + UserPromptSeed`，再应用 PyRIT/AIG/operator 变异；`UserPromptSeed` 不得退化为 `AttackSeed` 的机械复制。
 
 `generated/a-line/test_oracles.generated.json` 只用于离线验收和 corpus 质量检查，不进入运行时 `TestContext`，也不得作为 C 线风险判定证据。
 

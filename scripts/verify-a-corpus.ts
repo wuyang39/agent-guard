@@ -17,6 +17,7 @@ import type {
   TestOracle,
   ToolResponseSeed,
   ToolResponseTemplate,
+  UserPromptSeed,
 } from "@agent-guard/contracts";
 import {
   corpusOperatorFiles,
@@ -35,6 +36,7 @@ const input = {
   projectRoot,
   resourceSeeds: await readJson<ResourceSeed[]>(layout.seedDir, corpusSeedFiles.resources),
   attackSeeds: await readJson<AttackSeed[]>(layout.seedDir, corpusSeedFiles.attacks),
+  userPromptSeeds: await readJson<UserPromptSeed[]>(layout.seedDir, corpusSeedFiles.userPrompts),
   toolResponseSeeds: await readJson<ToolResponseSeed[]>(layout.seedDir, corpusSeedFiles.toolResponses),
   mutationOperators: await readJson<MutationOperatorSpec[]>(layout.operatorDir, corpusOperatorFiles.mutationOperators),
   runProfiles: await readJson<CorpusRunProfile[]>(layout.profileDir, corpusProfileFiles.runProfiles),

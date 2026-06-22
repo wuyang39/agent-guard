@@ -49,6 +49,7 @@ export function buildInitialRunGroup(
     agentId,
     agentName: request.agent.name,
     adapterKind: request.adapterKind,
+    selectionPlanId: request.selectionPlanId,
     status: "running",
     phase: "queued",
     startedAt: nowIso(),

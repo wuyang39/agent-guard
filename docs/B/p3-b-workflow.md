@@ -360,6 +360,69 @@ npm run verify:p3:b-gateway
 - Runtime Reviewer 必审。
 - Security Reviewer 必审。
 
+### P3-B7: 多 MCP Server Gateway 配置
+
+目标: OpenClaw 仍只连接 Agent Guard 一个 MCP URL，但 Agent Guard 可以同时聚合多个外部 MCP server。
+
+配置兼容:
+
+```txt
+旧单 provider:
+  AGENT_GUARD_DOWNSTREAM_MCP_URL
+  AGENT_GUARD_DOWNSTREAM_MCP_PROVIDER_ID
+  AGENT_GUARD_DOWNSTREAM_MCP_PROVIDER_NAME
+
+新增多 provider:
+  AGENT_GUARD_DOWNSTREAM_MCP_SERVERS=<JSON array or object>
+
+运行时 API:
+  POST /api/v1/runtime-config/downstream-mcp
+  body.servers[]
+```
+
+`servers[]` 单项字段:
+
+```txt
+enabled
+providerId
+providerName
+endpointUrl
+timeoutMs
+```
+
+Gateway 行为:
+
+```txt
+servers[]
+  -> 为每个 enabled server 创建 DownstreamMcpProvider
+  -> 分别调用 tools/list
+  -> 聚合成 agw__<providerId>__<toolName>
+  -> tools/call 继续统一经过 SupervisionBridge
+```
+
+验收:
+
+- 同时配置两个 MCP server 后，Gateway 返回两个 provider 的工具。
+- `gatewayReload.externalProviderCount` 与启用 provider 数一致。
+- providerId 重复时自动生成唯一 ID，避免覆盖。
+- 单 provider 旧配置继续可用。
+- 任一 provider 失败不应让其他 provider 的工具消失。
+
+当前验证:
+
+```txt
+npm run verify:p3:b-gateway
+  -> 通过 runtime-config API 写入两个 MCP server
+  -> Gateway reload 后 externalProviderCount = 2
+  -> tools/list 同时包含 stub_mcp 和 audit_mcp 工具
+```
+
+审核:
+
+- Runtime Reviewer 必审。
+- Security Reviewer 必审。
+- Test Reviewer 必审。
+
 ## 5. 每个任务的完成定义
 
 每个 P3-B 任务完成前必须满足:

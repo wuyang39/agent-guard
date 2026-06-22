@@ -4,6 +4,7 @@ import type { RunE2ERequest } from "../../types";
 import {
   runE2E,
   CaseIdValidationError,
+  SelectionPlanValidationError,
   createInitialE2ERunGroup,
 } from "../../../services/e2eRunService";
 import {
@@ -25,6 +26,13 @@ export async function testRunRoutes(app: FastifyInstance): Promise<void> {
     if (!body.agent?.name) {
       reply.code(400);
       return failure("BAD_REQUEST", "agent.name is required");
+    }
+    if (body.selectionPlanId && body.caseIds?.length) {
+      reply.code(400);
+      return failure(
+        "INVALID_SELECTION_PLAN",
+        "selectionPlanId and caseIds cannot be provided together.",
+      );
     }
 
     const validKinds = ["mock", "http_sample", "openclaw"];
@@ -61,6 +69,10 @@ export async function testRunRoutes(app: FastifyInstance): Promise<void> {
       if (err instanceof CaseIdValidationError) {
         reply.code(400);
         return failure("INVALID_CASE_IDS", err.message);
+      }
+      if (err instanceof SelectionPlanValidationError) {
+        reply.code(400);
+        return failure("INVALID_SELECTION_PLAN", err.message);
       }
       request.log.error({ err }, "E2E run failed");
       reply.code(500);

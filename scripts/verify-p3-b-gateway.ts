@@ -269,17 +269,54 @@ async function main(): Promise<void> {
   process.env.AGENT_GUARD_ASK_TIMEOUT_MS = "50";
   process.env.AGENT_GUARD_LLM_ENABLED = "1";
   process.env.AGENT_GUARD_LLM_MODE = "mock";
-  process.env.AGENT_GUARD_DOWNSTREAM_MCP_PROVIDER_ID = "stub_mcp";
-  process.env.AGENT_GUARD_DOWNSTREAM_MCP_PROVIDER_NAME = "Stub MCP Provider";
 
   const stubMcp = await startStubMcpServer();
-  process.env.AGENT_GUARD_DOWNSTREAM_MCP_URL = stubMcp.url;
+  const auditMcp = await startStubMcpServer();
+  delete process.env.AGENT_GUARD_DOWNSTREAM_MCP_URL;
+  delete process.env.AGENT_GUARD_DOWNSTREAM_MCP_PROVIDER_ID;
+  delete process.env.AGENT_GUARD_DOWNSTREAM_MCP_PROVIDER_NAME;
+  delete process.env.AGENT_GUARD_DOWNSTREAM_MCP_SERVERS;
   const app = await buildApp({ logger: false });
   const baseUrl = await app.listen({ port: 0, host: "127.0.0.1" });
 
   try {
     console.log("P3-B Gateway Verification");
     console.log(`API: ${baseUrl}`);
+
+    const runtimeConfig = await httpJson<
+      ApiResponse<{
+        downstreamMcp: { servers: { providerId: string }[] };
+        gatewayReload: { toolCount: number; externalProviderCount: number };
+      }>
+    >("POST", baseUrl, "/api/v1/runtime-config/downstream-mcp", {
+      enabled: true,
+      servers: [
+        {
+          providerId: "stub_mcp",
+          providerName: "Stub MCP Provider",
+          endpointUrl: stubMcp.url,
+          enabled: true,
+          timeoutMs: 5000,
+        },
+        {
+          providerId: "audit_mcp",
+          providerName: "Audit MCP Provider",
+          endpointUrl: auditMcp.url,
+          enabled: true,
+          timeoutMs: 5000,
+        },
+      ],
+    });
+    assert(runtimeConfig.ok === true, "multi MCP runtime config failed");
+    assert(
+      runtimeConfig.data?.gatewayReload.externalProviderCount === 2,
+      "Gateway did not reload two MCP providers",
+    );
+    assert(
+      runtimeConfig.data?.downstreamMcp.servers.length === 2,
+      "runtime snapshot did not preserve two MCP servers",
+    );
+    console.log("0. multi MCP runtime config ok (2 providers)");
 
     const info = await httpJson<ApiResponse<{ tools: { name: string }[] }>>(
       "GET",
@@ -290,6 +327,7 @@ async function main(): Promise<void> {
     const infoToolNames = info.data?.tools.map((tool) => tool.name) ?? [];
     assert(infoToolNames.includes("agent_guard_read_file"), "read_file tool not exposed");
     assert(infoToolNames.includes("agw__stub_mcp__run_shell"), "stub MCP tool not exposed");
+    assert(infoToolNames.includes("agw__audit_mcp__run_shell"), "second MCP provider tool not exposed");
     console.log(`1. info tools ok (${infoToolNames.length})`);
 
     const active = await httpJson<
@@ -605,6 +643,7 @@ async function main(): Promise<void> {
   } finally {
     await app.close();
     await stubMcp.close();
+    await auditMcp.close();
   }
 }
 

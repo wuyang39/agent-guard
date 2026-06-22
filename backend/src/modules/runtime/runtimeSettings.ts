@@ -20,6 +20,7 @@ export type RuntimeLlmSettingsInput = {
 };
 
 export type RuntimeDownstreamMcpSettings = {
+  servers: RuntimeMcpServerSettings[];
   enabled: boolean;
   providerId: string;
   providerName: string;
@@ -28,7 +29,24 @@ export type RuntimeDownstreamMcpSettings = {
   source: "runtime" | "env" | "default";
 };
 
+export type RuntimeMcpServerSettings = {
+  enabled: boolean;
+  providerId: string;
+  providerName: string;
+  endpointUrl?: string;
+  timeoutMs: number;
+};
+
 export type RuntimeDownstreamMcpSettingsInput = {
+  enabled?: boolean;
+  providerId?: string;
+  providerName?: string;
+  endpointUrl?: string;
+  timeoutMs?: number;
+  servers?: RuntimeMcpServerSettingsInput[];
+};
+
+export type RuntimeMcpServerSettingsInput = {
   enabled?: boolean;
   providerId?: string;
   providerName?: string;
@@ -119,19 +137,22 @@ export function getResolvedRuntimeDownstreamMcpSettings(
   }
 
   const endpointUrl = env.AGENT_GUARD_DOWNSTREAM_MCP_URL?.trim();
+  const envServers = parseEnvMcpServers(env.AGENT_GUARD_DOWNSTREAM_MCP_SERVERS);
   const hasEnv =
     endpointUrl !== undefined ||
+    envServers.length > 0 ||
     env.AGENT_GUARD_DOWNSTREAM_MCP_PROVIDER_ID !== undefined ||
     env.AGENT_GUARD_DOWNSTREAM_MCP_PROVIDER_NAME !== undefined ||
     env.AGENT_GUARD_DOWNSTREAM_MCP_TIMEOUT_MS !== undefined;
 
   return normalizeRuntimeDownstreamMcpSettings(
     {
-      enabled: Boolean(endpointUrl),
       providerId: env.AGENT_GUARD_DOWNSTREAM_MCP_PROVIDER_ID,
       providerName: env.AGENT_GUARD_DOWNSTREAM_MCP_PROVIDER_NAME,
       endpointUrl,
       timeoutMs: parsePositiveInt(env.AGENT_GUARD_DOWNSTREAM_MCP_TIMEOUT_MS),
+      servers: envServers,
+      enabled: Boolean(endpointUrl) || envServers.some((server) => server.enabled !== false && Boolean(server.endpointUrl)),
     },
     hasEnv ? "env" : "default",
   );
@@ -146,6 +167,12 @@ export function setRuntimeDownstreamMcpSettings(
   );
   runtimeSettingsUpdatedAt = new Date().toISOString();
   return getRuntimeSettingsSnapshot();
+}
+
+export function resolveRuntimeDownstreamMcpSettingsInput(
+  input: RuntimeDownstreamMcpSettingsInput,
+): RuntimeDownstreamMcpSettings {
+  return normalizeRuntimeDownstreamMcpSettings(input, "runtime");
 }
 
 function normalizeRuntimeLlmSettings(
@@ -170,14 +197,60 @@ function normalizeRuntimeDownstreamMcpSettings(
   source: RuntimeDownstreamMcpSettings["source"],
 ): RuntimeDownstreamMcpSettings {
   const endpointUrl = cleanOptional(input.endpointUrl);
+  const explicitServers = (input.servers ?? [])
+    .map((server) => normalizeMcpServer(server))
+    .filter((server) => server.endpointUrl);
+  const legacyServer = endpointUrl
+    ? normalizeMcpServer({
+        enabled: input.enabled ?? true,
+        providerId: input.providerId,
+        providerName: input.providerName,
+        endpointUrl,
+        timeoutMs: input.timeoutMs,
+      })
+    : undefined;
+  const servers = ensureUniqueProviderIds(
+    explicitServers.length > 0
+      ? explicitServers
+      : legacyServer
+      ? [legacyServer]
+      : [],
+  );
+  const firstServer = servers[0];
+  const enabled = input.enabled ?? servers.some((server) => server.enabled && server.endpointUrl);
+  return {
+    servers,
+    enabled,
+    providerId: firstServer?.providerId ?? safeProviderId(input.providerId ?? "external_mcp"),
+    providerName: firstServer?.providerName ?? cleanOptional(input.providerName) ?? "External MCP Provider",
+    endpointUrl: firstServer?.endpointUrl ?? endpointUrl,
+    timeoutMs: firstServer?.timeoutMs ?? normalizeTimeoutMs(input.timeoutMs),
+    source,
+  };
+}
+
+function normalizeMcpServer(input: RuntimeMcpServerSettingsInput): RuntimeMcpServerSettings {
+  const endpointUrl = cleanOptional(input.endpointUrl);
   return {
     enabled: input.enabled ?? Boolean(endpointUrl),
     providerId: safeProviderId(input.providerId ?? "external_mcp"),
     providerName: cleanOptional(input.providerName) ?? "External MCP Provider",
     endpointUrl,
-    timeoutMs: input.timeoutMs && input.timeoutMs > 0 ? Math.floor(input.timeoutMs) : 5000,
-    source,
+    timeoutMs: normalizeTimeoutMs(input.timeoutMs),
   };
+}
+
+function ensureUniqueProviderIds(
+  servers: RuntimeMcpServerSettings[],
+): RuntimeMcpServerSettings[] {
+  const counts = new Map<string, number>();
+  return servers.map((server) => {
+    const count = counts.get(server.providerId) ?? 0;
+    counts.set(server.providerId, count + 1);
+    return count === 0
+      ? server
+      : { ...server, providerId: `${server.providerId}_${count + 1}` };
+  });
 }
 
 function parseLlmMode(value: unknown): RuntimeLlmMode {
@@ -191,6 +264,52 @@ function parsePositiveInt(value: string | undefined): number | undefined {
   if (!value) return undefined;
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function normalizeTimeoutMs(value: number | undefined): number {
+  return value && value > 0 ? Math.floor(value) : 5000;
+}
+
+function parseEnvMcpServers(value: string | undefined): RuntimeMcpServerSettingsInput[] {
+  if (!value?.trim()) return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (Array.isArray(parsed)) {
+      return parsed.filter(isMcpServerInput);
+    }
+    if (isRecord(parsed)) {
+      return Object.entries(parsed).map(([providerId, config]) => {
+        if (typeof config === "string") {
+          return { providerId, providerName: providerId, endpointUrl: config, enabled: true };
+        }
+        if (isRecord(config)) {
+          return {
+            providerId,
+            providerName: typeof config.providerName === "string" ? config.providerName : providerId,
+            endpointUrl: typeof config.endpointUrl === "string"
+              ? config.endpointUrl
+              : typeof config.url === "string"
+              ? config.url
+              : undefined,
+            enabled: config.enabled !== false,
+            timeoutMs: typeof config.timeoutMs === "number" ? config.timeoutMs : undefined,
+          };
+        }
+        return { providerId, providerName: providerId, enabled: false };
+      });
+    }
+  } catch {
+    return [];
+  }
+  return [];
+}
+
+function isMcpServerInput(value: unknown): value is RuntimeMcpServerSettingsInput {
+  return isRecord(value);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function cleanOptional(value: unknown): string | undefined {

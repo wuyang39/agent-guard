@@ -8,6 +8,7 @@ import { createHttpMcpDownstreamProvider } from "../../../modules/gateway/downst
 import {
   getResolvedRuntimeLlmSettings,
   getRuntimeSettingsSnapshot,
+  resolveRuntimeDownstreamMcpSettingsInput,
   setRuntimeDownstreamMcpSettings,
   setRuntimeLlmSettings,
   type RuntimeDownstreamMcpSettingsInput,
@@ -109,36 +110,53 @@ export async function runtimeConfigRoutes(app: FastifyInstance): Promise<void> {
     const config = parsed?.ok
       ? normalizeMcpInputForCheck(parsed.config)
       : getRuntimeSettingsSnapshot().downstreamMcp;
-    if (!config.enabled || !config.endpointUrl) {
+    const servers = config.servers.filter((server) => server.enabled && server.endpointUrl);
+    if (!config.enabled || servers.length === 0) {
       return success({
         available: false,
         providerId: config.providerId,
         providerName: config.providerName,
         toolCount: 0,
         tools: [],
-        detail: "外部 MCP 未启用或 endpointUrl 为空。",
+        providers: [],
+        detail: "外部 MCP 未启用或 server endpoint 为空。",
       });
     }
 
     try {
-      const provider = createHttpMcpDownstreamProvider({
-        providerId: config.providerId,
-        providerName: config.providerName,
-        endpointUrl: config.endpointUrl,
-        timeoutMs: config.timeoutMs,
-      });
-      const tools = await provider.listTools();
+      const providerResults = [];
+      const allTools = [];
+      for (const server of servers) {
+        const provider = createHttpMcpDownstreamProvider({
+          providerId: server.providerId,
+          providerName: server.providerName,
+          endpointUrl: server.endpointUrl as string,
+          timeoutMs: server.timeoutMs,
+        });
+        const tools = await provider.listTools();
+        providerResults.push({
+          providerId: server.providerId,
+          providerName: server.providerName,
+          toolCount: tools.length,
+        });
+        allTools.push(
+          ...tools.map((tool) => ({
+            providerId: server.providerId,
+            providerName: server.providerName,
+            name: tool.originalToolName,
+            canonicalToolId: tool.canonicalToolId,
+            description: tool.description,
+          })),
+        );
+      }
       return success({
         available: true,
         providerId: config.providerId,
         providerName: config.providerName,
-        toolCount: tools.length,
-        tools: tools.map((tool) => ({
-          name: tool.originalToolName,
-          canonicalToolId: tool.canonicalToolId,
-          description: tool.description,
-        })),
-        detail: `已读取 ${tools.length} 个外部 MCP 工具。`,
+        toolCount: allTools.length,
+        tools: allTools,
+        providers: providerResults,
+        detail: `已读取 ${servers.length} 个外部 MCP server，共 ${allTools.length} 个工具。`,
       });
     } catch (error) {
       reply.code(502);
@@ -200,8 +218,18 @@ function parseDownstreamMcpSettings(
   | { ok: false; message: string } {
   const enabled = body.enabled === true;
   const endpointUrl = typeof body.endpointUrl === "string" ? body.endpointUrl.trim() : "";
-  if (enabled && !endpointUrl) {
-    return { ok: false, message: "endpointUrl is required when downstream MCP is enabled" };
+  const servers = Array.isArray(body.servers)
+    ? body.servers.filter(isObject).map((server) => ({
+        enabled: server.enabled !== false,
+        providerId: typeof server.providerId === "string" ? server.providerId : undefined,
+        providerName: typeof server.providerName === "string" ? server.providerName : undefined,
+        endpointUrl: typeof server.endpointUrl === "string" ? server.endpointUrl : undefined,
+        timeoutMs: parsePositiveInt(server.timeoutMs),
+      }))
+    : undefined;
+  const hasServerEndpoint = (servers ?? []).some((server) => server.enabled && server.endpointUrl?.trim());
+  if (enabled && !endpointUrl && !hasServerEndpoint) {
+    return { ok: false, message: "endpointUrl or servers[] is required when downstream MCP is enabled" };
   }
   return {
     ok: true,
@@ -211,18 +239,13 @@ function parseDownstreamMcpSettings(
       providerName: typeof body.providerName === "string" ? body.providerName : undefined,
       endpointUrl,
       timeoutMs: parsePositiveInt(body.timeoutMs),
+      servers,
     },
   };
 }
 
 function normalizeMcpInputForCheck(config: RuntimeDownstreamMcpSettingsInput) {
-  return {
-    enabled: Boolean(config.enabled),
-    providerId: config.providerId?.trim() || "external_mcp",
-    providerName: config.providerName?.trim() || "External MCP Provider",
-    endpointUrl: config.endpointUrl?.trim(),
-    timeoutMs: config.timeoutMs && config.timeoutMs > 0 ? config.timeoutMs : 5000,
-  };
+  return resolveRuntimeDownstreamMcpSettingsInput(config);
 }
 
 function parsePositiveInt(value: unknown): number | undefined {

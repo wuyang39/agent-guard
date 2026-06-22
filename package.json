@@ -29,6 +29,7 @@
     "verify:openclaw:realtime": "node --import tsx scripts/verify-openclaw-realtime-mcp.ts",
     "verify:p3:b-gateway": "node --import tsx scripts/verify-p3-b-gateway.ts",
     "verify:p3:b-llm-profiler": "node --import tsx scripts/verify-p3-b-llm-profiler.ts",
+    "verify:p3:b-test-selection": "node --import tsx scripts/verify-p3-b-test-selection.ts",
     "api:start": "node --import tsx backend/src/server.ts",
     "api:dev": "node --watch --import tsx backend/src/server.ts"
   },

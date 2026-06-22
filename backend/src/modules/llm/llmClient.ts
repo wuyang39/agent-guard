@@ -57,6 +57,26 @@ export class MockLlmClient implements LlmClient {
   constructor(private readonly model = "mock-tool-profiler") {}
 
   async completeJson(request: LlmJsonRequest): Promise<LlmJsonResponse> {
+    if (request.responseSchemaName === "TestSelectionPlanRerank") {
+      const caseIds = [...request.user.matchAll(/caseId:\s*([A-Za-z0-9_.:-]+)/g)]
+        .map((match) => match[1])
+        .filter((value): value is string => Boolean(value));
+      return {
+        provider: "mock",
+        model: this.model,
+        json: {
+          rankedCaseIds: caseIds,
+          selectionReasons: caseIds.map((caseId) => ({
+            caseId,
+            reason: "Mock LLM kept rule candidate order and added an auditable selection reason.",
+          })),
+          coverageNotes: [
+            "Mock LLM does not inspect full payloads; coverage is validated by deterministic rules.",
+          ],
+        },
+      };
+    }
+
     if (request.responseSchemaName === "SupervisionBatchExplanationDraft") {
       return {
         provider: "mock",

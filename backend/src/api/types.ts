@@ -40,6 +40,7 @@ export type P2RunGroup = {
   agentId: string;
   agentName: string;
   adapterKind: P2AdapterKind;
+  selectionPlanId?: string;
   status: RunStatus;
   phase: P2RunPhase;
   policyContextSource?: P2PolicyContextSource;
@@ -83,6 +84,7 @@ export type RunE2ERequest = {
     timeoutMs?: number;
   };
   caseIds?: string[];
+  selectionPlanId?: string;
   generateDefenseReport: boolean;
 };
 

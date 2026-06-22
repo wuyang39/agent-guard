@@ -1275,6 +1275,46 @@ RuntimeAgentMessagePayload
 
 P1 检测报告和防御报告导出产物统一复用 `ReportArtifact`。暂不新增 `DetectionReportArtifact` 或 `DefenseReportArtifact` 专用类型；如后续确需区分，必须先修改本文档和 `packages/contracts/src/types/**`。
 
+## 11. P3 测试选择契约
+
+P3-B 新增测试选择对象，用于在监督前检测阶段把 A 线攻击库候选样本转换为一次可执行的测试计划。
+
+新增共享类型位于:
+
+```txt
+packages/contracts/src/types/testSelection.ts
+```
+
+核心对象:
+
+```txt
+CandidateCaseCard
+TestSelectionRequest
+TestSelectionPlan
+CoverageSnapshot
+SelectionCoverageRequirements
+SelectionProfileSummary
+SelectionRunSummary
+SelectionEvalStyleResult
+SelectionReason
+LlmSelectionAudit
+```
+
+边界约束:
+
+- `CandidateCaseCard` 是攻击库元数据摘要，不包含完整攻击 prompt、secret、真实 payload 或 `TestOracle`。
+- `TestSelectionPlan.selectedCaseIds` 只能引用候选池中存在且 enabled 的 case。
+- `CoverageSnapshot.ready=false` 时，计划只能保存为 draft，不能直接驱动 e2e run。
+- `LlmSelectionAudit` 只记录 LLM 辅助选择过程，不构成风险结论。
+- `SelectionReason` 只能解释为什么选择 case，不得进入 `Finding`、`RiskReport` 或 `DefenseClaim`。
+- `RunE2ERequest.selectionPlanId` 与 `caseIds` 不能同时传入。
+- `P2RunGroup.selectionPlanId` 用于追溯本次运行来源。
+- `SelectionProfileSummary` 描述 profile、模式、adapter 和预算，不改变攻击库内容。
+- `SelectionRunSummary` 记录候选数、规则选择数、LLM 接受/拒绝数和 fallback 状态。
+- `SelectionEvalStyleResult` 只表达测试选择计划的检查结果，不表达 Agent 风险结论。
+
+第一版允许 B 线在 A 线正式 `CorpusManifest / AttackCaseCard[]` 上传前，从现有 `TestContext` 派生临时 `CandidateCaseCard`。该派生对象必须标记 `sourceOrigin: "derived"`，不得反向修改 A 线配置。
+
 ## 12. 契约演进规则
 
 允许:

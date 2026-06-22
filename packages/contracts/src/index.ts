@@ -11,4 +11,5 @@ export * from "./types/sandbox";
 export * from "./types/scenario";
 export * from "./types/supervision";
 export * from "./types/test";
+export * from "./types/testSelection";
 export * from "./types/trace";

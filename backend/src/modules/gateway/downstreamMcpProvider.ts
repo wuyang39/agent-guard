@@ -94,16 +94,19 @@ export function createHttpMcpDownstreamProvider(input: {
 export function createEnvDownstreamMcpProviders(): DownstreamMcpProvider[] {
   const providers: DownstreamMcpProvider[] = [];
   const settings = getResolvedRuntimeDownstreamMcpSettings();
-  if (!settings.enabled || !settings.endpointUrl) return providers;
+  if (!settings.enabled) return providers;
 
-  providers.push(
-    createHttpMcpDownstreamProvider({
-      providerId: settings.providerId,
-      providerName: settings.providerName,
-      endpointUrl: settings.endpointUrl,
-      timeoutMs: settings.timeoutMs,
-    }),
-  );
+  for (const server of settings.servers) {
+    if (!server.enabled || !server.endpointUrl) continue;
+    providers.push(
+      createHttpMcpDownstreamProvider({
+        providerId: server.providerId,
+        providerName: server.providerName,
+        endpointUrl: server.endpointUrl,
+        timeoutMs: server.timeoutMs,
+      }),
+    );
+  }
 
   return providers;
 }

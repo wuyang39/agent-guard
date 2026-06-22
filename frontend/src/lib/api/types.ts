@@ -259,6 +259,7 @@ export type RuntimeLlmConfigInput = {
 };
 
 export type RuntimeDownstreamMcpConfig = {
+  servers?: RuntimeMcpServerConfig[];
   enabled: boolean;
   providerId: string;
   providerName: string;
@@ -273,6 +274,23 @@ export type RuntimeDownstreamMcpConfigInput = {
   providerName: string;
   endpointUrl?: string;
   timeoutMs: number;
+  servers?: RuntimeMcpServerConfigInput[];
+};
+
+export type RuntimeMcpServerConfig = {
+  enabled: boolean;
+  providerId: string;
+  providerName: string;
+  endpointUrl?: string;
+  timeoutMs: number;
+};
+
+export type RuntimeMcpServerConfigInput = {
+  enabled?: boolean;
+  providerId?: string;
+  providerName?: string;
+  endpointUrl?: string;
+  timeoutMs?: number;
 };
 
 export type RuntimeConfigSnapshot = {
@@ -288,8 +306,15 @@ export type RuntimeConfigCheckResult = {
   model?: string;
   providerId?: string;
   providerName?: string;
+  providers?: {
+    providerId: string;
+    providerName: string;
+    toolCount: number;
+  }[];
   toolCount?: number;
   tools?: {
+    providerId?: string;
+    providerName?: string;
     name: string;
     canonicalToolId: string;
     description: string;

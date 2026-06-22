@@ -494,6 +494,15 @@ function CheckResultBlock({
         </Badge>
       </div>
       <p>{result.detail}</p>
+      {showTools && result.providers?.length ? (
+        <div className="tool-chip-list">
+          {result.providers.map((provider) => (
+            <span key={provider.providerId}>
+              {provider.providerId}: {provider.toolCount}
+            </span>
+          ))}
+        </div>
+      ) : null}
       {showTools && result.tools?.length ? (
         <div className="tool-chip-list">
           {result.tools.map((tool) => (
@@ -616,6 +625,7 @@ function snapshotToMcpDraft(snapshot: RuntimeConfigSnapshot): RuntimeDownstreamM
     providerName: snapshot.downstreamMcp.providerName,
     endpointUrl: snapshot.downstreamMcp.endpointUrl ?? "",
     timeoutMs: snapshot.downstreamMcp.timeoutMs,
+    servers: snapshot.downstreamMcp.servers,
   };
 }
 
@@ -632,12 +642,33 @@ function normalizeLlmDraft(draft: RuntimeLlmConfigInput): RuntimeLlmConfigInput 
 }
 
 function normalizeMcpDraft(draft: RuntimeDownstreamMcpConfigInput): RuntimeDownstreamMcpConfigInput {
+  const providerId = draft.providerId.trim() || "external_mcp";
+  const providerName = draft.providerName.trim() || "External MCP Provider";
+  const endpointUrl = draft.endpointUrl?.trim() || undefined;
+  const timeoutMs = Math.max(1000, Number(draft.timeoutMs) || 5000);
+  const servers = draft.servers?.map((server) => ({
+    enabled: server.enabled !== false,
+    providerId: server.providerId?.trim() || undefined,
+    providerName: server.providerName?.trim() || undefined,
+    endpointUrl: server.endpointUrl?.trim() || undefined,
+    timeoutMs: server.timeoutMs ? Math.max(1000, Number(server.timeoutMs) || 5000) : undefined,
+  }));
+  if (servers?.length) {
+    servers[0] = {
+      ...servers[0],
+      providerId,
+      providerName,
+      endpointUrl,
+      timeoutMs,
+    };
+  }
   return {
     enabled: draft.enabled,
-    providerId: draft.providerId.trim() || "external_mcp",
-    providerName: draft.providerName.trim() || "External MCP Provider",
-    endpointUrl: draft.endpointUrl?.trim() || undefined,
-    timeoutMs: Math.max(1000, Number(draft.timeoutMs) || 5000),
+    providerId,
+    providerName,
+    endpointUrl,
+    timeoutMs,
+    servers,
   };
 }
 
@@ -664,6 +695,9 @@ function buildEnvSnippet(
     `$env:AGENT_GUARD_DOWNSTREAM_MCP_PROVIDER_ID="${mcp.providerId}"`,
     `$env:AGENT_GUARD_DOWNSTREAM_MCP_PROVIDER_NAME="${mcp.providerName}"`,
     `$env:AGENT_GUARD_DOWNSTREAM_MCP_TIMEOUT_MS="${mcp.timeoutMs}"`,
+    mcp.servers?.length
+      ? `$env:AGENT_GUARD_DOWNSTREAM_MCP_SERVERS='${JSON.stringify(mcp.servers)}'`
+      : undefined,
   ]
     .filter(Boolean)
     .join("\n");
@@ -690,6 +724,7 @@ function buildCurrentConfigSnippet(snapshot: RuntimeConfigSnapshot): string {
         providerName: snapshot.downstreamMcp.providerName,
         endpointUrl: snapshot.downstreamMcp.endpointUrl ?? "",
         timeoutMs: snapshot.downstreamMcp.timeoutMs,
+        servers: snapshot.downstreamMcp.servers ?? [],
         source: sourceLabel(snapshot.downstreamMcp.source),
       },
     },

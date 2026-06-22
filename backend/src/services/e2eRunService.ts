@@ -41,6 +41,11 @@ import { indexReport, indexArtifact } from "../storage/fileReportStore";
 import type { AgentAdapter } from "../modules/agent/agentAdapter";
 import { HttpAgentAdapter } from "../modules/agent/httpAgentAdapter";
 import { OpenClawAdapter } from "../modules/agent/openclawAdapter";
+import {
+  getRequiredSelectionPlan,
+  TestSelectionError,
+} from "../modules/runner/testSelectionService";
+import { updateSelectionPlanStatus } from "../modules/runner/selectionPlanStore";
 
 const CONFIGS_DIR = path.resolve(process.cwd(), "configs");
 const P2_DEMO_CASES_FILE = path.join(CONFIGS_DIR, "p2_demo_cases.json");
@@ -51,6 +56,13 @@ export class CaseIdValidationError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "CaseIdValidationError";
+  }
+}
+
+export class SelectionPlanValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SelectionPlanValidationError";
   }
 }
 
@@ -115,32 +127,89 @@ export async function runE2E(
   // P2 adapterKind 映射到 contracts adapterType + 自定义 adapter。
   const adapterType = mapAdapterKind(request.adapterKind);
   const customAdapter = buildCustomAdapter(request);
-
-  const agent: AgentUnderTest = {
-    schemaVersion: "mvp-1",
-    agentId: existingRunGroup?.agentId ?? request.agent.agentId ?? createId("agent"),
-    name: request.agent.name,
-    adapterType,
-  };
-
-  const adapterConfig: AgentAdapterConfig = {
-    schemaVersion: "mvp-1",
-    adapterId: createId("adapter"),
-    agentId: agent.agentId,
-    adapterType: agent.adapterType,
-    timeoutMs: request.connection?.timeoutMs ?? 30000,
-  };
-
-  const runGroup = existingRunGroup ?? buildInitialRunGroup(request, agent.agentId);
+  const provisionalAgentId =
+    existingRunGroup?.agentId ?? request.agent.agentId ?? createId("agent");
+  const runGroup =
+    existingRunGroup ?? buildInitialRunGroup(request, provisionalAgentId);
+  runGroup.selectionPlanId = request.selectionPlanId;
 
   try {
+    if (request.selectionPlanId && request.caseIds?.length) {
+      throw new SelectionPlanValidationError(
+        "selectionPlanId and caseIds cannot be provided together.",
+      );
+    }
+
+    let selectedCaseIdsFromPlan: string[] | undefined;
+    let selectionPlanAgentId: string | undefined;
+    if (request.selectionPlanId) {
+      try {
+        const plan = await getRequiredSelectionPlan(request.selectionPlanId);
+        if (plan.status !== "ready" && plan.status !== "completed") {
+          throw new SelectionPlanValidationError(
+            `Selection plan ${request.selectionPlanId} is not ready. Current status: ${plan.status}.`,
+          );
+        }
+        if (
+          request.agent.agentId &&
+          plan.agentId !== "agent.selection.default" &&
+          plan.agentId !== request.agent.agentId
+        ) {
+          throw new SelectionPlanValidationError(
+            `Selection plan agentId ${plan.agentId} does not match requested agentId ${request.agent.agentId}.`,
+          );
+        }
+        selectionPlanAgentId = plan.agentId;
+        selectedCaseIdsFromPlan = plan.selectedCaseIds;
+      } catch (error) {
+        if (error instanceof TestSelectionError) {
+          throw new SelectionPlanValidationError(error.message);
+        }
+        throw error;
+      }
+    }
+
+    const resolvedAgentId =
+      request.agent.agentId ??
+      selectionPlanAgentId ??
+      runGroup.agentId;
+    runGroup.agentId = resolvedAgentId;
+
+    const agent: AgentUnderTest = {
+      schemaVersion: "mvp-1",
+      agentId: resolvedAgentId,
+      name: request.agent.name,
+      adapterType,
+    };
+
+    const adapterConfig: AgentAdapterConfig = {
+      schemaVersion: "mvp-1",
+      adapterId: createId("adapter"),
+      agentId: agent.agentId,
+      adapterType: agent.adapterType,
+      timeoutMs: request.connection?.timeoutMs ?? 30000,
+    };
+
+    if (request.selectionPlanId) {
+      await updateSelectionPlanStatus(
+        request.selectionPlanId,
+        "running",
+        {
+          runGroupId: runGroup.runGroupId,
+          agentId: resolvedAgentId,
+        },
+      );
+    }
+
     // ====== 阶段 1: 监督前检测 ======
     runGroup.status = "running";
     runGroup.phase = "detecting";
     await saveRunGroup(runGroup);
 
     const { contexts, repository } = await loadTestContexts(CONFIGS_DIR, agent);
-    const selectedCaseIds = request.caseIds?.length
+    const selectedCaseIds = selectedCaseIdsFromPlan?.length
+      ? selectedCaseIdsFromPlan
+      : request.caseIds?.length
       ? request.caseIds
       : await getDefaultP2CaseIds(request.adapterKind);
 
@@ -351,6 +420,13 @@ export async function runE2E(
     const links = buildLinks(runGroup);
 
     await saveRunGroup(runGroup);
+    if (runGroup.selectionPlanId) {
+      await updateSelectionPlanStatus(
+        runGroup.selectionPlanId,
+        "completed",
+        { runGroupId: runGroup.runGroupId },
+      );
+    }
 
     return { runGroup, links };
   } catch (err) {
@@ -359,6 +435,16 @@ export async function runE2E(
     runGroup.endedAt = nowIso();
     runGroup.error = err instanceof Error ? err.message : String(err);
     await saveRunGroup(runGroup);
+    if (runGroup.selectionPlanId) {
+      await updateSelectionPlanStatus(
+        runGroup.selectionPlanId,
+        "failed",
+        {
+          runGroupId: runGroup.runGroupId,
+          error: runGroup.error,
+        },
+      );
+    }
     throw err;
   }
 }

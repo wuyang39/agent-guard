@@ -637,3 +637,56 @@ GET  /api/v1/artifacts/:artifactId
 ```
 
 P2 前端不得依赖未进入 `docs/p2-api-contract-plan.md` 的临时字段。P2 后端如果需要新增字段，应优先新增可选字段，并同步该 API 冻结文档。
+
+## 9. P3 A/B 测试选择接口
+
+P3-B 新增“测试选择计划”能力，用于在监督前检测之前选择本次要运行的攻击库样本。
+
+A -> B 新增输入:
+
+```txt
+CorpusManifest
+AttackCaseCard[]
+caseId -> TestContext loader
+```
+
+B -> API / C 可追溯输出:
+
+```txt
+TestSelectionPlan
+CoverageSnapshot
+LlmSelectionAudit
+P2RunGroup.selectionPlanId
+```
+
+首批接口:
+
+```txt
+POST /api/v1/test-selection/plans
+GET  /api/v1/test-selection/plans
+GET  /api/v1/test-selection/plans/:selectionPlanId
+POST /api/v1/test-runs/e2e { selectionPlanId }
+```
+
+边界:
+
+- B 线只负责选择 case 和运行 case，不生成风险画像、策略包或报告结论。
+- LLM 只能辅助排序候选 case，不能创造 caseId。
+- LLM 选择理由不得作为风险证据或防御效果证据。
+- `selectionPlanId` 与 `caseIds` 不能同时传入 e2e run。
+- A 线正式攻击库未上传时，B 线可用现有 `TestContext` 派生临时候选池；A 线正式对象到位后替换 provider。
+
+P3-B 多 MCP server 配置:
+
+```txt
+POST /api/v1/runtime-config/downstream-mcp
+  -> 支持旧单 provider 字段
+  -> 支持 servers[]
+  -> 保存后触发 Gateway tools reload
+
+OpenClaw
+  -> 仍连接 /api/v1/openclaw/realtime/mcp
+  -> Gateway 聚合所有 enabled MCP server
+```
+
+`servers[]` 中每个 provider 必须拥有独立 `providerId`、`endpointUrl` 和 `timeoutMs`。暴露工具名继续使用 `agw__<providerId>__<toolName>`，所有工具调用继续进入 B 线监督链路。

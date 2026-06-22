@@ -14,8 +14,12 @@ const compileTargets = [
   "evaluator.py",
   "pyrit/prompt_converter/atbash_converter.py",
   "pyrit/prompt_converter/binary_converter.py",
+  "pyrit/prompt_converter/base2048_converter.py",
+  "pyrit/prompt_converter/ask_to_decode_converter.py",
   "pyrit/prompt_converter/morse_converter.py",
   "pyrit/prompt_converter/unicode_confusable_converter.py",
+  "pyrit/prompt_converter/unicode_sub_converter.py",
+  "pyrit/prompt_converter/token_smuggling/sneaky_bits_smuggler_converter.py",
   "pyrit/prompt_converter/flip_converter.py",
 ].map((relativePath) => path.join(vendorDir, relativePath));
 

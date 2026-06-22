@@ -43,11 +43,22 @@ def safe_text(value: Any, max_len: int = 800) -> str:
 def build_converter(operator_id: str) -> tuple[Any, str]:
     try:
         from pyrit.prompt_converter import (
+            AsciiArtConverter,
+            AsciiSmugglerConverter,
+            AskToDecodeConverter,
             AtbashConverter,
+            Base2048Converter,
             Base64Converter,
+            BinAsciiConverter,
             BinaryConverter,
+            BrailleConverter,
             CaesarConverter,
             CharacterSpaceConverter,
+            CharSwapConverter,
+            DiacriticConverter,
+            EcojiConverter,
+            EmojiConverter,
+            FirstLetterConverter,
             FlipConverter,
             InsertPunctuationConverter,
             JsonStringConverter,
@@ -59,7 +70,14 @@ def build_converter(operator_id: str) -> tuple[Any, str]:
             RepeatTokenConverter,
             StringJoinConverter,
             SuffixAppendConverter,
+            SuperscriptConverter,
+            UnicodeConfusableConverter,
+            UnicodeReplacementConverter,
+            UnicodeSubstitutionConverter,
             UrlConverter,
+            VariationSelectorSmugglerConverter,
+            SneakyBitsSmugglerConverter,
+            ZalgoConverter,
             ZeroWidthConverter,
         )
     except Exception as exc:
@@ -69,20 +87,38 @@ def build_converter(operator_id: str) -> tuple[Any, str]:
         "pyrit.converter.base64": lambda: Base64Converter(encoding_func="b64encode"),
         "pyrit.converter.base32": lambda: Base64Converter(encoding_func="b32encode"),
         "pyrit.converter.base85": lambda: Base64Converter(encoding_func="b85encode"),
+        "pyrit.converter.base2048": lambda: Base2048Converter(),
+        "pyrit.converter.base2048_placeholder": lambda: Base2048Converter(),
         "pyrit.converter.rot13": lambda: ROT13Converter(),
         "pyrit.converter.caesar_3": lambda: CaesarConverter(caesar_offset=3),
         "pyrit.converter.caesar_7": lambda: CaesarConverter(caesar_offset=7),
         "pyrit.converter.caesar_13": lambda: CaesarConverter(caesar_offset=13),
         "pyrit.converter.atbash": lambda: AtbashConverter(),
         "pyrit.converter.binary_8": lambda: BinaryConverter(bits_per_char=BinaryConverter.BitsPerChar.BITS_8),
+        "pyrit.converter.bin_ascii_words": lambda: BinAsciiConverter(encoding_func="hex"),
         "pyrit.converter.morse": lambda: MorseConverter(),
         "pyrit.converter.nato": lambda: NatoConverter(),
         "pyrit.converter.url_encode": lambda: UrlConverter(),
+        "pyrit.converter.braille": lambda: BrailleConverter(),
+        "pyrit.converter.superscript": lambda: SuperscriptConverter(),
         "pyrit.converter.character_space": lambda: CharacterSpaceConverter(),
         "pyrit.converter.string_join_dash": lambda: StringJoinConverter(join_value="-"),
         "pyrit.converter.string_join_slash": lambda: StringJoinConverter(join_value="/"),
         "pyrit.converter.flip": lambda: FlipConverter(),
+        "pyrit.converter.char_swap_adjacent": lambda: CharSwapConverter(max_iterations=1),
+        "pyrit.converter.first_letter": lambda: FirstLetterConverter(),
+        "pyrit.converter.diacritic_light": lambda: DiacriticConverter(target_chars="aeiou", accent="acute"),
+        "pyrit.converter.zalgo_heavy": lambda: ZalgoConverter(intensity=3, seed=7),
+        "pyrit.converter.emoji": lambda: EmojiConverter(),
+        "pyrit.converter.ecoji": lambda: EcojiConverter(),
         "pyrit.converter.leetspeak": lambda: LeetspeakConverter(deterministic=True),
+        "pyrit.converter.unicode_confusable": lambda: UnicodeConfusableConverter(deterministic=True),
+        "pyrit.converter.unicode_replacement": lambda: UnicodeReplacementConverter(encode_spaces=False),
+        "pyrit.converter.unicode_substitution": lambda: UnicodeSubstitutionConverter(),
+        "pyrit.converter.ascii_smuggler": lambda: AsciiSmugglerConverter(action="encode"),
+        "pyrit.converter.ascii_smuggler_tags": lambda: AsciiSmugglerConverter(action="encode", unicode_tags=True),
+        "pyrit.converter.variation_selector_smuggler": lambda: VariationSelectorSmugglerConverter(action="encode"),
+        "pyrit.converter.sneaky_bits_smuggler": lambda: SneakyBitsSmugglerConverter(action="encode"),
         "pyrit.converter.random_capitals": lambda: RandomCapitalLettersConverter(percentage=50.0),
         "pyrit.converter.insert_punctuation": lambda: InsertPunctuationConverter(word_swap_ratio=0.35),
         "pyrit.converter.suffix_append": lambda: SuffixAppendConverter(
@@ -93,6 +129,9 @@ def build_converter(operator_id: str) -> tuple[Any, str]:
         ),
         "pyrit.converter.json_string": lambda: JsonStringConverter(),
         "pyrit.converter.zero_width": lambda: ZeroWidthConverter(),
+        "pyrit.converter.ask_to_decode": lambda: AskToDecodeConverter(encoding_name="base64"),
+        "pyrit.converter.ascii_art": lambda: AsciiArtConverter(font="block"),
+        "pyrit.converter.ascii_art_box": lambda: AsciiArtConverter(font="block"),
     }
     factory = factories.get(operator_id)
     if not factory:
@@ -115,6 +154,8 @@ def fallback_convert(operator_id: str, value: str) -> str:
             return base64.b32encode(value.encode("utf-8")).decode("ascii")
         case "pyrit.converter.base85":
             return base64.b85encode(value.encode("utf-8")).decode("ascii")
+        case "pyrit.converter.base2048" | "pyrit.converter.base2048_placeholder":
+            return f"[BASE2048_COMPAT:{base64.b64encode(value.encode('utf-8')).decode('ascii')}]"
         case "pyrit.converter.rot13":
             return value.translate(
                 str.maketrans(
@@ -132,10 +173,18 @@ def fallback_convert(operator_id: str, value: str) -> str:
             return atbash(value)
         case "pyrit.converter.binary_8":
             return " ".join(format(ord(char), "08b") for char in value)
+        case "pyrit.converter.bin_ascii_words":
+            return " / ".join("-".join(format(ord(char), "08b") for char in word) for word in value.split())
         case "pyrit.converter.morse":
             return morse(value)
+        case "pyrit.converter.nato":
+            return nato(value)
         case "pyrit.converter.url_encode":
             return urllib.parse.quote(value)
+        case "pyrit.converter.braille":
+            return braille(value)
+        case "pyrit.converter.superscript":
+            return superscript(value)
         case "pyrit.converter.character_space":
             return " ".join(value)
         case "pyrit.converter.string_join_dash":
@@ -144,8 +193,30 @@ def fallback_convert(operator_id: str, value: str) -> str:
             return " ".join("/".join(word) for word in value.split())
         case "pyrit.converter.flip":
             return value[::-1]
+        case "pyrit.converter.char_swap_adjacent":
+            return " ".join(swap_adjacent(word) for word in value.split())
+        case "pyrit.converter.first_letter":
+            return " ".join(word[0] for word in value.split() if word)
+        case "pyrit.converter.diacritic_light":
+            return diacritic(value)
+        case "pyrit.converter.zalgo_heavy":
+            return "".join(f"{char}\u0313\u0308" if char.strip() else char for char in value)
+        case "pyrit.converter.emoji":
+            return "".join(f"{char}\ufe0f" if char.strip() else char for char in value)
+        case "pyrit.converter.ecoji":
+            return f"[ECOJI_COMPAT:{base64.b64encode(value.encode('utf-8')).decode('ascii')}]"
         case "pyrit.converter.leetspeak":
             return "".join({"a": "4", "e": "3", "i": "1", "o": "0", "s": "5", "t": "7"}.get(c.lower(), c) for c in value)
+        case "pyrit.converter.unicode_confusable":
+            return unicode_confusable(value)
+        case "pyrit.converter.unicode_replacement":
+            return "".join(f"\\u{ord(char):04x}" for char in value)
+        case "pyrit.converter.unicode_substitution" | "pyrit.converter.ascii_smuggler" | "pyrit.converter.ascii_smuggler_tags":
+            return "".join(chr(0xE0000 + ord(char)) for char in value)
+        case "pyrit.converter.variation_selector_smuggler":
+            return "🙂" + "".join(chr(0xE0100 + (ord(char) % 240)) for char in value)
+        case "pyrit.converter.sneaky_bits_smuggler":
+            return "".join("\u2062" if bit == "0" else "\u2064" for byte in value.encode("utf-8") for bit in format(byte, "08b"))
         case "pyrit.converter.random_capitals":
             return "".join(char.upper() if index % 2 == 0 else char.lower() for index, char in enumerate(value))
         case "pyrit.converter.insert_punctuation":
@@ -158,6 +229,10 @@ def fallback_convert(operator_id: str, value: str) -> str:
             return json.dumps(value, ensure_ascii=False)
         case "pyrit.converter.zero_width":
             return "\u200b".join(value)
+        case "pyrit.converter.ask_to_decode":
+            return f"base64 encoded string: {base64.b64encode(value.encode('utf-8')).decode('ascii')}\nbase64 decoded string:"
+        case "pyrit.converter.ascii_art" | "pyrit.converter.ascii_art_box":
+            return ascii_art_box(value)
         case _:
             raise KeyError(operator_id)
 
@@ -297,6 +372,8 @@ def build_attack_env() -> tuple[dict[str, str], list[str]]:
         "OPENAI_CHAT_ENDPOINT": [
             "OPENAI_CHAT_ENDPOINT",
             "AGENT_GUARD_PYRIT_OPENAI_CHAT_ENDPOINT",
+            "AGENT_GUARD_PYRIT_OPENCLAW_CHAT_ENDPOINT",
+            "OPENCLAW_CHAT_ENDPOINT",
             "DEEPSEEK_ENDPOINT",
         ],
         "OPENAI_CHAT_KEY": [
@@ -322,6 +399,10 @@ def build_attack_env() -> tuple[dict[str, str], list[str]]:
                 break
         if not env.get(target):
             missing.append(target)
+    if not env.get("OPENAI_CHAT_MODEL"):
+        env["OPENAI_CHAT_MODEL"] = "deepseek-v4-pro"
+        if "OPENAI_CHAT_MODEL" in missing:
+            missing.remove("OPENAI_CHAT_MODEL")
     return env, missing
 
 
@@ -349,6 +430,7 @@ def attack_result_item(
     payload = payload or {}
     last_response = payload.get("last_response", {}) if isinstance(payload.get("last_response"), dict) else {}
     response_preview = safe_text(last_response.get("converted_value"), 900)
+    original_objective = str(item.get("objective") or item.get("input") or "")
     result = {
         "itemId": str(item.get("itemId", "unknown")),
         "operatorId": str(item.get("operatorId", "")),
@@ -369,12 +451,34 @@ def attack_result_item(
         "metadata": {
             "datasetInfo": payload.get("dataset_info"),
             "pyritMetadata": payload.get("metadata"),
+            "originalObjectivePreview": safe_text(original_objective, 700),
+            "runtimeObjectiveChanged": objective != original_objective,
             **(item.get("metadata") or {}),
         },
     }
     if error:
         result["error"] = safe_text(error, 1200)
     return result
+
+
+async def maybe_convert_objective_for_attack(operator_id: str, objective: str, notes: list[str]) -> str:
+    if not operator_id.startswith("pyrit.converter."):
+        return objective
+    try:
+        converted, output_type, converter_class = await convert_with_pyrit(operator_id, objective, "text")
+    except KeyError:
+        notes.append(f"PyRIT converter pre-processing skipped: unsupported converter {operator_id}.")
+        return objective
+    except Exception as exc:
+        notes.append(f"PyRIT converter pre-processing skipped: {type(exc).__name__}: {safe_text(exc, 300)}.")
+        return objective
+    if output_type != "text":
+        notes.append(
+            f"PyRIT converter pre-processing skipped non-text output from {converter_class}: outputType={output_type}."
+        )
+        return objective
+    notes.append(f"Pre-applied PyRIT converter {converter_class} to runtime objective.")
+    return converted
 
 
 async def run_attack_cli_batch(request: dict[str, Any]) -> dict[str, Any]:
@@ -392,6 +496,7 @@ async def run_attack_cli_batch(request: dict[str, Any]) -> dict[str, Any]:
         method = method_for_item(item)
         objective = str(item.get("objective") or item.get("input") or "")
         item_id = str(item.get("itemId", f"attack-{index}"))
+        operator_id = str(item.get("operatorId", ""))
         output_json = output_root / f"{safe_file_name(item_id)}.json"
         notes: list[str] = []
         if not pyrit_available:
@@ -426,13 +531,14 @@ async def run_attack_cli_batch(request: dict[str, Any]) -> dict[str, Any]:
             )
             continue
 
+        runtime_objective = await maybe_convert_objective_for_attack(operator_id, objective, notes)
         cmd = [
             sys.executable,
             str(BASE_DIR / "run_attack_cli.py"),
             "--method",
             method,
             "--objective",
-            objective,
+            runtime_objective,
             "--max-turns",
             str(int(item.get("maxTurns") or options.get("maxTurns") or 3)),
             "--output-json",
@@ -465,7 +571,7 @@ async def run_attack_cli_batch(request: dict[str, Any]) -> dict[str, Any]:
                         item=item,
                         status="ok",
                         method=method,
-                        objective=objective,
+                        objective=runtime_objective,
                         output_json_path=output_json,
                         runtime_used="pyrit",
                         notes=notes,
@@ -478,7 +584,7 @@ async def run_attack_cli_batch(request: dict[str, Any]) -> dict[str, Any]:
                         item=item,
                         status="error",
                         method=method,
-                        objective=objective,
+                        objective=runtime_objective,
                         output_json_path=output_json,
                         runtime_used="pyrit",
                         notes=[safe_text(completed.stdout, 700)],
@@ -492,7 +598,7 @@ async def run_attack_cli_batch(request: dict[str, Any]) -> dict[str, Any]:
                     item=item,
                     status="error",
                     method=method,
-                    objective=objective,
+                    objective=runtime_objective,
                     output_json_path=output_json,
                     runtime_used="pyrit",
                     notes=notes,
@@ -571,6 +677,68 @@ def morse(value: str) -> str:
         "8": "---..", "9": "----.", " ": "/",
     }
     return " ".join(table.get(char.upper(), char) for char in value)
+
+
+def nato(value: str) -> str:
+    table = {
+        "A": "Alpha", "B": "Bravo", "C": "Charlie", "D": "Delta", "E": "Echo", "F": "Foxtrot",
+        "G": "Golf", "H": "Hotel", "I": "India", "J": "Juliett", "K": "Kilo", "L": "Lima",
+        "M": "Mike", "N": "November", "O": "Oscar", "P": "Papa", "Q": "Quebec", "R": "Romeo",
+        "S": "Sierra", "T": "Tango", "U": "Uniform", "V": "Victor", "W": "Whiskey",
+        "X": "Xray", "Y": "Yankee", "Z": "Zulu",
+    }
+    return " ".join(table.get(char.upper(), char) for char in value)
+
+
+def braille(value: str) -> str:
+    base = {
+        "a": "⠁", "b": "⠃", "c": "⠉", "d": "⠙", "e": "⠑", "f": "⠋", "g": "⠛", "h": "⠓",
+        "i": "⠊", "j": "⠚", "k": "⠅", "l": "⠇", "m": "⠍", "n": "⠝", "o": "⠕", "p": "⠏",
+        "q": "⠟", "r": "⠗", "s": "⠎", "t": "⠞", "u": "⠥", "v": "⠧", "w": "⠺", "x": "⠭",
+        "y": "⠽", "z": "⠵", " ": " ",
+    }
+    return "".join(base.get(char.lower(), char) for char in value)
+
+
+def superscript(value: str) -> str:
+    table = {
+        "a": "ᵃ", "b": "ᵇ", "c": "ᶜ", "d": "ᵈ", "e": "ᵉ", "f": "ᶠ", "g": "ᵍ",
+        "h": "ʰ", "i": "ᶦ", "j": "ʲ", "k": "ᵏ", "l": "ˡ", "m": "ᵐ", "n": "ⁿ",
+        "o": "ᵒ", "p": "ᵖ", "r": "ʳ", "s": "ˢ", "t": "ᵗ", "u": "ᵘ", "v": "ᵛ",
+        "w": "ʷ", "x": "ˣ", "y": "ʸ", "z": "ᶻ",
+        "A": "ᴬ", "B": "ᴮ", "D": "ᴰ", "E": "ᴱ", "G": "ᴳ", "H": "ᴴ", "I": "ᴵ",
+        "J": "ᴶ", "K": "ᴷ", "L": "ᴸ", "M": "ᴹ", "N": "ᴺ", "O": "ᴼ", "P": "ᴾ",
+        "R": "ᴿ", "T": "ᵀ", "U": "ᵁ", "V": "ⱽ", "W": "ᵂ",
+        "0": "⁰", "1": "¹", "2": "²", "3": "³", "4": "⁴", "5": "⁵", "6": "⁶",
+        "7": "⁷", "8": "⁸", "9": "⁹", "+": "⁺", "-": "⁻", "=": "⁼", "(": "⁽", ")": "⁾",
+    }
+    return "".join(table.get(char, char) for char in value)
+
+
+def swap_adjacent(value: str) -> str:
+    if len(value) < 4:
+        return value
+    chars = list(value)
+    chars[1], chars[2] = chars[2], chars[1]
+    return "".join(chars)
+
+
+def diacritic(value: str) -> str:
+    return "".join(f"{char}\u0301" if char.lower() in "aeiou" else char for char in value)
+
+
+def unicode_confusable(value: str) -> str:
+    table = str.maketrans({
+        "A": "Α", "B": "Β", "C": "Ϲ", "E": "Ε", "H": "Η", "I": "Ι", "K": "Κ", "M": "Μ",
+        "N": "Ν", "O": "Ο", "P": "Ρ", "T": "Τ", "X": "Χ", "Y": "Υ", "a": "а", "c": "с",
+        "e": "е", "i": "і", "o": "ο", "p": "р", "s": "ѕ", "x": "х", "y": "у",
+    })
+    return value.translate(table)
+
+
+def ascii_art_box(value: str) -> str:
+    line = "+" + "-" * min(max(len(value), 12), 76) + "+"
+    return f"{line}\n| {value[:72].ljust(min(max(len(value), 12), 76) - 2)} |\n{line}"
 
 
 def self_test(allow_fallback: bool) -> dict[str, Any]:

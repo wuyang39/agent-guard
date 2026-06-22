@@ -118,7 +118,7 @@ resource seeds: 1143
 attack seeds: 839
 user prompt seeds: 889
 tool response seeds: 309
-mutation operators: 162
+mutation operators: 168
 generated prompts: 2400
 generated test cases: 2400
 generated oracles: 2400
@@ -404,8 +404,10 @@ npm run a:pyrit-runtime
 ```txt
 OPENAI_CHAT_ENDPOINT
 OPENAI_CHAT_KEY       # 可由 DeepSeek_API_2 或 AGENT_GUARD_PYRIT_OPENAI_CHAT_KEY 映射
-OPENAI_CHAT_MODEL     # 例如 deepseek-v4-flash
+OPENAI_CHAT_MODEL     # 当前统一使用 deepseek-v4-pro
 ```
+
+协作参数说明以 `docs/A/p3-a-pyrit-runtime-usage.md` 为准。`OPENAI_CHAT_ENDPOINT` 必须是 OpenAI-compatible chat base URL；Agent Guard realtime MCP endpoint 只用于 OpenClaw/MCP 客户端，不得作为 PyRIT 模型 endpoint。P3-A 的 `attack_cli` 在 selected operator 是 bridge 支持的 `pyrit.converter.*` 时，会先真实调用 PyRIT converter 变换 objective，再运行 `run_attack_cli.py`。
 
 ## 6. AIG 补充迁移
 

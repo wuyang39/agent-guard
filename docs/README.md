@@ -8,6 +8,8 @@
 
 本目录中的文档以当前系统规划作为初始规范基线。文档版本统一为 `initial-1`，用于表示文本规范状态。
 
+重要提醒: A 线真实 PyRIT runtime 运行前必须先看 `A/p3-a-pyrit-runtime-usage.md`。`OPENAI_CHAT_MODEL` 当前统一使用 `deepseek-v4-pro`，`OPENAI_CHAT_KEY` 可由本机 `DeepSeek_API_2` 映射，`OPENAI_CHAT_ENDPOINT` 必须是 OpenAI-compatible chat base URL，不得填 Agent Guard realtime MCP endpoint。
+
 系统最终目标是设计并实现一个可用于信息安全作品赛、具备国一竞争力的 Agent-MCP 交互安全测评系统。当前文档中的 `mvp-1` 表示 P0 垂直闭环阶段的运行时契约版本，不代表最终系统目标只停留在简单 MVP。
 
 运行时共享对象版本仍可使用 `schemaVersion: "mvp-1"` 作为跨线兼容域；A 线 corpus/source/generated 对象使用 `schemaVersion: "p3-a-1"`。不要把文档版本、运行时对象版本和 A 线语料版本混用。
@@ -28,6 +30,7 @@
 - `A/p2-pyrit-python-bridge-contract.md`: PyRIT Python runtime bridge 的输入输出、模型环境、验证命令、安全边界和 B/C 线对接约束。
 - `A/p2-openclaw-project-runtime-test.md`: 项目隔离 OpenClaw runtime 的本机部署、DeepSeek 模型映射和 required 验证结果。
 - `A/p3-a-corpus-implementation-plan.md`: A 线 P3 攻击库、资源种子、PyRIT/AIG 迁移、千级 generated corpus、run profile 和验证脚本的实现前执行计划。
+- `A/p3-a-pyrit-runtime-usage.md`: A 线 PyRIT runtime 的 DeepSeek/OpenClaw 参数、环境变量优先级、点源脚本和协作运行说明。
 - `../configs/a-line/README.md`: A 线攻击库配置分层说明，解释 `sources/`、`corpus/seeds/`、`corpus/operators/`、`corpus/profiles/` 与 `generated/a-line/**` 的职责。
 - `B/p1-b-runtime-supervision-work-plan.md`: B 线 P1 运行时监督实现计划。
 - `B/superpowers/**`: B 线历史设计规格和实现计划。

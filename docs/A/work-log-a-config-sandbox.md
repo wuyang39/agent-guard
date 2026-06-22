@@ -1141,3 +1141,55 @@ npm run verify:a-pyrit-runtime
 - 用户补齐 OpenAI-compatible endpoint 和模型名后，运行 `npm run a:pyrit-runtime` 执行真实 PyRIT attack batch。
 - 如需把结果进入报告，应由 C 线消费 `PyritBridgeResult` 和脱敏后的 `outputs/pyrit-runs/**` 摘要，不得把它直接当成 B 线 `InteractionTrace` 或 realtime `RuntimeSupervisionRecord[]`。
 - 后续可以继续把 PyRIT 的更多 attack executor 参数、scorer/evaluator 指标和 batch dataset 读取能力暴露到 bridge request options。
+
+## 23. 2026-06-22 P3-A PyRIT Runtime 参数固化与 converter bridge 扩展
+
+分支: `a/p3-a-corpus-implementation-plan`
+
+本轮根据用户补充的模型参数要求，把 A 线真实 PyRIT runtime 的协作入口、DeepSeek/OpenClaw 参数和 converter 执行能力继续补齐。核心原则仍然是: generated corpus 是输入层，真实模型攻击证据必须来自 `npm run a:pyrit-runtime` 写入的 `outputs/pyrit-runs/**`，不能用离线模板冒充真实 PyRIT runtime。
+
+实现要点:
+
+- 新增 `docs/A/p3-a-pyrit-runtime-usage.md`，集中说明 `OPENAI_CHAT_ENDPOINT`、`OPENAI_CHAT_KEY`、`OPENAI_CHAT_MODEL`、`DeepSeek_API_2`、OpenClaw local gateway 和 realtime MCP endpoint 的职责边界。
+- 新增 `scripts/setup-pyrit-openclaw-env.ps1`，用于在当前 PowerShell 会话中点源设置 PyRIT 模型环境。默认模型为 `deepseek-v4-pro`，key 从 `DeepSeek_API_2` 映射，endpoint 默认候选为 `http://127.0.0.1:18789/v1`。脚本只改当前进程环境，不写系统环境，不落盘 key。
+- `pyritPythonBridge.ts` 和 `agent_guard_bridge.py` 已统一模型环境映射: endpoint 支持 `AGENT_GUARD_PYRIT_OPENAI_CHAT_ENDPOINT`、`AGENT_GUARD_PYRIT_OPENCLAW_CHAT_ENDPOINT`、`OPENCLAW_CHAT_ENDPOINT`、`DEEPSEEK_ENDPOINT`；key 支持 `DeepSeek_API_2`；model 默认 `deepseek-v4-pro`。
+- `agent_guard_bridge.py` 的 `converter_batch` 扩展到更多真实 PyRIT 文本 converter: Base2048、BinAscii、Braille、Superscript、UnicodeConfusable、UnicodeReplacement、UnicodeSubstitution、Ascii/Variation/SneakyBits smuggling、AsciiArt、AskToDecode、Emoji/Ecoji、CharSwap、Diacritic、Zalgo 等。
+- `attack_cli` 增加 converter 预处理: 如果 selected case 的 `operatorId` 是 bridge 支持的 `pyrit.converter.*`，会先真实调用 PyRIT converter 变换 objective，再把变换后的 objective 传给 `run_attack_cli.py`。
+- `seedFactory.ts` 把旧 `pyrit.converter.base2048_placeholder` 升级为真实 `pyrit.converter.base2048`，并新增 `unicode_replacement`、`unicode_substitution`、`ascii_smuggler`、`emoji`、`ecoji`、`ascii_art` 等 operator。
+- `mutationOperators.ts` 为新增 operator 提供离线预览实现；真实模型攻击仍以 bridge 的 PyRIT runtime 结果为准。
+- `verify-a-pyrit-runtime.ts` 的 converter self-test 扩展到 Base2048、UnicodeSubstitution、SneakyBits 和 AskToDecode。
+- `README.md`、`docs/README.md`、`configs/a-line/README.md`、`docs/A/p2-pyrit-python-bridge-contract.md`、`docs/A/p3-a-corpus-implementation-plan.md` 和 `docs/P3plan.md` 已同步参数和边界说明。
+
+当前规模:
+
+```txt
+resource seeds: 1143
+attack seeds: 839
+user prompt seeds: 889
+tool response seeds: 309
+mutation operators: 168
+generated prompts: 2400
+generated test cases: 2400
+generated test oracles: 2400
+```
+
+已验证:
+
+```powershell
+.venv\pyrit\Scripts\python.exe -m py_compile third_party\pyrit_adapted\agent_guard_bridge.py
+.venv\pyrit\Scripts\python.exe third_party\pyrit_adapted\agent_guard_bridge.py --self-test
+npm run a:generate-corpus
+npm run typecheck
+npm run verify:a-corpus
+npm run pyrit:bridge-smoke
+npm run verify:a-pyrit-runtime
+npm run verify:a-pyrit-library
+npm run verify:all
+```
+
+补充说明:
+
+- `http://127.0.0.1:3100/api/v1/openclaw/realtime/mcp` 是 Agent Guard realtime MCP endpoint，不是 `OPENAI_CHAT_ENDPOINT`。
+- `http://127.0.0.1:18789/v1` 只是项目隔离 OpenClaw gateway 的 OpenAI-compatible endpoint 候选；如果本机 gateway 未启动或不暴露 `/v1`，真实 PyRIT attack 会失败或需要显式传入其他 endpoint。
+- `base2048_placeholder` 仅保留在 bridge/TS 层作为历史兼容别名，新生成链路使用 `pyrit.converter.base2048`。
+- 当前本机 `verify:a-pyrit-runtime` 结果: converter runtime 通过；key/model 已识别，`OPENAI_CHAT_ENDPOINT` 未配置，因此真实 attack 按设计 `SKIP`，不是伪造成功。

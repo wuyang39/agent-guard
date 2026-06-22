@@ -1131,7 +1131,7 @@
     "preferredOperatorIds": [
       "pyrit.converter.variation_selector_smuggler",
       "pyrit.converter.sneaky_bits_smuggler",
-      "pyrit.converter.base2048_placeholder"
+      "pyrit.converter.base2048"
     ],
     "pyrit": {
       "templateIds": [
@@ -1140,7 +1140,7 @@
       "converterIds": [
         "pyrit.converter.variation_selector_smuggler",
         "pyrit.converter.sneaky_bits_smuggler",
-        "pyrit.converter.base2048_placeholder"
+        "pyrit.converter.base2048"
       ],
       "executorTemplateIds": []
     },
@@ -2446,7 +2446,7 @@
     "preferredOperatorIds": [
       "pyrit.converter.variation_selector_smuggler",
       "pyrit.converter.sneaky_bits_smuggler",
-      "pyrit.converter.base2048_placeholder"
+      "pyrit.converter.base2048"
     ],
     "pyrit": {
       "templateIds": [
@@ -2455,7 +2455,7 @@
       "converterIds": [
         "pyrit.converter.variation_selector_smuggler",
         "pyrit.converter.sneaky_bits_smuggler",
-        "pyrit.converter.base2048_placeholder"
+        "pyrit.converter.base2048"
       ],
       "executorTemplateIds": []
     },
@@ -3761,7 +3761,7 @@
     "preferredOperatorIds": [
       "pyrit.converter.variation_selector_smuggler",
       "pyrit.converter.sneaky_bits_smuggler",
-      "pyrit.converter.base2048_placeholder"
+      "pyrit.converter.base2048"
     ],
     "pyrit": {
       "templateIds": [
@@ -3770,7 +3770,7 @@
       "converterIds": [
         "pyrit.converter.variation_selector_smuggler",
         "pyrit.converter.sneaky_bits_smuggler",
-        "pyrit.converter.base2048_placeholder"
+        "pyrit.converter.base2048"
       ],
       "executorTemplateIds": []
     },
@@ -5076,7 +5076,7 @@
     "preferredOperatorIds": [
       "pyrit.converter.variation_selector_smuggler",
       "pyrit.converter.sneaky_bits_smuggler",
-      "pyrit.converter.base2048_placeholder"
+      "pyrit.converter.base2048"
     ],
     "pyrit": {
       "templateIds": [
@@ -5085,7 +5085,7 @@
       "converterIds": [
         "pyrit.converter.variation_selector_smuggler",
         "pyrit.converter.sneaky_bits_smuggler",
-        "pyrit.converter.base2048_placeholder"
+        "pyrit.converter.base2048"
       ],
       "executorTemplateIds": []
     },
@@ -6391,7 +6391,7 @@
     "preferredOperatorIds": [
       "pyrit.converter.variation_selector_smuggler",
       "pyrit.converter.sneaky_bits_smuggler",
-      "pyrit.converter.base2048_placeholder"
+      "pyrit.converter.base2048"
     ],
     "pyrit": {
       "templateIds": [
@@ -6400,7 +6400,7 @@
       "converterIds": [
         "pyrit.converter.variation_selector_smuggler",
         "pyrit.converter.sneaky_bits_smuggler",
-        "pyrit.converter.base2048_placeholder"
+        "pyrit.converter.base2048"
       ],
       "executorTemplateIds": []
     },
@@ -7706,7 +7706,7 @@
     "preferredOperatorIds": [
       "pyrit.converter.variation_selector_smuggler",
       "pyrit.converter.sneaky_bits_smuggler",
-      "pyrit.converter.base2048_placeholder"
+      "pyrit.converter.base2048"
     ],
     "pyrit": {
       "templateIds": [
@@ -7715,7 +7715,7 @@
       "converterIds": [
         "pyrit.converter.variation_selector_smuggler",
         "pyrit.converter.sneaky_bits_smuggler",
-        "pyrit.converter.base2048_placeholder"
+        "pyrit.converter.base2048"
       ],
       "executorTemplateIds": []
     },
@@ -9021,7 +9021,7 @@
     "preferredOperatorIds": [
       "pyrit.converter.variation_selector_smuggler",
       "pyrit.converter.sneaky_bits_smuggler",
-      "pyrit.converter.base2048_placeholder"
+      "pyrit.converter.base2048"
     ],
     "pyrit": {
       "templateIds": [
@@ -9030,7 +9030,7 @@
       "converterIds": [
         "pyrit.converter.variation_selector_smuggler",
         "pyrit.converter.sneaky_bits_smuggler",
-        "pyrit.converter.base2048_placeholder"
+        "pyrit.converter.base2048"
       ],
       "executorTemplateIds": []
     },
@@ -10336,7 +10336,7 @@
     "preferredOperatorIds": [
       "pyrit.converter.variation_selector_smuggler",
       "pyrit.converter.sneaky_bits_smuggler",
-      "pyrit.converter.base2048_placeholder"
+      "pyrit.converter.base2048"
     ],
     "pyrit": {
       "templateIds": [
@@ -10345,7 +10345,7 @@
       "converterIds": [
         "pyrit.converter.variation_selector_smuggler",
         "pyrit.converter.sneaky_bits_smuggler",
-        "pyrit.converter.base2048_placeholder"
+        "pyrit.converter.base2048"
       ],
       "executorTemplateIds": []
     },
@@ -11651,7 +11651,7 @@
     "preferredOperatorIds": [
       "pyrit.converter.variation_selector_smuggler",
       "pyrit.converter.sneaky_bits_smuggler",
-      "pyrit.converter.base2048_placeholder"
+      "pyrit.converter.base2048"
     ],
     "pyrit": {
       "templateIds": [
@@ -11660,7 +11660,7 @@
       "converterIds": [
         "pyrit.converter.variation_selector_smuggler",
         "pyrit.converter.sneaky_bits_smuggler",
-        "pyrit.converter.base2048_placeholder"
+        "pyrit.converter.base2048"
       ],
       "executorTemplateIds": []
     },
@@ -12966,7 +12966,7 @@
     "preferredOperatorIds": [
       "pyrit.converter.variation_selector_smuggler",
       "pyrit.converter.sneaky_bits_smuggler",
-      "pyrit.converter.base2048_placeholder"
+      "pyrit.converter.base2048"
     ],
     "pyrit": {
       "templateIds": [
@@ -12975,7 +12975,7 @@
       "converterIds": [
         "pyrit.converter.variation_selector_smuggler",
         "pyrit.converter.sneaky_bits_smuggler",
-        "pyrit.converter.base2048_placeholder"
+        "pyrit.converter.base2048"
       ],
       "executorTemplateIds": []
     },
@@ -14281,7 +14281,7 @@
     "preferredOperatorIds": [
       "pyrit.converter.variation_selector_smuggler",
       "pyrit.converter.sneaky_bits_smuggler",
-      "pyrit.converter.base2048_placeholder"
+      "pyrit.converter.base2048"
     ],
     "pyrit": {
       "templateIds": [
@@ -14290,7 +14290,7 @@
       "converterIds": [
         "pyrit.converter.variation_selector_smuggler",
         "pyrit.converter.sneaky_bits_smuggler",
-        "pyrit.converter.base2048_placeholder"
+        "pyrit.converter.base2048"
       ],
       "executorTemplateIds": []
     },
@@ -15596,7 +15596,7 @@
     "preferredOperatorIds": [
       "pyrit.converter.variation_selector_smuggler",
       "pyrit.converter.sneaky_bits_smuggler",
-      "pyrit.converter.base2048_placeholder"
+      "pyrit.converter.base2048"
     ],
     "pyrit": {
       "templateIds": [
@@ -15605,7 +15605,7 @@
       "converterIds": [
         "pyrit.converter.variation_selector_smuggler",
         "pyrit.converter.sneaky_bits_smuggler",
-        "pyrit.converter.base2048_placeholder"
+        "pyrit.converter.base2048"
       ],
       "executorTemplateIds": []
     },
@@ -16911,7 +16911,7 @@
     "preferredOperatorIds": [
       "pyrit.converter.variation_selector_smuggler",
       "pyrit.converter.sneaky_bits_smuggler",
-      "pyrit.converter.base2048_placeholder"
+      "pyrit.converter.base2048"
     ],
     "pyrit": {
       "templateIds": [
@@ -16920,7 +16920,7 @@
       "converterIds": [
         "pyrit.converter.variation_selector_smuggler",
         "pyrit.converter.sneaky_bits_smuggler",
-        "pyrit.converter.base2048_placeholder"
+        "pyrit.converter.base2048"
       ],
       "executorTemplateIds": []
     },
@@ -18226,7 +18226,7 @@
     "preferredOperatorIds": [
       "pyrit.converter.variation_selector_smuggler",
       "pyrit.converter.sneaky_bits_smuggler",
-      "pyrit.converter.base2048_placeholder"
+      "pyrit.converter.base2048"
     ],
     "pyrit": {
       "templateIds": [
@@ -18235,7 +18235,7 @@
       "converterIds": [
         "pyrit.converter.variation_selector_smuggler",
         "pyrit.converter.sneaky_bits_smuggler",
-        "pyrit.converter.base2048_placeholder"
+        "pyrit.converter.base2048"
       ],
       "executorTemplateIds": []
     },
@@ -19541,7 +19541,7 @@
     "preferredOperatorIds": [
       "pyrit.converter.variation_selector_smuggler",
       "pyrit.converter.sneaky_bits_smuggler",
-      "pyrit.converter.base2048_placeholder"
+      "pyrit.converter.base2048"
     ],
     "pyrit": {
       "templateIds": [
@@ -19550,7 +19550,7 @@
       "converterIds": [
         "pyrit.converter.variation_selector_smuggler",
         "pyrit.converter.sneaky_bits_smuggler",
-        "pyrit.converter.base2048_placeholder"
+        "pyrit.converter.base2048"
       ],
       "executorTemplateIds": []
     },
@@ -20856,7 +20856,7 @@
     "preferredOperatorIds": [
       "pyrit.converter.variation_selector_smuggler",
       "pyrit.converter.sneaky_bits_smuggler",
-      "pyrit.converter.base2048_placeholder"
+      "pyrit.converter.base2048"
     ],
     "pyrit": {
       "templateIds": [
@@ -20865,7 +20865,7 @@
       "converterIds": [
         "pyrit.converter.variation_selector_smuggler",
         "pyrit.converter.sneaky_bits_smuggler",
-        "pyrit.converter.base2048_placeholder"
+        "pyrit.converter.base2048"
       ],
       "executorTemplateIds": []
     },
@@ -22171,7 +22171,7 @@
     "preferredOperatorIds": [
       "pyrit.converter.variation_selector_smuggler",
       "pyrit.converter.sneaky_bits_smuggler",
-      "pyrit.converter.base2048_placeholder"
+      "pyrit.converter.base2048"
     ],
     "pyrit": {
       "templateIds": [
@@ -22180,7 +22180,7 @@
       "converterIds": [
         "pyrit.converter.variation_selector_smuggler",
         "pyrit.converter.sneaky_bits_smuggler",
-        "pyrit.converter.base2048_placeholder"
+        "pyrit.converter.base2048"
       ],
       "executorTemplateIds": []
     },
@@ -23486,7 +23486,7 @@
     "preferredOperatorIds": [
       "pyrit.converter.variation_selector_smuggler",
       "pyrit.converter.sneaky_bits_smuggler",
-      "pyrit.converter.base2048_placeholder"
+      "pyrit.converter.base2048"
     ],
     "pyrit": {
       "templateIds": [
@@ -23495,7 +23495,7 @@
       "converterIds": [
         "pyrit.converter.variation_selector_smuggler",
         "pyrit.converter.sneaky_bits_smuggler",
-        "pyrit.converter.base2048_placeholder"
+        "pyrit.converter.base2048"
       ],
       "executorTemplateIds": []
     },
@@ -24801,7 +24801,7 @@
     "preferredOperatorIds": [
       "pyrit.converter.variation_selector_smuggler",
       "pyrit.converter.sneaky_bits_smuggler",
-      "pyrit.converter.base2048_placeholder"
+      "pyrit.converter.base2048"
     ],
     "pyrit": {
       "templateIds": [
@@ -24810,7 +24810,7 @@
       "converterIds": [
         "pyrit.converter.variation_selector_smuggler",
         "pyrit.converter.sneaky_bits_smuggler",
-        "pyrit.converter.base2048_placeholder"
+        "pyrit.converter.base2048"
       ],
       "executorTemplateIds": []
     },
@@ -26116,7 +26116,7 @@
     "preferredOperatorIds": [
       "pyrit.converter.variation_selector_smuggler",
       "pyrit.converter.sneaky_bits_smuggler",
-      "pyrit.converter.base2048_placeholder"
+      "pyrit.converter.base2048"
     ],
     "pyrit": {
       "templateIds": [
@@ -26125,7 +26125,7 @@
       "converterIds": [
         "pyrit.converter.variation_selector_smuggler",
         "pyrit.converter.sneaky_bits_smuggler",
-        "pyrit.converter.base2048_placeholder"
+        "pyrit.converter.base2048"
       ],
       "executorTemplateIds": []
     },
@@ -27431,7 +27431,7 @@
     "preferredOperatorIds": [
       "pyrit.converter.variation_selector_smuggler",
       "pyrit.converter.sneaky_bits_smuggler",
-      "pyrit.converter.base2048_placeholder"
+      "pyrit.converter.base2048"
     ],
     "pyrit": {
       "templateIds": [
@@ -27440,7 +27440,7 @@
       "converterIds": [
         "pyrit.converter.variation_selector_smuggler",
         "pyrit.converter.sneaky_bits_smuggler",
-        "pyrit.converter.base2048_placeholder"
+        "pyrit.converter.base2048"
       ],
       "executorTemplateIds": []
     },
@@ -28746,7 +28746,7 @@
     "preferredOperatorIds": [
       "pyrit.converter.variation_selector_smuggler",
       "pyrit.converter.sneaky_bits_smuggler",
-      "pyrit.converter.base2048_placeholder"
+      "pyrit.converter.base2048"
     ],
     "pyrit": {
       "templateIds": [
@@ -28755,7 +28755,7 @@
       "converterIds": [
         "pyrit.converter.variation_selector_smuggler",
         "pyrit.converter.sneaky_bits_smuggler",
-        "pyrit.converter.base2048_placeholder"
+        "pyrit.converter.base2048"
       ],
       "executorTemplateIds": []
     },
@@ -30061,7 +30061,7 @@
     "preferredOperatorIds": [
       "pyrit.converter.variation_selector_smuggler",
       "pyrit.converter.sneaky_bits_smuggler",
-      "pyrit.converter.base2048_placeholder"
+      "pyrit.converter.base2048"
     ],
     "pyrit": {
       "templateIds": [
@@ -30070,7 +30070,7 @@
       "converterIds": [
         "pyrit.converter.variation_selector_smuggler",
         "pyrit.converter.sneaky_bits_smuggler",
-        "pyrit.converter.base2048_placeholder"
+        "pyrit.converter.base2048"
       ],
       "executorTemplateIds": []
     },
@@ -31376,7 +31376,7 @@
     "preferredOperatorIds": [
       "pyrit.converter.variation_selector_smuggler",
       "pyrit.converter.sneaky_bits_smuggler",
-      "pyrit.converter.base2048_placeholder"
+      "pyrit.converter.base2048"
     ],
     "pyrit": {
       "templateIds": [
@@ -31385,7 +31385,7 @@
       "converterIds": [
         "pyrit.converter.variation_selector_smuggler",
         "pyrit.converter.sneaky_bits_smuggler",
-        "pyrit.converter.base2048_placeholder"
+        "pyrit.converter.base2048"
       ],
       "executorTemplateIds": []
     },
@@ -32691,7 +32691,7 @@
     "preferredOperatorIds": [
       "pyrit.converter.variation_selector_smuggler",
       "pyrit.converter.sneaky_bits_smuggler",
-      "pyrit.converter.base2048_placeholder"
+      "pyrit.converter.base2048"
     ],
     "pyrit": {
       "templateIds": [
@@ -32700,7 +32700,7 @@
       "converterIds": [
         "pyrit.converter.variation_selector_smuggler",
         "pyrit.converter.sneaky_bits_smuggler",
-        "pyrit.converter.base2048_placeholder"
+        "pyrit.converter.base2048"
       ],
       "executorTemplateIds": []
     },

@@ -36,6 +36,26 @@ const converterRequest: PyritBridgeRequest = {
       operatorId: "pyrit.converter.rot13",
       input: "Agent Guard PyRIT runtime verification",
     },
+    {
+      itemId: "verify.base2048",
+      operatorId: "pyrit.converter.base2048",
+      input: "Agent Guard PyRIT runtime verification",
+    },
+    {
+      itemId: "verify.unicode_substitution",
+      operatorId: "pyrit.converter.unicode_substitution",
+      input: "Agent Guard PyRIT runtime verification",
+    },
+    {
+      itemId: "verify.sneaky_bits",
+      operatorId: "pyrit.converter.sneaky_bits_smuggler",
+      input: "Agent Guard PyRIT runtime verification",
+    },
+    {
+      itemId: "verify.ask_to_decode",
+      operatorId: "pyrit.converter.ask_to_decode",
+      input: "Agent Guard PyRIT runtime verification",
+    },
   ],
 };
 

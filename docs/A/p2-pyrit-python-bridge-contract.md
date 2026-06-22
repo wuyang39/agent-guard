@@ -47,11 +47,13 @@ OPENAI_CHAT_MODEL
 
 ```txt
 OPENAI_CHAT_KEY       <- DeepSeek_API_2 或 AGENT_GUARD_PYRIT_OPENAI_CHAT_KEY
-OPENAI_CHAT_ENDPOINT  <- AGENT_GUARD_PYRIT_OPENAI_CHAT_ENDPOINT 或 DEEPSEEK_ENDPOINT
-OPENAI_CHAT_MODEL     <- AGENT_GUARD_PYRIT_OPENAI_CHAT_MODEL 或 DEEPSEEK_MODEL
+OPENAI_CHAT_ENDPOINT  <- AGENT_GUARD_PYRIT_OPENAI_CHAT_ENDPOINT、AGENT_GUARD_PYRIT_OPENCLAW_CHAT_ENDPOINT、OPENCLAW_CHAT_ENDPOINT 或 DEEPSEEK_ENDPOINT
+OPENAI_CHAT_MODEL     <- AGENT_GUARD_PYRIT_OPENAI_CHAT_MODEL、DEEPSEEK_MODEL 或默认 deepseek-v4-pro
 ```
 
 密钥只允许来自用户环境变量或本地未提交配置，不得写入 configs、docs、outputs 摘要、commit 或命令行明文。
+
+协作参数和常见错误见 `docs/A/p3-a-pyrit-runtime-usage.md`。`OPENAI_CHAT_ENDPOINT` 必须是 OpenAI-compatible chat base URL；Agent Guard realtime MCP 地址 `http://127.0.0.1:3100/api/v1/openclaw/realtime/mcp` 不能填入该变量。
 
 ## 3. Bridge 输入
 
@@ -76,6 +78,8 @@ type PyritBridgeRequest = {
 ```
 
 `converter_batch` 用于验证 PyRIT converter runtime 和离线转换结果；`attack_cli` 用于调用 `run_attack_cli.py` 做真实模型攻击。
+
+P3-A 当前 `converter_batch` 已接入更多 vendored PyRIT 文本 converter，包括 Base2048、BinAscii、Braille、Superscript、UnicodeConfusable、UnicodeReplacement、UnicodeSubstitution、Ascii/Variation/SneakyBits smuggling、AsciiArt、AskToDecode、Emoji/Ecoji、CharSwap、Diacritic 和 Zalgo。`attack_cli` 在遇到 bridge 支持的 `pyrit.converter.*` operator 时，会先对 objective 做 PyRIT converter 预处理，再把变换后的 objective 传给 attack executor。
 
 `attack_cli` item 必须包含:
 
@@ -155,6 +159,14 @@ $env:VERIFY_PYRIT_RUNTIME_REQUIRED="1"
 ```
 
 `VERIFY_PYRIT_RUNTIME_REQUIRED=1` 会把模型未配置或无真实 attack 完成视为失败；未设置时，缺少 endpoint/model 会按 `SKIP` 处理。
+
+推荐在当前 PowerShell 会话中准备 DeepSeek/OpenClaw 参数:
+
+```powershell
+. .\scripts\setup-pyrit-openclaw-env.ps1
+```
+
+该脚本默认设置 `OPENAI_CHAT_MODEL=deepseek-v4-pro`，从 `DeepSeek_API_2` 映射 key，并尝试使用项目隔离 OpenClaw gateway 候选 endpoint `http://127.0.0.1:18789/v1`。如果 gateway 没有暴露 OpenAI-compatible `/v1`，需要显式传入正确 endpoint。
 
 ## 6. 安全边界
 

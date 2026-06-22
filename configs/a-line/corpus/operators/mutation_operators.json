@@ -1489,10 +1489,10 @@
   },
   {
     "schemaVersion": "p3-a-1",
-    "operatorId": "pyrit.converter.base2048_placeholder",
-    "name": "Base2048 payload placeholder",
+    "operatorId": "pyrit.converter.base2048",
+    "name": "Base2048 payload encoding",
     "family": "encoding",
-    "executionMode": "template_render",
+    "executionMode": "native_ts_adapter",
     "source": {
       "origin": "pyrit",
       "sourcePath": "third_party/pyrit_adapted"
@@ -1501,9 +1501,9 @@
     "maxFanout": 1,
     "tags": [
       "base2048",
-      "multimodal_placeholder"
+      "pyrit_runtime_converter"
     ],
-    "description": "Base2048 payload placeholder mutation operator for Agent Guard P3-A corpus."
+    "description": "Base2048 payload encoding mutation operator for Agent Guard P3-A corpus."
   },
   {
     "schemaVersion": "p3-a-1",
@@ -1715,6 +1715,63 @@
   },
   {
     "schemaVersion": "p3-a-1",
+    "operatorId": "pyrit.converter.unicode_replacement",
+    "name": "Unicode replacement escape",
+    "family": "unicode",
+    "executionMode": "native_ts_adapter",
+    "source": {
+      "origin": "pyrit",
+      "sourcePath": "third_party/pyrit_adapted"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "unicode",
+      "replacement",
+      "pyrit_runtime_converter"
+    ],
+    "description": "Unicode replacement escape mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "p3-a-1",
+    "operatorId": "pyrit.converter.unicode_substitution",
+    "name": "Unicode tag substitution",
+    "family": "unicode",
+    "executionMode": "native_ts_adapter",
+    "source": {
+      "origin": "pyrit",
+      "sourcePath": "third_party/pyrit_adapted"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "unicode",
+      "substitution",
+      "pyrit_runtime_converter"
+    ],
+    "description": "Unicode tag substitution mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "p3-a-1",
+    "operatorId": "pyrit.converter.ascii_smuggler",
+    "name": "ASCII smuggler unicode tags",
+    "family": "unicode",
+    "executionMode": "native_ts_adapter",
+    "source": {
+      "origin": "pyrit",
+      "sourcePath": "third_party/pyrit_adapted"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "ascii_smuggler",
+      "token_smuggling",
+      "pyrit_runtime_converter"
+    ],
+    "description": "ASCII smuggler unicode tags mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "p3-a-1",
     "operatorId": "pyrit.converter.emoji_bullets",
     "name": "Emoji bullet carrier",
     "family": "format",
@@ -1729,6 +1786,42 @@
       "emoji"
     ],
     "description": "Emoji bullet carrier mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "p3-a-1",
+    "operatorId": "pyrit.converter.emoji",
+    "name": "Emoji unicode converter",
+    "family": "unicode",
+    "executionMode": "native_ts_adapter",
+    "source": {
+      "origin": "pyrit",
+      "sourcePath": "third_party/pyrit_adapted"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "emoji",
+      "pyrit_runtime_converter"
+    ],
+    "description": "Emoji unicode converter mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "p3-a-1",
+    "operatorId": "pyrit.converter.ecoji",
+    "name": "Ecoji payload encoding",
+    "family": "encoding",
+    "executionMode": "native_ts_adapter",
+    "source": {
+      "origin": "pyrit",
+      "sourcePath": "third_party/pyrit_adapted"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "ecoji",
+      "pyrit_runtime_converter"
+    ],
+    "description": "Ecoji payload encoding mutation operator for Agent Guard P3-A corpus."
   },
   {
     "schemaVersion": "p3-a-1",
@@ -1780,6 +1873,24 @@
       "token_smuggling"
     ],
     "description": "Sneaky bits smuggling mutation operator for Agent Guard P3-A corpus."
+  },
+  {
+    "schemaVersion": "p3-a-1",
+    "operatorId": "pyrit.converter.ascii_art",
+    "name": "ASCII art converter",
+    "family": "format",
+    "executionMode": "native_ts_adapter",
+    "source": {
+      "origin": "pyrit",
+      "sourcePath": "third_party/pyrit_adapted"
+    },
+    "deterministic": true,
+    "maxFanout": 1,
+    "tags": [
+      "ascii_art",
+      "pyrit_runtime_converter"
+    ],
+    "description": "ASCII art converter mutation operator for Agent Guard P3-A corpus."
   },
   {
     "schemaVersion": "p3-a-1",

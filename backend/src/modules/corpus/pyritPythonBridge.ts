@@ -54,6 +54,8 @@ type PythonCommand = {
   displayName: string;
 };
 
+const defaultPyritChatModel = "deepseek-v4-pro";
+
 const operatorMethodHints: { pattern: RegExp; method: PyritAttackMethod }[] = [
   { pattern: /crescendo/i, method: "crescendo" },
   { pattern: /renellm/i, method: "renellm" },
@@ -299,12 +301,15 @@ function resolvePythonCommand(projectRoot: string, explicitCommand?: string): Py
 function normalizePyritModelEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const normalized: NodeJS.ProcessEnv = { ...env };
   normalized.OPENAI_CHAT_ENDPOINT ||= normalized.AGENT_GUARD_PYRIT_OPENAI_CHAT_ENDPOINT
+    || normalized.AGENT_GUARD_PYRIT_OPENCLAW_CHAT_ENDPOINT
+    || normalized.OPENCLAW_CHAT_ENDPOINT
     || normalized.DEEPSEEK_ENDPOINT;
   normalized.OPENAI_CHAT_KEY ||= normalized.AGENT_GUARD_PYRIT_OPENAI_CHAT_KEY
     || normalized.DeepSeek_API_2
     || normalized.DEEPSEEK_API_KEY;
   normalized.OPENAI_CHAT_MODEL ||= normalized.AGENT_GUARD_PYRIT_OPENAI_CHAT_MODEL
-    || normalized.DEEPSEEK_MODEL;
+    || normalized.DEEPSEEK_MODEL
+    || defaultPyritChatModel;
   return normalized;
 }
 

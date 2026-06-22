@@ -62,7 +62,14 @@ npm run verify:a-pyrit-runtime
 npm run a:pyrit-runtime
 ```
 
-真实模型调用需要 `OPENAI_CHAT_ENDPOINT`、`OPENAI_CHAT_KEY`、`OPENAI_CHAT_MODEL`。其中 key 可由 `DeepSeek_API_2` 映射，endpoint/model 仍需显式提供。模型未配置时，bridge 必须返回 `skipped`，不得用模板或 fallback 冒充真实攻击。
+真实模型调用需要 `OPENAI_CHAT_ENDPOINT`、`OPENAI_CHAT_KEY`、`OPENAI_CHAT_MODEL`。其中 key 可由 `DeepSeek_API_2` 映射，model 当前默认 `deepseek-v4-pro`；endpoint 仍需是可达的 OpenAI-compatible chat base URL。模型目标未配置完整时，bridge 必须返回 `skipped`，不得用模板或 fallback 冒充真实攻击。
+
+协作参数入口见 `docs/A/p3-a-pyrit-runtime-usage.md`。当前模型名统一为 `deepseek-v4-pro`；可用 `. .\scripts\setup-pyrit-openclaw-env.ps1` 在当前 PowerShell 会话中映射 `DeepSeek_API_2 -> OPENAI_CHAT_KEY`，并设置项目 OpenClaw gateway 候选 endpoint。注意 `http://127.0.0.1:3100/api/v1/openclaw/realtime/mcp` 是 Agent Guard realtime MCP endpoint，不是 PyRIT 模型 endpoint。
+
+当前 bridge 已支持两类真实 PyRIT runtime 行为:
+
+- `converter_batch`: 调用 vendored PyRIT 文本 converter，包括 Base2048、Unicode replacement/substitution、token smuggling、AsciiArt、AskToDecode、Braille、Ecoji、Emoji 等。
+- `attack_cli`: 调用 vendored `run_attack_cli.py`；如果 generated case 使用 bridge 支持的 `pyrit.converter.*`，会先对 objective 做 PyRIT converter 预处理，再执行真实 attack executor。
 
 ## 维护规则
 

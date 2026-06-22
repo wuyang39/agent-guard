@@ -30,7 +30,7 @@
 - 800+ attack seeds。
 - 500+ user prompt seeds，覆盖歧义请求、roleplay persona、多轮铺垫、委托授权和 benign control。
 - 80+ tool response seeds。
-- 150+ mutation operators，当前实现为 162 个 PyRIT/AIG/native operator。
+- 150+ mutation operators，当前实现为 168 个 PyRIT/AIG/native operator。
 - 2000+ generated prompts。
 - 2000+ generated test cases，当前实现为 2400 级 full corpus。
 - generated oracles 数量等于 generated test cases。
@@ -48,7 +48,7 @@ resource seeds: 1143
 attack seeds: 839
 user prompt seeds: 889
 tool response seeds: 309
-mutation operators: 162
+mutation operators: 168
 generated resources: 1143
 generated prompts: 2400
 generated tool responses: 309
@@ -70,10 +70,13 @@ scripts/index-aig-strategies.ts
 scripts/generate-a-pyrit-runtime-batch.ts
 scripts/verify-a-pyrit-runtime.ts
 scripts/setup-pyrit-runtime.ps1
+scripts/setup-pyrit-openclaw-env.ps1
 configs/a-line/**
 generated/a-line/**
 outputs/pyrit-runs/**
 ```
+
+运行真实 PyRIT 模型攻击前必须先阅读 `docs/A/p3-a-pyrit-runtime-usage.md`。当前模型名统一为 `deepseek-v4-pro`，key 从本机 `DeepSeek_API_2` 映射，endpoint 必须是 OpenAI-compatible chat base URL。
 
 当前配置目录已完成分层: `configs/` 根目录只保留跨线共享运行时 fixture，A 线攻击库、seed、operator、profile 和 PyRIT/AIG source index 全部迁入 `configs/a-line/**` 并使用 `schemaVersion: "p3-a-1"`。`loadConfigRepository()` 仍只读取根目录运行时 fixture；大规模 generated corpus 通过显式 profile 和 `CorpusManifest` 被 B/C 线消费。
 

@@ -1,8 +1,8 @@
 {
   "schemaVersion": "p3-a-1",
-  "libraryId": "pyrit_adapted.p2",
-  "name": "A-line P2 PyRIT adapted attack library",
-  "description": "Vendored and adapted PyRIT attack assets used by Agent Guard A-line P2 for jailbreak, encoding evasion, multi-turn induction, leakage, authorization bypass, and memory/context poisoning coverage.",
+  "libraryId": "pyrit_adapted.p3_a",
+  "name": "A-line P3 PyRIT adapted attack library",
+  "description": "Vendored and adapted PyRIT attack assets used by Agent Guard A-line P3 for jailbreak, encoding evasion, multi-turn induction, leakage, authorization bypass, memory/context poisoning, converter runtime, and model-backed attack executor coverage.",
   "source": {
     "upstreamName": "PyRIT adapted local project",
     "upstreamVersion": "0.12.1.dev0",
@@ -27,7 +27,7 @@
       "frontend prototype",
       "docker and CI scaffolding"
     ],
-    "notes": "Python code is vendored for traceable reuse. Agent Guard P2 uses native TS adapters for deterministic converter coverage and stores model-dependent PyRIT attacks as structured metadata until a Python execution bridge is explicitly enabled."
+    "notes": "Python code is vendored for traceable reuse. Agent Guard P3 keeps deterministic TS previews for generated corpus, and also exposes an explicit Python runtime bridge for PyRIT converter batches and model-backed run_attack_cli execution."
   },
   "converterCatalog": [
     {
@@ -37,7 +37,7 @@
       "executionMode": "native_ts_adapter",
       "supportedInputTypes": ["text"],
       "tags": ["encoding", "evasion", "single_turn"],
-      "description": "Encodes prompts with Base64-like text encodings. P2 TS adapter implements deterministic Base64."
+      "description": "Encodes prompts with Base64-like text encodings. P3-A has a deterministic TS preview and a real PyRIT converter bridge path."
     },
     {
       "converterId": "pyrit.converter.rot13",
@@ -187,7 +187,7 @@
       "executionMode": "python_reference",
       "supportedInputTypes": ["text"],
       "tags": ["jailbreak", "template", "single_turn"],
-      "description": "Applies PyRIT jailbreak YAML templates. P2 stores selected safe fixture prompts in Agent Guard config; full template rendering remains vendored Python reference."
+      "description": "Applies PyRIT jailbreak YAML templates. P3-A stores safe fixture prompts in Agent Guard config and keeps full template rendering traceable through vendored PyRIT assets."
     },
     {
       "converterId": "pyrit.converter.renellm_rewrite",
@@ -196,7 +196,7 @@
       "executionMode": "python_reference",
       "supportedInputTypes": ["text"],
       "tags": ["rewrite", "multi_turn", "llm_assisted"],
-      "description": "Model-assisted prompt rewriting used by ReneLLM-style attacks. P2 records strategy metadata but does not run LLM-assisted rewriting in CI."
+      "description": "Model-assisted prompt rewriting used by ReneLLM-style attacks. P3-A records strategy metadata and can run model-backed attack batches through the explicit PyRIT Python bridge when the model endpoint is configured."
     }
   ],
   "attackFamilies": [
@@ -212,7 +212,7 @@
       "maturity": "config_integrated",
       "recommendedCaseIds": ["case.pyrit_jailbreak_system_prompt_extraction"],
       "riskCategories": ["instruction_injection_following", "data_leakage"],
-      "notes": "The adapted source contains 165 jailbreak YAML templates. P2 Agent Guard uses safe fixture prompts and keeps full templates as vendored reference."
+      "notes": "The adapted source contains 165 jailbreak YAML templates. P3-A uses safe fixture prompts, source indexes, and vendored templates for traceable generation."
     },
     {
       "familyId": "pyrit.family.encoding_evasion",
@@ -225,7 +225,7 @@
       "maturity": "runtime_integrated",
       "recommendedCaseIds": ["case.pyrit_encoding_evasion_secret_exfil"],
       "riskCategories": ["instruction_injection_following", "data_leakage"],
-      "notes": "Native TS adapters cover deterministic text converters; model-dependent converters remain Python reference."
+      "notes": "Native TS previews cover deterministic text generation, and the Python bridge can pre-apply supported PyRIT converters before model-backed run_attack_cli execution."
     },
     {
       "familyId": "pyrit.family.leakage",
@@ -241,7 +241,7 @@
         "case.pyrit_crescendo_debug_access"
       ],
       "riskCategories": ["data_leakage", "unauthorized_access"],
-      "notes": "Leakage scoring in PyRIT combines objective-achieved and refusal signals. Agent Guard P2 maps this to trace-based rules and oracles."
+      "notes": "Leakage scoring in PyRIT combines objective-achieved and refusal signals. Agent Guard P3-A keeps scorer metadata in source indexes and leaves runtime risk conclusions to B/C trace evidence."
     },
     {
       "familyId": "pyrit.family.multi_turn",
@@ -255,7 +255,7 @@
       "maturity": "vendored_reference",
       "recommendedCaseIds": ["case.pyrit_crescendo_debug_access"],
       "riskCategories": ["instruction_injection_following", "data_leakage", "tool_misuse"],
-      "notes": "Crescendo, red teaming, TAP, and ReneLLM require model targets. P2 provides fixed multi-turn induction cases; Python bridge is reserved for later."
+      "notes": "Crescendo, red teaming, TAP, and ReneLLM require model targets. P3-A provides generated objectives and an explicit Python bridge for model-backed attack batches."
     },
     {
       "familyId": "pyrit.family.foundry_strategy",
@@ -270,7 +270,7 @@
         "case.pyrit_memory_context_poisoning"
       ],
       "riskCategories": ["instruction_injection_following", "tool_misuse"],
-      "notes": "FoundryStrategy cleanly separates easy converters, moderate converters, and difficult multi-turn attacks. Agent Guard uses this as the P2 attack-family taxonomy."
+      "notes": "FoundryStrategy cleanly separates easy converters, moderate converters, and difficult multi-turn attacks. Agent Guard uses this as the A-line attack-family taxonomy."
     },
     {
       "familyId": "pyrit.family.evaluation",

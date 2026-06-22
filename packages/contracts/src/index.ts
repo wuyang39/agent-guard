@@ -1,6 +1,7 @@
 export * from "./types/agent";
 export * from "./types/attackLibrary";
 export * from "./types/common";
+export * from "./types/corpus";
 export * from "./types/defense";
 export * from "./types/detection";
 export * from "./types/gateway";

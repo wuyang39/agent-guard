@@ -308,8 +308,37 @@ agent-guard/
     test_oracles.json
     red_team_scenarios.json
     supervision_policy_templates.json
-    pyrit_attack_library.json
-    pyrit_jailbreak_template_index.json
+    p2_demo_cases.json
+    a-line/
+      README.md
+      sources/
+        pyrit_attack_library.json
+        pyrit_jailbreak_template_index.json
+        pyrit_seed_dataset_index.json
+        pyrit_executor_template_index.json
+        pyrit_scorer_template_index.json
+        aig_strategy_index.json
+      corpus/
+        seeds/
+          resource_seeds.json
+          attack_seeds.json
+          user_prompt_seeds.json
+          tool_response_seeds.json
+        operators/
+          mutation_operators.json
+        profiles/
+          attack_generation_profiles.json
+          corpus_run_profiles.json
+
+  generated/
+    a-line/
+      resources.generated.json
+      prompts.generated.json
+      tool_responses.generated.json
+      test_cases.generated.json
+      test_oracles.generated.json
+      corpus_manifest.json
+      corpus_stats.json
 
   scenarios/
 
@@ -354,6 +383,7 @@ agent-guard/
 - `backend/src/core/`: 后端通用基础设施，只放错误、日志、ID、时间和结果对象等小工具。
 - `backend/src/modules/agent/`: 接入被测 Agent，提供统一调用接口。
 - `backend/src/modules/config/`: 加载、校验并转换配置，输出 `TestContext`。
+- `backend/src/modules/corpus/`: A 线 P3 离线 seed、PyRIT/AIG source index、mutation operator、generated corpus、run profile 和 `CorpusManifest` 管理；不执行 Agent，不生成风险画像、策略包或防御报告。
 - `backend/src/modules/detection/`: 输入风险报告和 trace，输出监督前检测报告。
 - `backend/src/modules/policy/`: 输入 Agent 风险画像和策略模板，输出 `SupervisionPolicyPack`。
 - `backend/src/modules/sandbox/`: 提供系统内置 MCP Sandbox 画像。
@@ -372,9 +402,11 @@ agent-guard/
 - `frontend/src/components/`: Web 控制台组件，按业务展示域拆分。
 - `frontend/src/lib/`: 前端 API Client、hook、视图模型和格式化函数。
 - `packages/contracts/`: 前后端共享契约唯一来源，禁止承载运行时业务逻辑。
-- `configs/`: 系统内置测试数据、规则数据、场景索引、策略模板和攻击库元数据。P0 可只使用本地 JSON；后续如接入数据库或远程配置中心，也必须先转换为标准契约对象再进入运行时。
+- `configs/`: 跨线共享运行时 fixture。根目录只保留默认 `loadConfigRepository()` 读取的 tools、resources、prompts、tool responses、rules、cases、oracles、scenarios、policy templates 和少量兼容入口。
+- `configs/a-line/`: A 线最终攻击库和语料工厂配置，使用 `schemaVersion: "p3-a-1"`。`sources/` 保存 PyRIT/AIG 来源索引和攻击库元数据；`corpus/seeds/`、`corpus/operators/`、`corpus/profiles/` 保存生成输入。该目录必须通过显式 profile 加载。
+- `generated/a-line/`: A 线 P3 deterministic generated corpus。该目录保存可复现测试输入、oracle、manifest 和 stats；运行链路必须显式选择 `smoke`、`openclaw`、`regression` 或 `full-corpus` profile。
 - `scenarios/`: 红队场景说明、对抗样本和攻击动作序列。
-- `third_party/`: 受控迁入的外部或本地参考源码。当前 `third_party/pyrit_adapted` 由 A 线维护，用于 PyRIT 攻击库、jailbreak、converter 和后续 Python bridge 溯源；默认 TS 主链路不得直接执行未经适配的 third-party runtime。
+- `third_party/`: 受控迁入的外部或本地参考源码。当前 `third_party/pyrit_adapted` 由 A 线维护，用于 PyRIT 攻击库、jailbreak、converter 和 Python runtime bridge 溯源；默认配置加载链路不得直接执行未经适配的 third-party runtime，真实 PyRIT attack 只能通过 `backend/src/modules/corpus/pyritPythonBridge.ts` 和显式脚本触发。
 - `outputs/`: 测试运行产物，包含 runs、traces、reports 和 exports。
 - `docs/A`、`docs/B`、`docs/C`: 各责任线的计划、交接和工作记录。
 

@@ -655,17 +655,24 @@ async def _run_async(args: argparse.Namespace) -> None:
                 "success_round": success_round,
             }
 
-        printer = ConsoleAttackResultPrinter()
-        await printer.print_result_async(result=result)  # type: ignore[arg-type]
-        if method == "renellm":
-            _print_renellm_rounds(renellm_rounds)
-
         payload = _result_to_dict(result=result, method=method, objective=objective)
+        printer_warnings: list[str] = []
+        try:
+            printer = ConsoleAttackResultPrinter()
+            await printer.print_result_async(result=result)  # type: ignore[arg-type]
+            if method == "renellm":
+                _print_renellm_rounds(renellm_rounds)
+        except Exception as printer_error:
+            printer_warnings.append(f"Console printer failed without blocking JSON output: {printer_error}")
+            print(f"[agent-guard] warning: {printer_warnings[-1]}")
+
         payload["dataset_info"] = {
             "source_file": str(args.dataset_xlsx) if args.dataset_xlsx else None,
             "row_index": item["row_index"] or None,
             "category": item["category"] or item["category_raw"] or None,
         }
+        if printer_warnings:
+            payload["printer_warnings"] = printer_warnings
         if method == "renellm":
             payload["metadata"] = {
                 **(payload.get("metadata") or {}),

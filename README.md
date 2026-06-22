@@ -1,8 +1,10 @@
 # Agent Guard
 
-Agent Guard is an MVP framework for evaluating the behavior safety of an Agent inside a system-provided MCP test environment.
+Agent Guard is a project-level framework for evaluating and supervising the behavior safety of an Agent inside a system-provided MCP test environment.
 
 The only tested object is the Agent. MCP Server, Tool, Resource, Prompt, Tool Response templates, risk rules, and test cases are internal test fixtures.
+
+Important for A-line PyRIT runtime: before running model-backed PyRIT checks, read `docs/A/p3-a-pyrit-runtime-usage.md`. Use `OPENAI_CHAT_MODEL=deepseek-v4-pro`, provide `OPENAI_CHAT_KEY` or a provider key such as `DEEPSEEK_API_KEY`, and point `OPENAI_CHAT_ENDPOINT` to the Agent Guard PyRIT/OpenClaw shim: `http://127.0.0.1:3100/api/v1/pyrit/openclaw/v1`. Do not use the Agent Guard realtime MCP endpoint as `OPENAI_CHAT_ENDPOINT`.
 
 ## Module Layout
 
@@ -30,7 +32,7 @@ See `docs/README.md` for the documentation index and source-of-truth rules.
 
 `packages/contracts` is the only shared interface package between backend and frontend. Frontend code must not import `backend/src/**`, and backend runtime modules must not place business logic in the contracts package.
 
-## MVP Pipeline
+## Core Pipeline
 
 ```txt
 AgentUnderTest
@@ -60,9 +62,18 @@ npm run verify:e2e
 
 `npm run verify:all` runs the standard typecheck and module verification suite. `npm run verify:e2e` runs the three-stage end-to-end pipeline: pre-supervision detection, supervised rerun, and defense report export.
 
-A-line P2 PyRIT checks:
+A-line P3 PyRIT corpus/runtime checks:
 
 ```bash
 npm run verify:a-pyrit-library
+npm run verify:a-corpus
 npm run pyrit:bridge-smoke
+npm run verify:a-pyrit-runtime
+```
+
+For model-backed PyRIT runs in PowerShell:
+
+```powershell
+. .\scripts\setup-pyrit-openclaw-env.ps1
+npm run a:pyrit-runtime
 ```

@@ -611,7 +611,7 @@ Required 模式的行为：
 - OpenClaw CLI adapter 不可用时抛出错误而非 skip。
 - OpenClaw CLI 检测阶段失败时抛出错误而非 skip。
 - 当前基线（2026-06-13）：本地 OpenClaw 2026.6.1 (2e08f0f) 环境已通过 required 模式验证。
-- 当前项目隔离基线（2026-06-16）：`E:\XinAnProject\openclaw-runtime` 使用 OpenClaw 2026.6.6，默认模型 `deepseek/deepseek-v4-flash`，通过进程内 `DeepSeek_API_2` -> `DEEPSEEK_API_KEY` 映射后，required 模式已通过且 `0 optional skipped`。
+- 当前项目隔离基线（2026-06-16）：`E:\XinAnProject\openclaw-runtime` 使用 OpenClaw 2026.6.6，默认模型 `deepseek/deepseek-v4-flash`，通过进程内 provider key 映射后，required 模式已通过且 `0 optional skipped`；`DeepSeek_API_2` 只是当时本机示例变量名。
 
 P2 sign-off 必须满足：
 

@@ -4,7 +4,7 @@ This directory contains a selected snapshot of the local adapted PyRIT project p
 
 Imported on: 2026-06-15  
 Local source during import: `E:\XinAnProject\pyrit`  
-Agent Guard config index: `configs/pyrit_attack_library.json`
+Agent Guard config index: `configs/a-line/sources/pyrit_attack_library.json`
 
 ## Included
 
@@ -25,8 +25,8 @@ Agent Guard config index: `configs/pyrit_attack_library.json`
 
 Agent Guard does not execute this Python package in the default TypeScript runtime. P2 uses:
 
-- `configs/pyrit_attack_library.json` for source mapping, attack families, converter catalog, and sample-to-case mapping.
-- `configs/pyrit_jailbreak_template_index.json` for a metadata-only index of 165 jailbreak templates. The YAML `value` field is intentionally not copied into Agent Guard configs.
+- `configs/a-line/sources/pyrit_attack_library.json` for source mapping, attack families, converter catalog, and sample-to-case mapping.
+- `configs/a-line/sources/pyrit_jailbreak_template_index.json` for a metadata-only index of 165 jailbreak templates. The YAML `value` field is intentionally not copied into Agent Guard configs.
 - `backend/src/modules/sandbox/pyritPromptMutators.ts` for deterministic TypeScript adapters of selected PyRIT prompt converters.
 - `configs/test_cases.json`, `configs/red_team_scenarios.json`, and related A-line configs for runnable sandbox fixtures.
 

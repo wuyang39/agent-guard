@@ -29,7 +29,7 @@ OpenClaw 2026.6.6 (8c802aa)
 模型配置:
 
 ```txt
-Provider env: DeepSeek_API_2 -> DEEPSEEK_API_KEY
+Provider env: provider key from local env, for example DEEPSEEK_API_KEY
 Default model: deepseek/deepseek-v4-flash
 ```
 
@@ -91,7 +91,7 @@ npm run verify:p2:api-e2e
 - OpenClaw CLI adapter 被识别为可用。
 - 补充 DeepSeek key 映射前，OpenClaw agent 检测因未配置模型 key 被 optional skip。
 
-required 模式在补充 `DeepSeek_API_2` 映射后已通过:
+required 模式在补充本机 provider key 映射后已通过:
 
 ```powershell
 $env:VERIFY_OPENCLAW_REQUIRED="1"
@@ -108,7 +108,7 @@ npm run verify:p2:api-e2e
 
 ## 4. 配置模型认证
 
-真实 OpenClaw agent 检测必须有可用模型 provider。当前本机使用用户环境变量 `DeepSeek_API_2`，启动脚本会在进程内映射为 OpenClaw 识别的 `DEEPSEEK_API_KEY`。
+真实 OpenClaw agent 检测必须有可用模型 provider。推荐使用 provider 原生环境变量，例如 `DEEPSEEK_API_KEY`。如果本机已有其他变量名，可以通过启动脚本参数把它进程内映射为 OpenClaw 识别的 provider key；`DeepSeek_API_2` 只是某个开发者本机示例名称。
 
 如果其他成员没有该用户环境变量，可以按自己的 provider 配置。示例:
 

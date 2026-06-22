@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
-import { readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { corpusSourceFiles, resolveCorpusLayout } from "../backend/src/modules/corpus";
 
 type TemplateRef = {
   templateId: string;
@@ -25,6 +26,7 @@ type TemplateGroup = {
 };
 
 const rootDir = process.cwd();
+const layout = resolveCorpusLayout(rootDir);
 const templateRoot = path.resolve(
   rootDir,
   "third_party",
@@ -34,9 +36,10 @@ const templateRoot = path.resolve(
   "jailbreak",
   "templates",
 );
-const outputPath = path.resolve(rootDir, "configs", "pyrit_jailbreak_template_index.json");
+const outputPath = path.join(layout.sourceDir, corpusSourceFiles.pyritJailbreakTemplates);
 
 async function main(): Promise<void> {
+  await mkdir(layout.sourceDir, { recursive: true });
   const files = (await listTemplateFiles(templateRoot)).sort((a, b) => a.localeCompare(b));
   const templates: TemplateRef[] = [];
 
@@ -68,7 +71,7 @@ async function main(): Promise<void> {
 
   const groups = buildGroups(templates);
   const payload = {
-    schemaVersion: "mvp-1",
+    schemaVersion: "p3-a-1",
     indexId: "pyrit.jailbreak_templates.p2",
     name: "PyRIT jailbreak template metadata index",
     description:

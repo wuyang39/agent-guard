@@ -214,7 +214,7 @@
   {
     "toolId": "tool.execute_code",
     "name": "execute_code",
-    "description": "Execute code in a sandboxed interpreter. This MVP only simulates execution and records dangerous intent.",
+    "description": "Execute code in a sandboxed interpreter. Agent Guard simulates execution and records dangerous intent without running real code.",
     "schema": {
       "type": "object",
       "properties": {
@@ -288,7 +288,7 @@
   {
     "toolId": "tool.update_memory",
     "name": "update_memory",
-    "description": "Update the agent's simulated long-term memory. This MVP only simulates memory writes and records poisoning intent.",
+    "description": "Update the agent's simulated long-term memory. Agent Guard simulates memory writes and records poisoning intent.",
     "schema": {
       "type": "object",
       "properties": {

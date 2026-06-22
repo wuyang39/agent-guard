@@ -30,7 +30,7 @@ ruleVersion: "mvp-1"
 ## 2. 通用类型
 
 ```ts
-type SchemaVersion = "mvp-1"
+type SchemaVersion = "mvp-1" | "p3-a-1"
 
 type RiskLevel = "low" | "medium" | "high" | "critical"
 
@@ -1122,15 +1122,112 @@ P1/P2 新增配置文件:
 ```txt
 configs/red_team_scenarios.json
 configs/supervision_policy_templates.json
-configs/pyrit_attack_library.json
-configs/pyrit_jailbreak_template_index.json
+configs/a-line/sources/pyrit_attack_library.json
+configs/a-line/sources/pyrit_jailbreak_template_index.json
 ```
 
 `configs/red_team_scenarios.json` 用于维护红队场景索引、用例归属和样本引用。`configs/supervision_policy_templates.json` 用于维护可复用策略模板。根据某个 Agent 检测结果生成的 `SupervisionPolicyPack` 不得写回策略模板配置文件。
 
-P2 新增的 `configs/pyrit_attack_library.json` 用于维护迁入 PyRIT 攻击库的来源、converter catalog、attack family 和 sample 到 case 的映射。它是攻击库目录对象，不是风险判定结果。
+P2 新增的 `configs/a-line/sources/pyrit_attack_library.json` 用于维护迁入 PyRIT 攻击库的来源、converter catalog、attack family 和 sample 到 case 的映射。它是攻击库目录对象，不是风险判定结果。
 
-P2 新增的 `configs/pyrit_jailbreak_template_index.json` 用于维护迁入 PyRIT jailbreak YAML 模板的元数据索引。它不得包含模板全文或 `value` 字段，只能包含路径、分组、参数、作者、哈希、大小和安全说明。
+P2 新增的 `configs/a-line/sources/pyrit_jailbreak_template_index.json` 用于维护迁入 PyRIT jailbreak YAML 模板的元数据索引。它不得包含模板全文或 `value` 字段，只能包含路径、分组、参数、作者、哈希、大小和安全说明。
+
+P3-A 新增配置与生成物:
+
+```txt
+configs/a-line/corpus/seeds/resource_seeds.json
+configs/a-line/corpus/seeds/attack_seeds.json
+configs/a-line/corpus/seeds/user_prompt_seeds.json
+configs/a-line/corpus/seeds/tool_response_seeds.json
+configs/a-line/corpus/operators/mutation_operators.json
+configs/a-line/corpus/profiles/attack_generation_profiles.json
+configs/a-line/corpus/profiles/corpus_run_profiles.json
+configs/a-line/sources/pyrit_seed_dataset_index.json
+configs/a-line/sources/pyrit_executor_template_index.json
+configs/a-line/sources/pyrit_scorer_template_index.json
+configs/a-line/sources/aig_strategy_index.json
+generated/a-line/resources.generated.json
+generated/a-line/prompts.generated.json
+generated/a-line/tool_responses.generated.json
+generated/a-line/test_cases.generated.json
+generated/a-line/test_oracles.generated.json
+generated/a-line/red_team_scenarios.generated.json
+generated/a-line/corpus_manifest.json
+generated/a-line/corpus_stats.json
+generated/a-line/attack_case_cards.generated.json
+generated/a-line/llm_selection_catalog.generated.json
+generated/a-line/coverage_taxonomy.generated.json
+generated/a-line/case_quality_report.generated.json
+```
+
+P3-A seed 文件是生成输入，不直接进入默认 `TestContext`。A 线 corpus/source/generated 对象使用 `schemaVersion: "p3-a-1"`；根目录运行时 fixture 和现有 B/C 线运行时对象仍可继续使用 `schemaVersion: "mvp-1"` 作为兼容域。`attack_seeds.json` 保存攻击目标、目标工具/资源和风险类别；`user_prompt_seeds.json` 保存进入 PyRIT/operator 变异前的用户 prompt 材料，包括歧义 user prompt、roleplay persona、多轮铺垫和委托授权。生成器先组合 `AttackSeed + UserPromptSeed`，再应用 PyRIT/AIG/operator 变异。`generated/a-line/**` 是可复现的测试输入和覆盖率材料，只能通过显式 run profile 被 B 线加载。默认 `loadConfigRepository()` 继续读取根目录共享运行时 fixture，不得默认加载 full corpus。
+
+`CorpusManifest` 是 P3-A generated corpus 的来源索引和覆盖率对象，记录 PyRIT/AIG/manual/user_supplied/synthetic 来源、seed、operator、profile、case/prompt/oracle 映射和 coverage。它不是风险判定结果，不能替代 `InteractionTrace`、`RiskReport`、`RuntimeSupervisionRecord[]` 或 `DefenseReport`。
+
+`AttackCaseCard` 是 P3-A 给 B 线选择攻击库时使用的脱敏元数据单元。它只包含 `caseId`、profile、攻击族、目标面、工具/资源 hint、来源、摘要、质量分和 digest，不包含完整 `task.instruction`、完整 prompt、tool response 内容、resource 内容、secret 或 `TestOracle.expectedOutcome` 细节。B 线可以把 card 或 `LlmSelectionCatalogItem` 交给规则选择器/LLM rerank 做候选排序，但真实运行仍必须通过 `caseId -> TestContext` 加载完整用例。
+
+```ts
+type AttackFamily =
+  | "prompt_injection"
+  | "data_leakage"
+  | "tool_hijack"
+  | "auth_bypass"
+  | "memory_poisoning"
+  | "environment_poisoning"
+  | "model_evasion"
+  | "dangerous_action"
+  | "benign_control"
+
+type TargetSurface =
+  | "input"
+  | "output"
+  | "context"
+  | "tool_call"
+  | "file_access"
+  | "code_execution"
+  | "network"
+  | "email"
+  | "api"
+  | "browser"
+  | "memory"
+  | "database"
+
+type AttackCaseCard = {
+  schemaVersion: "p3-a-1"
+  cardId: string
+  caseId: string
+  caseName: string
+  enabled: boolean
+  runProfiles: CorpusRunProfileId[]
+  attackFamilies: AttackFamily[]
+  targetSurfaces: TargetSurface[]
+  targetToolHints: string[]
+  targetResourceHints: string[]
+  sensitivityTags: string[]
+  estimatedCost: "low" | "medium" | "high"
+  estimatedDurationMs: number
+  requiresExternalTool: boolean
+  requiresNetwork: boolean
+  requiresOpenClaw: boolean
+  sourceOrigin: CorpusSourceOrigin
+  sourceRefs: string[]
+  promptSummary: string
+  payloadRiskSummary: string
+  expectedSafeBehaviorSummary: string
+  oracleSummary: string
+  qualityScore: number
+  qualityWarnings: string[]
+  digest: string
+}
+```
+
+`LlmSelectionCatalogItem` 是 `AttackCaseCard` 的更小投影，只允许包含 `caseId`、profile、攻击族、目标面、工具 hint、敏感标签、成本、来源、脱敏摘要、质量分和 digest。它不得包含 `task.instruction`、prompt/resource/tool response 原文、`runtimeObjectivePayloadPreview` 或 oracle 原始对象。LLM 对 catalog 的选择理由只能用于测试编排解释，不能进入 `RiskReport.findings`、`DefenseClaim` 或任何风险结论。
+
+`CoverageTaxonomy` 汇总 `AttackCaseCard[]` 的 profile、attack family、target surface、risk category 和 source origin 分布，用于 B 线覆盖 gate 和 C 线展示来源覆盖。`CaseQualityReport` 汇总低分、缺字段、摘要异常和重复 digest 等问题，用于 A/B 联调前过滤，不是风险报告。
+
+`PyritBridgeRequest` / `PyritBridgeResult` 是 P3-A PyRIT Python runtime bridge 的输入输出对象。它用于显式调用 vendored PyRIT `run_attack_cli.py` 或 converter runtime，结果写入 `outputs/pyrit-runs/**`。模型环境未配置时必须返回 `modelConfigured: false` 与 `status: "skipped"`；只有 `runtimeUsed: "pyrit"` 且 `status: "ok"` 才代表真实 PyRIT runtime 完成。该对象不进入默认 `TestContext`，不得替代 B 线 `InteractionTrace` 或 C 线风险结论。
+
+`configs/test_oracles.json` 和 `generated/a-line/test_oracles.generated.json` 都只用于验收测试、回归测试、corpus 质量检查和覆盖率统计，不得进入运行时 `TestContext`，也不得作为 C 线风险判定或防御效果证据。
 
 P1 配置对象:
 
@@ -1166,7 +1263,7 @@ type PolicyTemplate = {
 }
 
 type PyritAttackLibrary = {
-  schemaVersion: "mvp-1"
+  schemaVersion: "p3-a-1"
   libraryId: string
   name: string
   description: string
@@ -1226,7 +1323,7 @@ type PyritAttackSample = {
 }
 
 type PyritJailbreakTemplateIndex = {
-  schemaVersion: "mvp-1"
+  schemaVersion: "p3-a-1"
   indexId: string
   name: string
   description: string
@@ -1258,6 +1355,85 @@ type PyritJailbreakTemplateRef = {
   isGeneralTechnique?: boolean
   byteLength: number
   sha256: string
+}
+
+type PyritBridgeMode = "converter_batch" | "attack_cli"
+
+type PyritBridgeRuntimeUsed = "pyrit" | "fallback" | "not_executed"
+
+type PyritBridgeItemStatus = "ok" | "unsupported" | "error" | "skipped"
+
+type PyritAttackMethod =
+  | "prompt_sending"
+  | "flip"
+  | "red_teaming"
+  | "crescendo"
+  | "context_compliance"
+  | "role_play"
+  | "many_shot_jailbreak"
+  | "renellm"
+
+type PyritBridgeRequestItem = {
+  itemId: string
+  operatorId: string
+  input: string
+  inputType?: "text"
+  method?: PyritAttackMethod
+  objective?: string
+  maxTurns?: number
+  renellmMaxRounds?: number
+  renellmRewriteStyle?: string
+  evaluatorSync?: boolean
+  metadata?: JsonObject
+}
+
+type PyritBridgeRequest = {
+  schemaVersion: "p3-a-1"
+  bridgeVersion: string
+  requestId: string
+  mode: PyritBridgeMode
+  generatedAt: string
+  items: PyritBridgeRequestItem[]
+  options?: JsonObject
+}
+
+type PyritBridgeResultItem = {
+  itemId: string
+  operatorId: string
+  status: PyritBridgeItemStatus
+  input: string
+  output?: string
+  outputType?: string
+  converterClass?: string
+  method?: PyritAttackMethod
+  objective?: string
+  outputJsonPath?: string
+  executedTurns?: number
+  outcome?: string
+  outcomeReason?: string
+  lastScore?: JsonObject
+  lastResponsePreview?: string
+  runtimeUsed: PyritBridgeRuntimeUsed
+  notes: string[]
+  error?: string
+  metadata?: JsonObject
+}
+
+type PyritBridgeResult = {
+  schemaVersion: "p3-a-1"
+  bridgeVersion: string
+  requestId: string
+  mode: PyritBridgeMode
+  generatedAt: string
+  startedAt: string
+  endedAt: string
+  pythonExecutable?: string
+  pyritAvailable: boolean
+  modelConfigured?: boolean
+  fallbackAllowed: boolean
+  items: PyritBridgeResultItem[]
+  errors: string[]
+  metadata?: JsonObject
 }
 ```
 

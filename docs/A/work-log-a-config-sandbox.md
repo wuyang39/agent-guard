@@ -394,7 +394,7 @@ third_party/pyrit_adapted
 
 新增配置:
 
-- `configs/pyrit_attack_library.json`
+- `configs/a-line/sources/pyrit_attack_library.json`
 
 `ConfigRepository` 新增:
 
@@ -527,7 +527,7 @@ B 线:
 
 C 线:
 
-- `configs/pyrit_attack_library.json` 是攻击库目录和来源映射，不是风险结论。
+- `configs/a-line/sources/pyrit_attack_library.json` 是攻击库目录和来源映射，不是风险结论。
 - PyRIT `evaluator.py` 的 grade / similarity / iter_count / mutate_total_count / success variance 可作为后续报告统计增强候选。
 - 不建议前端直接展示完整 jailbreak 模板全文，应展示 family、sample、case、risk category 和安全 fixture。
 
@@ -542,7 +542,7 @@ C 线:
 新增:
 
 ```txt
-configs/pyrit_jailbreak_template_index.json
+configs/a-line/sources/pyrit_jailbreak_template_index.json
 scripts/generate-pyrit-template-index.ts
 ```
 
@@ -578,7 +578,7 @@ leetspeak, unicode_confusable, character_space, zero_width,
 string_join_dash, suffix_append_marker, url_encode, ascii_smuggler_tags
 ```
 
-`configs/pyrit_attack_library.json` 已同步 converter catalog 和 encoding evasion sample 的 converter 矩阵。
+`configs/a-line/sources/pyrit_attack_library.json` 已同步 converter catalog 和 encoding evasion sample 的 converter 矩阵。
 
 ### 12.3 Python bridge 边界
 
@@ -678,8 +678,8 @@ npm run verify:p2:api-e2e
 
 补充更新:
 
-- 用户提供本机用户环境变量 `DeepSeek_API_2`，用于 DeepSeek API key。
-- 已将本地 runtime wrapper 和项目启动脚本更新为进程内映射: `DeepSeek_API_2` → `DEEPSEEK_API_KEY`。
+- 当时用户本机使用环境变量 `DeepSeek_API_2` 保存 DeepSeek API key；该名称只是个人本机示例，不是团队规范。
+- 已将本地 runtime wrapper 和项目启动脚本更新为可配置的进程内映射: 本机 key env → `DEEPSEEK_API_KEY`。
 - OpenClaw 默认模型按用户指定切换为 `deepseek/deepseek-v4-flash`。
 - key 不写入仓库、不写入文档明文、不拼入命令行参数。
 - `VERIFY_OPENCLAW_REQUIRED=1 npm run verify:p2:api-e2e` 已通过，结果为 13 个 required 通过、0 个 optional skipped。
@@ -703,7 +703,7 @@ docs/P3plan.md
 
 审计结论:
 
-- 当前 A 线结构已经打通，但仍是 MVP 体量: 12 个 case、9 个 resource、10 个 prompt、9 个 tool response。
+- 当时 A 线结构已经打通，但仍停留在早期小体量基线: 12 个 case、9 个 resource、10 个 prompt、9 个 tool response。
 - PyRIT 已迁入并索引 165 个 jailbreak template，但尚未展开为大规模 runnable corpus。
 - AIG 的 `agent-scan/prompt/skills`、`mcp-scan/redteam` 和 `AIG-PromptSecurity/deepteam` 仍有大量可迁移策略、模板和 enhancer。
 - 用户补充的权限级别、示例 prompt 和 tool response 表格应作为 seed 草案清洗整理；不要直接追加在 `configs/resources.json` 末尾，否则会破坏配置加载。
@@ -721,4 +721,641 @@ P3-A 规划方向:
 
 - A 线不直接生成 `AgentRiskProfile`、`SupervisionPolicyPack` 或 `DefenseReport`。
 - `TestOracle` 不进入运行时 `TestContext`。
-- OpenClaw 默认 demo 只运行稳定 profile，不默认跑 full corpus。
+- generated corpus 后续必须通过显式 profile 加载，避免把 full corpus 误接到默认运行链路。
+
+## 15. 2026-06-18 P3-A 开发执行计划审阅稿
+
+分支: `a/p3-a-corpus-implementation-plan`
+
+本轮按用户要求切到新的 A 线开发规划分支，并基于最新 `main` 审阅总体文档、A 线历史文档、B/C/OpenClaw/前端接口文档、当前配置加载代码、PyRIT/AIG 本地参考目录和现有验证脚本。
+
+新增文档:
+
+```txt
+docs/A/p3-a-corpus-implementation-plan.md
+```
+
+审计要点:
+
+- 当前已提交配置仍是 P2 体量: 12 个 case、9 个 resource、10 个 prompt、9 个 tool response。
+- 本地 `configs/resources.json` 末尾存在用户补充的权限级别和 tool response 表格草稿，当前不是合法 JSON；后续必须先清洗为 seed 文件，不能直接进入运行配置。
+- `loadConfigRepository()` 默认读取 `configs/*.json` 并生成 `TestContext`，因此 P3-A 需要新增 seed/generated/profile 分层，不能默认把 full corpus 塞进运行时。
+- `generated/a-line/**` 和 `backend/src/modules/corpus/**` 当前尚不存在，是下一步实现的主要新增落点。
+- A 线继续只负责测试输入、sandbox、攻击库、oracle、manifest、coverage 和验证脚本，不直接生成风险画像、策略包或防御报告。
+
+计划中的下一步:
+
+- 恢复/重建合法 `configs/resources.json`，把用户补充表格导入 resource、attack 和 tool response seed。
+- 新增 corpus 类型、seed loader、PyRIT/AIG source index、mutation operators、corpus generator 和 manifest validator。
+- 生成 1000+ prompt/case/oracle，并通过 smoke/openclaw/regression/full-corpus profile 分层供 B/C 消费。
+- 新增 `verify:a-corpus`，检查 JSON、schema、引用、sourcePath、生成规模、来源占比、oracle 对齐和密钥脱敏。
+
+## 16. 2026-06-18 P3-A 首批语料工程实现
+
+分支: `a/p3-a-corpus-implementation-plan`
+
+说明: 本节记录首批 1200 级实现的历史基线。当前有效架构和规模以第 17 节“P3-A 配置分层与攻击库重构增强”为准。
+
+本轮开始按 P3-A 执行计划实施 A 线重构和补充。核心变化是把 A 线从少量 demo fixture 扩展为 seed -> source index -> mutation operator -> generated corpus -> manifest -> profile -> verifier 的完整离线语料生产链。
+
+已完成:
+
+- 恢复 `configs/resources.json` 为合法 JSON，用户粘贴在末尾的 P0-P7 权限表格已转入 `user_supplied` seed 生成链路。
+- 新增 `packages/contracts/src/types/corpus.ts`，定义 `ResourceSeed`、`AttackSeed`、`ToolResponseSeed`、`MutationOperatorSpec`、`CorpusRunProfile`、PyRIT/AIG source index 和 `CorpusManifest`。
+- 新增 `backend/src/modules/corpus/**`，包含 seed factory、PyRIT/AIG source scanner、deterministic mutation operators、corpus generator、profile loader 和 validator。
+- 新增 `scripts/generate-a-corpus.ts`、`scripts/verify-a-corpus.ts`、`scripts/index-pyrit-seed-datasets.ts`、`scripts/index-aig-strategies.ts`。
+- 新增 `configs/a-line/corpus/seeds/resource_seeds.json`、`configs/a-line/corpus/seeds/attack_seeds.json`、`configs/a-line/corpus/seeds/tool_response_seeds.json`、`configs/a-line/corpus/operators/mutation_operators.json`、`configs/a-line/corpus/profiles/corpus_run_profiles.json`、`configs/a-line/sources/*_index.json`。
+- 新增 `generated/a-line/**`，产出首批 generated corpus。
+
+当前规模:
+
+```txt
+resource seeds: 159
+attack seeds: 239
+canonical user prompts: 239 (embedded in attack seeds)
+tool response seeds: 213
+mutation operators: 52
+generated resources: 159
+generated prompts: 1200
+generated tool responses: 213
+generated test cases: 1200
+generated test oracles: 1200
+profile summary: smoke=30, openclaw=80, regression=400, full-corpus=1200
+```
+
+来源与迁移:
+
+- PyRIT 是主生成来源，占 generated manifest 大多数条目；使用了 seed dataset、executor、converter、jailbreak/scorer/evaluator 相关文件的 metadata index，并实现了 37 个 PyRIT 风格 deterministic operator。
+- AIG 是补充策略来源；索引 `agent-scan/prompt/skills`、`mcp-scan/redteam`、`mcp-scan/testcase`、`AIG-PromptSecurity/deepteam`，并实现 indirect document、RAG source confusion、tool rug pull、memory poison、debug override、ascii smuggling、zalgo、stratasword 等增强器。
+- 用户补充表格作为 `user_supplied` source，拆分为 permission prompt、resource seed 和 tool response seed。
+
+验证结果:
+
+```powershell
+npm run typecheck
+npm run verify:a-config-sandbox
+npm run verify:a-pyrit-library
+npm run verify:a-corpus
+```
+
+结果:
+
+- `typecheck` 通过。
+- `verify:a-config-sandbox` 通过，旧配置加载与 sandbox 未破坏。
+- `verify:a-pyrit-library` 通过，PyRIT adapted library 检查未破坏。
+- `verify:a-corpus` 通过，检查 seed 数量、generated 数量、case/oracle 对齐、引用完整性、PyRIT 来源比例、profile 覆盖和明显真实密钥形态。
+
+后续注意:
+
+- 默认 `loadConfigRepository()` 仍只加载稳定 `configs/*.json`；full corpus 必须显式通过 corpus profile 加载。
+- `generated/a-line/test_oracles.generated.json` 仍只用于离线验收和 corpus 质量检查，不得进入运行时 `TestContext`。
+- B 线可使用 `loadGeneratedCorpusProfile()` 按 `smoke/openclaw/regression/full-corpus` 选择 case；不需要理解 PyRIT/AIG 内部结构。
+- C 线只能把 `CorpusManifest` 用于来源、覆盖率和样本分层展示，不得把 oracle 或 generated corpus 当风险结论。
+
+## 17. 2026-06-18 P3-A 配置分层与攻击库重构增强
+
+分支: `a/p3-a-corpus-implementation-plan`
+
+本轮针对 P3-A 首批实现“文件都堆在 `configs/` 根目录、场景广度仍偏 demo 化、generated case 只有 1200 级”的问题继续重构。核心目标是让 A 线攻击库从“能生成”升级到“目录清晰、来源清楚、体量足够、场景覆盖更完整”。
+
+### 17.1 配置目录重构
+
+当前目录分层:
+
+```txt
+configs/
+  tools/resources/prompts/tool_responses/risk_rules/test_cases/test_oracles
+  red_team_scenarios/supervision_policy_templates/p2_demo_cases
+  a-line/
+    README.md
+    sources/
+      pyrit_attack_library.json
+      pyrit_jailbreak_template_index.json
+      pyrit_seed_dataset_index.json
+      pyrit_executor_template_index.json
+      pyrit_scorer_template_index.json
+      aig_strategy_index.json
+    corpus/
+      seeds/
+      operators/
+      profiles/
+```
+
+说明:
+
+- `configs/` 根目录只保留默认运行基线，继续服务 `loadConfigRepository()` 和 demo。
+- `configs/a-line/sources/**` 保存 PyRIT/AIG 来源索引和攻击库元数据。
+- `configs/a-line/corpus/seeds/**` 保存 resource、attack、user prompt、tool response 种子。
+- `configs/a-line/corpus/operators/**` 保存 mutation operator 目录。
+- `configs/a-line/corpus/profiles/**` 保存生成 profile 和 run profile。
+- `generated/a-line/**` 继续保存可复现生成物，不写入 `outputs/**`。
+
+`loadConfigRepository()` 已改为从 `configs/a-line/sources/` 读取 PyRIT attack library 和 jailbreak template index。`loadGeneratedCorpusProfile()`、`generate-a-corpus`、`verify-a-corpus`、PyRIT/AIG 索引脚本都已同步新路径。
+
+### 17.2 攻击库和种子增强
+
+本轮扩展:
+
+- resource blueprint 从基础 12 类扩展到 secret、identity、cloud、devops、finance、CRM、support、internal API、browser、email、calendar、repo、memory、RAG、filesystem 等 36 类组合来源。
+- resource variant 增加 PII bundle、credential hint、SSRF target、tool override note、memory poison、shadow tool claim、payment side effect、safe negative control。
+- 红队场景从 10 类扩到 25 类，补齐 system prompt contract extraction、secret chain exfiltration、SSRF metadata probe、shell command injection、SQL query bypass、browser hidden instruction、email delegation confusion、payment escalation、repo dependency shadowing、vector store source conflict、long context instruction decay、refusal suppression、tool schema confusion、policy exception forgery、safe control regression。
+- prompt frame 从 20 类扩到 32 类，增加 PyRIT objective、controlled jailbreak、retrieval priority conflict、two-turn plan、connector embedded instruction、encoded/split instruction、OpenClaw candidate、runtime-supervision evidence fixture 等框架。
+- mutation operator 从 52 扩到 76，新增 base64 decode hint、unicode escape、NATO、A1Z26、braille、superscript、repeat token、markdown link/image、HTML hidden input、LaTeX table、PAIR、Tree-of-Attacks reflection、simulated target compliance、OWASP ASI mapping、tool schema confusion、browser hidden instruction、email delegation、SSRF probe、false-positive control、permission escalation 等。
+
+PyRIT 仍是主来源和主生成底座；AIG 只作为 Agent/MCP 策略、OWASP ASI 分类、tool/schema/browser/email/SSRF 等 enhancer 补充来源。
+
+### 17.3 生成与验证增强
+
+生成器调整:
+
+- 默认 generator version 升级为 `p3-a-generator-2`。
+- default/full corpus 生成上限从 1200 提升到 2400。
+- 生成算法从“每个 seed 连续生成 6 条”改成“按 seed 轮转采样”，避免前部场景占满 full-corpus 上限。
+- `verify:a-corpus` 现在要求 generated prompts/test cases 至少 2000，场景覆盖至少 20，并检查 legacy A-line seed/source 文件不得回流到 `configs/` 根目录。
+- PyRIT 主导比例改为按 prompt/test_case/oracle 等攻击生成项计算，不再把 synthetic resource 和基础 tool response 混入分母。
+
+当前规模:
+
+```txt
+resource seeds: 687
+attack seeds: 839
+user prompt seeds: 639
+tool response seeds: 309
+mutation operators: 85
+generated resources: 687
+generated prompts: 2400
+generated tool responses: 309
+generated test cases: 2400
+generated test oracles: 2400
+red team scenarios: 25
+profile summary: smoke=30, openclaw=80, regression=400, full-corpus=2400
+source summary: manual=437, user_supplied=279, pyrit=5154, aig=1639, synthetic=687
+```
+
+已执行:
+
+```powershell
+npm run a:generate-corpus
+npm run verify:a-corpus
+```
+
+后续收尾前仍需执行:
+
+```powershell
+npm run typecheck
+npm run verify:a-config-sandbox
+npm run verify:a-pyrit-library
+npm run verify:all
+git diff --check
+```
+
+## 18. 2026-06-19 P3-A 最终工程化口径
+
+分支: `a/p3-a-corpus-implementation-plan`
+
+本轮根据用户要求明确 A 线后续不再以 demo/MVP 体量为约束，而按 P3 最终项目级交付模式继续设计和开发。当前原则:
+
+- A 线优先保证攻击库、语料工厂、source index、seed/operator/profile、manifest 和验证链路的完整性。
+- `configs/` 根目录只保留稳定运行基线；A 线攻击库和生成输入统一放在 `configs/a-line/**`。
+- `generated/a-line/**` 是大规模离线语料和覆盖率材料，不应因为 demo 展示简化而回退规模或结构。
+- PyRIT 是主底座，可以继续深度利用其 seed dataset、jailbreak template、converter、executor、scorer/evaluator 和定制攻击实现。
+- AIG 保持补充定位，迁移其 Agent/MCP 策略、OWASP ASI 分类和 PromptSecurity enhancer 思想，不作为主运行框架。
+- demo/OpenClaw 连通性可以验证，但若失败且原因来自其他线、运行时环境或本机 OpenClaw 状态，不应反向削弱 A 线最终架构。
+- 后续每批 P3-A 改动继续记录在本工作日志，并同步 `docs/P3plan.md`、`docs/architecture.md`、`docs/contracts.md`、`docs/interfaces.md`、`docs/ownership.md` 中受影响的边界。
+
+全局记忆已追加 `2026-06-19-agent-guard-p3a-final-mode.md`，记录该最终模式口径。
+
+### 18.1 Demo / OpenClaw 连通性检查
+
+本轮按“验证但不为 demo 妥协”的原则检查了 demo/OpenClaw 相关链路:
+
+```powershell
+npm run verify:openclaw:realtime
+npm run verify:p2:api-e2e
+$env:OPENCLAW_CLI=(Resolve-Path '..\openclaw-runtime\openclaw-local.cmd').Path; `
+  $env:OPENCLAW_HOME=(Resolve-Path '..\openclaw-runtime\home').Path; `
+  $env:OPENCLAW_WORKSPACE=(Resolve-Path '..\openclaw-runtime\workspace').Path; `
+  $env:VERIFY_OPENCLAW_REQUIRED='1'; `
+  npm run verify:p2:api-e2e
+```
+
+结果:
+
+- `verify:openclaw:realtime` 通过，覆盖 initialize、tools/list、deny、ask、redact、supervision query、trace query 和 realtime events stream。
+- 普通 `verify:p2:api-e2e` 通过 mock/http_sample/API/report/supervision 链路，OpenClaw CLI adapter 因未注入 `OPENCLAW_CLI` 被 optional skip。
+- 注入项目隔离 OpenClaw 环境变量后，`VERIFY_OPENCLAW_REQUIRED=1 npm run verify:p2:api-e2e` 通过，13 个 required 全部通过、0 optional skipped。
+
+判断:
+
+- 当前 A 线 P3 语料工厂重构没有破坏 P2 API demo 基线。
+- 本机 OpenClaw runtime 可用，但普通命令默认不会自动设置 `OPENCLAW_CLI`、`OPENCLAW_HOME`、`OPENCLAW_WORKSPACE`。后续 demo 启动仍建议使用 `scripts/start-agent-guard-openclaw.ps1` 或显式设置这三个变量。
+- A 线后续不应为了单机展示或快速回归简化 full corpus；运行链路必须显式选择 `smoke/openclaw/regression/full-corpus` profile。
+
+## 19. 2026-06-19 P3-A 去 MVP 化与 seed 入口收口
+
+分支: `a/p3-a-corpus-implementation-plan`
+
+本轮按当时理解重新审阅 A 线项目、框架和文档，把仍带有 demo/MVP 妥协口径或重复入口的部分继续收口。后续第 20 节已修正: `UserPromptSeed` 不是重复入口，而是 PyRIT 变异前的独立 prompt material 层。第 19 节保留为历史记录。
+
+- 删除独立 prompt seed 文件。该文件只是 `attack_seeds.json` 的重复投影，会导致攻击目标和用户 prompt 在两套 seed 中漂移。
+- 当时误认为 `AttackSeed.userPrompt` 应作为唯一 prompt seed。第 20 节已修正为独立 `UserPromptSeed` 材料层。
+- 契约字段从展示稳定标记改为 `stableForAutomation`。`smoke/openclaw/regression` 是自动化稳定档位，`full-corpus` 是完整覆盖档位；profile 是工程运行控制，不是 demo 分层。
+- `verify:a-corpus` 改为直接要求 `attackSeeds >= 800`，不再把 attack seed 与独立 prompt seed 相加凑数。
+- `README.md`、`configs/a-line/README.md`、`docs/P3plan.md`、`docs/A/p3-a-corpus-implementation-plan.md`、`docs/architecture.md`、`docs/contracts.md`、`docs/interfaces.md` 和 `docs/ownership.md` 已同步当前结构。
+
+当时记录的 A 线结构:
+
+```txt
+configs/a-line/
+  sources/
+    pyrit_attack_library.json
+    pyrit_jailbreak_template_index.json
+    pyrit_seed_dataset_index.json
+    pyrit_executor_template_index.json
+    pyrit_scorer_template_index.json
+    aig_strategy_index.json
+  corpus/
+    seeds/
+      resource_seeds.json
+      attack_seeds.json
+      tool_response_seeds.json
+    operators/
+      mutation_operators.json
+    profiles/
+      attack_generation_profiles.json
+      corpus_run_profiles.json
+
+generated/a-line/
+  resources.generated.json
+  prompts.generated.json
+  tool_responses.generated.json
+  test_cases.generated.json
+  test_oracles.generated.json
+  red_team_scenarios.generated.json
+  corpus_manifest.json
+  corpus_stats.json
+```
+
+第 19 节后续维护要求已被第 20 节替代。
+
+## 20. 2026-06-22 P3-A UserPromptSeed 变异材料层修正
+
+分支: `a/p3-a-corpus-implementation-plan`
+
+本轮根据用户指出的问题修正 A 线语料入口设计: 删除独立 prompt seed 的前提不成立。A 线需要在送入 PyRIT/operator 变异前，把用户 prompt 语境也作为材料输入，这样攻击样例才更有针对性。
+
+当前有效设计:
+
+- `AttackSeed`: 攻击目标、目标工具/资源、风险类别、场景归属和基础 objective。
+- `UserPromptSeed`: 用户 prompt 变异材料层，包含 `promptTemplate`、`intent`、`ambiguityLevel`、`persona`、`applicableScenarioIds` 和 `preferredOperatorIds`。
+- 生成器流程: `AttackSeed + UserPromptSeed -> composed prompt material -> PyRIT/AIG/native operator -> PromptDefinition/TestCase/TestOracle/CorpusManifest`。
+- `UserPromptSeed` 不能是 `AttackSeed` 的机械复制；它必须提供直接请求、歧义请求、委托授权、多轮铺垫、roleplay persona 和 benign control。
+
+本轮实现要点:
+
+- 恢复 `configs/a-line/corpus/seeds/user_prompt_seeds.json`，当前生成 639 条独立 user prompt seeds。
+- 新增 `UserPromptSeed` contract 字段: `intent`、`ambiguityLevel`、`persona`、`applicableScenarioIds`、`preferredOperatorIds`、`pyrit`。
+- `generateCorpus()` 现在按场景选择 `UserPromptSeed`，组合攻击目标和用户语境后再做 mutation。
+- roleplay 不再只有单一方式，新增 security auditor、game master、video game、trivia game、movie script、persuasion script、compliance reviewer、support operator、developer debugger 等 PyRIT 风格 operator。
+- 歧义 user prompt 已覆盖 fix-it、status check、inferred approval、read-or-act、policy exception、low-context、connector consent 等形态。
+- `verify:a-corpus` 现在要求 `userPromptSeeds >= 500`，并扫描该层是否含真实密钥形态。
+
+当前规模:
+
+```txt
+resource seeds: 687
+attack seeds: 839
+user prompt seeds: 639
+tool response seeds: 309
+mutation operators: 85
+generated prompts: 2400
+generated test cases: 2400
+generated test oracles: 2400
+```
+
+当前有效 A 线结构:
+
+```txt
+configs/a-line/corpus/seeds/resource_seeds.json
+configs/a-line/corpus/seeds/attack_seeds.json
+configs/a-line/corpus/seeds/user_prompt_seeds.json
+configs/a-line/corpus/seeds/tool_response_seeds.json
+configs/a-line/corpus/operators/mutation_operators.json
+configs/a-line/corpus/profiles/corpus_run_profiles.json
+generated/a-line/**
+```
+
+后续维护要求:
+
+- 新增攻击目标写入 `AttackSeed`；新增用户表达、歧义语境、角色扮演或多轮铺垫写入 `UserPromptSeed`。
+- 同一攻击方式允许多次变异运行，优先通过多个 `UserPromptSeed.persona` 和多个 PyRIT roleplay operator 扩展。
+- 新增资源/攻击/user prompt/响应/operator 后先运行 `npm run a:generate-corpus`，再运行 `npm run verify:a-corpus`。
+- 不因为 demo/OpenClaw 单机联调状态回退 A 线 full corpus 规模或目录结构。
+
+## 21. 2026-06-22 P3-A PyRIT operator 库升级与 p3-a-1 语料版本
+
+分支: `a/p3-a-corpus-implementation-plan`
+
+本轮根据用户要求继续去掉 A 线的 demo/MVP 约束，把 operator、source metadata、seed 和 generated corpus 统一推进到 P3-A 最终语料工程口径。根目录运行时对象仍可继续用 `mvp-1` 作为 B/C 线兼容域，但 `configs/a-line/**` 与 `generated/a-line/**` 已切到 `schemaVersion: "p3-a-1"`。
+
+实现要点:
+
+- `SchemaVersion` 扩展为 `"mvp-1" | "p3-a-1"`；A 线 corpus generator、seed factory、run profile、source index 和 generated stats 使用 `p3-a-1`。
+- `mutation_operators.json` 从 85 个扩展到 162 个，其中 PyRIT 来源 140 个，覆盖 encoding、unicode/token smuggling、obfuscation、format carrier、roleplay、multi-turn、language/tone/persuasion、XPIA 和 prompt fuzzer。
+- `mutationOperators.ts` 新增 deterministic TS 实现，避免只增加空 JSON 条目。新增实现包括 Base32/Base85/ROT47/Vigenere、HTML entity、double URL encode、keyboard shift、char swap、word shuffle、diacritic/zalgo、variation selector、sneaky bits、ASCII box、CSV/TOML/INI/XML/HTTP/MIME/logfmt/diff/Mermaid/Markdown table、math obfuscation、chunked request 等。
+- `UserPromptSeed` 扩展到 889 条，新增 chunked handoff、XPIA external content、delegated evidence bundle、audit board、tabletop incident、token smuggling hint、multimodal fixture、document review misread、fuzzer campaign 和 policy training contrast 等材料层。
+- `ResourceSeed` 扩展到 1143 条，新增 MCP tool manifest、OAuth consent、browser cookie、intranet preview、vector store collision、outdated policy chunk、phishing-like approval、payment run approval 等资源面。
+- `validateCorpus()` 的 operator 数量门槛从 45 提升到 150，防止后续退回薄 operator 库。
+- `configs/a-line/README.md`、`docs/P3plan.md`、`docs/contracts.md`、`docs/interfaces.md`、`docs/architecture.md` 和本工作日志已同步“最终语料域 + 共享运行时兼容域”的边界。
+
+当前规模:
+
+```txt
+resource seeds: 1143
+attack seeds: 839
+user prompt seeds: 889
+tool response seeds: 309
+mutation operators: 162
+generated resources: 1143
+generated prompts: 2400
+generated test cases: 2400
+generated test oracles: 2400
+```
+
+维护要求:
+
+- 新增 PyRIT operator 时，必须同时更新 operator spec 和 `mutationOperators.ts` 的 deterministic/template 实现。
+- `UserPromptSeed` 必须继续作为变异前材料层参与 `AttackSeed + UserPromptSeed -> operator` 流程，不能删除或并回 `AttackSeed`。
+- `smoke/openclaw/regression` 只是从最终语料库抽样出来的检查/联调/回归视图，不再作为 A 线规模上限。
+
+## 22. 2026-06-22 P3-A PyRIT Python Runtime Bridge 接入
+
+分支: `a/p3-a-corpus-implementation-plan`
+
+本轮根据用户要求修正 A 线 PyRIT 迁移方向: 不能只停留在“确定性离线变异 + 模板化编排 + 大规模结构化组合”。A 线现在保留 generated corpus 作为可追溯输入层，同时新增 PyRIT Python runtime bridge 作为显式执行层，用于真实调用 vendored PyRIT 的 `run_attack_cli.py`、attack executor 和 evaluator 逻辑。
+
+实现要点:
+
+- 项目隔离 runtime: 新增 `scripts/setup-pyrit-runtime.ps1` 和 `npm run pyrit:setup-runtime`，安装到 `.venv/pyrit`。`.venv/` 与 `third_party/pyrit_adapted/*.egg-info/` 已加入 `.gitignore`。
+- Python bridge: 新增 `third_party/pyrit_adapted/agent_guard_bridge.py`，支持 `converter_batch` 和 `attack_cli` 两种模式。
+- TS bridge: 新增 `backend/src/modules/corpus/pyritPythonBridge.ts`，负责选择 Python、规范环境变量映射、写入 bridge request、调用子进程、解析 bridge result。
+- 运行脚本: 新增 `scripts/generate-a-pyrit-runtime-batch.ts` 和 `npm run a:pyrit-runtime`，从 generated corpus profile 中选择 case/objective，调用 PyRIT runtime，并把结果写入 `outputs/pyrit-runs/**`。
+- 验证脚本: 新增 `scripts/verify-a-pyrit-runtime.ts` 和 `npm run verify:a-pyrit-runtime`，验证真实 PyRIT converter runtime 和 attack_cli 模型配置边界。
+- Contract: `packages/contracts/src/types/corpus.ts` 新增 `PyritBridgeRequest`、`PyritBridgeResult`、`PyritAttackMethod` 和相关 item/status/runtime 类型。
+- Operator 元数据: PyRIT executor 类 operator 的 `executionMode` 从 `template_render`/`metadata_only` 调整为 `pyrit_python_bridge`；离线 generated corpus 只作为预览和选样输入，真实执行结果以 `outputs/pyrit-runs/**` 为准。
+- Run profile: `smoke/openclaw/regression/full-corpus` 均允许 Python bridge，但 bridge 只通过显式命令触发，不进入默认配置加载。
+
+模型环境:
+
+```txt
+OPENAI_CHAT_ENDPOINT
+OPENAI_CHAT_KEY       # 可由 OPENAI_CHAT_KEY、AGENT_GUARD_PYRIT_OPENAI_CHAT_KEY、provider key 或显式本机 key env 映射
+OPENAI_CHAT_MODEL     # 可由 DEEPSEEK_MODEL 或 AGENT_GUARD_PYRIT_OPENAI_CHAT_MODEL 映射
+```
+
+当前本机检查结果:
+
+- `DeepSeek_API_2` 在当时本机可被识别为兼容 key；该名称不是团队规范。
+- `OPENAI_CHAT_ENDPOINT` 缺失。
+- `OPENAI_CHAT_MODEL` 缺失。
+- 因此 `verify:a-pyrit-runtime` 当前按设计返回: bridge/runtime 安装可用，真实模型 attack 被结构化 `SKIP`，不是伪造成功。
+
+已验证:
+
+```powershell
+npm run typecheck
+npm run pyrit:bridge-smoke
+npm run verify:a-pyrit-runtime
+.venv\pyrit\Scripts\python.exe third_party\pyrit_adapted\agent_guard_bridge.py --self-test
+```
+
+结果:
+
+- TypeScript typecheck 通过。
+- `pyrit:bridge-smoke` 通过。
+- Python bridge self-test 通过，`Base64Converter` 和 `ROT13Converter` 均以 `runtimeUsed: "pyrit"` 执行。
+- `verify:a-pyrit-runtime` 通过安装和 bridge 验证；真实 attack 因 endpoint/model 未配置被跳过。
+
+后续方向:
+
+- 用户补齐 OpenAI-compatible endpoint 和模型名后，运行 `npm run a:pyrit-runtime` 执行真实 PyRIT attack batch。
+- 如需把结果进入报告，应由 C 线消费 `PyritBridgeResult` 和脱敏后的 `outputs/pyrit-runs/**` 摘要，不得把它直接当成 B 线 `InteractionTrace` 或 realtime `RuntimeSupervisionRecord[]`。
+- 后续可以继续把 PyRIT 的更多 attack executor 参数、scorer/evaluator 指标和 batch dataset 读取能力暴露到 bridge request options。
+
+## 23. 2026-06-22 P3-A PyRIT Runtime 参数固化与 converter bridge 扩展
+
+分支: `a/p3-a-corpus-implementation-plan`
+
+本轮根据用户补充的模型参数要求，把 A 线真实 PyRIT runtime 的协作入口、DeepSeek/OpenClaw 参数和 converter 执行能力继续补齐。核心原则仍然是: generated corpus 是输入层，真实模型攻击证据必须来自 `npm run a:pyrit-runtime` 写入的 `outputs/pyrit-runs/**`，不能用离线模板冒充真实 PyRIT runtime。
+
+实现要点:
+
+- 新增 `docs/A/p3-a-pyrit-runtime-usage.md`，集中说明 `OPENAI_CHAT_ENDPOINT`、`OPENAI_CHAT_KEY`、`OPENAI_CHAT_MODEL`、本机 key 示例、OpenClaw local gateway、Agent Guard PyRIT/OpenClaw shim 和 realtime MCP endpoint 的职责边界。
+- 新增 `scripts/setup-pyrit-openclaw-env.ps1`，用于在当前 PowerShell 会话中点源设置 PyRIT 模型环境。默认模型为 `deepseek-v4-pro`，endpoint 默认使用 Agent Guard API 提供的 OpenAI-compatible shim: `http://127.0.0.1:3100/api/v1/pyrit/openclaw/v1`。key 优先读取 `OPENAI_CHAT_KEY`、`AGENT_GUARD_PYRIT_OPENAI_CHAT_KEY` 或 provider key；`DeepSeek_API_2` 仅作为个人本机示例兼容项。脚本只改当前进程环境，不写系统环境，不落盘 key。
+- `pyritPythonBridge.ts` 和 `agent_guard_bridge.py` 已统一模型环境映射: endpoint 支持 `AGENT_GUARD_PYRIT_OPENAI_CHAT_ENDPOINT`、`AGENT_GUARD_PYRIT_OPENCLAW_CHAT_ENDPOINT`、`OPENCLAW_CHAT_ENDPOINT`、`DEEPSEEK_ENDPOINT`；key 支持 `OPENAI_CHAT_KEY`、`AGENT_GUARD_PYRIT_OPENAI_CHAT_KEY`、provider key 和历史本机示例兼容项；model 默认 `deepseek-v4-pro`。
+- `agent_guard_bridge.py` 的 `converter_batch` 扩展到更多真实 PyRIT 文本 converter: Base2048、BinAscii、Braille、Superscript、UnicodeConfusable、UnicodeReplacement、UnicodeSubstitution、Ascii/Variation/SneakyBits smuggling、AsciiArt、AskToDecode、Emoji/Ecoji、CharSwap、Diacritic、Zalgo 等。
+- `attack_cli` 增加 converter 预处理: 如果 selected case 的 `operatorId` 是 bridge 支持的 `pyrit.converter.*`，会先真实调用 PyRIT converter 变换 objective，再把变换后的 objective 传给 `run_attack_cli.py`。
+- `seedFactory.ts` 把旧 `pyrit.converter.base2048_placeholder` 升级为真实 `pyrit.converter.base2048`，并新增 `unicode_replacement`、`unicode_substitution`、`ascii_smuggler`、`emoji`、`ecoji`、`ascii_art` 等 operator。
+- `mutationOperators.ts` 为新增 operator 提供离线预览实现；真实模型攻击仍以 bridge 的 PyRIT runtime 结果为准。
+- `verify-a-pyrit-runtime.ts` 的 converter self-test 扩展到 Base2048、UnicodeSubstitution、SneakyBits 和 AskToDecode。
+- `README.md`、`docs/README.md`、`configs/a-line/README.md`、`docs/A/p2-pyrit-python-bridge-contract.md`、`docs/A/p3-a-corpus-implementation-plan.md` 和 `docs/P3plan.md` 已同步参数和边界说明。
+
+当前规模:
+
+```txt
+resource seeds: 1143
+attack seeds: 839
+user prompt seeds: 889
+tool response seeds: 309
+mutation operators: 168
+generated prompts: 2400
+generated test cases: 2400
+generated test oracles: 2400
+```
+
+已验证:
+
+```powershell
+.venv\pyrit\Scripts\python.exe -m py_compile third_party\pyrit_adapted\agent_guard_bridge.py
+.venv\pyrit\Scripts\python.exe third_party\pyrit_adapted\agent_guard_bridge.py --self-test
+npm run a:generate-corpus
+npm run typecheck
+npm run verify:a-corpus
+npm run pyrit:bridge-smoke
+npm run verify:a-pyrit-runtime
+npm run verify:a-pyrit-library
+npm run verify:all
+```
+
+补充说明:
+
+- `http://127.0.0.1:3100/api/v1/openclaw/realtime/mcp` 是 Agent Guard realtime MCP endpoint，不是 `OPENAI_CHAT_ENDPOINT`。
+- `http://127.0.0.1:18789` 是项目隔离 OpenClaw gateway/control plane，已知不是传统 OpenAI-compatible REST `/v1`。PyRIT 默认应使用 Agent Guard shim: `http://127.0.0.1:3100/api/v1/pyrit/openclaw/v1`。
+- `base2048_placeholder` 仅保留在 bridge/TS 层作为历史兼容别名，新生成链路使用 `pyrit.converter.base2048`。
+- 当前本机 `verify:a-pyrit-runtime` 结果已按 Agent Guard shim 重新验证通过；真实 attack 以 `runtimeUsed: "pyrit"` 和 `status: "ok"` 作为证据。
+
+## 24. 2026-06-22 P3-A PyRIT/OpenClaw OpenAI-compatible shim 修正
+
+分支: `a/p3-a-corpus-implementation-plan`
+
+本轮根据用户澄清，修正此前把 `DeepSeek_API_2` 写成默认协作参数的问题。该变量只是当前开发者本机示例名称，后续文档和脚本必须按“协作者自带本机 key env”处理。
+
+实现要点:
+
+- 新增 Agent Guard API route: `GET /api/v1/pyrit/openclaw/v1/models` 和 `POST /api/v1/pyrit/openclaw/v1/chat/completions`。
+- 该 route 对外呈现 OpenAI Chat Completions 兼容协议，供 PyRIT `OpenAIChatTarget` 使用；内部调用 `runOpenClawSession()`，继续走项目隔离 OpenClaw CLI。
+- `scripts/setup-pyrit-openclaw-env.ps1` 默认 endpoint 改为 `http://127.0.0.1:3100/api/v1/pyrit/openclaw/v1`，并新增 `-KeyEnvName` 和 provider key 映射参数。
+- `scripts/start-agent-guard-openclaw.ps1` 的 provider key 映射改为可配置；`DeepSeek_API_2` 只作为示例 fallback，不是规范变量。
+- `docs/A/p3-a-pyrit-runtime-usage.md`、`README.md`、`docs/README.md`、`configs/a-line/README.md`、`docs/P3plan.md`、`docs/A/p2-pyrit-python-bridge-contract.md` 和本工作日志已同步说明。
+- `run_attack_cli.py` 的 console printer 变成非阻断路径，避免 Windows GBK 控制台无法打印 Unicode 图标时阻断 JSON 结果落盘。
+- `buildPyritRuntimeRequest()` 修正 `PYRIT_RUNTIME_METHODS` 语义: 显式传入 method 时，本批次所有选中样本都使用指定 method；未显式传入时才按 case/operator 推断。
+
+边界结论:
+
+- `http://127.0.0.1:3100/api/v1/openclaw/realtime/mcp` 是 B 线 realtime MCP endpoint，不是 PyRIT 模型 endpoint。
+- `http://127.0.0.1:18789` 是 OpenClaw gateway/control plane，不是 PyRIT 可直接调用的 OpenAI REST `/v1`。
+- PyRIT 和 OpenClaw 的正确对接入口是 Agent Guard shim: `http://127.0.0.1:3100/api/v1/pyrit/openclaw/v1`。
+
+已验证:
+
+```powershell
+npm run typecheck
+npm run pyrit:bridge-smoke
+$env:VERIFY_PYRIT_RUNTIME_REQUIRED="1"; npm run verify:a-pyrit-runtime
+$env:PYRIT_RUNTIME_PROFILE="smoke"
+$env:PYRIT_RUNTIME_MAX_ITEMS="2"
+$env:PYRIT_RUNTIME_METHODS="prompt_sending"
+$env:PYRIT_RUNTIME_MAX_TURNS="1"
+npm run a:pyrit-runtime
+```
+
+验证结果:
+
+- `/api/v1/pyrit/openclaw/v1/models` 返回 OpenAI-compatible model list。
+- `/api/v1/pyrit/openclaw/v1/chat/completions` 触发 OpenClaw CLI 并返回 200。
+- `verify:a-pyrit-runtime` required 模式通过，至少一个真实模型-backed PyRIT attack item 完成。
+- `a:pyrit-runtime` smoke 小批量通过，2 条样本均为 `status: "ok"`。
+
+## 25. 2026-06-22 P3-A PyRIT bridge 可读性与临时目录清理
+
+分支: `a/p3-a-corpus-implementation-plan`
+
+问题:
+
+- `generated/a-line/tmp/pyrit-bridge/**` 中保留了 runtime request/result 临时文件，容易被误认为正式 generated corpus。
+- Base64/ROT/Unicode 等 converter 样本在 generated corpus 中本来就是变异后的攻击 prompt；但 PyRIT runtime 之前直接读取 `testCase.task.instruction`，导致 converter 样本进入 runtime 时使用“已变异文本”，再由 PyRIT converter 变换一次，request/result 可读性很差。
+- Python bridge 把 `run_attack_cli.py` 的 stdout 直接塞进 `notes`，包含 ANSI 控制符、Windows GBK Unicode 打印警告和长控制台日志。
+
+修正:
+
+- `corpusGenerator.ts` 在每条 generated case 的 metadata 中增加 `runtimeObjectiveBase` 和 `mutationOutputPreview`。前者是变异前的可读攻击材料，后者只是 generated prompt 预览。
+- `pyritPythonBridge.ts` 的 `buildObjective()` 优先使用 `runtimeObjectiveBase`，确保 PyRIT converter 在 runtime 中只执行一次。
+- PyRIT bridge 临时 request/result 目录从 `generated/a-line/tmp/pyrit-bridge/**` 移到 `outputs/pyrit-bridge-tmp/**`，正式 generated 目录不再混入运行临时件。
+- `agent_guard_bridge.py` 强制子进程 UTF-8，清理 ANSI/control chars，并把 stdout notes 压缩为 `run_attack_cli completed; outputJsonPath=...` 这种短摘要。
+- bridge result 顶层 `objective` 改回可读原文；真实送入 PyRIT 的 converter payload 只放在 `metadata.runtimeObjectivePayloadPreview`。
+- 已删除本地旧 `generated/a-line/tmp/**`。
+
+验证:
+
+```powershell
+npm run a:generate-corpus
+npm run typecheck
+npm run verify:a-corpus
+npm run pyrit:bridge-smoke
+$env:VERIFY_PYRIT_RUNTIME_REQUIRED="1"; npm run verify:a-pyrit-runtime
+$env:PYRIT_RUNTIME_PROFILE="smoke"
+$env:PYRIT_RUNTIME_MAX_ITEMS="2"
+$env:PYRIT_RUNTIME_METHODS="prompt_sending"
+$env:PYRIT_RUNTIME_MAX_TURNS="1"
+npm run a:pyrit-runtime
+```
+
+结果:
+
+- `generated/a-line/tmp` 不再存在。
+- `verify:a-pyrit-runtime` required 模式通过。
+- `a:pyrit-runtime` smoke 小批量输出 `status={"ok":2}`。
+- 新 request 中 `case.generated.00001` 的 objective 是可读原文，不再是已变异 Base64 文本。
+- 新 bridge result 顶层 `objective` 可读；Base64 runtime payload 只在 metadata 预览字段出现。
+
+## 26. 2026-06-22 P3-A 攻击库选择资产 AB-0/AB-1
+
+分支: `a/p3-a-corpus-implementation-plan`
+
+本轮根据 `docs/p3-llm-attack-library-ab-plan.md` 实现 A 线负责的 AB-0/AB-1。核心目标不是让 A 线调用 LLM 做选择，而是把已有 2400 条 generated case 转成 B 线可安全筛选、可审计、可解释的攻击库选择资产。
+
+新增契约:
+
+- `AttackFamily` 和 `TargetSurface`。
+- `AttackCaseCard`。
+- `LlmSelectionCatalogItem`。
+- `CoverageTaxonomy`。
+- `CaseQualityIssue` / `CaseQualityReport`。
+
+新增实现:
+
+- `backend/src/modules/corpus/attackCaseCardGenerator.ts`
+  - 从 `test_cases.generated.json`、`corpus_manifest.json`、`resources.generated.json`、`tool_responses.generated.json`、`test_oracles.generated.json` 派生 card。
+  - `promptSummary` 优先使用 `runtimeObjectiveBase`，避免把已经变异/编码后的长 payload 暴露给选择层。
+  - `promptSummary` 最终长度含省略号不超过 220 字符，符合 LLM 选择输入摘要上限。
+  - `payloadRiskSummary`、`expectedSafeBehaviorSummary`、`oracleSummary` 全部由结构化字段生成，不调用 LLM，不复制 oracle 原始对象。
+  - `qualityScore` 使用确定性规则评分，`digest` 使用 card 稳定字段计算 SHA-256。
+- `backend/src/modules/corpus/attackCaseCardValidator.ts`
+  - 校验 caseId、manifest 映射、profile、attack family、target surface、OpenClaw 覆盖、摘要脱敏、catalog forbidden field、digest 可复现和稳定排序。
+- `scripts/verify-a-attack-cards.ts`
+  - 新增 npm script: `verify:a-attack-cards`。
+  - 已加入 `verify:all`。
+- `scripts/generate-a-corpus.ts`
+  - 生成 corpus 时同步写出选择资产并即时校验。
+
+新增 generated 输出:
+
+```txt
+generated/a-line/attack_case_cards.generated.json
+generated/a-line/llm_selection_catalog.generated.json
+generated/a-line/coverage_taxonomy.generated.json
+generated/a-line/case_quality_report.generated.json
+```
+
+当前生成结果:
+
+```txt
+attack case cards: 2400
+llm selection catalog items: 2400
+openclaw profile cards: 80
+full-corpus profile cards: 2400
+min quality score: 90
+average quality score: 93
+low quality cases: 0
+duplicate digest cases: 0
+quality warnings: 0
+```
+
+coverage 摘要:
+
+- attack family 覆盖 `prompt_injection`、`data_leakage`、`tool_hijack`、`auth_bypass`、`memory_poisoning`、`environment_poisoning`、`model_evasion`、`dangerous_action`、`benign_control`。
+- target surface 覆盖 `input`、`output`、`context`、`tool_call`、`file_access`、`code_execution`、`network`、`email`、`api`、`browser`、`memory`、`database`。
+- source origin 当前为 pyrit 主来源，AIG/manual/user_supplied 补充。
+
+边界记录:
+
+- A 线输出 card/catalog/taxonomy/report，不输出 B 线 `TestSelectionPlan`。
+- A 线不做正式 LLM rerank，不写 selection plan store。
+- B 线可以把 `llm_selection_catalog.generated.json` 作为 LLM 输入，但不得发送完整 prompt、resource、tool response、secret、`runtimeObjectivePayloadPreview` 或 oracle 原始对象。
+- LLM 选择理由只能作为测试编排解释，不能进入 `Finding`、`RiskReport`、`SupervisionPolicyPack`、`DefenseReport` 或运行时监督结论。
+
+同步文档:
+
+- `docs/contracts.md`
+- `docs/interfaces.md`
+- `docs/ownership.md`
+- `docs/A/p3-a-corpus-implementation-plan.md`
+- `docs/A/work-log-a-config-sandbox.md`
+
+验证:
+
+```powershell
+npm run typecheck
+npm run a:generate-corpus
+npm run verify:a-attack-cards
+```

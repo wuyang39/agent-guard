@@ -1,5 +1,7 @@
 param(
-  [string]$RuntimeRoot = ""
+  [string]$RuntimeRoot = "",
+  [string]$ProviderKeyEnvName = "DEEPSEEK_API_KEY",
+  [string]$ExampleLocalKeyEnvName = "DeepSeek_API_2"
 )
 
 $ErrorActionPreference = "Stop"
@@ -33,13 +35,16 @@ $env:all_proxy = ""
 $env:NO_PROXY = "*"
 $env:no_proxy = "*"
 
-if (-not $env:DEEPSEEK_API_KEY) {
-  $deepSeekKey = [Environment]::GetEnvironmentVariable("DeepSeek_API_2")
-  if (-not $deepSeekKey) {
-    $deepSeekKey = [Environment]::GetEnvironmentVariable("DeepSeek_API_2", "User")
+if ($ProviderKeyEnvName -and -not [Environment]::GetEnvironmentVariable($ProviderKeyEnvName)) {
+  $providerKey = ""
+  if ($ExampleLocalKeyEnvName) {
+    $providerKey = [Environment]::GetEnvironmentVariable($ExampleLocalKeyEnvName)
+    if (-not $providerKey) {
+      $providerKey = [Environment]::GetEnvironmentVariable($ExampleLocalKeyEnvName, "User")
+    }
   }
-  if ($deepSeekKey) {
-    $env:DEEPSEEK_API_KEY = $deepSeekKey
+  if ($providerKey) {
+    Set-Item -Path "env:$ProviderKeyEnvName" -Value $providerKey
   }
 }
 

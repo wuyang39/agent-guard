@@ -1,0 +1,26 @@
+[
+  {
+    "schemaVersion": "p3-a-1",
+    "profileId": "generation.pyrit_primary",
+    "name": "PyRIT primary generation",
+    "description": "Use PyRIT dataset/template/converter/executor metadata as the main generator source.",
+    "sourceRatioTarget": {
+      "pyrit": 0.7,
+      "aig": 0.2,
+      "manualAndUserSupplied": 0.1
+    },
+    "maxMutationPerSeed": 6
+  },
+  {
+    "schemaVersion": "p3-a-1",
+    "profileId": "generation.aig_enhanced",
+    "name": "AIG strategy enhanced generation",
+    "description": "Use AIG skills, redteam strategies, and PromptSecurity enhancers as supplemental coverage.",
+    "sourceRatioTarget": {
+      "pyrit": 0.65,
+      "aig": 0.25,
+      "manualAndUserSupplied": 0.1
+    },
+    "maxMutationPerSeed": 4
+  }
+]

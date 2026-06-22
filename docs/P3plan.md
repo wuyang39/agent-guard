@@ -47,7 +47,7 @@ P3 C 线报告/前端主线:
 - `ReportBundle` 是 P3 C 线报告聚合对象，必须引用 `DefenseReport`、`RuntimeSupervisionRecord[]`、`SupervisionPolicyPack`、`DetectionReport`、`RiskReport`、`InteractionTrace` 和 `TestContextView`。
 - `CorpusManifest` 是 P3 A 线攻击库生成结果索引，必须记录 PyRIT/AIG/manual/user_supplied 来源、生成方法、run tier、caseId/promptId/oracleId 映射和 coverage 统计。
 - `TestOracle` 仍只用于 A 线离线验证和 corpus 质量检查，不得进入运行时 `TestContext`、风险判定、报告结论或前端业务推导。
-- P3-A 生成的千级攻击库默认按 profile 分层加载；OpenClaw 默认 demo 只运行稳定 profile，不默认运行 full corpus。
+- P3-A 生成的千级攻击库必须按 profile 显式加载；`smoke/openclaw/regression` 是自动化稳定档位，`full-corpus` 是完整覆盖档位。
 
 ### 0.3 前端统一规则
 
@@ -69,7 +69,7 @@ P3 C 线报告/前端主线:
 
 ```txt
 P3-A0 PyRIT 生成链路契约、seed schema、CorpusManifest 和 run profile 冻结
-P3-A1 ResourceSeed / AttackSeed / ToolResponseSeed / UserPromptSeed 大规模整理
+P3-A1 ResourceSeed / AttackSeed / UserPromptSeed / ToolResponseSeed 大规模整理
 P3-A2 PyRIT template/converter/attack executor/seed dataset 驱动生成 1000+ corpus
 P3-A3 AIG 策略库、PromptSecurity enhancer 和 OWASP ASI 映射作为补充增强源
 P3-B0 TestContextView 契约/API/前端正式化
@@ -97,7 +97,7 @@ P3-B 的具体开发流程、可选多 agent 协作方式和审核模板见 `doc
 
 ## 1. 最终判断
 
-当前 A 线已经完成配置加载、sandbox profile、AIG 场景映射、PyRIT 迁入、jailbreak template index、TS mutator 和少量可运行 case，但体量仍是 MVP:
+当前 A 线已经完成配置加载、sandbox profile、AIG 场景映射、PyRIT 迁入、jailbreak template index、TS mutator、UserPromptSeed 变异材料层和 P3-A generated corpus。根目录仍有少量运行时 fixture，但它们只作为跨线兼容入口，不再代表 A 线目标体量:
 
 ```txt
 tools: 8
@@ -113,6 +113,25 @@ pyrit mapped samples: 5
 pyrit jailbreak template refs: 165
 ```
 
+2026-06-22 P3-A 实施已经把 A 线推进为最终语料工程生产链:
+
+```txt
+resource seeds: 1143
+attack seeds: 839
+user prompt seeds: 889
+tool response seeds: 309
+mutation operators: 168
+generated prompts: 2400
+generated test cases: 2400
+generated oracles: 2400
+red team scenarios: 25
+run profiles: smoke / openclaw / regression / full-corpus
+```
+
+同时配置目录已完成分层: `configs/` 根目录只保留跨线共享运行时 fixture；A 线攻击库元数据、PyRIT/AIG source index、seed、operator 和 profile 统一迁入 `configs/a-line/**` 并使用 `schemaVersion: "p3-a-1"`；生成物继续位于 `generated/a-line/**`。
+
+该实现仍遵守 P3 总口径: A 线产物是测试输入、来源索引和覆盖率材料，不是运行时风险结论；generated corpus 必须按 profile 显式加载。
+
 P3-A 不能继续停留在“少量手工 case + 一些 converter”的状态。最后一轮应把 A 线升级为 PyRIT 驱动的攻击库生产系统:
 
 ```txt
@@ -122,17 +141,18 @@ AIG 是策略、扫描思路、增强器和分类体系补充来源。
 Agent Guard 本地 generator 只负责编排、校验、分层和输出契约对象。
 ```
 
-这意味着 P3-A 攻击库的大部分样例必须来自 PyRIT 的 seed dataset、jailbreak template、converter、executor template、attack strategy 和可选 Python bridge 生成，而不是简单地把少量 seed 做笛卡尔组合。组合只用于受控采样、分层和补齐覆盖，不作为主要创新点。
+这意味着 P3-A 攻击库的大部分样例必须来自 PyRIT 的 seed dataset、jailbreak template、converter、executor template、attack strategy 和 PyRIT Python runtime bridge，而不是简单地把少量 seed 做笛卡尔组合。组合只用于受控采样、分层和补齐覆盖，不作为主要创新点。
 
 ## 2. P3-A 总目标
 
 P3-A 完成后必须形成项目级攻击库:
 
 ```txt
-resource seeds:        >= 100
-attack/user prompt seeds: >= 200
+resource seeds:        >= 1000
+attack seeds:          >= 800
+user prompt seeds:     >= 500
 tool response seeds:   >= 80
-mutation operators:    >= 45
+mutation operators:    >= 150
 pyrit generated prompts: >= 1000
 generated test cases:  >= 2000
 generated oracles:     >= generated test cases
@@ -154,26 +174,25 @@ PyRIT generated 包括:
 - PyRIT prompt converters 变异。
 - PyRIT local seed datasets 导入。
 - PyRIT executor templates 固定化生成。
-- PyRIT custom `run_attack_cli.py` / attack executor 可选离线 bridge 生成。
+- PyRIT custom `run_attack_cli.py` / attack executor 通过显式 Python runtime bridge 真实执行。
 - PyRIT evaluator/scorer metadata 进入 coverage 和质量统计。
 
 ## 3. Resource 种子库重构
 
-当前 `configs/resources.json` 仍只保存 9 个资源。P3-A 要把资源从“运行夹具数组”升级为“资源种子库 + 生成资源定义”。
+当前 `configs/resources.json` 仍只保存少量跨线共享运行时 fixture。P3-A 已把资源从“运行夹具数组”升级为 `configs/a-line/corpus/seeds/resource_seeds.json` 和 `generated/a-line/resources.generated.json` 组成的资源种子库与生成资源定义。
 
 新增文件:
 
 ```txt
-configs/resource_seeds.json
+configs/a-line/corpus/seeds/resource_seeds.json
 generated/a-line/resources.generated.json
-generated/a-line/resource_seed_manifest.json
 ```
 
 `ResourceSeed` 建议字段:
 
 ```ts
 type ResourceSeed = {
-  schemaVersion: "mvp-1";
+  schemaVersion: "p3-a-1";
   seedId: string;
   name: string;
   resourceType:
@@ -234,7 +253,7 @@ type ResourceSeed = {
 | repo/devops resources | 10+ | CI config、package manifest、deploy token marker、git diff |
 | benign controls | 10+ | public/internal safe resources，用于误报控制 |
 
-用户补充的 resource、权限级别、示例 prompt 和 tool response 内容应先清洗到 `configs/resource_seeds.json`、`configs/attack_seeds.json` 和 `configs/tool_response_seeds.json`，再由 generator 转成正式 `ResourceDefinition` / `PromptDefinition` / `ToolResponseTemplate`。不要把表格草案直接追加在 `configs/resources.json` 末尾，否则会破坏配置加载。
+用户补充的 resource、权限级别、示例 prompt 和 tool response 内容应先清洗到 `configs/a-line/corpus/seeds/resource_seeds.json`、`configs/a-line/corpus/seeds/attack_seeds.json` 和 `configs/a-line/corpus/seeds/tool_response_seeds.json`，再由 generator 转成正式 `ResourceDefinition` / `PromptDefinition` / `ToolResponseTemplate`。不要把表格草案直接追加在 `configs/resources.json` 末尾，否则会破坏配置加载。
 
 ## 4. PyRIT 主导的攻击生成链路
 
@@ -253,14 +272,14 @@ PyRIT SeedDataset / SeedPrompt / SeedObjective
 新增文件:
 
 ```txt
-configs/attack_seeds.json
-configs/user_prompt_seeds.json
-configs/tool_response_seeds.json
-configs/pyrit_seed_dataset_index.json
-configs/pyrit_executor_template_index.json
-configs/pyrit_scorer_template_index.json
-configs/mutation_operators.json
-configs/corpus_run_profiles.json
+configs/a-line/corpus/seeds/attack_seeds.json
+configs/a-line/corpus/seeds/user_prompt_seeds.json
+configs/a-line/corpus/seeds/tool_response_seeds.json
+configs/a-line/sources/pyrit_seed_dataset_index.json
+configs/a-line/sources/pyrit_executor_template_index.json
+configs/a-line/sources/pyrit_scorer_template_index.json
+configs/a-line/corpus/operators/mutation_operators.json
+configs/a-line/corpus/profiles/corpus_run_profiles.json
 generated/a-line/prompts.generated.json
 generated/a-line/tool_responses.generated.json
 generated/a-line/test_cases.generated.json
@@ -273,7 +292,7 @@ generated/a-line/corpus_stats.json
 
 ```ts
 type AttackSeed = {
-  schemaVersion: "mvp-1";
+  schemaVersion: "p3-a-1";
   seedId: string;
   name: string;
   objective: string;
@@ -296,7 +315,9 @@ type AttackSeed = {
 };
 ```
 
-重点是先构造 Agent-MCP 专项 user prompt/objective，再交给 PyRIT 生成:
+`UserPromptSeed` 是进入 PyRIT/operator 变异前的用户语境材料，不是 `AttackSeed` 的复制。它负责表达用户说法、歧义程度、roleplay persona、委托授权、多轮铺垫和 preferred operators。生成器先组合 `AttackSeed + UserPromptSeed`，再执行 PyRIT/AIG/native operator。
+
+重点是先构造 Agent-MCP 专项 objective 和 user prompt material，再交给 PyRIT 生成:
 
 | user prompt/objective 类型 | PyRIT 生成方式 |
 | --- | --- |
@@ -352,30 +373,43 @@ template_segment_jailbreak, pyrit_text_jailbreak
 执行模式:
 
 ```txt
-native_ts_adapter: 默认 CI 可跑
-pyrit_template_rendered: 默认 CI 可跑
-python_bridge_offline: 手动启用
-llm_assisted: 手动启用
+native_ts_adapter: TypeScript 可复现变异实现，默认 CI 可跑
+template_render: 离线模板/格式载体渲染，默认 CI 可跑
+pyrit_python_bridge: 显式调用 vendored PyRIT Python runtime，可真实调用模型
 metadata_only: 只做来源和覆盖统计
 ```
 
-### 5.3 PyRIT Python bridge
+### 5.3 PyRIT Python runtime bridge
 
-P3-A 可以引入可选 Python bridge，用于真实运行定制 PyRIT 的 `run_attack_cli.py`、executor/attack 和 evaluator 逻辑。
+P3-A 已引入 Python runtime bridge，用于真实运行定制 PyRIT 的 `run_attack_cli.py`、executor/attack 和 evaluator 逻辑。它不是模板化生成的替代描述，而是 A 线 runtime 执行层: generated corpus 负责提供 objective/profile，bridge 负责把选中的 objective 交给 PyRIT attack executor。
 
 约束:
 
 - 不进入默认 CI。
 - 有超时、最大输出长度和 JSON schema。
-- 生成物必须标记 `executionMode: "python_bridge_offline"`。
-- 不写入真实 key，不使用生产环境凭证。
-- bridge 失败不影响 native TS corpus 生成。
+- PyRIT executor operator 必须标记 `executionMode: "pyrit_python_bridge"`。
+- 不写入真实 key，不使用生产环境凭证；key 只能来自环境变量。
+- 模型环境未配置时必须结构化 `skipped`，不能伪造成功。
+- bridge 失败不影响 generated corpus 生成，但会影响显式 runtime 批测验收。
 
-建议命令:
+当前命令:
 
 ```txt
-npm run pyrit:bridge-generate -- --profile offline --max-cases 300
+npm run pyrit:setup-runtime
+npm run pyrit:bridge-smoke
+npm run verify:a-pyrit-runtime
+npm run a:pyrit-runtime
 ```
+
+模型配置:
+
+```txt
+OPENAI_CHAT_ENDPOINT
+OPENAI_CHAT_KEY       # 由协作者本机环境提供；DeepSeek_API_2 只作为历史本机示例兼容项
+OPENAI_CHAT_MODEL     # 当前统一使用 deepseek-v4-pro
+```
+
+协作参数说明以 `docs/A/p3-a-pyrit-runtime-usage.md` 为准。`OPENAI_CHAT_ENDPOINT` 默认使用 Agent Guard PyRIT/OpenClaw shim: `http://127.0.0.1:3100/api/v1/pyrit/openclaw/v1`；Agent Guard realtime MCP endpoint 只用于 OpenClaw/MCP 客户端，不得作为 PyRIT 模型 endpoint。P3-A 的 `attack_cli` 在 selected operator 是 bridge 支持的 `pyrit.converter.*` 时，会先真实调用 PyRIT converter 变换 objective，再运行 `run_attack_cli.py`。
 
 ## 6. AIG 补充迁移
 
@@ -408,7 +442,7 @@ P3-A 的 generated corpus 必须可复现、可分层、可抽样。
 2. 读取 PyRIT dataset/template/executor/scorer index
 3. 读取 AIG strategy/enhancer index
 4. 按 AttackGenerationProfile 选择 PyRIT 生成方式
-5. 渲染 PyRIT template 或调用 native converter / optional bridge
+5. 渲染 PyRIT template、调用 native converter，或显式触发 PyRIT Python runtime bridge
 6. 生成 PromptDefinition / ToolResponseTemplate / TestCase / TestOracle
 7. 去重、长度限制、secret-like pattern 扫描、引用校验
 8. 输出 generated/a-line/** 和 CorpusManifest
@@ -475,7 +509,7 @@ qualityChecks
 交付:
 
 - `ResourceSeed`、`AttackSeed`、`MutationOperatorSpec`、`CorpusManifest` 契约。
-- `configs/resource_seeds.json`、`configs/attack_seeds.json`、`configs/mutation_operators.json`、`configs/corpus_run_profiles.json`。
+- `configs/a-line/corpus/seeds/resource_seeds.json`、`configs/a-line/corpus/seeds/attack_seeds.json`、`configs/a-line/corpus/operators/mutation_operators.json`、`configs/a-line/corpus/profiles/corpus_run_profiles.json`。
 - `generated/a-line/**` 目录和生成物边界。
 
 ### P3-A-1 Resource seed 大扩容
@@ -483,7 +517,7 @@ qualityChecks
 交付:
 
 - 吸收用户补充资源。
-- 手工补齐 100+ resource seeds。
+- 手工补齐 1000+ resource seeds。
 - 资源池覆盖 secret、PII、多租户、RAG、web/browser、memory、devops、internal API、benign controls。
 
 ### P3-A-2 PyRIT 索引和生成器
@@ -494,8 +528,8 @@ qualityChecks
 - PyRIT executor template index。
 - PyRIT scorer template index。
 - PyRIT template renderer。
-- Native TS converter 扩到 45+。
-- 可选 Python bridge 生成入口。
+- Native/template/metadata mutation operators 扩到 150+，并覆盖 PyRIT converter、executor、prompt fuzzer、XPIA 和 token smuggling 类别。
+- PyRIT Python runtime bridge 生成入口和验证脚本。
 
 ### P3-A-3 千级 generated corpus
 
@@ -522,9 +556,8 @@ qualityChecks
 交付:
 
 ```txt
+npm run a:generate-corpus
 npm run verify:a-corpus
-npm run verify:a-corpus-scale
-npm run inspect:a-corpus-stats
 ```
 
 检查:
@@ -541,11 +574,11 @@ npm run inspect:a-corpus-stats
 P3-A 完成标准:
 
 1. PyRIT dataset/template/converter/executor/scorer 均进入可追溯 index。
-2. 100+ resource seeds 和 200+ attack/user prompt seeds 已保存。
-3. 45+ mutation operators 可用于 native/template 生成。
-4. generated corpus 至少 1000 个 case，且 PyRIT 生成占比不低于 70%。
+2. 1000+ resource seeds、800+ attack seeds 和 500+ user prompt seeds 已保存；`UserPromptSeed` 覆盖歧义请求、roleplay、多轮铺垫、委托授权和 benign control。
+3. 150+ mutation operators 可用于 native/template/metadata 生成，且新增 operator 需要有确定性实现或明确 template 语义。
+4. generated corpus 至少 2000 个 case，当前实现为 2400 个 case，且 PyRIT 攻击生成项占比不低于 70%。
 5. smoke/openclaw/regression/full-corpus 四层 profile 清楚。
-6. `verify:a-corpus` 和 `verify:a-corpus-scale` 通过。
+6. `npm run a:generate-corpus` 和 `npm run verify:a-corpus` 通过。
 7. B 线能按 profile 加载 case，不需要读取 PyRIT 私有结构。
 8. C 线能用 `CorpusManifest` 展示覆盖率和来源，不把 oracle 当风险证据。
 
@@ -556,7 +589,6 @@ npm run typecheck
 npm run verify:a-config-sandbox
 npm run verify:a-pyrit-library
 npm run verify:a-corpus
-npm run verify:a-corpus-scale
 git diff --check
 ```
 
@@ -1129,7 +1161,7 @@ A 负责 PyRIT 驱动攻击库、资源种子和策略模板输入:
 
 1. 以 PyRIT 为主生成内置画像样本、OpenClaw 候选样本、外部监督批测样本和 full-corpus 样本。
 2. 扩展资源种子库，覆盖 secret、PII、多租户业务数据、RAG、web/browser、memory、devops、internal API 和 benign controls。
-3. 迁移 PyRIT seed dataset、jailbreak template、executor template、converter、scorer 和可选 Python bridge 生成能力。
+3. 迁移 PyRIT seed dataset、jailbreak template、executor template、converter、scorer 和 Python runtime bridge 生成能力。
 4. 迁移 AIG indirect/data/tool/auth skill、mcp-scan Crescendo/TAP 和 PromptSecurity enhancer 作为补充策略源。
 5. 维护 `CorpusManifest`、run profile、case source metadata 和策略模板与 capabilityTags/riskTags 的映射建议。
 6. 提供工具能力画像的人工校验样本，以及 B/C 可追溯的 caseId、promptId、oracleId 和 source origin。

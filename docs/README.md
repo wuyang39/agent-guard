@@ -8,9 +8,11 @@
 
 本目录中的文档以当前系统规划作为初始规范基线。文档版本统一为 `initial-1`，用于表示文本规范状态。
 
+重要提醒: A 线真实 PyRIT runtime 运行前必须先看 `A/p3-a-pyrit-runtime-usage.md`。`OPENAI_CHAT_MODEL` 当前统一使用 `deepseek-v4-pro`，`OPENAI_CHAT_KEY` 或 provider key 由协作者本机环境提供，`OPENAI_CHAT_ENDPOINT` 默认使用 Agent Guard PyRIT/OpenClaw shim: `http://127.0.0.1:3100/api/v1/pyrit/openclaw/v1`。不得填 Agent Guard realtime MCP endpoint。
+
 系统最终目标是设计并实现一个可用于信息安全作品赛、具备国一竞争力的 Agent-MCP 交互安全测评系统。当前文档中的 `mvp-1` 表示 P0 垂直闭环阶段的运行时契约版本，不代表最终系统目标只停留在简单 MVP。
 
-运行时共享对象版本仍为 `schemaVersion: "mvp-1"`。不要把文档版本和运行时对象版本混用。
+运行时共享对象版本仍可使用 `schemaVersion: "mvp-1"` 作为跨线兼容域；A 线 corpus/source/generated 对象使用 `schemaVersion: "p3-a-1"`。不要把文档版本、运行时对象版本和 A 线语料版本混用。
 
 ## 2. 文档职责
 
@@ -25,8 +27,11 @@
 - `A/p2-pyrit-understanding-record.md`: A 线对本地定制 PyRIT 项目的结构审阅、可迁移能力、已迁入内容和已知限制。
 - `A/p2-a-line-pyrit-integration-plan.md`: A 线 P2 PyRIT 攻击库迁移、配置接入、sandbox 适配、验证和后续开发计划。
 - `A/p2-built-in-test-data-guide.md`: A 线 P2 内置 case、OpenClaw/fallback 分层、AIG/PyRIT 来源和答辩说明。
-- `A/p2-pyrit-python-bridge-contract.md`: 可选 PyRIT Python bridge 的输入输出、边界、烟测和后续接入约束。
+- `A/p2-pyrit-python-bridge-contract.md`: PyRIT Python runtime bridge 的输入输出、模型环境、验证命令、安全边界和 B/C 线对接约束。
 - `A/p2-openclaw-project-runtime-test.md`: 项目隔离 OpenClaw runtime 的本机部署、DeepSeek 模型映射和 required 验证结果。
+- `A/p3-a-corpus-implementation-plan.md`: A 线 P3 攻击库、资源种子、PyRIT/AIG 迁移、千级 generated corpus、run profile 和验证脚本的实现前执行计划。
+- `A/p3-a-pyrit-runtime-usage.md`: A 线 PyRIT runtime 的 DeepSeek/OpenClaw 参数、环境变量优先级、点源脚本和协作运行说明。
+- `../configs/a-line/README.md`: A 线攻击库配置分层说明，解释 `sources/`、`corpus/seeds/`、`corpus/operators/`、`corpus/profiles/` 与 `generated/a-line/**` 的职责。
 - `B/p1-b-runtime-supervision-work-plan.md`: B 线 P1 运行时监督实现计划。
 - `B/p3-b-workflow.md`: P3-B OpenClaw 外部工具实时监督网关的开发流程、多 agent 协作方式、阶段验收和审核模板。
 - `B/p3-b-llm-integration-plan.md`: P3-B LLM 接入计划，限定在工具语义画像增强、未知工具解释和批测解释辅助，不接管运行时监督决策。

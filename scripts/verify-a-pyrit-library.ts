@@ -60,7 +60,7 @@ async function main(): Promise<void> {
   const repository = await loadConfigRepository(configsDir);
   const library = repository.pyritAttackLibrary;
 
-  assert(library.libraryId === "pyrit_adapted.p2", "loads PyRIT adapted library");
+  assert(library.libraryId === "pyrit_adapted.p3_a", "loads PyRIT adapted library");
   assert(library.attackFamilies.length >= 6, "loads PyRIT attack families");
   assert(library.samples.length >= 5, "loads PyRIT mapped samples");
   assert(library.converterCatalog.length >= 17, "loads extended PyRIT converter catalog");

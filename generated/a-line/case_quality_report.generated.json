@@ -1,0 +1,12 @@
+{
+  "schemaVersion": "p3-a-1",
+  "reportId": "case_quality_report.p3_a.selection",
+  "generatedAt": "2026-06-18T00:00:00.000Z",
+  "corpusId": "corpus.p3_a.generated",
+  "totalCards": 2400,
+  "minQualityScore": 90,
+  "averageQualityScore": 93,
+  "lowQualityCaseIds": [],
+  "duplicateDigestCaseIds": [],
+  "issues": []
+}

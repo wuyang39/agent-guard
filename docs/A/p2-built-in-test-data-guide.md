@@ -52,8 +52,8 @@ A 线禁止把 `TestOracle`、预期结论或防御效果注入运行时。`Test
 已进入 Agent Guard 的 PyRIT 内容分三层:
 
 1. `third_party/pyrit_adapted/**`: 可追溯源码快照，保留攻击执行器、converter、datasets、CLI/API/evaluator。
-2. `configs/pyrit_attack_library.json`: 攻击家族、converter 目录、sample 到 case 的映射。
-3. `configs/pyrit_jailbreak_template_index.json`: 165 个 jailbreak 模板的元数据索引，不包含模板全文。
+2. `configs/a-line/sources/pyrit_attack_library.json`: 攻击家族、converter 目录、sample 到 case 的映射。
+3. `configs/a-line/sources/pyrit_jailbreak_template_index.json`: 165 个 jailbreak 模板的元数据索引，不包含模板全文。
 
 当前 native TS adapter 支持 15 个确定性 converter:
 

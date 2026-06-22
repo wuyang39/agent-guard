@@ -1,0 +1,1435 @@
+{
+  "schemaVersion": "p3-a-1",
+  "indexId": "pyrit_seed_dataset_index.p3_a",
+  "generatedAt": "2026-06-22T06:55:29.185Z",
+  "sourceRoot": "third_party/pyrit_adapted",
+  "datasets": [
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_local_adv_bench_prompt",
+      "name": "adv_bench.prompt",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/local/adv_bench.prompt",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed",
+        "prompt"
+      ],
+      "sha256": "90206a34ec8700c034e6679db0e8ed2868de2e247288a189c00d582846a224b9",
+      "byteLength": 129127,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/local/adv_bench.prompt"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_local_airt_fairness_prompt",
+      "name": "fairness.prompt",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/local/airt/fairness.prompt",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed",
+        "prompt"
+      ],
+      "sha256": "966ce0e5795bef8c55e64c718b540b8bf798ba0af023d94cde0719f03a4ff389",
+      "byteLength": 637,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/local/airt/fairness.prompt"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_local_airt_fairness_yes_no_prompt",
+      "name": "fairness_yes_no.prompt",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/local/airt/fairness_yes_no.prompt",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed",
+        "prompt"
+      ],
+      "sha256": "4ff9160a811d6787d76dca39c7abee50fdc1ea191ee7c98201fa7bf50c6e72be",
+      "byteLength": 1252,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/local/airt/fairness_yes_no.prompt"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_local_airt_harassment_prompt",
+      "name": "harassment.prompt",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/local/airt/harassment.prompt",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed",
+        "prompt"
+      ],
+      "sha256": "837106c5e8b3ddaa5e3b419f7090e8a71228d709231b0ea40cbc70882daf9d57",
+      "byteLength": 337,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/local/airt/harassment.prompt"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_local_airt_harms_prompt",
+      "name": "harms.prompt",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/local/airt/harms.prompt",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed",
+        "prompt"
+      ],
+      "sha256": "95136d943a4475957c031b34d55e618ca117ee5c3bb505b4f90493fbec150fd2",
+      "byteLength": 713,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/local/airt/harms.prompt"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_local_airt_hate_prompt",
+      "name": "hate.prompt",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/local/airt/hate.prompt",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed",
+        "prompt"
+      ],
+      "sha256": "b17c2af5f2c848ccab4ea2188ff4ac1c3399c2a5c050ec8535f87446f71085fc",
+      "byteLength": 2741,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/local/airt/hate.prompt"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_local_airt_illegal_prompt",
+      "name": "illegal.prompt",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/local/airt/illegal.prompt",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed",
+        "prompt"
+      ],
+      "sha256": "55c66e82602a5cf7d09cd9d4ef3db447b350df7a5fa17df90f83351b49b1e31c",
+      "byteLength": 716,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/local/airt/illegal.prompt"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_local_airt_leakage_prompt",
+      "name": "leakage.prompt",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/local/airt/leakage.prompt",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed",
+        "prompt",
+        "leak"
+      ],
+      "sha256": "0870adf5174a3b6b15cccf6b0077319891addff90b0c5f0a7c2fa19320994ad0",
+      "byteLength": 1286,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/local/airt/leakage.prompt"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_local_airt_malware_prompt",
+      "name": "malware.prompt",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/local/airt/malware.prompt",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed",
+        "prompt"
+      ],
+      "sha256": "04796bf7c620caa60d0ca2e0ff0ec7fd522fa7abdb9ad2734fb6985a2ebbb8b8",
+      "byteLength": 601,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/local/airt/malware.prompt"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_local_airt_misinformation_prompt",
+      "name": "misinformation.prompt",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/local/airt/misinformation.prompt",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed",
+        "prompt"
+      ],
+      "sha256": "e254f9dbc0171442ca40ee3e0b5ad787245c0d560b569a00da69fd161dec81f3",
+      "byteLength": 402,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/local/airt/misinformation.prompt"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_local_airt_psychosocial_prompt",
+      "name": "psychosocial.prompt",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/local/airt/psychosocial.prompt",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed",
+        "prompt"
+      ],
+      "sha256": "940ee9a6a5fa04a1035e4cbab0e8560095635da870b5750e6127cb098d8adc96",
+      "byteLength": 612,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/local/airt/psychosocial.prompt"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_local_airt_scams_prompt",
+      "name": "scams.prompt",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/local/airt/scams.prompt",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed",
+        "prompt"
+      ],
+      "sha256": "8eb9c9018748981f69327a879a514d584e090b3682ce0521e56a4c7fcfdbf164",
+      "byteLength": 831,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/local/airt/scams.prompt"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_local_airt_sexual_prompt",
+      "name": "sexual.prompt",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/local/airt/sexual.prompt",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed",
+        "prompt"
+      ],
+      "sha256": "c0e5c71e927817746a534c2c7edcdf89cca98e422fab5dce8161e6fed4af76b4",
+      "byteLength": 366,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/local/airt/sexual.prompt"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_local_airt_violence_prompt",
+      "name": "violence.prompt",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/local/airt/violence.prompt",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed",
+        "prompt"
+      ],
+      "sha256": "2e74587402ce09ffb2f690092fbe3d10c8a4edab7c243271f7a807926d107c70",
+      "byteLength": 373,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/local/airt/violence.prompt"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_local_examples_illegal_multimodal_dataset_prompt",
+      "name": "illegal-multimodal-dataset.prompt",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/local/examples/illegal-multimodal-dataset.prompt",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed",
+        "prompt"
+      ],
+      "sha256": "c031e6a7e35a8a329f1583122e2dad638b0dab15862cd222f355a62383eb8b34",
+      "byteLength": 1555,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/local/examples/illegal-multimodal-dataset.prompt"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_local_examples_illegal_multimodal_group_prompt",
+      "name": "illegal-multimodal-group.prompt",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/local/examples/illegal-multimodal-group.prompt",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed",
+        "prompt"
+      ],
+      "sha256": "b9bd45ecbdcc54bbc10abefe1e7ada789dda08e8e032c4a05eddd44128c50f46",
+      "byteLength": 1151,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/local/examples/illegal-multimodal-group.prompt"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_local_examples_illegal_multimodal_objective_group_prompt",
+      "name": "illegal-multimodal-objective-group.prompt",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/local/examples/illegal-multimodal-objective-group.prompt",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed",
+        "prompt"
+      ],
+      "sha256": "0f21712c69fa6e8ab398c6056e8717d5eece6c30bf4f9a54dfe3a1cfb534a5df",
+      "byteLength": 923,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/local/examples/illegal-multimodal-objective-group.prompt"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_local_examples_illegal_multiple_multiturn_dataset_prompt",
+      "name": "illegal-multiple-multiturn-dataset.prompt",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/local/examples/illegal-multiple-multiturn-dataset.prompt",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed",
+        "prompt"
+      ],
+      "sha256": "faae3fdff87d6a8d5c23c874f9cabbfd75c6cd84cee941df9ff584fb97ac559b",
+      "byteLength": 1301,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/local/examples/illegal-multiple-multiturn-dataset.prompt"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_local_examples_illegal_multiturn_group_prompt",
+      "name": "illegal-multiturn-group.prompt",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/local/examples/illegal-multiturn-group.prompt",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed",
+        "prompt"
+      ],
+      "sha256": "c9b2d914ce70b8e0dce7f7c07a659ca73c12e3e1929ff7bfa92634f42112b48e",
+      "byteLength": 841,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/local/examples/illegal-multiturn-group.prompt"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_local_examples_illegal_objective_only_group_prompt",
+      "name": "illegal-objective-only-group.prompt",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/local/examples/illegal-objective-only-group.prompt",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed",
+        "prompt"
+      ],
+      "sha256": "0604c591284518d6621404a71a1d75a9fe2751455324eeb4579297b6033f6477",
+      "byteLength": 294,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/local/examples/illegal-objective-only-group.prompt"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_local_examples_psych_crisis_conversations_prompt",
+      "name": "psych-crisis-conversations.prompt",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/local/examples/psych-crisis-conversations.prompt",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed",
+        "prompt"
+      ],
+      "sha256": "4e98609391b6b8a7ded0ff2872a9e0e9de8535597bcfca672c1643091bf1459b",
+      "byteLength": 11931,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/local/examples/psych-crisis-conversations.prompt"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_local_garak_access_shell_commands_prompt",
+      "name": "access_shell_commands.prompt",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/local/garak/access_shell_commands.prompt",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed",
+        "prompt",
+        "shell"
+      ],
+      "sha256": "35a75597efe99c78704e4bb0eed8cc715abe97e81109b552c3e6656079f6a9a8",
+      "byteLength": 532,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/local/garak/access_shell_commands.prompt"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_local_garak_slur_terms_en_prompt",
+      "name": "slur_terms_en.prompt",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/local/garak/slur_terms_en.prompt",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed",
+        "prompt"
+      ],
+      "sha256": "beb278e69a2bf86d40a92bdc1239c281a5dccd9255fe1c97d4f9cb0602b8496d",
+      "byteLength": 1339,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/local/garak/slur_terms_en.prompt"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_local_garak_web_html_js_prompt",
+      "name": "web_html_js.prompt",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/local/garak/web_html_js.prompt",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed",
+        "prompt"
+      ],
+      "sha256": "bc0e2900af0f5d97c6117424696c25c5569e25624c3e5b1da0157b38e0653d9d",
+      "byteLength": 1409,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/local/garak/web_html_js.prompt"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_local_local_dataset_loader_py",
+      "name": "local_dataset_loader.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/local/local_dataset_loader.py",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed"
+      ],
+      "sha256": "8900b57ce85f08d53a9ce0c6ceaa60bc5feb7e414a33a145f258e534ebd58e64",
+      "byteLength": 5767,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/local/local_dataset_loader.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_local_psfuzz_steal_system_prompt",
+      "name": "psfuzz_steal_system.prompt",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/local/psfuzz_steal_system.prompt",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed",
+        "prompt"
+      ],
+      "sha256": "0324f867c1c39b05b55b222f31c90f309ecc3c10719308bcb65d7461b8f5b5d9",
+      "byteLength": 1481,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/local/psfuzz_steal_system.prompt"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_local_init_py",
+      "name": "__init__.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/local/__init__.py",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed"
+      ],
+      "sha256": "2409af8deb483232ff930ed88911410a7ef4c165af601ba078f39cc24883bcc2",
+      "byteLength": 371,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/local/__init__.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_remote_aegis_ai_content_safety_dataset_py",
+      "name": "aegis_ai_content_safety_dataset.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/remote/aegis_ai_content_safety_dataset.py",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed"
+      ],
+      "sha256": "17a2f61a3c02335c0d64945d51ed8d46a4f36ffbadfc802d04c5b70d0768817d",
+      "byteLength": 7227,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/remote/aegis_ai_content_safety_dataset.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_remote_aya_redteaming_dataset_py",
+      "name": "aya_redteaming_dataset.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/remote/aya_redteaming_dataset.py",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed",
+        "redteam"
+      ],
+      "sha256": "9bd58d449cc65bf62c8b9f235e49a20904e59ab3ee3764cee1b3b02b13243931",
+      "byteLength": 4637,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/remote/aya_redteaming_dataset.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_remote_babelscape_alert_dataset_py",
+      "name": "babelscape_alert_dataset.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/remote/babelscape_alert_dataset.py",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed"
+      ],
+      "sha256": "92cd67a547bcd801156f332ba14faa986ee9a1ba2e142dab472de9eab0a63158",
+      "byteLength": 3357,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/remote/babelscape_alert_dataset.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_remote_beaver_tails_dataset_py",
+      "name": "beaver_tails_dataset.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/remote/beaver_tails_dataset.py",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed"
+      ],
+      "sha256": "83d76f34aef6e359ad00255fab39aa1dccb95be27c34482c9c909d9ac54e8ef9",
+      "byteLength": 4330,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/remote/beaver_tails_dataset.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_remote_cbt_bench_dataset_py",
+      "name": "cbt_bench_dataset.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/remote/cbt_bench_dataset.py",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed"
+      ],
+      "sha256": "a743492ad92d22036b92a19afce0f3dcc31ad0426291561dfde3854637dc43f2",
+      "byteLength": 4832,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/remote/cbt_bench_dataset.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_remote_ccp_sensitive_prompts_dataset_py",
+      "name": "ccp_sensitive_prompts_dataset.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/remote/ccp_sensitive_prompts_dataset.py",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed",
+        "prompt"
+      ],
+      "sha256": "aeab7ea555187c2ba9ba8dcc8e83c1530e52f95c475ad3ef48945e89492d6e99",
+      "byteLength": 2402,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/remote/ccp_sensitive_prompts_dataset.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_remote_darkbench_dataset_py",
+      "name": "darkbench_dataset.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/remote/darkbench_dataset.py",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed"
+      ],
+      "sha256": "dc6b7ba387de1467512ddbb1f7d3d7681edc8f22c02bea43134cf682bd43ed80",
+      "byteLength": 3736,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/remote/darkbench_dataset.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_remote_equitymedqa_dataset_py",
+      "name": "equitymedqa_dataset.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/remote/equitymedqa_dataset.py",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed"
+      ],
+      "sha256": "d1f1438f375a765108a20f485268525eb30757e4f66d8c145ad3e19a05bcf670",
+      "byteLength": 6372,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/remote/equitymedqa_dataset.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_remote_forbidden_questions_dataset_py",
+      "name": "forbidden_questions_dataset.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/remote/forbidden_questions_dataset.py",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed"
+      ],
+      "sha256": "fffcb6ada20d76fb35536b3efbfe5607442b25a64a82b80ef88ca82a583613dc",
+      "byteLength": 3546,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/remote/forbidden_questions_dataset.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_remote_harmbench_dataset_py",
+      "name": "harmbench_dataset.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/remote/harmbench_dataset.py",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed"
+      ],
+      "sha256": "bdc5417dfece939169eb5c40cf51f8c70cad36da19eb11a96abd4f191fd63d8b",
+      "byteLength": 3634,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/remote/harmbench_dataset.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_remote_harmbench_multimodal_dataset_py",
+      "name": "harmbench_multimodal_dataset.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/remote/harmbench_multimodal_dataset.py",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed"
+      ],
+      "sha256": "88cca964fe2dbafce46c79b7671a194a5bfd24fa9388e79c320ac20b908595e1",
+      "byteLength": 10026,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/remote/harmbench_multimodal_dataset.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_remote_harmful_qa_dataset_py",
+      "name": "harmful_qa_dataset.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/remote/harmful_qa_dataset.py",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed"
+      ],
+      "sha256": "3bdb105188898c2f5d8fa03856ff9cf69062ee6dd749d6c4d29a6b5b7d3bf9ea",
+      "byteLength": 3255,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/remote/harmful_qa_dataset.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_remote_jbb_behaviors_dataset_py",
+      "name": "jbb_behaviors_dataset.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/remote/jbb_behaviors_dataset.py",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed"
+      ],
+      "sha256": "65e7ef2cd432c367ea3c86fed0de8212fb541247382249490e50d9096d6a3644",
+      "byteLength": 8853,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/remote/jbb_behaviors_dataset.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_remote_librai_do_not_answer_dataset_py",
+      "name": "librai_do_not_answer_dataset.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/remote/librai_do_not_answer_dataset.py",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed"
+      ],
+      "sha256": "8ca7999d3a781089a5a36a9b9d4f6260a9a894064cfc0e1fa6dc23c7d235b5be",
+      "byteLength": 2583,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/remote/librai_do_not_answer_dataset.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_remote_llm_latent_adversarial_training_dataset_py",
+      "name": "llm_latent_adversarial_training_dataset.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/remote/llm_latent_adversarial_training_dataset.py",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed"
+      ],
+      "sha256": "ccb0ccaf4d11e827b5ebe5899ab36ffc26464c7499a2a2e269fa77e905487f96",
+      "byteLength": 2251,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/remote/llm_latent_adversarial_training_dataset.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_remote_medsafetybench_dataset_py",
+      "name": "medsafetybench_dataset.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/remote/medsafetybench_dataset.py",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed"
+      ],
+      "sha256": "bfe3178e2a7f1f9520783bf9df774ba5894c514d38a66f400e152dbbdfd7f304",
+      "byteLength": 5272,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/remote/medsafetybench_dataset.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_remote_mlcommons_ailuminate_dataset_py",
+      "name": "mlcommons_ailuminate_dataset.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/remote/mlcommons_ailuminate_dataset.py",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed"
+      ],
+      "sha256": "fcfc0045b3935b894e6ce7a06e4f7c21c1b1818c8523b006fa7f75ad126efde5",
+      "byteLength": 3976,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/remote/mlcommons_ailuminate_dataset.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_remote_multilingual_vulnerability_dataset_py",
+      "name": "multilingual_vulnerability_dataset.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/remote/multilingual_vulnerability_dataset.py",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed",
+        "vulnerability"
+      ],
+      "sha256": "9974a8a99410127a523d723f37cea0aa4f7f9e8d79b5531fdd484605877ddb1e",
+      "byteLength": 3097,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/remote/multilingual_vulnerability_dataset.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_remote_or_bench_dataset_py",
+      "name": "or_bench_dataset.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/remote/or_bench_dataset.py",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed"
+      ],
+      "sha256": "89f542ab6145b7056f908464eec32a70a14ea4fcca0007e9e701d672e98c7c62",
+      "byteLength": 4743,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/remote/or_bench_dataset.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_remote_pku_safe_rlhf_dataset_py",
+      "name": "pku_safe_rlhf_dataset.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/remote/pku_safe_rlhf_dataset.py",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed"
+      ],
+      "sha256": "db093a331d998a7e3a36515a37d0149c16c7ca0949be8432d1dcbb7f5a0b9f34",
+      "byteLength": 5005,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/remote/pku_safe_rlhf_dataset.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_remote_promptintel_dataset_py",
+      "name": "promptintel_dataset.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/remote/promptintel_dataset.py",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed",
+        "prompt"
+      ],
+      "sha256": "71fd12f7b2260ef90c0495d44c4d8db75ba50a163c8838dd92d076fcb7f40083",
+      "byteLength": 12722,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/remote/promptintel_dataset.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_remote_red_team_social_bias_dataset_py",
+      "name": "red_team_social_bias_dataset.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/remote/red_team_social_bias_dataset.py",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed"
+      ],
+      "sha256": "3316ecf9586707eecfea52b4798ada4b520410f1a32b31948d9ee22fe44915f8",
+      "byteLength": 5427,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/remote/red_team_social_bias_dataset.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_remote_remote_dataset_loader_py",
+      "name": "remote_dataset_loader.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/remote/remote_dataset_loader.py",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed"
+      ],
+      "sha256": "3c22216e3672717b297e00f5bc190eb01cec202990933b3b53889162a8bae2e2",
+      "byteLength": 12116,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/remote/remote_dataset_loader.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_remote_salad_bench_dataset_py",
+      "name": "salad_bench_dataset.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/remote/salad_bench_dataset.py",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed"
+      ],
+      "sha256": "fcc053a66b4bc3e33e66b525deee4542c0bb4690455a7310f05720865aee728f",
+      "byteLength": 4415,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/remote/salad_bench_dataset.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_remote_simple_safety_tests_dataset_py",
+      "name": "simple_safety_tests_dataset.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/remote/simple_safety_tests_dataset.py",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed"
+      ],
+      "sha256": "b3033b70f7588c6fe04e4b290daafc380b26fad8df1edd7c55f81a5aa8542263",
+      "byteLength": 3393,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/remote/simple_safety_tests_dataset.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_remote_sorry_bench_dataset_py",
+      "name": "sorry_bench_dataset.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/remote/sorry_bench_dataset.py",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed"
+      ],
+      "sha256": "7a6240004198b7c2157858bc0cdaddb0fd8662f832d6839f66bb7a85630de081",
+      "byteLength": 7877,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/remote/sorry_bench_dataset.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_remote_sosbench_dataset_py",
+      "name": "sosbench_dataset.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/remote/sosbench_dataset.py",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed"
+      ],
+      "sha256": "16a44b3a486e901dbfaf94f9dd771b51d693a9a76cec961906d1688d8ce1ad4f",
+      "byteLength": 3379,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/remote/sosbench_dataset.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_remote_tdc23_redteaming_dataset_py",
+      "name": "tdc23_redteaming_dataset.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/remote/tdc23_redteaming_dataset.py",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed",
+        "redteam"
+      ],
+      "sha256": "3c414a9aab74c1e9233326db4535185ff1e9fa0021a5578b081311f0d7cadc44",
+      "byteLength": 2688,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/remote/tdc23_redteaming_dataset.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_remote_toxic_chat_dataset_py",
+      "name": "toxic_chat_dataset.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/remote/toxic_chat_dataset.py",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed"
+      ],
+      "sha256": "9f17ced81251967ba44a986a37fce5783ca914ad8ae102157c26fa3aab0d7d59",
+      "byteLength": 5932,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/remote/toxic_chat_dataset.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_remote_transphobia_awareness_dataset_py",
+      "name": "transphobia_awareness_dataset.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/remote/transphobia_awareness_dataset.py",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed"
+      ],
+      "sha256": "c37cf858e1eefee70587fe7f2bf3df7649fd95ba6a940c47fbe4fe54500e4b4f",
+      "byteLength": 5525,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/remote/transphobia_awareness_dataset.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_remote_vlsu_multimodal_dataset_py",
+      "name": "vlsu_multimodal_dataset.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/remote/vlsu_multimodal_dataset.py",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed"
+      ],
+      "sha256": "6b148f79161e4796a2d1719c4cba1163ac500bab7e1182b092c76ecca863b4fd",
+      "byteLength": 11423,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/remote/vlsu_multimodal_dataset.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_remote_xstest_dataset_py",
+      "name": "xstest_dataset.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/remote/xstest_dataset.py",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed"
+      ],
+      "sha256": "1fef1351805eec6c03a179be63a0ffa2e12ec702b5ef0a335a8fb15f117e4e6d",
+      "byteLength": 2500,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/remote/xstest_dataset.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_remote_init_py",
+      "name": "__init__.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/remote/__init__.py",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed"
+      ],
+      "sha256": "938e223c1efc3d965c85afbb7457c55dde652415d4eb2275ade3c6241b65a61d",
+      "byteLength": 5276,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/remote/__init__.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_seed_dataset_provider_py",
+      "name": "seed_dataset_provider.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/seed_dataset_provider.py",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed"
+      ],
+      "sha256": "4a6bc5600543b9b6ec59ce436d94acf93ab947eaee66c26eaa94f7a3154ad0d7",
+      "byteLength": 13052,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/seed_dataset_provider.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_seed_datasets_seed_metadata_py",
+      "name": "seed_metadata.py",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/seed_datasets/seed_metadata.py",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "seed"
+      ],
+      "sha256": "7a04b38ea96b610e56512b3602f12db3b92f08c25684f399390716df44cb8b1b",
+      "byteLength": 10566,
+      "metadata": {
+        "relativePath": "pyrit/datasets/seed_datasets/seed_metadata.py"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_scorer_evals_harm_exploits_csv",
+      "name": "exploits.csv",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/scorer_evals/harm/exploits.csv",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "score"
+      ],
+      "sha256": "077576fcd8780e9806ef3b439adf0e9e51c8d461ce4151a2aa2cff8991ba1e44",
+      "byteLength": 90303,
+      "metadata": {
+        "relativePath": "pyrit/datasets/scorer_evals/harm/exploits.csv"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_scorer_evals_harm_exploits_metrics_jsonl",
+      "name": "exploits_metrics.jsonl",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/scorer_evals/harm/exploits_metrics.jsonl",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "score"
+      ],
+      "sha256": "94598745c659cc2e70a11f82ff52aa8790c311a6143c04e988edebf35f1cea0e",
+      "byteLength": 6779,
+      "metadata": {
+        "relativePath": "pyrit/datasets/scorer_evals/harm/exploits_metrics.jsonl"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_scorer_evals_harm_fairness_bias_csv",
+      "name": "fairness_bias.csv",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/scorer_evals/harm/fairness_bias.csv",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "score"
+      ],
+      "sha256": "24fafe1fd8f9af5f248aa4cfee4f5073c5c70ea832b1f8f55d983577031d1b8b",
+      "byteLength": 46092,
+      "metadata": {
+        "relativePath": "pyrit/datasets/scorer_evals/harm/fairness_bias.csv"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_scorer_evals_harm_fairness_bias_metrics_jsonl",
+      "name": "fairness_bias_metrics.jsonl",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/scorer_evals/harm/fairness_bias_metrics.jsonl",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "score"
+      ],
+      "sha256": "a521f1a1d738e63a03d3434cde1a7bcac009398d0971c79d0ba7dd03eee29541",
+      "byteLength": 4748,
+      "metadata": {
+        "relativePath": "pyrit/datasets/scorer_evals/harm/fairness_bias_metrics.jsonl"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_scorer_evals_harm_hate_speech_csv",
+      "name": "hate_speech.csv",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/scorer_evals/harm/hate_speech.csv",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "score"
+      ],
+      "sha256": "162d6ebe3a536f9d32918b61d70f3e9972e941a2cf5faae110e88b32ddfe88ab",
+      "byteLength": 42806,
+      "metadata": {
+        "relativePath": "pyrit/datasets/scorer_evals/harm/hate_speech.csv"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_scorer_evals_harm_hate_speech_metrics_jsonl",
+      "name": "hate_speech_metrics.jsonl",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/scorer_evals/harm/hate_speech_metrics.jsonl",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "score"
+      ],
+      "sha256": "460652859f7633bab924230f57676e7f67dfa86c1dc699377e31a32b05a47e9f",
+      "byteLength": 6095,
+      "metadata": {
+        "relativePath": "pyrit/datasets/scorer_evals/harm/hate_speech_metrics.jsonl"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_scorer_evals_harm_hate_speech_multi_score_csv",
+      "name": "hate_speech_multi_score.csv",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/scorer_evals/harm/hate_speech_multi_score.csv",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "score"
+      ],
+      "sha256": "8445ed309a43f28d938303ad5405d7a37e70593a24ce90115c823c78aafb87fd",
+      "byteLength": 132898,
+      "metadata": {
+        "relativePath": "pyrit/datasets/scorer_evals/harm/hate_speech_multi_score.csv"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_scorer_evals_harm_information_integrity_metrics_jsonl",
+      "name": "information_integrity_metrics.jsonl",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/scorer_evals/harm/information_integrity_metrics.jsonl",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "score"
+      ],
+      "sha256": "3170d9304fa46647d5abfa101c1bf426fc26af2c45ad10ec1654075ea33ffeea",
+      "byteLength": 6128,
+      "metadata": {
+        "relativePath": "pyrit/datasets/scorer_evals/harm/information_integrity_metrics.jsonl"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_scorer_evals_harm_info_integrity_csv",
+      "name": "info_integrity.csv",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/scorer_evals/harm/info_integrity.csv",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "score"
+      ],
+      "sha256": "b3667bab498262b6e8f824f34182ae0e27442bf9ddb192b299edd49f752c37fd",
+      "byteLength": 91066,
+      "metadata": {
+        "relativePath": "pyrit/datasets/scorer_evals/harm/info_integrity.csv"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_scorer_evals_harm_mini_hate_speech_csv",
+      "name": "mini_hate_speech.csv",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/scorer_evals/harm/mini_hate_speech.csv",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "score"
+      ],
+      "sha256": "3d97d9ca5c66825551145e82f5c02fbbb7d4255f9f7a3814fa30112a727f2e92",
+      "byteLength": 12852,
+      "metadata": {
+        "relativePath": "pyrit/datasets/scorer_evals/harm/mini_hate_speech.csv"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_scorer_evals_harm_privacy_csv",
+      "name": "privacy.csv",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/scorer_evals/harm/privacy.csv",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "score"
+      ],
+      "sha256": "ea476cb891ef1b725d84fd2f139d4bc55b164bbe483978ef14ec057b68d00514",
+      "byteLength": 129976,
+      "metadata": {
+        "relativePath": "pyrit/datasets/scorer_evals/harm/privacy.csv"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_scorer_evals_harm_privacy_metrics_jsonl",
+      "name": "privacy_metrics.jsonl",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/scorer_evals/harm/privacy_metrics.jsonl",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "score"
+      ],
+      "sha256": "06739837e1738e06d22ef46e95b79f3c3d8d23d126f4b09c882968c642e5a414",
+      "byteLength": 5471,
+      "metadata": {
+        "relativePath": "pyrit/datasets/scorer_evals/harm/privacy_metrics.jsonl"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_scorer_evals_harm_self_harm_csv",
+      "name": "self_harm.csv",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/scorer_evals/harm/self_harm.csv",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "score"
+      ],
+      "sha256": "7df7a3638c65ed7aff2f86605c4f7f7cfe6a779cee51a1aca208363dd4a65cec",
+      "byteLength": 95594,
+      "metadata": {
+        "relativePath": "pyrit/datasets/scorer_evals/harm/self_harm.csv"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_scorer_evals_harm_self_harm_metrics_jsonl",
+      "name": "self_harm_metrics.jsonl",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/scorer_evals/harm/self_harm_metrics.jsonl",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "score"
+      ],
+      "sha256": "74209080a9767cac79427be6eeeee9278dcd205c3f81f4edf788b9e935af23fb",
+      "byteLength": 5897,
+      "metadata": {
+        "relativePath": "pyrit/datasets/scorer_evals/harm/self_harm_metrics.jsonl"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_scorer_evals_harm_sexual_csv",
+      "name": "sexual.csv",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/scorer_evals/harm/sexual.csv",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "score"
+      ],
+      "sha256": "d780e2e3024f95719d1d28b65ce651a8e0851a831012c9a71139ebb929912451",
+      "byteLength": 106580,
+      "metadata": {
+        "relativePath": "pyrit/datasets/scorer_evals/harm/sexual.csv"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_scorer_evals_harm_sexual_metrics_jsonl",
+      "name": "sexual_metrics.jsonl",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/scorer_evals/harm/sexual_metrics.jsonl",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "score"
+      ],
+      "sha256": "e13dae5686ce883912dafa6472f7fa4f360f45d716150a98ff684eb7cd5f706c",
+      "byteLength": 7849,
+      "metadata": {
+        "relativePath": "pyrit/datasets/scorer_evals/harm/sexual_metrics.jsonl"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_scorer_evals_harm_violence_csv",
+      "name": "violence.csv",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/scorer_evals/harm/violence.csv",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "score"
+      ],
+      "sha256": "eea704b97e1d84899d377bba2df3e56673e774cf1ff6e1a2631dd421d8bfb81a",
+      "byteLength": 114566,
+      "metadata": {
+        "relativePath": "pyrit/datasets/scorer_evals/harm/violence.csv"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_scorer_evals_harm_violence_metrics_jsonl",
+      "name": "violence_metrics.jsonl",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/scorer_evals/harm/violence_metrics.jsonl",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "score"
+      ],
+      "sha256": "15d718faab75662d797eaf57d969e4c17f5d286a5d4d22dbad0718d2ebf439c6",
+      "byteLength": 5333,
+      "metadata": {
+        "relativePath": "pyrit/datasets/scorer_evals/harm/violence_metrics.jsonl"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_scorer_evals_harm_violence_multi_score_csv",
+      "name": "violence_multi_score.csv",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/scorer_evals/harm/violence_multi_score.csv",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "score"
+      ],
+      "sha256": "9ba1992ca3a736d8c90fa0a30d162eac34014cd2a8b83045798a00151ec79a2c",
+      "byteLength": 63431,
+      "metadata": {
+        "relativePath": "pyrit/datasets/scorer_evals/harm/violence_multi_score.csv"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_scorer_evals_objective_bias_csv",
+      "name": "bias.csv",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/scorer_evals/objective/bias.csv",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "score"
+      ],
+      "sha256": "27c618ea07796cb1f3102d490edeb84d9e399a56c74f8f48f6e0001aa04c755f",
+      "byteLength": 46165,
+      "metadata": {
+        "relativePath": "pyrit/datasets/scorer_evals/objective/bias.csv"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_scorer_evals_objective_exploits_csv",
+      "name": "exploits.csv",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/scorer_evals/objective/exploits.csv",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "score"
+      ],
+      "sha256": "e893a3e76b08c30b5a3cec454cfdaf191bded91d7c3f44f0f2cb2f1969832961",
+      "byteLength": 93153,
+      "metadata": {
+        "relativePath": "pyrit/datasets/scorer_evals/objective/exploits.csv"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_scorer_evals_objective_hate_speech_csv",
+      "name": "hate_speech.csv",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/scorer_evals/objective/hate_speech.csv",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "score"
+      ],
+      "sha256": "44b79ffe79d85104047d8141609787294dfdac61e6adba23325f4183a276ee76",
+      "byteLength": 21286,
+      "metadata": {
+        "relativePath": "pyrit/datasets/scorer_evals/objective/hate_speech.csv"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_scorer_evals_objective_info_integrity_csv",
+      "name": "info_integrity.csv",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/scorer_evals/objective/info_integrity.csv",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "score"
+      ],
+      "sha256": "adba287ee9877cb6b1bbacfab2a9e00c280e1e8a98a8946d92dac38644496338",
+      "byteLength": 68239,
+      "metadata": {
+        "relativePath": "pyrit/datasets/scorer_evals/objective/info_integrity.csv"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_scorer_evals_objective_objective_achieved_metrics_jsonl",
+      "name": "objective_achieved_metrics.jsonl",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/scorer_evals/objective/objective_achieved_metrics.jsonl",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "score"
+      ],
+      "sha256": "1981cd94b5c081a5efa9d09335c253c8b7e8c895991e4c2c86b895801c2c8419",
+      "byteLength": 69010,
+      "metadata": {
+        "relativePath": "pyrit/datasets/scorer_evals/objective/objective_achieved_metrics.jsonl"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_scorer_evals_objective_privacy_csv",
+      "name": "privacy.csv",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/scorer_evals/objective/privacy.csv",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "score"
+      ],
+      "sha256": "52bc984f5db9985e671f9140a44dd6b7196dd8d7aaa51a280d5576e36ce2745a",
+      "byteLength": 93401,
+      "metadata": {
+        "relativePath": "pyrit/datasets/scorer_evals/objective/privacy.csv"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_scorer_evals_objective_self_harm_csv",
+      "name": "self_harm.csv",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/scorer_evals/objective/self_harm.csv",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "score"
+      ],
+      "sha256": "08af453e22e4b2ca6df718762e79dde2fa31619ca4ac26f6e099cdb8bd82a379",
+      "byteLength": 42227,
+      "metadata": {
+        "relativePath": "pyrit/datasets/scorer_evals/objective/self_harm.csv"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_scorer_evals_objective_sexual_csv",
+      "name": "sexual.csv",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/scorer_evals/objective/sexual.csv",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "score"
+      ],
+      "sha256": "fa484d7b12bdcd622131c1076c8c98e58ffd129f09d54ed19b3636a9824af802",
+      "byteLength": 46202,
+      "metadata": {
+        "relativePath": "pyrit/datasets/scorer_evals/objective/sexual.csv"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_scorer_evals_objective_violence_csv",
+      "name": "violence.csv",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/scorer_evals/objective/violence.csv",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "score"
+      ],
+      "sha256": "162eb2bfb23f1109d347e7d5dc4d00c9534270c4b19227e2c3653533898666cf",
+      "byteLength": 37902,
+      "metadata": {
+        "relativePath": "pyrit/datasets/scorer_evals/objective/violence.csv"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_scorer_evals_refusal_scorer_refusal_csv",
+      "name": "refusal.csv",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/scorer_evals/refusal_scorer/refusal.csv",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "score"
+      ],
+      "sha256": "b77bc03a947f18821026299f0a98f6ec9dac472b7c3c9ea305a64b15a50a4325",
+      "byteLength": 166040,
+      "metadata": {
+        "relativePath": "pyrit/datasets/scorer_evals/refusal_scorer/refusal.csv"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_scorer_evals_refusal_scorer_refusal_metrics_jsonl",
+      "name": "refusal_metrics.jsonl",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/scorer_evals/refusal_scorer/refusal_metrics.jsonl",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "score"
+      ],
+      "sha256": "00a4ba5a53c2e47087d476c8aa5dcffdbbd22412fcfcb4d2cebf9bb617409cbe",
+      "byteLength": 7944,
+      "metadata": {
+        "relativePath": "pyrit/datasets/scorer_evals/refusal_scorer/refusal_metrics.jsonl"
+      }
+    },
+    {
+      "sourceId": "pyrit_seed_dataset.pyrit_datasets_scorer_evals_sample_mini_refusal_csv",
+      "name": "mini_refusal.csv",
+      "sourcePath": "third_party/pyrit_adapted/pyrit/datasets/scorer_evals/sample/mini_refusal.csv",
+      "sourceType": "pyrit_seed_dataset",
+      "origin": "pyrit",
+      "tags": [
+        "score"
+      ],
+      "sha256": "295002e3a8550d08aaad9755c2755506e87490e58b48719b72a751fa4be11b63",
+      "byteLength": 23387,
+      "metadata": {
+        "relativePath": "pyrit/datasets/scorer_evals/sample/mini_refusal.csv"
+      }
+    }
+  ]
+}

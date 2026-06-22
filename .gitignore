@@ -1,4 +1,7 @@
 node_modules/
+.venv/
+third_party/pyrit_adapted/*.egg-info/
+third_party/pyrit_adapted/attack_results.db
 openclaw-runtime/
 dist/
 coverage/
@@ -22,3 +25,5 @@ outputs/exports/**
 !outputs/traces/.gitkeep
 !outputs/reports/.gitkeep
 !outputs/exports/.gitkeep
+generated/a-line/tmp/
+generated/a-line/*.tmp.json

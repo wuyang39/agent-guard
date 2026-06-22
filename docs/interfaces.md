@@ -49,8 +49,15 @@ configs/test_cases.json
 configs/test_oracles.json
 configs/red_team_scenarios.json
 configs/supervision_policy_templates.json
-configs/pyrit_attack_library.json
-configs/pyrit_jailbreak_template_index.json
+configs/a-line/sources/pyrit_attack_library.json
+configs/a-line/sources/pyrit_jailbreak_template_index.json
+configs/a-line/corpus/seeds/resource_seeds.json
+configs/a-line/corpus/seeds/attack_seeds.json
+configs/a-line/corpus/seeds/user_prompt_seeds.json
+configs/a-line/corpus/seeds/tool_response_seeds.json
+configs/a-line/corpus/operators/mutation_operators.json
+configs/a-line/corpus/profiles/corpus_run_profiles.json
+generated/a-line/**
 AgentUnderTest
 ```
 
@@ -62,6 +69,14 @@ RedTeamScenarioSet
 PolicyTemplate[]
 PyritAttackLibrary
 PyritJailbreakTemplateIndex
+CorpusManifest
+CorpusRunProfile[]
+AttackCaseCard[]
+LlmSelectionCatalogItem[]
+CoverageTaxonomy
+CaseQualityReport
+PyritBridgeRequest
+PyritBridgeResult
 ```
 
 输出给 C:
@@ -94,6 +109,16 @@ TestOracle
 `PyritAttackLibrary` 是 A 线 P2 新增的攻击库目录对象，用于描述 vendored PyRIT 来源、converter catalog、attack family 和 sample 到 case 的映射。它不是运行时风险结论，不能替代 `InteractionTrace` 或 C 线报告。
 
 `PyritJailbreakTemplateIndex` 是 A 线 P2 新增的 PyRIT jailbreak 模板元数据索引。它只保存路径、分组、参数、作者、哈希和大小，不保存模板全文；前端和报告只能把它作为来源说明或覆盖率统计。
+
+`CorpusManifest` 是 A 线 P3 generated corpus 的来源和覆盖率索引。B 线可按 `CorpusRunProfile` 显式选择 generated case；C 线可用 `CorpusManifest` 展示来源、覆盖率和样本分层。`CorpusManifest` 不包含风险结论，不能替代 `InteractionTrace`、`RiskReport` 或 `DefenseReport`。
+
+`AttackCaseCard[]`、`LlmSelectionCatalogItem[]`、`CoverageTaxonomy` 和 `CaseQualityReport` 是 A 线 P3 AB-0/AB-1 新增的攻击库选择资产。B 线只能把这些对象当作候选池元数据使用: 先按 profile、enabled、目标工具面和预算过滤，再由规则或 LLM rerank 选择 `caseId`。B 线不得把完整 `TestCase.task.instruction`、prompt/resource/tool response 原文或 `TestOracle.expectedOutcome` 发送给 LLM；真实运行仍必须通过 `caseId` 加载 `TestContext`。C 线可以展示 coverage/source origin/selection reason，但风险结论仍只能来自 B 线真实 `InteractionTrace`、检测结果和运行时监督记录。
+
+`PyritBridgeRequest` / `PyritBridgeResult` 是 A 线 P3 PyRIT Python runtime bridge 的执行契约。它用于把 generated corpus 中选出的 objective 交给 vendored PyRIT `run_attack_cli.py` 做真实模型攻击，并把结果写入 `outputs/pyrit-runs/**`。它不是 `TestContext` 的一部分，也不能替代 B 线 `InteractionTrace` 或 realtime `RuntimeSupervisionRecord[]`。
+
+`configs/a-line/corpus/seeds/attack_seeds.json` 是攻击目标、目标工具/资源、风险类别和基础 objective 的入口。`configs/a-line/corpus/seeds/user_prompt_seeds.json` 是进入 PyRIT/operator 变异前的用户 prompt 材料层，负责直接请求、歧义请求、委托授权、多轮铺垫、roleplay persona 和 benign control。生成器先组合 `AttackSeed + UserPromptSeed`，再应用 PyRIT/AIG/operator 变异；`UserPromptSeed` 不得退化为 `AttackSeed` 的机械复制。
+
+`generated/a-line/test_oracles.generated.json` 只用于离线验收和 corpus 质量检查，不进入运行时 `TestContext`，也不得作为 C 线风险判定证据。
 
 其中 `sandbox` 必须包含:
 
@@ -272,7 +297,7 @@ TestContext + InteractionTrace
 
 每次联调前检查:
 
-- 所有共享对象都有 `schemaVersion: "mvp-1"`
+- 运行时共享对象仍可使用 `schemaVersion: "mvp-1"`；A 线 corpus/source/generated 对象使用 `schemaVersion: "p3-a-1"`，跨线联调时不得把 full corpus 默认注入运行时。
 - `TestContext.caseId` 与 `InteractionTrace.caseId` 一致
 - `TestContext.contextId` 与 `InteractionTrace.contextId` 一致
 - `InteractionTrace.events` 按 `sequence` 单调递增
@@ -283,6 +308,8 @@ TestContext + InteractionTrace
 - `RiskReport.evidenceChains` 与 `RiskEvaluationResult.evidenceChains` 一致
 - `ReportArtifact[]` 至少包含 `json` 和 `html`
 - 每个 `ReportArtifact.reportId` 都指向本次 `RiskReport.reportId`
+- 如果启用攻击库选择，B 线选择输入只读取 `AttackCaseCard[]` 或 `LlmSelectionCatalogItem[]`，输出 `caseId` 后再加载完整 `TestContext`
+- LLM 选择理由不得作为 `Finding`、`RiskEvaluationResult`、`DefenseReport` 或策略包生成依据
 
 联调失败时，先修接口契约和 mock 数据，再讨论业务逻辑。
 

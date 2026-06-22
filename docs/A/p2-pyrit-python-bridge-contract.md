@@ -1,158 +1,202 @@
-# A 线 P2 PyRIT Python Bridge 草案
+# A 线 PyRIT Python Runtime Bridge 契约
 
-日期: 2026-06-15  
-状态: P2 可选能力草案，未进入默认运行主链路  
-适用范围: 后续需要真实执行 vendored PyRIT 攻击时的接口约束
+日期: 2026-06-22
+状态: P3-A 已实现运行时桥接
+适用范围: A 线显式调用 vendored PyRIT runtime、真实模型攻击批测、bridge 结果归档和后续 B/C 线证据对接
 
-## 1. 当前状态
+## 1. 当前定位
 
-P2 已经把用户提供的定制 PyRIT 项目迁入:
-
-```txt
-third_party/pyrit_adapted
-```
-
-默认 Agent Guard 主链路仍使用 TypeScript:
+P2 时本文档只是可选草案；P3-A 已经把 bridge 落成两层能力:
 
 ```txt
-configs -> TestContext -> sandbox -> trace -> risk/policy/report
+generated/a-line/**                # 可复现输入层，提供 case/objective/profile/manifest
+third_party/pyrit_adapted/**       # vendored PyRIT runtime 和定制 run_attack_cli.py
+backend/src/modules/corpus/pyritPythonBridge.ts
+scripts/verify-a-pyrit-runtime.ts
+scripts/generate-a-pyrit-runtime-batch.ts
+outputs/pyrit-runs/**              # bridge request/result 和 PyRIT output JSON
 ```
 
-当前不在默认 CI 中真实执行 PyRIT Python attack executor。原因:
+这条链路不再是“确定性离线变异 + 模板化编排”的替代说法。它会在模型环境配置齐全时真实调用 PyRIT 的 `run_attack_cli.py`，执行 `role_play`、`crescendo`、`red_teaming`、`context_compliance`、`many_shot_jailbreak`、`renellm`、`flip`、`prompt_sending` 等攻击方法。
 
-- 真实攻击依赖模型 target、API key、PyRIT memory 和 Python 依赖环境。
-- 多轮攻击会引入网络、耗时和不稳定性。
-- P2 默认验收需要可重复、可离线、无真实副作用。
+## 2. 安装和环境
 
-因此 P2 的 Python bridge 是可选能力，不是默认必跑项。
+项目隔离 Python runtime:
 
-## 2. 已有可复用入口
-
-vendored PyRIT 中最重要的三个定制入口:
-
-| 文件 | 当前价值 | P2 状态 |
-| --- | --- | --- |
-| `run_attack_cli.py` | 中文 CLI、攻击方法选择、单条/xlsx 批量、JSON 输出、evaluator sync | 已迁入，作为 bridge 主要执行入口候选 |
-| `evaluator.py` | SQLite 评估统计、0/1/2 grade、similarity、iter/mutate count、成功率方差 | 已迁入，作为报告统计增强候选 |
-| `api.py` | FastAPI 统计查询和 batch endpoint | 已迁入，但 batch endpoint 依赖缺失 `attack_runner.py`，不作为 P2 默认服务 |
-
-当前新增脚本:
-
-```bash
-npm run pyrit:bridge-smoke
+```powershell
+npm run pyrit:setup-runtime
 ```
 
-该脚本只做:
+该命令在项目内创建或复用:
 
-- Python 可用性检查。
-- `py_compile` 语法检查。
-- 确认 `run_attack_cli.py` 保留核心攻击方法。
-- 确认 `api.py` 对缺失 batch runner 有明确错误边界。
+```txt
+.venv/pyrit
+```
 
-它不调用真实模型、不发网络、不写 evaluator 数据库。
+`.venv/` 和 editable install 产生的 `third_party/pyrit_adapted/*.egg-info/` 已被 `.gitignore` 忽略，不进入主线提交。
 
-## 3. 建议 bridge 输入契约
+真实模型攻击需要以下环境变量:
 
-后续如接入真实 PyRIT，建议新增独立 bridge 请求对象，不直接复用 `TestContext` 全量对象。
+```txt
+OPENAI_CHAT_ENDPOINT
+OPENAI_CHAT_KEY
+OPENAI_CHAT_MODEL
+```
+
+兼容映射:
+
+```txt
+OPENAI_CHAT_KEY       <- OPENAI_CHAT_KEY、AGENT_GUARD_PYRIT_OPENAI_CHAT_KEY、provider key 或 -KeyEnvName 指定的本机变量
+OPENAI_CHAT_ENDPOINT  <- 默认 Agent Guard PyRIT/OpenClaw shim，或显式 OpenAI-compatible chat base URL
+OPENAI_CHAT_MODEL     <- AGENT_GUARD_PYRIT_OPENAI_CHAT_MODEL、DEEPSEEK_MODEL 或默认 deepseek-v4-pro
+```
+
+密钥只允许来自用户环境变量或本地未提交配置，不得写入 configs、docs、outputs 摘要、commit 或命令行明文。
+
+协作参数和常见错误见 `docs/A/p3-a-pyrit-runtime-usage.md`。`OPENAI_CHAT_ENDPOINT` 必须是 OpenAI-compatible chat base URL；Agent Guard realtime MCP 地址 `http://127.0.0.1:3100/api/v1/openclaw/realtime/mcp` 不能填入该变量。
+
+## 3. Bridge 输入
+
+共享类型已进入:
+
+```txt
+packages/contracts/src/types/corpus.ts
+```
+
+核心请求:
 
 ```ts
 type PyritBridgeRequest = {
-  schemaVersion: "mvp-1"
+  schemaVersion: "p3-a-1"
+  bridgeVersion: string
   requestId: string
-  caseId: string
-  sampleId: string
-  method:
-    | "prompt_sending"
-    | "flip"
-    | "red_teaming"
-    | "crescendo"
-    | "context_compliance"
-    | "role_play"
-    | "many_shot_jailbreak"
-    | "renellm"
-  objective: string
-  maxTurns?: number
-  timeoutMs: number
-  outputDir: string
-  evaluatorSync: boolean
-  envKeys: string[]
+  mode: "converter_batch" | "attack_cli"
+  generatedAt: string
+  items: PyritBridgeRequestItem[]
+  options?: JsonObject
 }
 ```
 
-约束:
+`converter_batch` 用于验证 PyRIT converter runtime 和离线转换结果；`attack_cli` 用于调用 `run_attack_cli.py` 做真实模型攻击。
 
-- `objective` 必须来自 A 线安全 fixture 或显式人工输入，不从前端自由拼接。
-- `outputDir` 必须限制在 `outputs/pyrit-runs/**`。
-- `envKeys` 只允许列环境变量名，不能保存密钥值。
-- 默认 `evaluatorSync=false`，避免无意写入 SQLite。
+P3-A 当前 `converter_batch` 已接入更多 vendored PyRIT 文本 converter，包括 Base2048、BinAscii、Braille、Superscript、UnicodeConfusable、UnicodeReplacement、UnicodeSubstitution、Ascii/Variation/SneakyBits smuggling、AsciiArt、AskToDecode、Emoji/Ecoji、CharSwap、Diacritic 和 Zalgo。`attack_cli` 在遇到 bridge 支持的 `pyrit.converter.*` operator 时，会先对 objective 做 PyRIT converter 预处理，再把变换后的 objective 传给 attack executor。
 
-## 4. 建议 bridge 输出契约
+`attack_cli` item 必须包含:
+
+```ts
+type PyritBridgeRequestItem = {
+  itemId: string
+  operatorId: string
+  input: string
+  method?: PyritAttackMethod
+  objective?: string
+  maxTurns?: number
+  renellmMaxRounds?: number
+  renellmRewriteStyle?: string
+  evaluatorSync?: boolean
+  metadata?: JsonObject
+}
+```
+
+`objective` 必须来自 A 线 generated corpus、受控 seed 或人工明确传入的安全 fixture；不要从前端自由拼接。
+
+## 4. Bridge 输出
+
+核心结果:
 
 ```ts
 type PyritBridgeResult = {
-  schemaVersion: "mvp-1"
+  schemaVersion: "p3-a-1"
+  bridgeVersion: string
   requestId: string
-  caseId: string
-  sampleId: string
-  status: "completed" | "failed" | "skipped"
-  method: PyritBridgeRequest["method"]
+  mode: "converter_batch" | "attack_cli"
   startedAt: string
   endedAt: string
-  outputJsonPath?: string
-  executedTurns?: number
-  outcome?: string
-  outcomeReason?: string
-  lastScore?: {
-    value?: string | boolean | number
-    scoreType?: string
-    scoreRationale?: string
-  }
-  lastResponsePreview?: string
-  metrics?: {
-    answerGrade?: 0 | 1 | 2
-    similarity?: number
-    iterCount?: number
-    mutateTotalCount?: number
-  }
-  error?: string
+  pythonExecutable?: string
+  pyritAvailable: boolean
+  modelConfigured?: boolean
+  fallbackAllowed: boolean
+  items: PyritBridgeResultItem[]
+  errors: string[]
+  metadata?: JsonObject
 }
 ```
 
-约束:
+`PyritBridgeResultItem` 会记录 `method`、`objective`、`outputJsonPath`、`executedTurns`、`outcome`、`lastScore`、`lastResponsePreview`、`runtimeUsed` 和 `status`。
+
+安全要求:
 
 - `lastResponsePreview` 必须截断和脱敏。
-- 不能把完整模型输出、完整 jailbreak 模板或密钥写进正式 API。
-- 如果 PyRIT 产生的输出包含疑似 secret，bridge 必须先落本地隔离文件，再由 C 线决定是否进入报告。
+- 完整模型输出只落在 `outputs/pyrit-runs/**`，不写入 configs。
+- `runtimeUsed: "pyrit"` 才代表真实 PyRIT runtime 参与。
+- 模型环境未配置时必须返回 `status: "skipped"` 和 `modelConfigured: false`，不能用 fallback 假装成功。
 
-## 5. 安全边界
+## 5. 命令
 
-必须满足:
+安装/烟测:
 
-- 子进程 timeout。
-- 运行目录固定。
-- 输出路径 allowlist。
-- 不允许 Python bridge 修改 `configs/**`。
-- 不允许 bridge 写入 `third_party/**`。
-- 默认不启用真实网络，除非用户显式配置模型 target 环境。
-- 所有失败都要结构化返回，不能让 API 层吞异常。
-
-## 6. 与 P2 主链路的关系
-
-P2 默认完成定义仍以 TS 可复现链路为准:
-
-```txt
-PyRIT source/config/index
-  -> TestCase
-  -> sandbox deterministic behavior
-  -> trace/risk/policy/report
+```powershell
+npm run pyrit:setup-runtime
+npm run pyrit:bridge-smoke
+npm run verify:a-pyrit-runtime
 ```
 
-Python bridge 后续最多作为增强入口:
+真实运行一批 generated corpus 样本:
 
-```txt
-PyRITBridgeResult
-  -> 生成额外 evidence artifact
-  -> C 线可选纳入 DetectionReport 统计
+```powershell
+npm run a:pyrit-runtime
 ```
 
-它不能替代 B 线真实 Agent trace，也不能直接生成 C 线风险结论。
+可选环境:
+
+```powershell
+$env:PYRIT_RUNTIME_PROFILE="regression"
+$env:PYRIT_RUNTIME_MAX_ITEMS="8"
+$env:PYRIT_RUNTIME_METHODS="role_play,crescendo,red_teaming,renellm"
+$env:PYRIT_RUNTIME_MAX_TURNS="3"
+$env:PYRIT_RUNTIME_TIMEOUT_MS="180000"
+$env:VERIFY_PYRIT_RUNTIME_REQUIRED="1"
+```
+
+`VERIFY_PYRIT_RUNTIME_REQUIRED=1` 会把模型未配置或无真实 attack 完成视为失败；未设置时，缺少 endpoint/model 会按 `SKIP` 处理。
+
+显式设置 `PYRIT_RUNTIME_METHODS` 时，该批次所有选中样本都使用指定 method；未设置时，bridge 才按 case/operator 推断 `context_compliance`、`role_play`、`crescendo` 等更重的方法。联调 smoke 建议使用:
+
+```powershell
+$env:PYRIT_RUNTIME_PROFILE="smoke"
+$env:PYRIT_RUNTIME_MAX_ITEMS="2"
+$env:PYRIT_RUNTIME_METHODS="prompt_sending"
+$env:PYRIT_RUNTIME_MAX_TURNS="1"
+```
+
+推荐在当前 PowerShell 会话中准备 DeepSeek/OpenClaw 参数:
+
+```powershell
+. .\scripts\setup-pyrit-openclaw-env.ps1
+```
+
+该脚本默认设置 `OPENAI_CHAT_MODEL=deepseek-v4-pro`，endpoint 指向 Agent Guard API 提供的 PyRIT/OpenClaw shim: `http://127.0.0.1:3100/api/v1/pyrit/openclaw/v1`。key 应优先来自 `OPENAI_CHAT_KEY`、`AGENT_GUARD_PYRIT_OPENAI_CHAT_KEY` 或 provider 原生变量，例如 `DEEPSEEK_API_KEY`；`DeepSeek_API_2` 仅作为本机示例兼容项。18789 是项目隔离 OpenClaw gateway/control plane，不再作为 PyRIT `OPENAI_CHAT_ENDPOINT`。
+
+2026-06-22 已实测: `verify:a-pyrit-runtime` 在 required 模式下通过，`a:pyrit-runtime` smoke profile 2 条 `prompt_sending` 样本均返回 `status: "ok"`。
+
+## 6. 安全边界
+
+- 子进程必须有 timeout。
+- 运行目录固定在项目根或 `third_party/pyrit_adapted`。
+- 输出路径限制在 `outputs/pyrit-runs/**`。
+- bridge 不允许修改 `configs/**` 或 generated corpus。
+- bridge 不允许把密钥值写入结果。
+- 失败必须结构化返回，不能让 API 层吞异常。
+- 这条链路不替代 B 线 `InteractionTrace` 或 realtime `RuntimeSupervisionRecord[]`；它提供 A 线攻击生成/执行证据和后续 C 线报告素材。
+
+## 7. 与 A/B/C 的关系
+
+A 线负责:
+
+- 生成受控 objective。
+- 选择 profile/case。
+- 调用 PyRIT runtime bridge。
+- 归档 `PyritBridgeResult` 和 `outputs/pyrit-runs/**`。
+
+B 线仍负责真实 Agent 执行和 `InteractionTrace` / `RuntimeSupervisionRecord[]`。
+C 线后续可以消费 `PyritBridgeResult` 作为攻击库来源与模型攻击执行证据，但不能把它直接当成 Agent 风险结论。

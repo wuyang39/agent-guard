@@ -4,6 +4,7 @@
 生成日期: 2026-06-21
 视角: 资深产品经理
 适用范围: A 线攻击库、B 线检测运行与 OpenClaw/Gateway 监督前测试编排
+当前实现状态: A 线 AB-0/AB-1 已落地；B 线 AB-2/AB-3 已在 p3-B 接入，并可在 A 线正式语料资产可用后切换为真实 CorpusManifest / AttackCaseCard 输入。
 
 说明: 本文档中的 A/B 指 A 线与 B 线协同，不是面向用户流量的 A/B 实验。核心目标是让 LLM 参与“攻击库样本选择与测试编排”，但不让 LLM 直接替代风险检测、策略生成或运行时监督决策。
 
@@ -190,6 +191,16 @@ Agent 工具面摘要
 时间预算和 case 数量预算
 已有风险画像摘要
 ```
+
+B 线正式接入 LLM 时使用以下环境变量名。A 线 AB-0/AB-1 只声明输入约定并生成安全 catalog，不调用模型做正式选择:
+
+```txt
+AGENT_GUARD_LLM_ENDPOINT
+AGENT_GUARD_LLM_MODEL=deepseek-v4-pro
+AGENT_GUARD_LLM_KEY
+```
+
+个人本机变量如 `DeepSeek_API_2` 只能作为开发者自己的兼容示例，不是团队默认变量名，也不得写入配置文件或提交到仓库。
 
 不允许发送给 LLM:
 

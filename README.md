@@ -4,7 +4,7 @@ Agent Guard is a project-level framework for evaluating and supervising the beha
 
 The only tested object is the Agent. MCP Server, Tool, Resource, Prompt, Tool Response templates, risk rules, and test cases are internal test fixtures.
 
-Important for A-line PyRIT runtime: before running model-backed PyRIT checks, read `docs/A/p3-a-pyrit-runtime-usage.md`. Use `OPENAI_CHAT_MODEL=deepseek-v4-pro`, map `OPENAI_CHAT_KEY` from the local `DeepSeek_API_2` environment variable, and provide an OpenAI-compatible chat endpoint. Do not use the Agent Guard realtime MCP endpoint as `OPENAI_CHAT_ENDPOINT`.
+Important for A-line PyRIT runtime: before running model-backed PyRIT checks, read `docs/A/p3-a-pyrit-runtime-usage.md`. Use `OPENAI_CHAT_MODEL=deepseek-v4-pro`, provide `OPENAI_CHAT_KEY` or a provider key such as `DEEPSEEK_API_KEY`, and point `OPENAI_CHAT_ENDPOINT` to the Agent Guard PyRIT/OpenClaw shim: `http://127.0.0.1:3100/api/v1/pyrit/openclaw/v1`. Do not use the Agent Guard realtime MCP endpoint as `OPENAI_CHAT_ENDPOINT`.
 
 ## Module Layout
 

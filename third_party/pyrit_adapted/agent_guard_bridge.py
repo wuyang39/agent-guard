@@ -379,8 +379,8 @@ def build_attack_env() -> tuple[dict[str, str], list[str]]:
         "OPENAI_CHAT_KEY": [
             "OPENAI_CHAT_KEY",
             "AGENT_GUARD_PYRIT_OPENAI_CHAT_KEY",
-            "DeepSeek_API_2",
             "DEEPSEEK_API_KEY",
+            "DeepSeek_API_2",
         ],
         "OPENAI_CHAT_MODEL": [
             "OPENAI_CHAT_MODEL",
@@ -524,7 +524,7 @@ async def run_attack_cli_batch(request: dict[str, Any]) -> dict[str, Any]:
                     runtime_used="not_executed",
                     notes=[
                         "Model target is not configured. Set OPENAI_CHAT_ENDPOINT, OPENAI_CHAT_KEY and OPENAI_CHAT_MODEL.",
-                        "OPENAI_CHAT_KEY can be supplied through DeepSeek_API_2 or AGENT_GUARD_PYRIT_OPENAI_CHAT_KEY.",
+                        "OPENAI_CHAT_KEY can be supplied directly, through AGENT_GUARD_PYRIT_OPENAI_CHAT_KEY, a provider key such as DEEPSEEK_API_KEY, or an explicit local key env.",
                     ],
                     error=f"Missing model environment variables: {', '.join(missing_env)}",
                 )

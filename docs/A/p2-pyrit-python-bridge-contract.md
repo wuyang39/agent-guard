@@ -46,8 +46,8 @@ OPENAI_CHAT_MODEL
 兼容映射:
 
 ```txt
-OPENAI_CHAT_KEY       <- DeepSeek_API_2 或 AGENT_GUARD_PYRIT_OPENAI_CHAT_KEY
-OPENAI_CHAT_ENDPOINT  <- AGENT_GUARD_PYRIT_OPENAI_CHAT_ENDPOINT、AGENT_GUARD_PYRIT_OPENCLAW_CHAT_ENDPOINT、OPENCLAW_CHAT_ENDPOINT 或 DEEPSEEK_ENDPOINT
+OPENAI_CHAT_KEY       <- OPENAI_CHAT_KEY、AGENT_GUARD_PYRIT_OPENAI_CHAT_KEY、provider key 或 -KeyEnvName 指定的本机变量
+OPENAI_CHAT_ENDPOINT  <- 默认 Agent Guard PyRIT/OpenClaw shim，或显式 OpenAI-compatible chat base URL
 OPENAI_CHAT_MODEL     <- AGENT_GUARD_PYRIT_OPENAI_CHAT_MODEL、DEEPSEEK_MODEL 或默认 deepseek-v4-pro
 ```
 
@@ -160,13 +160,24 @@ $env:VERIFY_PYRIT_RUNTIME_REQUIRED="1"
 
 `VERIFY_PYRIT_RUNTIME_REQUIRED=1` 会把模型未配置或无真实 attack 完成视为失败；未设置时，缺少 endpoint/model 会按 `SKIP` 处理。
 
+显式设置 `PYRIT_RUNTIME_METHODS` 时，该批次所有选中样本都使用指定 method；未设置时，bridge 才按 case/operator 推断 `context_compliance`、`role_play`、`crescendo` 等更重的方法。联调 smoke 建议使用:
+
+```powershell
+$env:PYRIT_RUNTIME_PROFILE="smoke"
+$env:PYRIT_RUNTIME_MAX_ITEMS="2"
+$env:PYRIT_RUNTIME_METHODS="prompt_sending"
+$env:PYRIT_RUNTIME_MAX_TURNS="1"
+```
+
 推荐在当前 PowerShell 会话中准备 DeepSeek/OpenClaw 参数:
 
 ```powershell
 . .\scripts\setup-pyrit-openclaw-env.ps1
 ```
 
-该脚本默认设置 `OPENAI_CHAT_MODEL=deepseek-v4-pro`，从 `DeepSeek_API_2` 映射 key，并尝试使用项目隔离 OpenClaw gateway 候选 endpoint `http://127.0.0.1:18789/v1`。如果 gateway 没有暴露 OpenAI-compatible `/v1`，需要显式传入正确 endpoint。
+该脚本默认设置 `OPENAI_CHAT_MODEL=deepseek-v4-pro`，endpoint 指向 Agent Guard API 提供的 PyRIT/OpenClaw shim: `http://127.0.0.1:3100/api/v1/pyrit/openclaw/v1`。key 应优先来自 `OPENAI_CHAT_KEY`、`AGENT_GUARD_PYRIT_OPENAI_CHAT_KEY` 或 provider 原生变量，例如 `DEEPSEEK_API_KEY`；`DeepSeek_API_2` 仅作为本机示例兼容项。18789 是项目隔离 OpenClaw gateway/control plane，不再作为 PyRIT `OPENAI_CHAT_ENDPOINT`。
+
+2026-06-22 已实测: `verify:a-pyrit-runtime` 在 required 模式下通过，`a:pyrit-runtime` smoke profile 2 条 `prompt_sending` 样本均返回 `status: "ok"`。
 
 ## 6. 安全边界
 

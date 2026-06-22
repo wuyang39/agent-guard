@@ -2,6 +2,8 @@
 param(
   [string]$Endpoint = "",
   [string]$Model = "deepseek-v4-pro",
+  [string]$KeyEnvName = "",
+  [string]$OpenClawProviderKeyEnvName = "DEEPSEEK_API_KEY",
   [switch]$Required
 )
 
@@ -37,7 +39,7 @@ function Test-TcpPort {
   }
 }
 
-$defaultOpenClawGatewayEndpoint = "http://127.0.0.1:18789/v1"
+$defaultPyritOpenClawEndpoint = "http://127.0.0.1:3100/api/v1/pyrit/openclaw/v1"
 $resolvedEndpoint = First-NonEmpty @(
   $Endpoint,
   $env:OPENAI_CHAT_ENDPOINT,
@@ -49,7 +51,7 @@ $resolvedEndpoint = First-NonEmpty @(
 
 $endpointWasDefaulted = $false
 if ([string]::IsNullOrWhiteSpace($resolvedEndpoint)) {
-  $resolvedEndpoint = $defaultOpenClawGatewayEndpoint
+  $resolvedEndpoint = $defaultPyritOpenClawEndpoint
   $endpointWasDefaulted = $true
 }
 
@@ -62,20 +64,24 @@ if ($resolvedEndpoint -match "/api/v1/openclaw/realtime/mcp/?$") {
 }
 
 $resolvedKey = First-NonEmpty @(
+  $(if ($KeyEnvName) { [Environment]::GetEnvironmentVariable($KeyEnvName) } else { "" }),
   $env:OPENAI_CHAT_KEY,
   $env:AGENT_GUARD_PYRIT_OPENAI_CHAT_KEY,
-  $env:DeepSeek_API_2,
-  $env:DEEPSEEK_API_KEY
+  $env:DEEPSEEK_API_KEY,
+  $env:DeepSeek_API_2
 )
 
 if ([string]::IsNullOrWhiteSpace($resolvedKey)) {
-  $message = "Missing OPENAI_CHAT_KEY. Set user/session env DeepSeek_API_2 or AGENT_GUARD_PYRIT_OPENAI_CHAT_KEY."
+  $message = "Missing OPENAI_CHAT_KEY. Set OPENAI_CHAT_KEY, AGENT_GUARD_PYRIT_OPENAI_CHAT_KEY, a provider key such as DEEPSEEK_API_KEY, or pass -KeyEnvName <YOUR_LOCAL_KEY_ENV>. DeepSeek_API_2 is only a local example name."
   if ($Required) {
     throw $message
   }
   Write-Warning $message
 } else {
   $env:OPENAI_CHAT_KEY = $resolvedKey
+  if ($OpenClawProviderKeyEnvName -and -not [Environment]::GetEnvironmentVariable($OpenClawProviderKeyEnvName)) {
+    Set-Item -Path "env:$OpenClawProviderKeyEnvName" -Value $resolvedKey
+  }
 }
 
 $env:OPENAI_CHAT_ENDPOINT = $resolvedEndpoint
@@ -87,15 +93,18 @@ Write-Host "Agent Guard PyRIT runtime env prepared for this PowerShell process."
 Write-Host "OPENAI_CHAT_ENDPOINT=$resolvedEndpoint"
 Write-Host "OPENAI_CHAT_MODEL=$Model"
 Write-Host ("OPENAI_CHAT_KEY=" + ($(if ([string]::IsNullOrWhiteSpace($resolvedKey)) { "missing" } else { "set" })))
+if ($OpenClawProviderKeyEnvName) {
+  Write-Host ("$OpenClawProviderKeyEnvName=" + ($(if ([Environment]::GetEnvironmentVariable($OpenClawProviderKeyEnvName)) { "set" } else { "missing" })))
+}
 
 if ($endpointWasDefaulted) {
-  Write-Warning "Endpoint defaulted to the project OpenClaw local gateway candidate $defaultOpenClawGatewayEndpoint. Confirm your OpenClaw gateway exposes an OpenAI-compatible /v1 API before running required model-backed tests."
+  Write-Warning "Endpoint defaulted to the Agent Guard PyRIT/OpenClaw OpenAI-compatible shim $defaultPyritOpenClawEndpoint. Start Agent Guard API before running required model-backed tests."
 }
 
 try {
   $uri = [System.Uri]$resolvedEndpoint
   if ($uri.Host -in @("127.0.0.1", "localhost") -and -not (Test-TcpPort -HostName $uri.Host -Port $uri.Port)) {
-    $message = "No local TCP listener detected at $($uri.Host):$($uri.Port). Start the project OpenClaw gateway or provide a reachable endpoint."
+    $message = "No local TCP listener detected at $($uri.Host):$($uri.Port). Start Agent Guard API/OpenClaw runtime or provide a reachable endpoint."
     if ($Required) {
       throw $message
     }

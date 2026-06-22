@@ -38,7 +38,7 @@ assert(
 );
 
 const bridgeSource = await readFile(path.join(vendorDir, "agent_guard_bridge.py"), "utf8");
-for (const requiredSnippet of ["converter_batch", "attack_cli", "DeepSeek_API_2", "run_attack_cli.py"]) {
+for (const requiredSnippet of ["converter_batch", "attack_cli", "AGENT_GUARD_PYRIT_OPENAI_CHAT_KEY", "run_attack_cli.py"]) {
   assert(bridgeSource.includes(requiredSnippet), `agent_guard_bridge.py should include ${requiredSnippet}`);
 }
 

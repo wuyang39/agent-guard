@@ -76,7 +76,7 @@ generated/a-line/**
 outputs/pyrit-runs/**
 ```
 
-运行真实 PyRIT 模型攻击前必须先阅读 `docs/A/p3-a-pyrit-runtime-usage.md`。当前模型名统一为 `deepseek-v4-pro`，key 从本机 `DeepSeek_API_2` 映射，endpoint 必须是 OpenAI-compatible chat base URL。
+运行真实 PyRIT 模型攻击前必须先阅读 `docs/A/p3-a-pyrit-runtime-usage.md`。当前模型名统一为 `deepseek-v4-pro`，key 由协作者本机环境提供，endpoint 默认使用 Agent Guard API 暴露的 PyRIT/OpenClaw OpenAI-compatible shim: `http://127.0.0.1:3100/api/v1/pyrit/openclaw/v1`。`DeepSeek_API_2` 只是某个开发者本机变量名示例，不是项目规范。
 
 当前配置目录已完成分层: `configs/` 根目录只保留跨线共享运行时 fixture，A 线攻击库、seed、operator、profile 和 PyRIT/AIG source index 全部迁入 `configs/a-line/**` 并使用 `schemaVersion: "p3-a-1"`。`loadConfigRepository()` 仍只读取根目录运行时 fixture；大规模 generated corpus 通过显式 profile 和 `CorpusManifest` 被 B/C 线消费。
 

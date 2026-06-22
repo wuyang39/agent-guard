@@ -29,7 +29,7 @@
 | `OPENCLAW_WORKSPACE` | `E:\XinAnProject\openclaw-runtime\workspace` |
 | Gateway | `http://127.0.0.1:18789` |
 | Agent 模型 | `deepseek/deepseek-v4-flash` |
-| Provider key | 用户环境变量 `DeepSeek_API_2` 在启动进程内映射为 `DEEPSEEK_API_KEY`，不写入仓库 |
+| Provider key | provider key 由本机环境提供，DeepSeek 推荐 `DEEPSEEK_API_KEY`；`DeepSeek_API_2` 仅是个人本机示例兼容项，不写入仓库 |
 
 当前验证结论:
 

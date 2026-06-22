@@ -678,8 +678,8 @@ npm run verify:p2:api-e2e
 
 补充更新:
 
-- 用户提供本机用户环境变量 `DeepSeek_API_2`，用于 DeepSeek API key。
-- 已将本地 runtime wrapper 和项目启动脚本更新为进程内映射: `DeepSeek_API_2` → `DEEPSEEK_API_KEY`。
+- 当时用户本机使用环境变量 `DeepSeek_API_2` 保存 DeepSeek API key；该名称只是个人本机示例，不是团队规范。
+- 已将本地 runtime wrapper 和项目启动脚本更新为可配置的进程内映射: 本机 key env → `DEEPSEEK_API_KEY`。
 - OpenClaw 默认模型按用户指定切换为 `deepseek/deepseek-v4-flash`。
 - key 不写入仓库、不写入文档明文、不拼入命令行参数。
 - `VERIFY_OPENCLAW_REQUIRED=1 npm run verify:p2:api-e2e` 已通过，结果为 13 个 required 通过、0 个 optional skipped。
@@ -1109,13 +1109,13 @@ generated test oracles: 2400
 
 ```txt
 OPENAI_CHAT_ENDPOINT
-OPENAI_CHAT_KEY       # 可由 DeepSeek_API_2 或 AGENT_GUARD_PYRIT_OPENAI_CHAT_KEY 映射
+OPENAI_CHAT_KEY       # 可由 OPENAI_CHAT_KEY、AGENT_GUARD_PYRIT_OPENAI_CHAT_KEY、provider key 或显式本机 key env 映射
 OPENAI_CHAT_MODEL     # 可由 DEEPSEEK_MODEL 或 AGENT_GUARD_PYRIT_OPENAI_CHAT_MODEL 映射
 ```
 
 当前本机检查结果:
 
-- `DeepSeek_API_2` 可被识别为 key。
+- `DeepSeek_API_2` 在当时本机可被识别为兼容 key；该名称不是团队规范。
 - `OPENAI_CHAT_ENDPOINT` 缺失。
 - `OPENAI_CHAT_MODEL` 缺失。
 - 因此 `verify:a-pyrit-runtime` 当前按设计返回: bridge/runtime 安装可用，真实模型 attack 被结构化 `SKIP`，不是伪造成功。
@@ -1150,9 +1150,9 @@ npm run verify:a-pyrit-runtime
 
 实现要点:
 
-- 新增 `docs/A/p3-a-pyrit-runtime-usage.md`，集中说明 `OPENAI_CHAT_ENDPOINT`、`OPENAI_CHAT_KEY`、`OPENAI_CHAT_MODEL`、`DeepSeek_API_2`、OpenClaw local gateway 和 realtime MCP endpoint 的职责边界。
-- 新增 `scripts/setup-pyrit-openclaw-env.ps1`，用于在当前 PowerShell 会话中点源设置 PyRIT 模型环境。默认模型为 `deepseek-v4-pro`，key 从 `DeepSeek_API_2` 映射，endpoint 默认候选为 `http://127.0.0.1:18789/v1`。脚本只改当前进程环境，不写系统环境，不落盘 key。
-- `pyritPythonBridge.ts` 和 `agent_guard_bridge.py` 已统一模型环境映射: endpoint 支持 `AGENT_GUARD_PYRIT_OPENAI_CHAT_ENDPOINT`、`AGENT_GUARD_PYRIT_OPENCLAW_CHAT_ENDPOINT`、`OPENCLAW_CHAT_ENDPOINT`、`DEEPSEEK_ENDPOINT`；key 支持 `DeepSeek_API_2`；model 默认 `deepseek-v4-pro`。
+- 新增 `docs/A/p3-a-pyrit-runtime-usage.md`，集中说明 `OPENAI_CHAT_ENDPOINT`、`OPENAI_CHAT_KEY`、`OPENAI_CHAT_MODEL`、本机 key 示例、OpenClaw local gateway、Agent Guard PyRIT/OpenClaw shim 和 realtime MCP endpoint 的职责边界。
+- 新增 `scripts/setup-pyrit-openclaw-env.ps1`，用于在当前 PowerShell 会话中点源设置 PyRIT 模型环境。默认模型为 `deepseek-v4-pro`，endpoint 默认使用 Agent Guard API 提供的 OpenAI-compatible shim: `http://127.0.0.1:3100/api/v1/pyrit/openclaw/v1`。key 优先读取 `OPENAI_CHAT_KEY`、`AGENT_GUARD_PYRIT_OPENAI_CHAT_KEY` 或 provider key；`DeepSeek_API_2` 仅作为个人本机示例兼容项。脚本只改当前进程环境，不写系统环境，不落盘 key。
+- `pyritPythonBridge.ts` 和 `agent_guard_bridge.py` 已统一模型环境映射: endpoint 支持 `AGENT_GUARD_PYRIT_OPENAI_CHAT_ENDPOINT`、`AGENT_GUARD_PYRIT_OPENCLAW_CHAT_ENDPOINT`、`OPENCLAW_CHAT_ENDPOINT`、`DEEPSEEK_ENDPOINT`；key 支持 `OPENAI_CHAT_KEY`、`AGENT_GUARD_PYRIT_OPENAI_CHAT_KEY`、provider key 和历史本机示例兼容项；model 默认 `deepseek-v4-pro`。
 - `agent_guard_bridge.py` 的 `converter_batch` 扩展到更多真实 PyRIT 文本 converter: Base2048、BinAscii、Braille、Superscript、UnicodeConfusable、UnicodeReplacement、UnicodeSubstitution、Ascii/Variation/SneakyBits smuggling、AsciiArt、AskToDecode、Emoji/Ecoji、CharSwap、Diacritic、Zalgo 等。
 - `attack_cli` 增加 converter 预处理: 如果 selected case 的 `operatorId` 是 bridge 支持的 `pyrit.converter.*`，会先真实调用 PyRIT converter 变换 objective，再把变换后的 objective 传给 `run_attack_cli.py`。
 - `seedFactory.ts` 把旧 `pyrit.converter.base2048_placeholder` 升级为真实 `pyrit.converter.base2048`，并新增 `unicode_replacement`、`unicode_substitution`、`ascii_smuggler`、`emoji`、`ecoji`、`ascii_art` 等 operator。
@@ -1190,6 +1190,48 @@ npm run verify:all
 补充说明:
 
 - `http://127.0.0.1:3100/api/v1/openclaw/realtime/mcp` 是 Agent Guard realtime MCP endpoint，不是 `OPENAI_CHAT_ENDPOINT`。
-- `http://127.0.0.1:18789/v1` 只是项目隔离 OpenClaw gateway 的 OpenAI-compatible endpoint 候选；如果本机 gateway 未启动或不暴露 `/v1`，真实 PyRIT attack 会失败或需要显式传入其他 endpoint。
+- `http://127.0.0.1:18789` 是项目隔离 OpenClaw gateway/control plane，已知不是传统 OpenAI-compatible REST `/v1`。PyRIT 默认应使用 Agent Guard shim: `http://127.0.0.1:3100/api/v1/pyrit/openclaw/v1`。
 - `base2048_placeholder` 仅保留在 bridge/TS 层作为历史兼容别名，新生成链路使用 `pyrit.converter.base2048`。
-- 当前本机 `verify:a-pyrit-runtime` 结果: converter runtime 通过；key/model 已识别，`OPENAI_CHAT_ENDPOINT` 未配置，因此真实 attack 按设计 `SKIP`，不是伪造成功。
+- 当前本机 `verify:a-pyrit-runtime` 结果已按 Agent Guard shim 重新验证通过；真实 attack 以 `runtimeUsed: "pyrit"` 和 `status: "ok"` 作为证据。
+
+## 24. 2026-06-22 P3-A PyRIT/OpenClaw OpenAI-compatible shim 修正
+
+分支: `a/p3-a-corpus-implementation-plan`
+
+本轮根据用户澄清，修正此前把 `DeepSeek_API_2` 写成默认协作参数的问题。该变量只是当前开发者本机示例名称，后续文档和脚本必须按“协作者自带本机 key env”处理。
+
+实现要点:
+
+- 新增 Agent Guard API route: `GET /api/v1/pyrit/openclaw/v1/models` 和 `POST /api/v1/pyrit/openclaw/v1/chat/completions`。
+- 该 route 对外呈现 OpenAI Chat Completions 兼容协议，供 PyRIT `OpenAIChatTarget` 使用；内部调用 `runOpenClawSession()`，继续走项目隔离 OpenClaw CLI。
+- `scripts/setup-pyrit-openclaw-env.ps1` 默认 endpoint 改为 `http://127.0.0.1:3100/api/v1/pyrit/openclaw/v1`，并新增 `-KeyEnvName` 和 provider key 映射参数。
+- `scripts/start-agent-guard-openclaw.ps1` 的 provider key 映射改为可配置；`DeepSeek_API_2` 只作为示例 fallback，不是规范变量。
+- `docs/A/p3-a-pyrit-runtime-usage.md`、`README.md`、`docs/README.md`、`configs/a-line/README.md`、`docs/P3plan.md`、`docs/A/p2-pyrit-python-bridge-contract.md` 和本工作日志已同步说明。
+- `run_attack_cli.py` 的 console printer 变成非阻断路径，避免 Windows GBK 控制台无法打印 Unicode 图标时阻断 JSON 结果落盘。
+- `buildPyritRuntimeRequest()` 修正 `PYRIT_RUNTIME_METHODS` 语义: 显式传入 method 时，本批次所有选中样本都使用指定 method；未显式传入时才按 case/operator 推断。
+
+边界结论:
+
+- `http://127.0.0.1:3100/api/v1/openclaw/realtime/mcp` 是 B 线 realtime MCP endpoint，不是 PyRIT 模型 endpoint。
+- `http://127.0.0.1:18789` 是 OpenClaw gateway/control plane，不是 PyRIT 可直接调用的 OpenAI REST `/v1`。
+- PyRIT 和 OpenClaw 的正确对接入口是 Agent Guard shim: `http://127.0.0.1:3100/api/v1/pyrit/openclaw/v1`。
+
+已验证:
+
+```powershell
+npm run typecheck
+npm run pyrit:bridge-smoke
+$env:VERIFY_PYRIT_RUNTIME_REQUIRED="1"; npm run verify:a-pyrit-runtime
+$env:PYRIT_RUNTIME_PROFILE="smoke"
+$env:PYRIT_RUNTIME_MAX_ITEMS="2"
+$env:PYRIT_RUNTIME_METHODS="prompt_sending"
+$env:PYRIT_RUNTIME_MAX_TURNS="1"
+npm run a:pyrit-runtime
+```
+
+验证结果:
+
+- `/api/v1/pyrit/openclaw/v1/models` 返回 OpenAI-compatible model list。
+- `/api/v1/pyrit/openclaw/v1/chat/completions` 触发 OpenClaw CLI 并返回 200。
+- `verify:a-pyrit-runtime` required 模式通过，至少一个真实模型-backed PyRIT attack item 完成。
+- `a:pyrit-runtime` smoke 小批量通过，2 条样本均为 `status: "ok"`。

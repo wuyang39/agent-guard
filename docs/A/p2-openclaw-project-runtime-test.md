@@ -56,7 +56,7 @@ OPENCLAW_NO_ONBOARD=1
 
 本机额外约定:
 
-- 用户环境变量 `DeepSeek_API_2` 映射为 OpenClaw DeepSeek provider 识别的 `DEEPSEEK_API_KEY`。
+- 本机示例环境变量 `DeepSeek_API_2` 可映射为 OpenClaw DeepSeek provider 识别的 `DEEPSEEK_API_KEY`；该名称不是团队规范，其他成员可使用自己的 key env。
 - 默认模型设置为 `deepseek/deepseek-v4-flash`。
 - 启动脚本只在进程环境中映射 key，不把 key 写入仓库文档或命令行参数。
 
@@ -128,7 +128,7 @@ npm run verify:p2:api-e2e
 
 注意:
 
-- `openclaw-local.cmd` 会在进程内把用户环境变量 `DeepSeek_API_2` 映射为 `DEEPSEEK_API_KEY`，验证命令不需要写明 key 值。
+- `openclaw-local.cmd` 可在进程内把本机示例 key env 映射为 `DEEPSEEK_API_KEY`，验证命令不需要写明 key 值。
 - required 验证不要设置 `OPENCLAW_GATEWAY_URL`。OpenClaw `2026.6.6` 遇到 gateway URL override 会要求显式 gateway auth，可能报 `GatewayExplicitAuthRequiredError: gateway url override`。
 
 补充模型 key 前，required OpenClaw 检测未通过:
@@ -145,11 +145,11 @@ OpenClaw CLI 可执行，gateway 可连接，但模型 provider 认证缺失。
 OpenClaw 返回 No API key。
 ```
 
-这不是 Agent Guard adapter 的路径问题，而是 OpenClaw 本体尚未配置可用模型凭证。2026-06-16 已补充 `DeepSeek_API_2` → `DEEPSEEK_API_KEY` 的本机运行时映射，后续验证以最新命令结果为准。
+这不是 Agent Guard adapter 的路径问题，而是 OpenClaw 本体尚未配置可用模型凭证。2026-06-16 已补充“本机 key env → `DEEPSEEK_API_KEY`”的运行时映射，后续验证以最新命令结果为准。
 
 ## 5. 后续维护注意
 
-当前本机已通过 `DeepSeek_API_2` 用户环境变量提供模型认证。其他成员本地部署时需要提供自己的模型 provider 认证。
+当前本机曾通过个人环境变量示例提供模型认证。其他成员本地部署时需要提供自己的模型 provider 认证，推荐使用 provider 原生变量如 `DEEPSEEK_API_KEY` 或脚本参数显式指定本机变量名。
 
 示例:
 

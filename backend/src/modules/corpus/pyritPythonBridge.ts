@@ -149,8 +149,9 @@ export function buildPyritRuntimeRequest(
   options: BuildPyritRuntimeRequestOptions,
 ): PyritBridgeRequest {
   const generatedAt = options.generatedAt ?? new Date().toISOString();
-  const methods = options.methods && options.methods.length > 0 ? options.methods : defaultMethods;
-  const items = selectRuntimeItems(options.testCases, options.maxItems, methods);
+  const explicitMethods = Boolean(options.methods && options.methods.length > 0);
+  const methods = explicitMethods ? options.methods as PyritAttackMethod[] : defaultMethods;
+  const items = selectRuntimeItems(options.testCases, options.maxItems, methods, explicitMethods);
   return {
     schemaVersion,
     bridgeVersion,
@@ -172,6 +173,7 @@ function selectRuntimeItems(
   testCases: TestCase[],
   maxItems: number,
   methods: PyritAttackMethod[],
+  explicitMethods: boolean,
 ): PyritBridgeRequestItem[] {
   const items: PyritBridgeRequestItem[] = [];
   const usedCaseIds = new Set<string>();
@@ -192,7 +194,10 @@ function selectRuntimeItems(
     if (items.length >= maxItems) break;
     if (usedCaseIds.has(testCase.caseId)) continue;
     usedCaseIds.add(testCase.caseId);
-    items.push(itemFromCase(testCase, methodForCase(testCase)));
+    const method = explicitMethods
+      ? methods[items.length % methods.length] ?? "prompt_sending"
+      : methodForCase(testCase);
+    items.push(itemFromCase(testCase, method));
   }
   return items;
 }
@@ -305,8 +310,8 @@ function normalizePyritModelEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
     || normalized.OPENCLAW_CHAT_ENDPOINT
     || normalized.DEEPSEEK_ENDPOINT;
   normalized.OPENAI_CHAT_KEY ||= normalized.AGENT_GUARD_PYRIT_OPENAI_CHAT_KEY
-    || normalized.DeepSeek_API_2
-    || normalized.DEEPSEEK_API_KEY;
+    || normalized.DEEPSEEK_API_KEY
+    || normalized.DeepSeek_API_2;
   normalized.OPENAI_CHAT_MODEL ||= normalized.AGENT_GUARD_PYRIT_OPENAI_CHAT_MODEL
     || normalized.DEEPSEEK_MODEL
     || defaultPyritChatModel;

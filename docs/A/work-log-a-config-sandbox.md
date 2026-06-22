@@ -1277,3 +1277,83 @@ npm run a:pyrit-runtime
 - `a:pyrit-runtime` smoke 小批量输出 `status={"ok":2}`。
 - 新 request 中 `case.generated.00001` 的 objective 是可读原文，不再是已变异 Base64 文本。
 - 新 bridge result 顶层 `objective` 可读；Base64 runtime payload 只在 metadata 预览字段出现。
+
+## 26. 2026-06-22 P3-A 攻击库选择资产 AB-0/AB-1
+
+分支: `a/p3-a-corpus-implementation-plan`
+
+本轮根据 `docs/p3-llm-attack-library-ab-plan.md` 实现 A 线负责的 AB-0/AB-1。核心目标不是让 A 线调用 LLM 做选择，而是把已有 2400 条 generated case 转成 B 线可安全筛选、可审计、可解释的攻击库选择资产。
+
+新增契约:
+
+- `AttackFamily` 和 `TargetSurface`。
+- `AttackCaseCard`。
+- `LlmSelectionCatalogItem`。
+- `CoverageTaxonomy`。
+- `CaseQualityIssue` / `CaseQualityReport`。
+
+新增实现:
+
+- `backend/src/modules/corpus/attackCaseCardGenerator.ts`
+  - 从 `test_cases.generated.json`、`corpus_manifest.json`、`resources.generated.json`、`tool_responses.generated.json`、`test_oracles.generated.json` 派生 card。
+  - `promptSummary` 优先使用 `runtimeObjectiveBase`，避免把已经变异/编码后的长 payload 暴露给选择层。
+  - `payloadRiskSummary`、`expectedSafeBehaviorSummary`、`oracleSummary` 全部由结构化字段生成，不调用 LLM，不复制 oracle 原始对象。
+  - `qualityScore` 使用确定性规则评分，`digest` 使用 card 稳定字段计算 SHA-256。
+- `backend/src/modules/corpus/attackCaseCardValidator.ts`
+  - 校验 caseId、manifest 映射、profile、attack family、target surface、OpenClaw 覆盖、摘要脱敏、catalog forbidden field 和稳定排序。
+- `scripts/verify-a-attack-cards.ts`
+  - 新增 npm script: `verify:a-attack-cards`。
+  - 已加入 `verify:all`。
+- `scripts/generate-a-corpus.ts`
+  - 生成 corpus 时同步写出选择资产并即时校验。
+
+新增 generated 输出:
+
+```txt
+generated/a-line/attack_case_cards.generated.json
+generated/a-line/llm_selection_catalog.generated.json
+generated/a-line/coverage_taxonomy.generated.json
+generated/a-line/case_quality_report.generated.json
+```
+
+当前生成结果:
+
+```txt
+attack case cards: 2400
+llm selection catalog items: 2400
+openclaw profile cards: 80
+full-corpus profile cards: 2400
+min quality score: 70
+average quality score: 91
+low quality cases: 0
+duplicate digest cases: 0
+```
+
+coverage 摘要:
+
+- attack family 覆盖 `prompt_injection`、`data_leakage`、`tool_hijack`、`auth_bypass`、`memory_poisoning`、`environment_poisoning`、`model_evasion`、`dangerous_action`、`benign_control`。
+- target surface 覆盖 `input`、`output`、`context`、`tool_call`、`file_access`、`code_execution`、`network`、`email`、`api`、`browser`、`memory`、`database`。
+- source origin 当前为 pyrit 主来源，AIG/manual/user_supplied 补充。
+
+边界记录:
+
+- A 线输出 card/catalog/taxonomy/report，不输出 B 线 `TestSelectionPlan`。
+- A 线不做正式 LLM rerank，不写 selection plan store。
+- B 线可以把 `llm_selection_catalog.generated.json` 作为 LLM 输入，但不得发送完整 prompt、resource、tool response、secret、`runtimeObjectivePayloadPreview` 或 oracle 原始对象。
+- LLM 选择理由只能作为测试编排解释，不能进入 `Finding`、`RiskReport`、`SupervisionPolicyPack`、`DefenseReport` 或运行时监督结论。
+
+同步文档:
+
+- `docs/contracts.md`
+- `docs/interfaces.md`
+- `docs/ownership.md`
+- `docs/A/p3-a-corpus-implementation-plan.md`
+- `docs/A/work-log-a-config-sandbox.md`
+
+验证:
+
+```powershell
+npm run typecheck
+npm run a:generate-corpus
+npm run verify:a-attack-cards
+```

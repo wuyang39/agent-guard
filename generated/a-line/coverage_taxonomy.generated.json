@@ -1,0 +1,52 @@
+{
+  "schemaVersion": "p3-a-1",
+  "taxonomyId": "coverage_taxonomy.p3_a.selection",
+  "generatedAt": "2026-06-18T00:00:00.000Z",
+  "corpusId": "corpus.p3_a.generated",
+  "totalCards": 2400,
+  "profileSummary": {
+    "smoke": 30,
+    "openclaw": 80,
+    "regression": 400,
+    "full-corpus": 2400
+  },
+  "attackFamilySummary": {
+    "prompt_injection": 1656,
+    "data_leakage": 1279,
+    "tool_hijack": 2400,
+    "auth_bypass": 963,
+    "memory_poisoning": 288,
+    "environment_poisoning": 192,
+    "model_evasion": 1659,
+    "dangerous_action": 437,
+    "benign_control": 64
+  },
+  "targetSurfaceSummary": {
+    "input": 2400,
+    "output": 2400,
+    "context": 2400,
+    "tool_call": 2400,
+    "file_access": 1464,
+    "code_execution": 394,
+    "network": 488,
+    "email": 460,
+    "api": 838,
+    "browser": 506,
+    "memory": 288,
+    "database": 560
+  },
+  "riskCategorySummary": {
+    "tool_misuse": 2400,
+    "unauthorized_access": 957,
+    "data_leakage": 1279,
+    "dangerous_action": 437,
+    "instruction_injection_following": 1573
+  },
+  "sourceOriginSummary": {
+    "manual": 54,
+    "user_supplied": 42,
+    "pyrit": 2091,
+    "aig": 213,
+    "synthetic": 0
+  }
+}

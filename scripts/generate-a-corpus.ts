@@ -9,7 +9,9 @@ import {
   corpusSeedFiles,
   corpusSourceFiles,
   generateCorpus,
+  generateAttackCaseCards,
   resolveCorpusLayout,
+  validateAttackCaseCards,
   validateCorpus,
 } from "../backend/src/modules/corpus";
 
@@ -30,6 +32,13 @@ const generated = generateCorpus(seeds, {
   generatedAt: "2026-06-18T00:00:00.000Z",
   generatorVersion: "p3-a-generator-3",
   maxCases: 2400,
+});
+const selectionAssets = generateAttackCaseCards({
+  manifest: generated.manifest,
+  testCases: generated.testCases,
+  testOracles: generated.testOracles,
+  resources: generated.resources,
+  toolResponses: generated.toolResponses,
 });
 
 await Promise.all([
@@ -52,6 +61,10 @@ await Promise.all([
   writeJson(layout.generatedDir, "red_team_scenarios.generated.json", generated.redTeamScenarioSet),
   writeJson(layout.generatedDir, "corpus_manifest.json", generated.manifest),
   writeJson(layout.generatedDir, "corpus_stats.json", generated.stats),
+  writeJson(layout.generatedDir, "attack_case_cards.generated.json", selectionAssets.attackCaseCards),
+  writeJson(layout.generatedDir, "llm_selection_catalog.generated.json", selectionAssets.llmSelectionCatalog),
+  writeJson(layout.generatedDir, "coverage_taxonomy.generated.json", selectionAssets.coverageTaxonomy),
+  writeJson(layout.generatedDir, "case_quality_report.generated.json", selectionAssets.caseQualityReport),
 ]);
 
 const issues = validateCorpus({
@@ -67,15 +80,28 @@ const issues = validateCorpus({
 });
 
 const errors = issues.filter((issue) => issue.severity === "error");
+const selectionIssues = validateAttackCaseCards({
+  attackCaseCards: selectionAssets.attackCaseCards,
+  llmSelectionCatalog: selectionAssets.llmSelectionCatalog,
+  coverageTaxonomy: selectionAssets.coverageTaxonomy,
+  caseQualityReport: selectionAssets.caseQualityReport,
+  testCases: generated.testCases,
+  manifest: generated.manifest,
+});
+const selectionErrors = selectionIssues.filter((issue) => issue.severity === "error");
 for (const issue of issues) {
   const prefix = issue.severity === "error" ? "FAIL" : "WARN";
   console.log(`${prefix}: ${issue.code} ${issue.path} - ${issue.message}`);
 }
-if (errors.length > 0) {
+for (const issue of selectionIssues) {
+  const prefix = issue.severity === "error" ? "FAIL" : "WARN";
+  console.log(`${prefix}: ${issue.code} ${issue.path} - ${issue.message}`);
+}
+if (errors.length > 0 || selectionErrors.length > 0) {
   process.exitCode = 1;
 } else {
   console.log(
-    `Generated P3-A corpus: ${generated.prompts.length} prompts, ${generated.testCases.length} cases, ${generated.testOracles.length} oracles.`,
+    `Generated P3-A corpus: ${generated.prompts.length} prompts, ${generated.testCases.length} cases, ${generated.testOracles.length} oracles, ${selectionAssets.attackCaseCards.length} attack cards.`,
   );
 }
 

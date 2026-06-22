@@ -2,7 +2,7 @@
 
 文档版本: p3-a-implementation-1  
 生成日期: 2026-06-18  
-状态: P3-A 语料工厂重构已完成首轮实现，当前接入 PyRIT Python runtime bridge
+状态: P3-A 语料工厂、PyRIT runtime bridge 和攻击库选择资产已完成首轮实现
 分支: `a/p3-a-corpus-implementation-plan`  
 适用范围: A 线 P3 攻击库、资源种子、PyRIT/AIG 迁移、生成语料、sandbox/profile 接入和验证脚本
 
@@ -17,8 +17,9 @@
   -> 结构化 seed files
   -> mutation operators / attack generation profiles
   -> generated/a-line/** 大规模语料
-  -> corpus manifest / corpus stats
+  -> corpus manifest / corpus stats / attack case cards / LLM selection catalog
   -> 按 smoke / openclaw / regression / full-corpus profile 显式加载
+  -> B 线按 AttackCaseCard / LlmSelectionCatalogItem 做规则或 LLM 辅助选择
   -> 显式选择样本进入 PyRIT Python runtime bridge 做真实模型攻击
   -> B 线运行 TestContext
   -> C 线按 CorpusManifest 展示来源、覆盖率和证据追溯
@@ -34,6 +35,7 @@
 - 2000+ generated prompts。
 - 2000+ generated test cases，当前实现为 2400 级 full corpus。
 - generated oracles 数量等于 generated test cases。
+- AttackCaseCard / LLM selection catalog 数量等于 generated test cases。
 - PyRIT 生成来源占比不低于 70%。
 - smoke / openclaw / regression / full-corpus 四类工程运行 profile。
 
@@ -54,6 +56,8 @@ generated prompts: 2400
 generated tool responses: 309
 generated test cases: 2400
 generated test oracles: 2400
+attack case cards: 2400
+llm selection catalog items: 2400
 red team scenarios: 25
 run profiles: smoke=30, openclaw=80, regression=400, full-corpus=2400
 ```
@@ -68,6 +72,7 @@ scripts/verify-a-corpus.ts
 scripts/index-pyrit-seed-datasets.ts
 scripts/index-aig-strategies.ts
 scripts/generate-a-pyrit-runtime-batch.ts
+scripts/verify-a-attack-cards.ts
 scripts/verify-a-pyrit-runtime.ts
 scripts/setup-pyrit-runtime.ps1
 scripts/setup-pyrit-openclaw-env.ps1
@@ -79,6 +84,8 @@ outputs/pyrit-runs/**
 运行真实 PyRIT 模型攻击前必须先阅读 `docs/A/p3-a-pyrit-runtime-usage.md`。当前模型名统一为 `deepseek-v4-pro`，key 由协作者本机环境提供，endpoint 默认使用 Agent Guard API 暴露的 PyRIT/OpenClaw OpenAI-compatible shim: `http://127.0.0.1:3100/api/v1/pyrit/openclaw/v1`。`DeepSeek_API_2` 只是某个开发者本机变量名示例，不是项目规范。
 
 当前配置目录已完成分层: `configs/` 根目录只保留跨线共享运行时 fixture，A 线攻击库、seed、operator、profile 和 PyRIT/AIG source index 全部迁入 `configs/a-line/**` 并使用 `schemaVersion: "p3-a-1"`。`loadConfigRepository()` 仍只读取根目录运行时 fixture；大规模 generated corpus 通过显式 profile 和 `CorpusManifest` 被 B/C 线消费。
+
+P3 LLM 攻击库选择计划的 A 线 AB-0/AB-1 已落地: A 线现在额外输出 `AttackCaseCard[]`、`LlmSelectionCatalogItem[]`、`CoverageTaxonomy` 和 `CaseQualityReport`。这些对象是“选择资产”，不是运行资产；B 线只能用它们筛选、排序和解释候选 case，真实执行仍按 `caseId` 加载完整 `TestContext`。A 线不生成 `TestSelectionPlan`，不调用 LLM 做正式选择，不把选择理由写入风险结论。
 
 ### 2.1 当前配置体量
 
@@ -141,6 +148,9 @@ configs/a-line/corpus/profiles/corpus_run_profiles.json
 - A 线不编造 `RuntimeSupervisionRecord[]`。
 - `TestOracle` 只用于离线验收、回归和 corpus 质量检查。
 - `generated/a-line/**` 是测试输入和覆盖率依据，不是风险结论。
+- `AttackCaseCard[]` 和 `LlmSelectionCatalogItem[]` 是脱敏选择元数据，不能替代 `TestCase`、`TestContext`、`InteractionTrace` 或 `RuntimeSupervisionRecord[]`。
+- LLM 只能看到 `llm_selection_catalog.generated.json` 这类安全投影，不得接触完整 prompt、完整 tool response、resource 内容、secret 或 `TestOracle.expectedOutcome` 细节。
+- A 线不生成 B 线 `TestSelectionPlan`，不实现正式 LLM rerank，不写入 selection plan store。
 - generated corpus 必须通过显式 profile 加载。`smoke/openclaw/regression` 是从最终语料库抽样出来的检查、联调和回归视图，`full-corpus` 是完整覆盖视图，不代表 A 线目标被 demo 缩减。
 
 ## 4. 外部素材使用边界
@@ -233,13 +243,18 @@ generated/a-line/test_oracles.generated.json
 generated/a-line/red_team_scenarios.generated.json
 generated/a-line/corpus_manifest.json
 generated/a-line/corpus_stats.json
+generated/a-line/attack_case_cards.generated.json
+generated/a-line/llm_selection_catalog.generated.json
+generated/a-line/coverage_taxonomy.generated.json
+generated/a-line/case_quality_report.generated.json
 ```
 
 说明:
 
 - `generated/a-line/**` 是确定性生成物，应可被验证脚本重建或校验。
 - 不放入 `outputs/**`，因为 outputs 是运行结果，不是内置语料。
-- 临时中间文件和 Python bridge 原始输出应放到 `generated/a-line/tmp/**` 或 `outputs/**`，并通过 `.gitignore` 保护。
+- 临时中间文件和 Python bridge 原始输出应放到 `outputs/**`，并通过 `.gitignore` 保护；正式 `generated/a-line/**` 不再存放 runtime 临时件。
+- `llm_selection_catalog.generated.json` 是给 B 线规则/LLM rerank 的安全投影，字段比 `AttackCaseCard` 更少，禁止包含完整 prompt、tool response、resource 内容和 oracle 原始对象。
 
 ### 5.3 新增后端模块
 
@@ -255,6 +270,8 @@ backend/src/modules/corpus/aigStrategyMapper.ts
 backend/src/modules/corpus/corpusGenerator.ts
 backend/src/modules/corpus/corpusManifest.ts
 backend/src/modules/corpus/corpusValidator.ts
+backend/src/modules/corpus/attackCaseCardGenerator.ts
+backend/src/modules/corpus/attackCaseCardValidator.ts
 backend/src/modules/corpus/runProfile.ts
 ```
 
@@ -702,7 +719,47 @@ npm run verify:p2:api-e2e
 npm run verify:openclaw:realtime
 ```
 
-### P3-A-8 文档、交接和答辩材料
+### P3-A-8 攻击库选择资产 AB-0/AB-1
+
+目标:
+
+- 把现有 generated corpus 从“可运行样本”升级为“可被规则/LLM 安全选择的测试资产”。
+- 为 B 线提供不暴露完整 payload 的候选池元数据。
+- 为 C 线提供 coverage/source origin 展示材料，但不提供风险结论。
+
+新增输出:
+
+```txt
+generated/a-line/attack_case_cards.generated.json
+generated/a-line/llm_selection_catalog.generated.json
+generated/a-line/coverage_taxonomy.generated.json
+generated/a-line/case_quality_report.generated.json
+```
+
+实现要点:
+
+- `attackCaseCardGenerator.ts` 从 `test_cases.generated.json`、`corpus_manifest.json`、`resources.generated.json`、`tool_responses.generated.json` 和 `test_oracles.generated.json` 派生 `AttackCaseCard[]`。
+- `promptSummary` 优先使用 `runtimeObjectiveBase`，编码/规避类 operator 只描述 technique 和目标面，不复制完整编码 payload。
+- `payloadRiskSummary` 和 `oracleSummary` 由结构化字段生成，oracle 只暴露 risk category / risk level 摘要，不暴露 `expectedOutcome` 原始对象。
+- `qualityScore` 采用确定性规则评分，低分样本不删除，但通过 `qualityWarnings` 和 `CaseQualityReport` 明确标记。
+- `digest` 基于 card 稳定字段生成 SHA-256，用于 B 线审计、replay 和重复检测。
+- `llm_selection_catalog.generated.json` 是更小投影，禁止包含 `task.instruction`、prompt/resource/tool response 原文、`runtimeObjectivePayloadPreview` 或 oracle 细节。
+
+验收:
+
+- 已完成。`a:generate-corpus` 同步生成 2400 张 `AttackCaseCard` 和 2400 条 LLM catalog item。
+- 已完成。`verify:a-attack-cards` 校验 caseId、manifest、profile、attack family、target surface、OpenClaw 覆盖、脱敏摘要和稳定排序。
+- 已完成。`coverage_taxonomy.generated.json` 显示 openclaw=80、full-corpus=2400，并覆盖 prompt injection、data leakage、tool hijack、auth bypass、file/code/network/api 等关键维度。
+- 已完成。`case_quality_report.generated.json` 当前最低质量分 70，无低于 60 分样本，无重复 digest；warning 主要用于提示摘要长度边界。
+
+边界:
+
+- A 线不实现 B 线 `TestSelectionService`。
+- A 线不调用 LLM 做正式选择，不落地 `TestSelectionPlan`。
+- B 线如启用 LLM，只能把 `LlmSelectionCatalogItem[]` 作为输入，LLM 输出必须被规则校验后再按 `caseId` 加载完整 `TestContext`。
+- LLM 选择理由只能用于测试计划解释，不得进入 `RiskReport.findings`、`DefenseReport`、策略包或运行时监督结论。
+
+### P3-A-9 文档、交接和答辩材料
 
 目标:
 
@@ -748,6 +805,8 @@ npm run verify:openclaw:realtime
 B 线只需要:
 
 - profile 选择结果。
+- `AttackCaseCard[]` 或 `LlmSelectionCatalogItem[]` 作为选择候选池。
+- `CoverageTaxonomy` 和 `CaseQualityReport` 作为覆盖 gate 和质量过滤输入。
 - `TestCase[]`。
 - `McpSandboxProfile`。
 - case metadata。
@@ -758,6 +817,8 @@ B 线不需要:
 - AIG agent scan runtime。
 - generator 内部细节。
 - oracle 参与运行时。
+- 完整 prompt/resource/tool response 原文进入 LLM 选择输入。
+- A 线私有 seed/operator 文件作为正式选择接口。
 
 ### 给 C 线
 
@@ -765,6 +826,8 @@ C 线只需要:
 
 - CorpusManifest。
 - corpusStats。
+- CoverageTaxonomy。
+- AttackCaseCard 中的 source origin、coverage 和脱敏摘要。
 - case source metadata。
 - `TestOracle[]` 只用于验证脚本或评测统计。
 
@@ -773,6 +836,7 @@ C 线不得:
 - 把 oracle 当风险判定证据。
 - 根据 generated corpus 直接声称防御有效。
 - 编造 runtime effect。
+- 把 LLM 选择理由当作风险结论或策略生成依据。
 
 ## 10. 风险与处理
 
@@ -783,6 +847,8 @@ C 线不得:
 | PyRIT bridge 引入网络或模型依赖 | 默认关闭，offline profile 单独启用 |
 | 复制 AIG/PyRIT 长 prompt 或密钥样例 | 只索引 metadata，长文本进入安全 fixture 时必须脱敏 |
 | A 线越界生成策略包或防御报告 | 只输出 seed、case、oracle、manifest 和策略模板建议 |
+| LLM 选择输入泄露完整攻击 payload 或 oracle | 只允许读取 `llm_selection_catalog.generated.json`，并由 `verify:a-attack-cards` 做脱敏和 forbidden field 检查 |
+| B 线直接读取 A 线私有 seed/operator 文件做选择 | A 线公开交接对象固定为 `AttackCaseCard[]`、`LlmSelectionCatalogItem[]`、`CoverageTaxonomy`、`CaseQualityReport` 和 `CorpusManifest` |
 | generated artifacts 难以审查 | manifest 记录 source chain、hash、profile 和 coverage |
 | contracts 频繁变化影响 B/C | 先新增可选字段或 A 线私有 corpus 类型，跨线字段再进入 contracts |
 
@@ -794,5 +860,5 @@ P3-A 语料工厂已经进入工程化维护阶段，后续改动按以下顺序
 2. 攻击目标写入 `AttackSeed`，用户语境、歧义表达和 roleplay persona 写入 `UserPromptSeed`。
 3. 同一种攻击方式允许多次变异运行，例如 roleplay 可以覆盖游戏、电影脚本、安全审查员、客服、合规审查员、开发调试等 persona。
 4. 资源、攻击、user prompt、工具响应和 operator 扩容后运行 `npm run a:generate-corpus`。
-5. 生成后运行 `npm run verify:a-corpus`，再按影响范围运行 `npm run typecheck` 和 `npm run verify:all`。
+5. 生成后运行 `npm run verify:a-corpus` 和 `npm run verify:a-attack-cards`，再按影响范围运行 `npm run typecheck` 和 `npm run verify:all`。
 6. 涉及跨线交接时同步 `docs/contracts.md`、`docs/interfaces.md`、`docs/ownership.md` 和本工作日志。

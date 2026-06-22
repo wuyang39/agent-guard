@@ -24,6 +24,31 @@ export type CorpusRunProfileId =
   | "regression"
   | "full-corpus";
 
+export type AttackFamily =
+  | "prompt_injection"
+  | "data_leakage"
+  | "tool_hijack"
+  | "auth_bypass"
+  | "memory_poisoning"
+  | "environment_poisoning"
+  | "model_evasion"
+  | "dangerous_action"
+  | "benign_control";
+
+export type TargetSurface =
+  | "input"
+  | "output"
+  | "context"
+  | "tool_call"
+  | "file_access"
+  | "code_execution"
+  | "network"
+  | "email"
+  | "api"
+  | "browser"
+  | "memory"
+  | "database";
+
 export type SeedSource = {
   origin: CorpusSourceOrigin;
   sourcePath?: string;
@@ -349,4 +374,81 @@ export type CorpusManifest = {
   profileSummary: Record<CorpusRunProfileId, number>;
   coverage: CorpusCoverageSummary;
   items: CorpusManifestItem[];
+};
+
+export type AttackCaseCard = {
+  schemaVersion: SchemaVersion;
+  cardId: string;
+  caseId: string;
+  caseName: string;
+  enabled: boolean;
+  runProfiles: CorpusRunProfileId[];
+  attackFamilies: AttackFamily[];
+  targetSurfaces: TargetSurface[];
+  targetToolHints: string[];
+  targetResourceHints: string[];
+  sensitivityTags: string[];
+  estimatedCost: "low" | "medium" | "high";
+  estimatedDurationMs: number;
+  requiresExternalTool: boolean;
+  requiresNetwork: boolean;
+  requiresOpenClaw: boolean;
+  sourceOrigin: CorpusSourceOrigin;
+  sourceRefs: string[];
+  promptSummary: string;
+  payloadRiskSummary: string;
+  expectedSafeBehaviorSummary: string;
+  oracleSummary: string;
+  qualityScore: number;
+  qualityWarnings: string[];
+  digest: string;
+};
+
+export type LlmSelectionCatalogItem = Pick<
+  AttackCaseCard,
+  | "caseId"
+  | "runProfiles"
+  | "attackFamilies"
+  | "targetSurfaces"
+  | "targetToolHints"
+  | "sensitivityTags"
+  | "estimatedCost"
+  | "sourceOrigin"
+  | "promptSummary"
+  | "payloadRiskSummary"
+  | "qualityScore"
+  | "digest"
+>;
+
+export type CoverageTaxonomy = {
+  schemaVersion: SchemaVersion;
+  taxonomyId: string;
+  generatedAt: string;
+  corpusId: string;
+  totalCards: number;
+  profileSummary: Record<CorpusRunProfileId, number>;
+  attackFamilySummary: Record<AttackFamily, number>;
+  targetSurfaceSummary: Record<TargetSurface, number>;
+  riskCategorySummary: Record<RiskCategory, number>;
+  sourceOriginSummary: Record<CorpusSourceOrigin, number>;
+};
+
+export type CaseQualityIssue = {
+  caseId: string;
+  severity: "warning" | "error";
+  code: string;
+  message: string;
+};
+
+export type CaseQualityReport = {
+  schemaVersion: SchemaVersion;
+  reportId: string;
+  generatedAt: string;
+  corpusId: string;
+  totalCards: number;
+  minQualityScore: number;
+  averageQualityScore: number;
+  lowQualityCaseIds: string[];
+  duplicateDigestCaseIds: string[];
+  issues: CaseQualityIssue[];
 };

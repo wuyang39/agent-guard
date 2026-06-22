@@ -71,6 +71,10 @@ PyritAttackLibrary
 PyritJailbreakTemplateIndex
 CorpusManifest
 CorpusRunProfile[]
+AttackCaseCard[]
+LlmSelectionCatalogItem[]
+CoverageTaxonomy
+CaseQualityReport
 PyritBridgeRequest
 PyritBridgeResult
 ```
@@ -107,6 +111,8 @@ TestOracle
 `PyritJailbreakTemplateIndex` 是 A 线 P2 新增的 PyRIT jailbreak 模板元数据索引。它只保存路径、分组、参数、作者、哈希和大小，不保存模板全文；前端和报告只能把它作为来源说明或覆盖率统计。
 
 `CorpusManifest` 是 A 线 P3 generated corpus 的来源和覆盖率索引。B 线可按 `CorpusRunProfile` 显式选择 generated case；C 线可用 `CorpusManifest` 展示来源、覆盖率和样本分层。`CorpusManifest` 不包含风险结论，不能替代 `InteractionTrace`、`RiskReport` 或 `DefenseReport`。
+
+`AttackCaseCard[]`、`LlmSelectionCatalogItem[]`、`CoverageTaxonomy` 和 `CaseQualityReport` 是 A 线 P3 AB-0/AB-1 新增的攻击库选择资产。B 线只能把这些对象当作候选池元数据使用: 先按 profile、enabled、目标工具面和预算过滤，再由规则或 LLM rerank 选择 `caseId`。B 线不得把完整 `TestCase.task.instruction`、prompt/resource/tool response 原文或 `TestOracle.expectedOutcome` 发送给 LLM；真实运行仍必须通过 `caseId` 加载 `TestContext`。C 线可以展示 coverage/source origin/selection reason，但风险结论仍只能来自 B 线真实 `InteractionTrace`、检测结果和运行时监督记录。
 
 `PyritBridgeRequest` / `PyritBridgeResult` 是 A 线 P3 PyRIT Python runtime bridge 的执行契约。它用于把 generated corpus 中选出的 objective 交给 vendored PyRIT `run_attack_cli.py` 做真实模型攻击，并把结果写入 `outputs/pyrit-runs/**`。它不是 `TestContext` 的一部分，也不能替代 B 线 `InteractionTrace` 或 realtime `RuntimeSupervisionRecord[]`。
 
@@ -302,6 +308,8 @@ TestContext + InteractionTrace
 - `RiskReport.evidenceChains` 与 `RiskEvaluationResult.evidenceChains` 一致
 - `ReportArtifact[]` 至少包含 `json` 和 `html`
 - 每个 `ReportArtifact.reportId` 都指向本次 `RiskReport.reportId`
+- 如果启用攻击库选择，B 线选择输入只读取 `AttackCaseCard[]` 或 `LlmSelectionCatalogItem[]`，输出 `caseId` 后再加载完整 `TestContext`
+- LLM 选择理由不得作为 `Finding`、`RiskEvaluationResult`、`DefenseReport` 或策略包生成依据
 
 联调失败时，先修接口契约和 mock 数据，再讨论业务逻辑。
 

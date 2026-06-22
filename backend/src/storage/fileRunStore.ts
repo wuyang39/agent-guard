@@ -53,6 +53,7 @@ export function buildInitialRunGroup(
     status: "running",
     phase: "queued",
     startedAt: nowIso(),
+    updatedAt: nowIso(),
     caseIds: request.caseIds ?? [],
     caseCount: request.caseIds?.length ?? 0,
     testRunIds: [],
@@ -67,6 +68,7 @@ export function buildInitialRunGroup(
 
 export async function saveRunGroup(runGroup: P2RunGroup): Promise<void> {
   await runGroupsMutex.run(async () => {
+    runGroup.updatedAt = nowIso();
     await ensureDir(ROOT);
     const all = await readJson<P2RunGroup[]>(RUN_GROUPS_FILE, []);
     const idx = all.findIndex((r) => r.runGroupId === runGroup.runGroupId);

@@ -5,14 +5,20 @@ import type {
   CLineDashboardSummary,
   CLineRunGroup,
   P2RunE2EResponse,
+  RunProgressView,
 } from "./types";
+
+type RunE2EOptions = {
+  selectionPlanId?: string;
+  generateDefenseReport?: boolean;
+};
 
 export const runsApi = {
   dashboardSummary() {
     return request<CLineDashboardSummary>("/api/v1/dashboard/summary");
   },
 
-  runE2E(config?: AgentConnectionConfig) {
+  runE2E(config?: AgentConnectionConfig, options: RunE2EOptions = {}) {
     const adapterKind = config?.adapterKind ?? "openclaw";
     const endpointUrl =
       adapterKind === "openclaw"
@@ -20,32 +26,38 @@ export const runsApi = {
         : adapterKind === "http_sample"
           ? config?.endpointUrl
           : undefined;
+    const payload: Record<string, unknown> = {
+      adapterKind,
+      agent: {
+        agentId: config?.agentId || undefined,
+        name: config?.name || defaultAgentName(adapterKind),
+        description:
+          config?.description ||
+          "由前端发起的智能体安全检测。",
+      },
+      connection: {
+        endpointUrl,
+        cliPath:
+          adapterKind === "openclaw" && config?.openclawCliPath
+            ? config.openclawCliPath
+            : undefined,
+        launchMode: "external_running",
+        timeoutMs: config?.timeoutMs ?? 120000,
+      },
+      generateDefenseReport: options.generateDefenseReport ?? adapterKind !== "openclaw",
+    };
+
+    if (options.selectionPlanId) {
+      payload.selectionPlanId = options.selectionPlanId;
+    } else {
+      // 默认只跑一个真实用例，保证前端产品测试可以快速完成闭环。
+      payload.caseIds = config?.caseIds.length ? config.caseIds : ["case.resource_injection"];
+    }
 
     return request<P2RunE2EResponse>("/api/v1/test-runs/e2e?async=1", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        adapterKind,
-        agent: {
-          agentId: config?.agentId || undefined,
-          name: config?.name || defaultAgentName(adapterKind),
-          description:
-            config?.description ||
-            "由前端发起的智能体安全检测。",
-        },
-        connection: {
-          endpointUrl,
-          cliPath:
-            adapterKind === "openclaw" && config?.openclawCliPath
-              ? config.openclawCliPath
-              : undefined,
-          launchMode: "external_running",
-          timeoutMs: config?.timeoutMs ?? 120000,
-        },
-        // 默认只跑一个真实用例，保证前端产品测试可以快速完成闭环。
-        caseIds: config?.caseIds.length ? config.caseIds : ["case.resource_injection"],
-        generateDefenseReport: adapterKind !== "openclaw",
-      }),
+      body: JSON.stringify(payload),
     });
   },
 
@@ -69,6 +81,7 @@ export const runsApi = {
 
 type P2RunGroupWire = {
   runGroupId: string;
+  selectionPlanId?: string;
   agentId: string;
   agentName?: string;
   adapterKind?: "openclaw" | "http_sample" | "mock";
@@ -83,9 +96,11 @@ type P2RunGroupWire = {
     | "failed";
   policyContextSource?: "stored_detection" | "synthetic_fallback";
   startedAt: string;
+  updatedAt?: string;
   endedAt?: string;
   caseIds?: string[];
   caseCount: number;
+  progress?: RunProgressView;
   testRunIds: string[];
   traceIds: string[];
   riskReportIds: string[];
@@ -101,6 +116,7 @@ function toRunGroup(run: P2RunGroupWire): CLineRunGroup {
   return {
     schemaVersion: "mvp-1",
     runGroupId: run.runGroupId,
+    selectionPlanId: run.selectionPlanId,
     agentId: run.agentId,
     agentName: run.agentName,
     adapterKind: run.adapterKind,
@@ -109,6 +125,7 @@ function toRunGroup(run: P2RunGroupWire): CLineRunGroup {
     policyContextSource: run.policyContextSource,
     caseIds: run.caseIds ?? Array.from({ length: run.caseCount }, (_, index) => `case.${index + 1}`),
     caseCount: run.caseCount,
+    progress: run.progress,
     detectionReportId: run.detectionReportId ?? "",
     riskProfileId: run.riskProfileId ?? "",
     policyPackId: run.policyPackId ?? "",
@@ -118,7 +135,7 @@ function toRunGroup(run: P2RunGroupWire): CLineRunGroup {
     runtimeSessionIds: run.runtimeSessionIds,
     artifactIds: run.artifactIds,
     createdAt: run.startedAt,
-    updatedAt: run.endedAt ?? run.startedAt,
+    updatedAt: run.updatedAt ?? run.endedAt ?? run.startedAt,
   };
 }
 

@@ -21,6 +21,7 @@ import type {
   AgentAdapterConfig,
   RiskLevel,
 } from "@agent-guard/contracts";
+import type { TestContext } from "../modules/config/schemas";
 import { loadTestContexts } from "../modules/config/loadTestContext";
 import { runTestCase } from "../modules/runner/testRunner";
 import { evaluateRisk } from "../modules/risk/riskEvaluator";
@@ -33,7 +34,12 @@ import {
   exportDefenseJsonReport,
   exportDefenseHtmlReport,
 } from "../modules/defense/defenseReportExporter";
-import type { RunE2ERequest, P2RunGroup, EntityLink } from "../api/types";
+import type {
+  RunE2ERequest,
+  P2RunGroup,
+  P2RunProgress,
+  EntityLink,
+} from "../api/types";
 import { buildInitialRunGroup, saveRunGroup } from "../storage/fileRunStore";
 import type { SupervisionSessionSummary } from "../storage/fileRunStore";
 import { saveSessionRecords } from "../storage/fileRunStore";
@@ -84,7 +90,7 @@ function buildCustomAdapter(request: RunE2ERequest): AgentAdapter | undefined {
     case "http_sample": {
       const endpointUrl =
         request.connection?.endpointUrl ??
-        `http://localhost:${process.env.SAMPLE_AGENT_PORT ?? 7001}/agent/run`;
+        `http://127.0.0.1:${process.env.SAMPLE_AGENT_PORT ?? 7001}/agent/run`;
       return new HttpAgentAdapter({
         endpointUrl,
         timeoutMs: request.connection?.timeoutMs ?? 15_000,
@@ -244,46 +250,27 @@ export async function runE2E(
 
     runGroup.caseCount = targetCases.length;
     runGroup.caseIds = targetCases.map((context) => context.caseId);
+    startRunProgress(runGroup, "detecting", targetCases.length, getDetectionConcurrency(request));
+    await saveRunGroup(runGroup);
 
-    const riskReports: Awaited<
-      ReturnType<typeof buildRiskReport>
-    >[] = [];
-
-    for (const context of targetCases) {
-      const { testRun, trace } = await runTestCase(
-        agent,
-        adapterConfig,
-        context,
-        {
-          customAdapter,
-          selectionPlanId: runGroup.selectionPlanId,
-        },
-      );
-
-      runGroup.testRunIds.push(testRun.runId);
-      runGroup.traceIds.push(trace.traceId);
-
-      // 落盘 trace 文件供 GET /traces/:id 查询
-      await writeTraceFile(trace);
-
-      if (testRun.status === "failed") {
-        // 关键 testRun 失败 → 跳过此 case 的后续处理，记录到 runGroup
-        runGroup.status = "failed";
-        runGroup.error = testRun.error ?? "Detection test run failed";
-        await saveRunGroup(runGroup);
-        throw new Error(
-          `Detection pass failed for ${context.caseId}: ${testRun.error ?? "unknown error"}`,
-        );
-      }
-
-      const evaluation = evaluateRisk(context, trace);
-      const riskReport = buildRiskReport(context, evaluation, trace);
-      riskReports.push(riskReport);
-
-      runGroup.riskReportIds.push(riskReport.reportId);
-    }
+    const riskReports = await runDetectionCasesConcurrently({
+      targetCases,
+      agent,
+      adapterConfig,
+      customAdapter,
+      runGroup,
+      request,
+    });
 
     // ====== 阶段 2: 检测报告 → 画像 → 策略包 ======
+    updateRunProgress(runGroup, {
+      phase: "policy_building",
+      runningCaseIds: [],
+      completedCases: targetCases.length,
+      failedCases: runGroup.progress?.failedCases ?? 0,
+    });
+    await saveRunGroup(runGroup);
+
     const detectionReport = buildDetectionReport({
       agentId: agent.agentId,
       riskReports,
@@ -311,6 +298,11 @@ export async function runE2E(
       policyPack,
     });
     runGroup.phase = "policy_ready";
+    updateRunProgress(runGroup, {
+      phase: "completed",
+      runningCaseIds: [],
+      completedCases: targetCases.length,
+    });
     await saveRunGroup(runGroup);
 
     // mock/http_sample 仍可在同一次回归链路中带 PolicyPack 再跑一轮。
@@ -445,6 +437,11 @@ export async function runE2E(
     runGroup.phase = "failed";
     runGroup.endedAt = nowIso();
     runGroup.error = err instanceof Error ? err.message : String(err);
+    updateRunProgress(runGroup, {
+      phase: "failed",
+      runningCaseIds: [],
+      failedCases: Math.max(runGroup.progress?.failedCases ?? 0, 1),
+    });
     await saveRunGroup(runGroup);
     if (runGroup.selectionPlanId) {
       await updateSelectionPlanStatus(
@@ -461,6 +458,203 @@ export async function runE2E(
 }
 
 // ---- helpers ----
+
+async function runDetectionCasesConcurrently(input: {
+  targetCases: TestContext[];
+  agent: AgentUnderTest;
+  adapterConfig: AgentAdapterConfig;
+  customAdapter?: AgentAdapter;
+  runGroup: P2RunGroup;
+  request: RunE2ERequest;
+}): Promise<ReturnType<typeof buildRiskReport>[]> {
+  const {
+    targetCases,
+    agent,
+    adapterConfig,
+    customAdapter,
+    runGroup,
+    request,
+  } = input;
+  const concurrency = runGroup.progress?.concurrency ?? getDetectionConcurrency(request);
+  const runningCaseIds = new Set<string>();
+  const riskReportsByIndex: Array<ReturnType<typeof buildRiskReport> | undefined> =
+    new Array(targetCases.length);
+  let completedCases = 0;
+  let failedCases = 0;
+  let fatalError: Error | undefined;
+
+  await runWithConcurrency(
+    targetCases,
+    concurrency,
+    async (context, index) => {
+      if (fatalError) return;
+      runningCaseIds.add(context.caseId);
+      updateRunProgress(runGroup, {
+        runningCaseIds: [...runningCaseIds],
+        completedCases,
+        failedCases,
+      });
+      await saveRunGroup(runGroup);
+
+      try {
+        const { testRun, trace } = await runTestCase(
+          agent,
+          adapterConfig,
+          context,
+          {
+            customAdapter,
+            selectionPlanId: runGroup.selectionPlanId,
+          },
+        );
+
+        runGroup.testRunIds.push(testRun.runId);
+        runGroup.traceIds.push(trace.traceId);
+
+        // 落盘 trace 文件供 GET /traces/:id 查询
+        await writeTraceFile(trace);
+
+        if (testRun.status === "failed") {
+          throw new Error(testRun.error ?? "Detection test run failed");
+        }
+
+        const evaluation = evaluateRisk(context, trace);
+        const riskReport = buildRiskReport(context, evaluation, trace);
+        riskReportsByIndex[index] = riskReport;
+
+        runGroup.riskReportIds.push(riskReport.reportId);
+        completedCases++;
+        updateRunProgress(runGroup, {
+          runningCaseIds: [...runningCaseIds],
+          completedCases,
+          failedCases,
+          lastCompletedCaseId: context.caseId,
+        });
+      } catch (error) {
+        failedCases++;
+        const message = error instanceof Error ? error.message : String(error);
+        fatalError = new Error(`Detection pass failed for ${context.caseId}: ${message}`);
+        runGroup.status = "failed";
+        runGroup.phase = "failed";
+        runGroup.error = fatalError.message;
+        updateRunProgress(runGroup, {
+          phase: "failed",
+          runningCaseIds: [...runningCaseIds],
+          completedCases,
+          failedCases,
+        });
+      } finally {
+        runningCaseIds.delete(context.caseId);
+        updateRunProgress(runGroup, {
+          runningCaseIds: [...runningCaseIds],
+          completedCases,
+          failedCases,
+        });
+        await saveRunGroup(runGroup);
+      }
+    },
+    () => fatalError !== undefined,
+  );
+
+  if (fatalError) {
+    throw fatalError;
+  }
+
+  return riskReportsByIndex.filter(
+    (item): item is ReturnType<typeof buildRiskReport> => Boolean(item),
+  );
+}
+
+async function runWithConcurrency<T>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<void>,
+  shouldStop: () => boolean = () => false,
+): Promise<void> {
+  let nextIndex = 0;
+  const workerCount = Math.max(1, Math.min(concurrency, items.length));
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (true) {
+        if (shouldStop()) return;
+        const index = nextIndex++;
+        if (index >= items.length) return;
+        await worker(items[index], index);
+      }
+    }),
+  );
+}
+
+function getDetectionConcurrency(request: RunE2ERequest): number {
+  const configured = Number(
+    process.env.AGENT_GUARD_E2E_DETECTION_CONCURRENCY ??
+      process.env.AGENT_GUARD_E2E_CONCURRENCY,
+  );
+  if (Number.isFinite(configured) && configured > 0) {
+    return Math.max(1, Math.min(Math.floor(configured), 8));
+  }
+  if (request.adapterKind === "openclaw") return 2;
+  if (request.adapterKind === "http_sample") return 4;
+  return 6;
+}
+
+function startRunProgress(
+  runGroup: P2RunGroup,
+  phase: P2RunProgress["phase"],
+  totalCases: number,
+  concurrency: number,
+): void {
+  const now = nowIso();
+  runGroup.progress = {
+    phase,
+    totalCases,
+    completedCases: 0,
+    failedCases: 0,
+    runningCaseIds: [],
+    concurrency,
+    percent: 0,
+    startedAt: now,
+    updatedAt: now,
+  };
+}
+
+function updateRunProgress(
+  runGroup: P2RunGroup,
+  patch: Partial<Omit<P2RunProgress, "totalCases" | "concurrency" | "startedAt">> & {
+    totalCases?: number;
+    concurrency?: number;
+  },
+): void {
+  const previous = runGroup.progress;
+  const now = nowIso();
+  const totalCases = patch.totalCases ?? previous?.totalCases ?? runGroup.caseCount ?? 0;
+  const completedCases = patch.completedCases ?? previous?.completedCases ?? 0;
+  const failedCases = patch.failedCases ?? previous?.failedCases ?? 0;
+  const finishedCases = completedCases + failedCases;
+  const percent =
+    patch.percent ??
+    (totalCases > 0
+      ? Math.min(100, Math.round((finishedCases / totalCases) * 100))
+      : runGroup.status === "completed"
+        ? 100
+        : 0);
+
+  runGroup.progress = {
+    phase: patch.phase ?? previous?.phase ?? runGroup.phase,
+    totalCases,
+    completedCases,
+    failedCases,
+    runningCaseIds: patch.runningCaseIds ?? previous?.runningCaseIds ?? [],
+    lastCompletedCaseId: patch.lastCompletedCaseId ?? previous?.lastCompletedCaseId,
+    concurrency: patch.concurrency ?? previous?.concurrency ?? getDetectionConcurrency({
+      adapterKind: runGroup.adapterKind,
+      agent: { name: runGroup.agentName },
+      generateDefenseReport: Boolean(runGroup.defenseReportId),
+    }),
+    percent,
+    startedAt: previous?.startedAt ?? now,
+    updatedAt: now,
+  };
+}
 
 function buildLinks(runGroup: P2RunGroup): EntityLink[] {
   const links: EntityLink[] = [];

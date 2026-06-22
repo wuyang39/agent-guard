@@ -19,6 +19,19 @@ export type P2PolicyContextSource =
   | "stored_detection"
   | "synthetic_fallback";
 
+export type P2RunProgress = {
+  phase: P2RunPhase | "policy_building" | "reporting" | "completed";
+  totalCases: number;
+  completedCases: number;
+  failedCases: number;
+  runningCaseIds: string[];
+  lastCompletedCaseId?: string;
+  concurrency: number;
+  percent: number;
+  startedAt: string;
+  updatedAt: string;
+};
+
 export type EntityLink = {
   kind:
     | "test_context"
@@ -45,9 +58,11 @@ export type P2RunGroup = {
   phase: P2RunPhase;
   policyContextSource?: P2PolicyContextSource;
   startedAt: string;
+  updatedAt?: string;
   endedAt?: string;
   caseIds?: string[];
   caseCount: number;
+  progress?: P2RunProgress;
   highestRiskLevel?: RiskLevel;
   testRunIds: string[];
   traceIds: string[];

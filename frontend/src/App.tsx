@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import type { TestSelectionPlan, TestSelectionRequest } from "@agent-guard/contracts";
 import { agentGuardApi } from "./lib/api/client";
 import {
   mockDashboardSummary,
@@ -57,6 +58,7 @@ export function App() {
     loadStoredAgentConfig(),
   );
   const [running, setRunning] = useState(false);
+  const [planning, setPlanning] = useState(false);
   const [summaryState, setSummaryState] = useState<LoadState<CLineDashboardSummary>>({
     status: "idle",
   });
@@ -67,6 +69,9 @@ export function App() {
     status: "idle",
   });
   const [traceState, setTraceState] = useState<LoadState<TraceDetailView>>({
+    status: "idle",
+  });
+  const [selectionPlanState, setSelectionPlanState] = useState<LoadState<TestSelectionPlan>>({
     status: "idle",
   });
   const [runGroupsState, setRunGroupsState] = useState<
@@ -82,6 +87,7 @@ export function App() {
     setDetectionState({ status: "ready", data: mockDetectionDetail, source: "mock" });
     setDefenseState({ status: "ready", data: mockDefenseDetail, source: "mock" });
     setTraceState({ status: "ready", data: mockTraceDetail, source: "mock" });
+    setSelectionPlanState({ status: "empty", message: "示例数据不包含攻击库选择计划。" });
     setRunGroupsState({
       status: "ready",
       data: { schemaVersion: "mvp-1", runGroups: mockDashboardSummary.recentRunGroups },
@@ -113,6 +119,7 @@ export function App() {
 
   const loadDetailsForRunGroup = useCallback(async (runGroup: CLineRunGroup) => {
     setSelectedRunGroupId(runGroup.runGroupId);
+    await loadSelectionPlanForRunGroup(runGroup, setSelectionPlanState);
 
     if (runGroup.detectionReportId) {
       setDetectionState({ status: "loading" });
@@ -168,6 +175,10 @@ export function App() {
     const latest = summary.latestRunGroup;
     if (!latest) {
       setSelectedRunGroupId(undefined);
+      setSelectionPlanState({
+        status: "empty",
+        message: "尚无攻击库选择计划。请先执行 LLM 选样并生成监督策略包。",
+      });
       setDetectionState({
         status: "empty",
         message: "尚无检测报告。请先生成监督策略包。",
@@ -237,16 +248,47 @@ export function App() {
     void loadInitial();
   }, [loadInitial]);
 
+  async function createSelectionPlan() {
+    setPlanning(true);
+    setSelectionPlanState({ status: "loading" });
+    try {
+      const nextConfig = await saveCurrentAgentConfig();
+      const selectionPlan = await createSelectionPlanForConfig(nextConfig);
+      setSelectionPlanState({ status: "ready", data: selectionPlan, source: "api" });
+      setView("dashboard");
+    } catch (error) {
+      setSelectionPlanState({
+        status: "error",
+        message: error instanceof Error ? error.message : "LLM 攻击库选择失败。",
+      });
+    } finally {
+      setPlanning(false);
+    }
+  }
+
   async function runE2E() {
     setRunning(true);
-    setSummaryState({ status: "loading" });
     try {
-      const saved = await agentGuardApi.saveAgent(agentConfig);
-      const nextConfig = { ...agentConfig, ...saved.agent };
-      persistAgentConfig(nextConfig);
-      const started = await agentGuardApi.runE2E(nextConfig);
+      const nextConfig = await saveCurrentAgentConfig();
+      const selectionPlan =
+        selectionPlanState.status === "ready" &&
+        selectionPlanState.data.status === "ready" &&
+        selectionPlanState.data.agentId === nextConfig.agentId
+          ? selectionPlanState.data
+          : await createSelectionPlanForConfig(nextConfig);
+      setSelectionPlanState({ status: "ready", data: selectionPlan, source: "api" });
+      if (selectionPlan.status !== "ready") {
+        throw new Error(
+          `攻击库选择计划未就绪，当前状态为 ${selectionPlan.status}。请检查覆盖率要求。`,
+        );
+      }
+      const started = await agentGuardApi.runE2E(nextConfig, {
+        selectionPlanId: selectionPlan.selectionPlanId,
+        generateDefenseReport: nextConfig.adapterKind !== "openclaw",
+      });
       if (started.runGroup?.runGroupId) {
-        await waitForRunGroup(started.runGroup.runGroupId);
+        acceptRunGroupProgress(started.runGroup);
+        await waitForRunGroup(started.runGroup.runGroupId, 1_200_000, acceptRunGroupProgress);
       }
       const [summary, runGroups, system] = await Promise.all([
         agentGuardApi.dashboardSummary(),
@@ -259,13 +301,21 @@ export function App() {
       await loadDetails(summary);
       setView("dashboard");
     } catch (error) {
-      setSummaryState({
+      setSummaryState((current) =>
+        current.status === "ready"
+          ? current
+          : {
+              status: "error",
+              message:
+                error instanceof Error
+                  ? `${error.message}。确认 npm run api:start 是否已启动。`
+                  : "生成监督策略包失败。确认 npm run api:start 是否已启动。",
+              fallback: mockDashboardSummary,
+            },
+      );
+      setSelectionPlanState({
         status: "error",
-        message:
-          error instanceof Error
-            ? `${error.message}。确认 npm run api:start 是否已启动。`
-            : "生成监督策略包失败。确认 npm run api:start 是否已启动。",
-        fallback: mockDashboardSummary,
+        message: error instanceof Error ? error.message : "LLM 攻击库选择或检测运行失败。",
       });
     } finally {
       setRunning(false);
@@ -298,6 +348,36 @@ export function App() {
   function persistAgentConfig(next: AgentConnectionConfig) {
     setAgentConfig(next);
     localStorage.setItem(AGENT_CONFIG_STORAGE_KEY, JSON.stringify(next));
+  }
+
+  async function saveCurrentAgentConfig(): Promise<AgentConnectionConfig> {
+    const saved = await agentGuardApi.saveAgent(agentConfig);
+    const nextConfig = { ...agentConfig, ...saved.agent };
+    persistAgentConfig(nextConfig);
+    return nextConfig;
+  }
+
+  async function createSelectionPlanForConfig(
+    config: AgentConnectionConfig,
+  ): Promise<TestSelectionPlan> {
+    return agentGuardApi.createTestSelectionPlan(buildLlmSelectionRequest(config));
+  }
+
+  function acceptRunGroupProgress(runGroup: CLineRunGroup) {
+    setSelectedRunGroupId(runGroup.runGroupId);
+    setRunGroupsState((current) => mergeRunGroupListState(current, runGroup));
+    setSummaryState((current) =>
+      current.status === "ready"
+        ? {
+            ...current,
+            data: {
+              ...current.data,
+              latestRunGroup: runGroup,
+              recentRunGroups: mergeRunGroups(current.data.recentRunGroups, runGroup),
+            },
+          }
+        : current,
+    );
   }
 
   function openEvidence(tab: EvidenceTabKey) {
@@ -356,11 +436,14 @@ export function App() {
         ) : null}
         {view === "dashboard" ? (
           <DashboardPage
+            onCreateSelectionPlan={() => void createSelectionPlan()}
             onRun={() => void runE2E()}
             onSelectView={selectDashboardTarget}
             onUseMock={useMock}
+            planning={planning}
             running={running}
             state={summaryState}
+            selectionPlanState={selectionPlanState}
           />
         ) : null}
         {view === "supervision" ? (
@@ -388,7 +471,7 @@ export function App() {
             onSelectRunGroup={(runGroup) => void loadDetailsForRunGroup(runGroup)}
             onTabChange={setEvidenceTab}
             runGroupsState={runGroupsState}
-            running={running}
+            running={running || planning}
             selectedRunGroupId={selectedRunGroupId}
             summaryState={summaryState}
             systemState={systemState}
@@ -398,6 +481,45 @@ export function App() {
       </main>
     </div>
   );
+}
+
+function buildLlmSelectionRequest(config: AgentConnectionConfig): TestSelectionRequest {
+  return {
+    schemaVersion: "mvp-1",
+    agentId: config.agentId,
+    targetProfile: "openclaw",
+    selectionMode: "llm_assisted",
+    maxCaseCount: 5,
+    minCaseCount: 3,
+    requiredAttackFamilies: ["prompt_injection", "data_leakage", "tool_hijack"],
+    requiredTargetSurfaces: ["tool_call"],
+    includeExternalTools: true,
+    adapterKind: config.adapterKind,
+  };
+}
+
+async function loadSelectionPlanForRunGroup(
+  runGroup: CLineRunGroup,
+  setSelectionPlanState: (state: LoadState<TestSelectionPlan>) => void,
+): Promise<void> {
+  if (!runGroup.selectionPlanId) {
+    setSelectionPlanState({
+      status: "empty",
+      message: `运行组 ${runGroup.runGroupId} 未绑定攻击库选择计划。`,
+    });
+    return;
+  }
+
+  setSelectionPlanState({ status: "loading" });
+  try {
+    const plan = await agentGuardApi.testSelectionPlan(runGroup.selectionPlanId);
+    setSelectionPlanState({ status: "ready", data: plan, source: "api" });
+  } catch (error) {
+    setSelectionPlanState({
+      status: "error",
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
 function loadStoredAgentConfig(): AgentConnectionConfig {
@@ -425,10 +547,12 @@ function hasStoredAgentConfig(): boolean {
 async function waitForRunGroup(
   runGroupId: string,
   timeoutMs = 180000,
+  onProgress?: (runGroup: CLineRunGroup) => void,
 ): Promise<CLineRunGroup | undefined> {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
     const result = await agentGuardApi.runGroup(runGroupId);
+    onProgress?.(result.runGroup);
     if (result.runGroup.status !== "running") {
       return result.runGroup;
     }
@@ -439,4 +563,38 @@ async function waitForRunGroup(
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function mergeRunGroupListState(
+  current: LoadState<{ schemaVersion: "mvp-1"; runGroups: CLineRunGroup[] }>,
+  runGroup: CLineRunGroup,
+): LoadState<{ schemaVersion: "mvp-1"; runGroups: CLineRunGroup[] }> {
+  if (current.status === "ready") {
+    return {
+      ...current,
+      data: {
+        ...current.data,
+        runGroups: mergeRunGroups(current.data.runGroups, runGroup),
+      },
+    };
+  }
+
+  return {
+    status: "ready",
+    source: "api",
+    data: {
+      schemaVersion: "mvp-1",
+      runGroups: [runGroup],
+    },
+  };
+}
+
+function mergeRunGroups(
+  runGroups: CLineRunGroup[],
+  next: CLineRunGroup,
+): CLineRunGroup[] {
+  const rest = runGroups.filter((item) => item.runGroupId !== next.runGroupId);
+  return [next, ...rest].sort(
+    (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
+  );
 }

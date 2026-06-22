@@ -164,6 +164,7 @@ function toFrontendRunGroup(run: P2RunGroup) {
   return {
     schemaVersion: "mvp-1" as const,
     runGroupId: run.runGroupId,
+    selectionPlanId: run.selectionPlanId,
     agentId: run.agentId,
     agentName: run.agentName,
     adapterKind: run.adapterKind,
@@ -172,6 +173,7 @@ function toFrontendRunGroup(run: P2RunGroup) {
     policyContextSource: run.policyContextSource,
     caseIds: run.caseIds ?? Array.from({ length: run.caseCount }, (_, index) => `case.${index + 1}`),
     caseCount: run.caseCount,
+    progress: run.progress,
     detectionReportId: run.detectionReportId ?? "",
     riskProfileId: run.riskProfileId ?? "",
     policyPackId: run.policyPackId ?? "",
@@ -181,7 +183,7 @@ function toFrontendRunGroup(run: P2RunGroup) {
     runtimeSessionIds: run.runtimeSessionIds,
     artifactIds: run.artifactIds,
     createdAt: run.startedAt,
-    updatedAt: run.endedAt ?? run.startedAt,
+    updatedAt: run.updatedAt ?? run.endedAt ?? run.startedAt,
   };
 }
 

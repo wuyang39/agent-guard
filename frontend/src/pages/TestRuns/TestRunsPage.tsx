@@ -1,4 +1,5 @@
 import { Badge } from "../../components/ui/Badge";
+import { RunProgress } from "../../components/ui/RunProgress";
 import { EmptyBlock, ErrorBlock, LoadingBlock } from "../../components/ui/StateBlock";
 import type { CLineRunGroup, LoadState } from "../../lib/api/types";
 import {
@@ -39,7 +40,7 @@ export function TestRunsPage({
         message="生成监督策略包后，这里会显示运行组、报告和调用轨迹索引。"
         action={
           <button className="primary-button" disabled={running} onClick={onRun}>
-            {running ? "正在生成策略包..." : "生成监督策略包"}
+            {running ? "正在运行检测..." : "运行检测生成策略包"}
           </button>
         }
       />
@@ -57,7 +58,7 @@ export function TestRunsPage({
           <div className="button-row">
             {selectedRunGroupId ? <Badge tone="tone-medium">当前 {selectedRunGroupId}</Badge> : null}
             <button className="primary-button" disabled={running} onClick={onRun}>
-              {running ? "正在生成策略包..." : "生成监督策略包"}
+              {running ? "正在运行检测..." : "运行检测生成策略包"}
             </button>
           </div>
         </div>
@@ -66,10 +67,12 @@ export function TestRunsPage({
             <thead>
               <tr>
                 <th>运行组</th>
+                <th>选择计划</th>
                 <th>智能体</th>
                 <th>状态</th>
                 <th>阶段</th>
                 <th>策略来源</th>
+                <th>检测进度</th>
                 <th>用例</th>
                 <th>风险报告</th>
                 <th>调用轨迹</th>
@@ -97,9 +100,12 @@ export function TestRunsPage({
                     <code>{runGroup.runGroupId}</code>
                     {selected ? <Badge tone="tone-low">已选择</Badge> : null}
                   </td>
+                  <td>
+                    <code>{runGroup.selectionPlanId ?? "未绑定"}</code>
+                  </td>
                   <td>{runGroup.agentName ?? adapterKindLabel(runGroup.adapterKind)}</td>
                   <td>
-                    <Badge tone={runGroup.status === "completed" ? "tone-low" : "tone-critical"}>
+                    <Badge tone={statusTone(runGroup.status)}>
                       {statusLabel(runGroup.status)}
                     </Badge>
                   </td>
@@ -107,6 +113,9 @@ export function TestRunsPage({
                     <Badge tone={runPhaseTone(runGroup.phase)}>{runPhaseLabel(runGroup.phase)}</Badge>
                   </td>
                   <td>{policySourceLabel(runGroup.policyContextSource)}</td>
+                  <td className="progress-cell">
+                    <RunProgress runGroup={runGroup} compact />
+                  </td>
                   <td>{runGroup.caseIds.length}</td>
                   <td>{runGroup.riskReportIds.length}</td>
                   <td>{runGroup.traceIds.length}</td>
@@ -126,4 +135,10 @@ function statusLabel(status: CLineRunGroup["status"]): string {
   if (status === "running") return "运行中";
   if (status === "completed") return "已完成";
   return "失败";
+}
+
+function statusTone(status: CLineRunGroup["status"]): string {
+  if (status === "running") return "tone-medium";
+  if (status === "completed") return "tone-low";
+  return "tone-critical";
 }

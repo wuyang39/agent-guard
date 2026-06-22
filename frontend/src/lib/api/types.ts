@@ -29,6 +29,7 @@ export type ApiResponse<T> =
 export type CLineRunGroup = {
   schemaVersion: "mvp-1";
   runGroupId: string;
+  selectionPlanId?: string;
   agentId: string;
   agentName?: string;
   adapterKind?: "openclaw" | "http_sample" | "mock";
@@ -44,6 +45,7 @@ export type CLineRunGroup = {
   policyContextSource?: "stored_detection" | "synthetic_fallback";
   caseIds: string[];
   caseCount?: number;
+  progress?: RunProgressView;
   detectionReportId: string;
   riskProfileId: string;
   policyPackId: string;
@@ -53,6 +55,23 @@ export type CLineRunGroup = {
   runtimeSessionIds: string[];
   artifactIds: string[];
   createdAt: string;
+  updatedAt: string;
+};
+
+export type RunProgressView = {
+  phase:
+    | CLineRunGroup["phase"]
+    | "policy_building"
+    | "reporting"
+    | "completed";
+  totalCases: number;
+  completedCases: number;
+  failedCases: number;
+  runningCaseIds: string[];
+  lastCompletedCaseId?: string;
+  concurrency: number;
+  percent: number;
+  startedAt: string;
   updatedAt: string;
 };
 

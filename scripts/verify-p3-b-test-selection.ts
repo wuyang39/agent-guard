@@ -158,6 +158,14 @@ async function main(): Promise<void> {
     const runGroup = runData.runGroup as Record<string, unknown>;
     assert(runGroup.selectionPlanId === rulePlan.selectionPlanId, "runGroup selectionPlanId missing");
     assert(runGroup.agentId === rulePlan.agentId, "runGroup agentId should match selection plan");
+    const progress = runGroup.progress as Record<string, unknown>;
+    assert(progress && typeof progress === "object", "runGroup progress missing");
+    assert(
+      progress.totalCases === rulePlan.selectedCaseIds.length,
+      "runGroup progress totalCases should match selection plan",
+    );
+    assert(progress.completedCases === rulePlan.selectedCaseIds.length, "runGroup progress completedCases mismatch");
+    assert(progress.percent === 100, "runGroup progress should reach 100 percent");
     assert(
       sameStringSet(runGroup.caseIds as string[], rulePlan.selectedCaseIds),
       "runGroup caseIds should match selection plan",
@@ -176,6 +184,15 @@ async function main(): Promise<void> {
     console.log(`8. selectionPlanId -> e2e run + trace ok (${runGroup.runGroupId})`);
     passed++;
 
+    const dashboardResp = await injectJson(app, "GET", "/api/v1/dashboard/summary");
+    const latestRunGroup = dataRecord(dashboardResp).latestRunGroup as Record<string, unknown>;
+    assert(
+      latestRunGroup.selectionPlanId === rulePlan.selectionPlanId,
+      "dashboard latestRunGroup selectionPlanId should match selection plan",
+    );
+    console.log("9. dashboard selectionPlanId linkage ok");
+    passed++;
+
     const getCompletedPlan = await injectJson(
       app,
       "GET",
@@ -187,7 +204,7 @@ async function main(): Promise<void> {
       completedPlan.runGroupIds?.includes(runGroup.runGroupId as string),
       "selection plan should record runGroupId",
     );
-    console.log("9. selection plan status linkage ok");
+    console.log("10. selection plan status linkage ok");
     passed++;
 
     const asyncInvalid = await injectJson(
@@ -208,7 +225,7 @@ async function main(): Promise<void> {
       "failed",
     );
     assert(failedAsyncRun.status === "failed", "invalid async selection should fail runGroup");
-    console.log("10. invalid async selection failure state ok");
+    console.log("11. invalid async selection failure state ok");
     passed++;
 
     console.log(`\nP3-B TEST SELECTION VERIFIED (${passed} passed)`);

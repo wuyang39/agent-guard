@@ -148,7 +148,7 @@ async function main(): Promise<void> {
     const httpPort = process.env.SAMPLE_AGENT_PORT ?? "7001";
     const httpRun = await injectJson(app, "POST", "/api/v1/test-runs/e2e", {
       adapterKind: "http_sample", agent: { name: "B5 HTTP" },
-      connection: { endpointUrl: `http://localhost:${httpPort}/agent/run` },
+      connection: { endpointUrl: `http://127.0.0.1:${httpPort}/agent/run` },
       caseIds: ["case.resource_injection"], generateDefenseReport: true,
     });
     ok(httpRun);

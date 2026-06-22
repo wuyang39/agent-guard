@@ -92,8 +92,11 @@ function startChild(label, command, args, opts = {}) {
   return child;
 }
 
-function npmCommand() {
-  return process.platform === "win32" ? "npm.cmd" : "npm";
+function frontendCommand() {
+  return {
+    command: process.execPath,
+    args: ["node_modules/vite/bin/vite.js", "--config", "frontend/vite.config.ts", "--port", FRONTEND_PORT],
+  };
 }
 
 function shutdown() {
@@ -117,25 +120,35 @@ async function main() {
   console.log("=".repeat(56));
 
   // 1. Start sample agent server
-  log("sample", `starting on port ${SAMPLE_PORT}...`);
-  startChild("sample", process.execPath, ["scripts/sample-agent-server.mjs"], {
-    env: { SAMPLE_AGENT_PORT: SAMPLE_PORT },
-  });
+  const sampleHealthUrl = `http://127.0.0.1:${SAMPLE_PORT}/health`;
+  if (await isHttpReady(sampleHealthUrl)) {
+    log("sample", `already ready at ${sampleHealthUrl}`);
+  } else {
+    log("sample", `starting on port ${SAMPLE_PORT}...`);
+    startChild("sample", process.execPath, ["scripts/sample-agent-server.mjs"], {
+      env: { SAMPLE_AGENT_PORT: SAMPLE_PORT },
+    });
 
-  // 2. Wait for sample agent
-  log("sample", "waiting for health check...");
-  await healthCheck(`http://127.0.0.1:${SAMPLE_PORT}/health`, "Sample Agent");
-  log("sample", `ready at http://127.0.0.1:${SAMPLE_PORT}/health`);
+    // 2. Wait for sample agent
+    log("sample", "waiting for health check...");
+    await healthCheck(sampleHealthUrl, "Sample Agent");
+    log("sample", `ready at ${sampleHealthUrl}`);
+  }
 
   // 3. Start API server
-  log("api", `starting on port ${API_PORT}...`);
-  startChild("api", process.execPath, ["--import", "tsx", "backend/src/server.ts"], {
-    env: { API_PORT, SAMPLE_AGENT_PORT: SAMPLE_PORT },
-  });
+  const apiStatusUrl = `${API_BASE}/api/v1/system/status`;
+  if (await isHttpReady(apiStatusUrl)) {
+    log("api", `already ready at ${apiStatusUrl}`);
+  } else {
+    log("api", `starting on port ${API_PORT}...`);
+    startChild("api", process.execPath, ["--import", "tsx", "backend/src/server.ts"], {
+      env: { API_PORT, SAMPLE_AGENT_PORT: SAMPLE_PORT },
+    });
 
-  // 4. Wait for API
-  log("api", "waiting for health check...");
-  const sys = await healthCheck(`${API_BASE}/api/v1/system/status`, "API Server");
+    // 4. Wait for API
+    log("api", "waiting for health check...");
+  }
+  const sys = await healthCheck(apiStatusUrl, "API Server");
   log("api", `ready: ${sys?.data?.service ?? "agent-guard-api"} v${sys?.data?.apiVersion ?? "?"}`);
 
   // 5. Start frontend if it is not already serving the formal console.
@@ -143,7 +156,8 @@ async function main() {
     log("frontend", `already ready at ${FRONTEND_BASE}`);
   } else {
     log("frontend", `starting on port ${FRONTEND_PORT}...`);
-    startChild("frontend", npmCommand(), ["run", "frontend", "--", "--port", FRONTEND_PORT], {
+    const frontend = frontendCommand();
+    startChild("frontend", frontend.command, frontend.args, {
       env: { VITE_AGENT_GUARD_API_BASE: API_BASE },
     });
     log("frontend", "waiting for Vite...");
@@ -162,6 +176,10 @@ async function main() {
   console.log("");
 
   log("demo", "services ready. Press Ctrl+C to stop.");
+  if (process.env.DEMO_EXIT_AFTER_READY === "1") {
+    shutdown();
+    return;
+  }
 
   // 7. Keep alive
   setInterval(() => {}, 60_000);

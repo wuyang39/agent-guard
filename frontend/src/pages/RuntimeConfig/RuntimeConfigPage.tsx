@@ -1,5 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Badge } from "../../components/ui/Badge";
+import {
+  DiagnosticKeyValueGrid,
+  DiagnosticTable,
+} from "../../components/ui/DeveloperDiagnostics";
+import { DeveloperDetails } from "../../components/ui/DeveloperDetails";
 import { ErrorBlock, LoadingBlock } from "../../components/ui/StateBlock";
 import { agentGuardApi } from "../../lib/api/client";
 import { formatDateTime } from "../../lib/formatters/time";
@@ -12,7 +17,6 @@ import type {
   RuntimeLlmMode,
 } from "../../lib/api/types";
 
-const MCP_URL = "http://127.0.0.1:3100/api/v1/openclaw/realtime/mcp";
 const LLM_DRAFT_STORAGE_KEY = "agent-guard.runtime-config.llm-draft";
 const MCP_DRAFT_STORAGE_KEY = "agent-guard.runtime-config.mcp-draft";
 
@@ -36,26 +40,14 @@ export function RuntimeConfigPage() {
     void loadConfig();
   }, []);
 
-  async function loadConfig(options: { preferDraft?: boolean } = { preferDraft: true }) {
+  async function loadConfig() {
     setState({ status: "loading" });
     setError(undefined);
     try {
       const snapshot = await agentGuardApi.runtimeConfig();
-      if (options.preferDraft === false) {
-        clearStoredLlmDraft();
-        clearStoredMcpDraft();
-      }
       setState({ status: "ready", data: snapshot, source: "api" });
-      setLlmDraft(
-        options.preferDraft === false
-          ? snapshotToLlmDraft(snapshot)
-          : loadStoredLlmDraft() ?? snapshotToLlmDraft(snapshot),
-      );
-      setMcpDraft(
-        options.preferDraft === false
-          ? snapshotToMcpDraft(snapshot)
-          : loadStoredMcpDraft() ?? snapshotToMcpDraft(snapshot),
-      );
+      setLlmDraft(loadStoredLlmDraft() ?? snapshotToLlmDraft(snapshot));
+      setMcpDraft(loadStoredMcpDraft() ?? snapshotToMcpDraft(snapshot));
     } catch (loadError) {
       setState({
         status: "error",
@@ -100,19 +92,6 @@ export function RuntimeConfigPage() {
       endpoint: "https://api.deepseek.com",
       model: "deepseek-v4-flash",
       timeoutMs: Math.max(current.timeoutMs, 10000),
-    }));
-  }
-
-  function applyMockPreset() {
-    setLlmCheck(undefined);
-    setError(undefined);
-    updateLlmDraft((current) => ({
-      ...current,
-      enabled: true,
-      mode: "mock",
-      endpoint: "",
-      model: "mock-tool-profiler",
-      timeoutMs: 5000,
     }));
   }
 
@@ -167,14 +146,6 @@ export function RuntimeConfigPage() {
     });
   }
 
-  const sourceSummary = useMemo(() => {
-    if (state.status !== "ready") return undefined;
-    return {
-      llm: sourceLabel(state.data.llm.source),
-      mcp: sourceLabel(state.data.downstreamMcp.source),
-    };
-  }, [state]);
-
   if (state.status === "idle" || state.status === "loading") {
     return <LoadingBlock message="正在读取运行时配置..." />;
   }
@@ -190,42 +161,21 @@ export function RuntimeConfigPage() {
           <p className="eyebrow">运行配置</p>
           <h1>LLM 与外部 MCP 接入</h1>
         </div>
-        <div className="hero-actions">
-          <Badge tone={llmDraft.enabled ? "tone-medium" : "tone-neutral"}>
-            LLM {llmDraft.enabled ? "启用" : "关闭"}
-          </Badge>
-          <Badge tone={mcpDraft.enabled ? "tone-low" : "tone-neutral"}>
-            外部 MCP {mcpDraft.enabled ? "启用" : "关闭"}
-          </Badge>
-          <button className="secondary-button" onClick={() => void loadConfig()}>
-            保留草稿刷新
-          </button>
-          <button className="secondary-button" onClick={() => void loadConfig({ preferDraft: false })}>
-            还原后端配置
-          </button>
-        </div>
       </section>
 
       {error ? <ErrorBlock title="配置操作失败" message={error} /> : null}
 
-      <section className="workspace-grid runtime-config-workspace">
-        <div className="workspace-main">
-          <article className="panel config-panel">
+      <section className="workspace-main runtime-config-workspace">
+        <article className="panel config-panel">
             <div className="section-header compact">
               <div>
-                <p className="eyebrow">LLM API</p>
-                <h2>LLM 辅助能力</h2>
+                <p className="eyebrow">LLM</p>
+                <h2>LLM 配置</h2>
               </div>
               <div className="button-row">
                 <button className="secondary-button compact-button" onClick={applyDeepSeekPreset} type="button">
                   DeepSeek V4 Flash
                 </button>
-                <button className="secondary-button compact-button" onClick={applyMockPreset} type="button">
-                  Mock
-                </button>
-                <Badge tone={llmDraft.enabled ? "tone-medium" : "tone-neutral"}>
-                  {sourceSummary?.llm ?? "runtime"}
-                </Badge>
               </div>
             </div>
 
@@ -238,7 +188,11 @@ export function RuntimeConfigPage() {
                     updateLlmDraft((current) => ({
                       ...current,
                       enabled: event.target.checked,
-                      mode: event.target.checked ? current.mode === "disabled" ? "mock" : current.mode : "disabled",
+                      mode: event.target.checked
+                        ? current.mode === "disabled" || current.mode === "mock"
+                          ? "openai_compatible"
+                          : current.mode
+                        : "disabled",
                     }))
                   }
                   type="checkbox"
@@ -257,14 +211,13 @@ export function RuntimeConfigPage() {
                     }))
                   }
                 >
-                  <option value="disabled">disabled</option>
-                  <option value="mock">mock</option>
-                  <option value="openai_compatible">openai_compatible</option>
+                  <option value="disabled">关闭</option>
+                  <option value="openai_compatible">OpenAI-compatible</option>
                 </select>
               </label>
 
               <label className="field wide-field">
-                <span>Endpoint</span>
+                <span>接口地址</span>
                 <input
                   placeholder="https://api.deepseek.com 或 https://example.com/v1/chat/completions"
                   value={llmDraft.endpoint ?? ""}
@@ -275,7 +228,7 @@ export function RuntimeConfigPage() {
               </label>
 
               <label className="field">
-                <span>Model</span>
+                <span>模型</span>
                 <input
                   placeholder="deepseek-v4-flash"
                   value={llmDraft.model ?? ""}
@@ -328,17 +281,14 @@ export function RuntimeConfigPage() {
               </button>
             </div>
             {llmCheck ? <CheckResultBlock result={llmCheck} /> : null}
-          </article>
+        </article>
 
-          <article className="panel config-panel">
+        <article className="panel config-panel">
             <div className="section-header compact">
               <div>
-                <p className="eyebrow">External MCP</p>
-                <h2>外部 MCP Provider</h2>
+                <p className="eyebrow">外部 MCP</p>
+                <h2>外部 MCP 配置</h2>
               </div>
-              <Badge tone={mcpDraft.enabled ? "tone-low" : "tone-neutral"}>
-                {sourceSummary?.mcp ?? "runtime"}
-              </Badge>
             </div>
 
             <div className="form-grid">
@@ -354,7 +304,7 @@ export function RuntimeConfigPage() {
               </label>
 
               <label className="field">
-                <span>Provider ID</span>
+                <span>接入 ID</span>
                 <input
                   value={mcpDraft.providerId}
                   onChange={(event) =>
@@ -364,7 +314,7 @@ export function RuntimeConfigPage() {
               </label>
 
               <label className="field">
-                <span>Provider Name</span>
+                <span>显示名称</span>
                 <input
                   value={mcpDraft.providerName}
                   onChange={(event) =>
@@ -390,7 +340,7 @@ export function RuntimeConfigPage() {
               </label>
 
               <label className="field wide-field">
-                <span>外部 MCP URL</span>
+                <span>MCP 地址</span>
                 <input
                   placeholder="http://127.0.0.1:9001/mcp"
                   value={mcpDraft.endpointUrl ?? ""}
@@ -403,76 +353,31 @@ export function RuntimeConfigPage() {
 
             <div className="button-row config-actions">
               <button className="primary-button" disabled={mcpSaving} onClick={() => void saveMcp()}>
-                {mcpSaving ? "接入中..." : "保存并重新加载 Gateway"}
+                {mcpSaving ? "保存中..." : "保存 MCP 配置"}
               </button>
               <button className="secondary-button" onClick={() => void checkMcp()}>
-                测试 tools/list
+                测试 MCP
               </button>
             </div>
-            {mcpCheck ? <CheckResultBlock result={mcpCheck} showTools /> : null}
-          </article>
-        </div>
+            {mcpCheck ? <CheckResultBlock result={mcpCheck} /> : null}
+        </article>
 
-        <aside className="surface-rail">
-          <div className="rail-section">
-            <div className="section-header compact">
-              <h2>OpenClaw 连接口径</h2>
-              <Badge>固定 MCP URL</Badge>
-            </div>
-            <div className="rail-list">
-              <div>
-                <span>OpenClaw MCP URL</span>
-                <code>{MCP_URL}</code>
-              </div>
-              <div>
-                <span>外部工具暴露名</span>
-                <code>agw__{mcpDraft.providerId || "provider"}__tool_name</code>
-              </div>
-              <div>
-                <span>配置生效范围</span>
-                <code>当前后端进程，重启后回到环境变量</code>
-              </div>
-            </div>
-          </div>
-
-          <div className="rail-section">
-            <h2>配置状态</h2>
-            <div className="decision-grid">
-              <div>
-                <span>LLM</span>
-                <strong>{llmDraft.enabled ? "ON" : "OFF"}</strong>
-              </div>
-              <div>
-                <span>MCP</span>
-                <strong>{mcpDraft.enabled ? "ON" : "OFF"}</strong>
-              </div>
-              <div>
-                <span>Key</span>
-                <strong>{state.data.llm.hasApiKey || llmDraft.apiKey ? "YES" : "NO"}</strong>
-              </div>
-              <div>
-                <span>Tools</span>
-                <strong>{mcpCheck?.toolCount ?? "-"}</strong>
-              </div>
-            </div>
-          </div>
-
-          <div className="rail-section">
-            <div className="section-header compact">
-              <h2>当前生效配置</h2>
-              <Badge>后端</Badge>
-            </div>
-            <p className="muted config-note">
-              这里显示后端当前实际使用的配置；表单草稿只有保存后才会进入这里。
-            </p>
-            <pre>{buildCurrentConfigSnippet(state.data)}</pre>
-          </div>
-
-          <div className="rail-section">
-            <h2>草稿环境变量等价写法</h2>
-            <pre>{buildEnvSnippet(llmDraft, mcpDraft)}</pre>
-          </div>
-        </aside>
+        <DeveloperDetails
+          defaultOpen
+          items={[
+            { label: "更新时间", value: formatDateTime(state.data.updatedAt) },
+            { label: "LLM 来源", value: configSourceLabel(state.data.llm.source) },
+            { label: "LLM 模式", value: state.data.llm.mode },
+            { label: "LLM 接口", value: state.data.llm.endpoint },
+            { label: "LLM 模型", value: state.data.llm.model },
+            { label: "API Key", value: state.data.llm.hasApiKey ? "已配置" : "未配置" },
+            { label: "MCP 来源", value: configSourceLabel(state.data.downstreamMcp.source) },
+            { label: "MCP 接入 ID", value: state.data.downstreamMcp.providerId },
+            { label: "MCP 地址", value: state.data.downstreamMcp.endpointUrl },
+            { label: "MCP 超时", value: state.data.downstreamMcp.timeoutMs },
+          ]}
+          title="当前生效配置"
+        />
       </section>
     </div>
   );
@@ -480,37 +385,50 @@ export function RuntimeConfigPage() {
 
 function CheckResultBlock({
   result,
-  showTools,
 }: {
   result: RuntimeConfigCheckResult;
-  showTools?: boolean;
 }) {
   return (
     <div className={`config-check-result ${result.available ? "is-ok" : "is-warn"}`}>
       <div className="section-header compact">
         <strong>{result.available ? "检测通过" : "未通过"}</strong>
         <Badge tone={result.available ? "tone-low" : "tone-high"}>
-          {result.available ? "available" : "unavailable"}
+          {result.available ? "可用" : "不可用"}
         </Badge>
       </div>
       <p>{result.detail}</p>
-      {showTools && result.providers?.length ? (
-        <div className="tool-chip-list">
-          {result.providers.map((provider) => (
-            <span key={provider.providerId}>
-              {provider.providerId}: {provider.toolCount}
-            </span>
-          ))}
-        </div>
+      <DiagnosticKeyValueGrid
+        items={[
+          { label: "Provider", value: result.provider },
+          { label: "Model", value: result.model },
+          { label: "Provider ID", value: result.providerId },
+          { label: "Provider name", value: result.providerName },
+          { label: "Tool count", value: result.toolCount },
+        ]}
+      />
+      {result.providers?.length ? (
+        <DiagnosticTable
+          columns={[
+            { header: "Provider ID", render: (provider) => <code>{provider.providerId}</code> },
+            { header: "Provider name", render: (provider) => provider.providerName },
+            { header: "Tools", render: (provider) => provider.toolCount },
+          ]}
+          rowKey={(provider) => provider.providerId}
+          rows={result.providers}
+        />
       ) : null}
-      {showTools && result.tools?.length ? (
-        <div className="tool-chip-list">
-          {result.tools.map((tool) => (
-            <span key={tool.canonicalToolId} title={tool.description || tool.canonicalToolId}>
-              {tool.name}
-            </span>
-          ))}
-        </div>
+      {result.tools?.length ? (
+        <DiagnosticTable
+          columns={[
+            { header: "Provider", render: (tool) => tool.providerId ? <code>{tool.providerId}</code> : "-" },
+            { header: "Name", render: (tool) => tool.name },
+            { header: "Canonical ID", render: (tool) => <code>{tool.canonicalToolId}</code> },
+            { header: "Description", render: (tool) => tool.description },
+          ]}
+          maxRows={36}
+          rowKey={(tool, index) => `${tool.canonicalToolId}.${index}`}
+          rows={result.tools}
+        />
       ) : null}
     </div>
   );
@@ -522,7 +440,7 @@ function defaultLlmDraft(): RuntimeLlmConfigInput {
     mode: "disabled",
     endpoint: "",
     apiKey: "",
-    model: "mock-tool-profiler",
+    model: "deepseek-v4-flash",
     timeoutMs: 5000,
   };
 }
@@ -547,11 +465,11 @@ function loadStoredLlmDraft(): RuntimeLlmConfigInput | undefined {
       ...parsed,
       enabled: Boolean(parsed.enabled),
       mode:
-        parsed.mode === "disabled" ||
-        parsed.mode === "mock" ||
         parsed.mode === "openai_compatible"
-          ? parsed.mode
-          : "disabled",
+          ? "openai_compatible"
+          : parsed.mode === "mock"
+            ? "openai_compatible"
+            : "disabled",
       timeoutMs: Math.max(1000, Number(parsed.timeoutMs) || 5000),
     };
   } catch {
@@ -609,8 +527,8 @@ function clearStoredMcpDraft(): void {
 
 function snapshotToLlmDraft(snapshot: RuntimeConfigSnapshot): RuntimeLlmConfigInput {
   return {
-    enabled: snapshot.llm.enabled,
-    mode: snapshot.llm.mode,
+    enabled: snapshot.llm.enabled && snapshot.llm.mode !== "mock",
+    mode: snapshot.llm.mode === "mock" ? "openai_compatible" : snapshot.llm.mode,
     endpoint: snapshot.llm.endpoint ?? "",
     apiKey: "",
     model: snapshot.llm.model ?? "",
@@ -630,7 +548,11 @@ function snapshotToMcpDraft(snapshot: RuntimeConfigSnapshot): RuntimeDownstreamM
 }
 
 function normalizeLlmDraft(draft: RuntimeLlmConfigInput): RuntimeLlmConfigInput {
-  const mode = draft.enabled ? draft.mode === "disabled" ? "mock" : draft.mode : "disabled";
+  const mode = draft.enabled
+    ? draft.mode === "disabled" || draft.mode === "mock"
+      ? "openai_compatible"
+      : draft.mode
+    : "disabled";
   return {
     enabled: draft.enabled && mode !== "disabled",
     mode,
@@ -672,71 +594,11 @@ function normalizeMcpDraft(draft: RuntimeDownstreamMcpConfigInput): RuntimeDowns
   };
 }
 
-function sourceLabel(source: RuntimeConfigSnapshot["llm"]["source"]): string {
+function configSourceLabel(source: RuntimeConfigSnapshot["llm"]["source"]): string {
   const labels: Record<RuntimeConfigSnapshot["llm"]["source"], string> = {
     runtime: "页面配置",
     env: "环境变量",
     default: "默认值",
   };
   return labels[source];
-}
-
-function buildEnvSnippet(
-  llm: RuntimeLlmConfigInput,
-  mcp: RuntimeDownstreamMcpConfigInput,
-): string {
-  return [
-    `$env:AGENT_GUARD_LLM_ENABLED="${llm.enabled ? "1" : "0"}"`,
-    `$env:AGENT_GUARD_LLM_MODE="${llm.mode}"`,
-    llm.endpoint ? `$env:AGENT_GUARD_LLM_ENDPOINT="${llm.endpoint}"` : undefined,
-    llm.model ? `$env:AGENT_GUARD_LLM_MODEL="${llm.model}"` : undefined,
-    `$env:AGENT_GUARD_LLM_API_KEY="<your-api-key>"`,
-    `$env:AGENT_GUARD_LLM_TIMEOUT_MS="${llm.timeoutMs}"`,
-    "# A/B 共用同一套 OpenAI-compatible LLM 配置",
-    llm.endpoint ? `$env:OPENAI_CHAT_ENDPOINT=$env:AGENT_GUARD_LLM_ENDPOINT` : undefined,
-    llm.model ? `$env:OPENAI_CHAT_MODEL=$env:AGENT_GUARD_LLM_MODEL` : undefined,
-    `$env:OPENAI_CHAT_KEY=$env:AGENT_GUARD_LLM_API_KEY`,
-    llm.endpoint ? `$env:AGENT_GUARD_PYRIT_OPENAI_CHAT_ENDPOINT=$env:AGENT_GUARD_LLM_ENDPOINT` : undefined,
-    llm.model ? `$env:AGENT_GUARD_PYRIT_OPENAI_CHAT_MODEL=$env:AGENT_GUARD_LLM_MODEL` : undefined,
-    `$env:AGENT_GUARD_PYRIT_OPENAI_CHAT_KEY=$env:AGENT_GUARD_LLM_API_KEY`,
-    `$env:AGENT_GUARD_DOWNSTREAM_MCP_URL="${mcp.endpointUrl ?? ""}"`,
-    `$env:AGENT_GUARD_DOWNSTREAM_MCP_PROVIDER_ID="${mcp.providerId}"`,
-    `$env:AGENT_GUARD_DOWNSTREAM_MCP_PROVIDER_NAME="${mcp.providerName}"`,
-    `$env:AGENT_GUARD_DOWNSTREAM_MCP_TIMEOUT_MS="${mcp.timeoutMs}"`,
-    mcp.servers?.length
-      ? `$env:AGENT_GUARD_DOWNSTREAM_MCP_SERVERS='${JSON.stringify(mcp.servers)}'`
-      : undefined,
-  ]
-    .filter(Boolean)
-    .join("\n");
-}
-
-function buildCurrentConfigSnippet(snapshot: RuntimeConfigSnapshot): string {
-  return JSON.stringify(
-    {
-      updatedAt: snapshot.updatedAt === new Date(0).toISOString()
-        ? "未通过页面修改"
-        : formatDateTime(snapshot.updatedAt),
-      llm: {
-        enabled: snapshot.llm.enabled,
-        mode: snapshot.llm.mode,
-        endpoint: snapshot.llm.endpoint ?? "",
-        model: snapshot.llm.model ?? "",
-        timeoutMs: snapshot.llm.timeoutMs,
-        source: sourceLabel(snapshot.llm.source),
-        apiKey: snapshot.llm.hasApiKey ? "已配置，不回显" : "未配置",
-      },
-      downstreamMcp: {
-        enabled: snapshot.downstreamMcp.enabled,
-        providerId: snapshot.downstreamMcp.providerId,
-        providerName: snapshot.downstreamMcp.providerName,
-        endpointUrl: snapshot.downstreamMcp.endpointUrl ?? "",
-        timeoutMs: snapshot.downstreamMcp.timeoutMs,
-        servers: snapshot.downstreamMcp.servers ?? [],
-        source: sourceLabel(snapshot.downstreamMcp.source),
-      },
-    },
-    null,
-    2,
-  );
 }

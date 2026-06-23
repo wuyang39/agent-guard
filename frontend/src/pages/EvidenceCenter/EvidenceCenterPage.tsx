@@ -29,20 +29,17 @@ type EvidenceCenterPageProps = {
   runGroupsState: LoadState<{ schemaVersion: "mvp-1"; runGroups: CLineRunGroup[] }>;
   systemState: LoadState<SystemStatus>;
   selectedRunGroupId?: string;
-  running: boolean;
-  onRun: () => void;
-  onGoDefense: () => void;
   onActivateRealtime: () => void;
   onSelectRunGroup: (runGroup: CLineRunGroup) => void;
 };
 
-const TABS: Array<{ key: EvidenceTabKey; label: string; summary: string }> = [
-  { key: "runs", label: "测试运行", summary: "每次检测任务的运行索引" },
-  { key: "cases", label: "测试用例", summary: "本轮检测覆盖的风险场景" },
-  { key: "detection", label: "检测与策略", summary: "风险画像和策略包" },
-  { key: "trace", label: "调用轨迹", summary: "工具调用和证据链" },
-  { key: "system", label: "系统状态", summary: "API 与适配器可用性" },
-  { key: "configs", label: "配置摘要", summary: "报告、策略和配置统计" },
+const TABS: Array<{ key: EvidenceTabKey; label: string }> = [
+  { key: "runs", label: "运行" },
+  { key: "cases", label: "用例" },
+  { key: "detection", label: "检测" },
+  { key: "trace", label: "轨迹" },
+  { key: "system", label: "系统" },
+  { key: "configs", label: "配置" },
 ];
 
 export function EvidenceCenterPage({
@@ -54,9 +51,6 @@ export function EvidenceCenterPage({
   runGroupsState,
   systemState,
   selectedRunGroupId,
-  running,
-  onRun,
-  onGoDefense,
   onActivateRealtime,
   onSelectRunGroup,
 }: EvidenceCenterPageProps) {
@@ -79,7 +73,6 @@ export function EvidenceCenterPage({
               onClick={() => onTabChange(tab.key)}
             >
               <strong>{tab.label}</strong>
-              <span>{tab.summary}</span>
             </button>
           ))}
         </div>
@@ -87,9 +80,7 @@ export function EvidenceCenterPage({
 
       {currentTab.key === "runs" ? (
         <TestRunsPage
-          onRun={onRun}
           onSelectRunGroup={onSelectRunGroup}
-          running={running}
           selectedRunGroupId={selectedRunGroupId}
           state={runGroupsState}
         />
@@ -106,18 +97,12 @@ export function EvidenceCenterPage({
       {currentTab.key === "detection" ? (
         <DetectionPage
           onActivateRealtime={onActivateRealtime}
-          onGoDefense={onGoDefense}
-          onGoTrace={() => onTabChange("trace")}
           state={detectionState}
         />
       ) : null}
 
       {currentTab.key === "trace" ? (
-        <TraceDetailPage
-          onGoDefense={onGoDefense}
-          onGoDetection={() => onTabChange("detection")}
-          state={traceState}
-        />
+        <TraceDetailPage state={traceState} />
       ) : null}
 
       {currentTab.key === "system" ? <SystemPage state={systemState} /> : null}

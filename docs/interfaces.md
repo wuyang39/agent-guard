@@ -717,3 +717,77 @@ OpenClaw
 ```
 
 `servers[]` 中每个 provider 必须拥有独立 `providerId`、`endpointUrl` 和 `timeoutMs`。暴露工具名继续使用 `agw__<providerId>__<toolName>`，所有工具调用继续进入 B 线监督链路。
+
+## 10. P3 C 报告包与证据接口
+
+P3-C 在 P1/P2 检测、防御和运行时监督对象之上新增报告聚合层。C 线后端只消费真实 run group、report index、trace、policy pack 和 `RuntimeSupervisionRecord[]`，不得在报告层重新判定风险或编造运行时效果。
+
+A -> C 可展示输入:
+
+```txt
+TestContext
+CorpusManifest
+AttackCaseCard[]
+CoverageTaxonomy
+CaseQualityReport
+```
+
+B -> C 证据输入:
+
+```txt
+TestRun
+InteractionTrace
+TestSelectionPlan
+RuntimeSupervisionRecord[]
+SupervisionBatchResult
+```
+
+C -> Backend API / Frontend / Export 输出:
+
+```txt
+TestContextView[]
+ReportBundle
+EvidenceBundle
+TraceabilityGraph
+ReportQualitySummary
+DefenseClaim[]
+ReportArtifact[]
+ExportJob
+```
+
+首批接口:
+
+```txt
+GET  /api/v1/reports/bundles/:bundleId
+GET  /api/v1/test-runs/:runGroupId/report-bundle
+GET  /api/v1/reports/defense/:reportId/evidence
+GET  /api/v1/reports/defense/:reportId/quality
+POST /api/v1/reports/defense/:reportId/exports
+GET  /api/v1/reports/exports/:exportJobId
+GET  /api/v1/artifacts/:artifactId
+```
+
+边界:
+
+- `ReportBundle` 必须回指 `DefenseReport`、`RuntimeSupervisionRecord[]`、`SupervisionPolicyPack`、`DetectionReport`、`RiskReport`、`InteractionTrace` 和 `TestContextView`。
+- `runtime_effect` 类型 claim 必须引用真实 `RuntimeSupervisionRecord.recordId`。
+- 如果没有 runtime record，C 线只能输出缺证据或未观察到运行时防御效果，不能声明已阻断或已缓解。
+- `EvidenceBundle.missingEvidence` 和 `ReportQualitySummary.blockingIssues` 必须暴露给前端和导出报告。
+- Markdown/HTML/PDF 导出必须基于同一个 `ReportBundle`。
+- 前端 Report Workspace 只消费 API 和 contracts 类型，不直接读取 `configs/*.json`、`outputs/**` 或 `backend/src/**`。
+
+验收方式:
+
+```txt
+npm run verify:p3:c-report
+```
+
+该脚本必须证明:
+
+```txt
+Realtime MCP tools/call
+  -> RuntimeSupervisionRecord[]
+  -> DefenseReport
+  -> ReportBundle
+  -> EvidenceBundle / ReportQualitySummary / Markdown export
+```

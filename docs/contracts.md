@@ -659,6 +659,126 @@ type ReportArtifact = {
 - 报告模块不得重新判定风险等级
 - 报告模块不得绕过 `Finding` 直接解析原始日志生成结论
 
+### 9.1 P3 C ReportBundle、证据包和报告质量契约
+
+P3-C 在 P1/P2 报告对象之上新增提交级报告聚合对象。该对象只聚合和引用已有事实对象，不重新执行风险判定、策略生成或运行时监督。
+
+新增共享类型位于:
+
+```txt
+packages/contracts/src/types/report.ts
+```
+
+核心对象:
+
+```txt
+TestContextView
+ReportSection
+DefenseClaim
+EvidenceBundle
+EvidenceCoverageMatrix
+EvidenceCoverageRow
+EvidenceItem
+MissingEvidenceItem
+TraceabilityGraph
+TraceabilityNode
+TraceabilityEdge
+ReportQualitySummary
+ReportQualityCheck
+ReportBundle
+```
+
+`TestContextView` 是后端基于真实 `TestContext` 或 trace 元数据构建的展示对象。前端不得读取 `configs/*.json` 或 `outputs/**` 原始文件补齐上下文。
+
+```ts
+type TestContextView = {
+  schemaVersion: SchemaVersion
+  contextViewId: string
+  contextId: string
+  caseId: string
+  caseName: string
+  agentId: string
+  scenarioIds: string[]
+  attackEntryType?: AttackEntryType
+  task: {
+    taskId?: string
+    instructionPreview?: string
+  }
+  tools: TestContextToolView[]
+  resources: TestContextResourceView[]
+  prompts: TestContextPromptView[]
+  riskRuleIds: string[]
+  source: "config" | "trace_only" | "missing"
+  warnings: string[]
+}
+```
+
+`DefenseClaim` 把报告结论结构化，便于前端复核证据。
+
+```ts
+type DefenseClaim = {
+  claimId: string
+  title: string
+  statement: string
+  claimType:
+    | "risk"
+    | "detection"
+    | "policy"
+    | "runtime_effect"
+    | "residual_risk"
+    | "limitation"
+  confidence: "low" | "medium" | "high"
+  sourceIds: {
+    contextIds?: string[]
+    traceEventIds?: string[]
+    findingIds?: string[]
+    policyIds?: string[]
+    runtimeRecordIds?: string[]
+  }
+  reviewStatus: "auto_checked" | "needs_review" | "blocked_by_missing_evidence"
+}
+```
+
+`ReportBundle` 是 C 线报告工作台和导出器的统一输入。
+
+```ts
+type ReportBundle = {
+  schemaVersion: SchemaVersion
+  bundleId: string
+  runGroupId: string
+  agentId: string
+  generatedAt: string
+  source: {
+    testContextViewIds: string[]
+    testRunIds: string[]
+    traceIds: string[]
+    riskReportIds: string[]
+    detectionReportId?: string
+    riskProfileId?: string
+    policyPackId?: string
+    runtimeSessionIds: string[]
+    defenseReportId?: string
+  }
+  testContextViews: TestContextView[]
+  executiveSummary: ReportSection
+  claims: DefenseClaim[]
+  evidenceBundle: EvidenceBundle
+  traceabilityGraph: TraceabilityGraph
+  quality: ReportQualitySummary
+  exports: ReportArtifact[]
+}
+```
+
+约束:
+
+- `ReportBundle.source` 中的 ID 必须来自当前 run group、report index、trace store 或 runtime session store。
+- `claimType: "runtime_effect"` 必须引用真实 `RuntimeSupervisionRecord.recordId`。
+- 没有 runtime record 时，报告只能表达缺少运行时证据，不得表达已阻断、已缓解或已生效。
+- `EvidenceBundle.items` 只能引用真实对象；缺失对象必须进入 `missingEvidence`。
+- `TraceabilityGraph` 必须覆盖 TestContextView、trace、risk report、detection report、policy pack、runtime record、defense report 和 artifact 的主链路。
+- `ReportQualitySummary.level` 可为 `draft`、`reviewable` 或 `submission_ready`；存在 blocking issue 时必须降级为 `draft`。
+- Markdown、HTML、PDF 等导出格式必须消费同一个 `ReportBundle`，不得各自重新拼接结论。
+
 ## 10. P1 检测画像、策略包、运行时监督和防御报告类型
 
 P1 新增对象用于支撑“监督前检测 -> 风险画像 -> 策略包 -> 真实运行监督 -> 防御报告”的扩展链路。P1 对象仍必须保持 JSON 可序列化，并使用 `schemaVersion: "mvp-1"`，除非协调人明确启动版本升级。

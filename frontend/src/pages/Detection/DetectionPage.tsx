@@ -1,20 +1,24 @@
 import { Badge } from "../../components/ui/Badge";
+import {
+  DeveloperDiagnostics,
+  DiagnosticJson,
+  DiagnosticKeyValueGrid,
+  DiagnosticSection,
+  DiagnosticTable,
+} from "../../components/ui/DeveloperDiagnostics";
+import { DeveloperDetails } from "../../components/ui/DeveloperDetails";
 import { EmptyBlock, ErrorBlock, LoadingBlock } from "../../components/ui/StateBlock";
 import { categoryLabel, riskLabel, riskTone, actionLabel, actionTone } from "../../lib/formatters/risk";
-import { formatDateTime } from "../../lib/formatters/time";
 import type { DetectionDetailView, LoadState } from "../../lib/api/types";
+import { formatDateTime } from "../../lib/formatters/time";
 
 type DetectionPageProps = {
   state: LoadState<DetectionDetailView>;
-  onGoTrace: () => void;
-  onGoDefense: () => void;
   onActivateRealtime: () => void;
 };
 
 export function DetectionPage({
   state,
-  onGoTrace,
-  onGoDefense,
   onActivateRealtime,
 }: DetectionPageProps) {
   if (state.status === "idle" || state.status === "loading") {
@@ -43,37 +47,25 @@ export function DetectionPage({
             <Badge tone={riskTone(detectionReport.riskSummary.highestRiskLevel)}>
               {riskLabel(detectionReport.riskSummary.highestRiskLevel)}
             </Badge>
-            <button className="secondary-button" onClick={onGoTrace}>
-              调用轨迹
-            </button>
-            <button className="secondary-button" onClick={onGoDefense}>
-              防御报告
-            </button>
             <button className="primary-button" onClick={onActivateRealtime}>
               启用实时监督
             </button>
           </div>
         </div>
-
-        <div className="id-grid">
-          <div>
-            <span>检测报告</span>
-            <code>{detectionReport.reportId}</code>
-          </div>
-          <div>
-            <span>风险画像</span>
-            <code>{riskProfile.profileId}</code>
-          </div>
-          <div>
-            <span>策略包</span>
-            <code>{policyPack.policyPackId}</code>
-          </div>
-          <div>
-            <span>生成时间</span>
-            <code>{formatDateTime(detectionReport.generatedAt)}</code>
-          </div>
-        </div>
       </section>
+
+      <DeveloperDetails
+        items={[
+          { label: "检测报告", value: detectionReport.reportId },
+          { label: "风险画像", value: riskProfile.profileId },
+          { label: "策略包", value: policyPack.policyPackId },
+          { label: "源风险报告", value: sourceRiskReports.length },
+          { label: "策略模板", value: detectionReport.recommendedPolicyTemplateIds.length },
+          { label: "生成时间", value: formatDateTime(detectionReport.generatedAt) },
+        ]}
+        title="报告索引"
+      />
+      <DetectionDeveloperDiagnostics detail={state.data} />
 
       <section className="split-grid">
         <div className="panel">
@@ -94,7 +86,7 @@ export function DetectionPage({
                     <td>{scenario.scenarioId}</td>
                     <td>
                       <Badge tone={scenario.status === "passed" ? "tone-low" : "tone-high"}>
-                        {scenario.status}
+                        {scenario.status === "passed" ? "通过" : "失败"}
                       </Badge>
                     </td>
                     <td>{scenario.caseIds.length}</td>
@@ -125,7 +117,7 @@ export function DetectionPage({
       <section className="panel">
         <div className="section-header compact">
           <h2>生成的监督策略</h2>
-          <Badge>{policyPack.policies.length} policies</Badge>
+          <Badge>{policyPack.policies.length} 条</Badge>
         </div>
         <div className="policy-grid">
           {policyPack.policies.map((policy) => (
@@ -137,11 +129,11 @@ export function DetectionPage({
               <p>{policy.reason}</p>
               <dl>
                 <div>
-                  <dt>Target</dt>
+                  <dt>目标</dt>
                   <dd>{policy.targetType}</dd>
                 </div>
                 <div>
-                  <dt>Risk</dt>
+                  <dt>风险</dt>
                   <dd>{riskLabel(policy.riskLevel)}</dd>
                 </div>
               </dl>
@@ -149,19 +141,113 @@ export function DetectionPage({
           ))}
         </div>
       </section>
-
-      <section className="panel">
-        <h2>源风险报告</h2>
-        <div className="report-list">
-          {sourceRiskReports.map((report) => (
-            <div className="report-row" key={report.reportId}>
-              <code>{report.reportId}</code>
-              <span>{report.caseReport.caseName}</span>
-              <Badge tone={riskTone(report.riskLevel)}>{riskLabel(report.riskLevel)}</Badge>
-            </div>
-          ))}
-        </div>
-      </section>
     </div>
+  );
+}
+
+function DetectionDeveloperDiagnostics({ detail }: { detail: DetectionDetailView }) {
+  const { detectionReport, riskProfile, policyPack, sourceRiskReports } = detail;
+  return (
+    <DeveloperDiagnostics
+      count={sourceRiskReports.length + riskProfile.weaknesses.length + policyPack.policies.length}
+      title="检测策略开发者诊断"
+    >
+      <DiagnosticSection title="检测报告索引">
+        <DiagnosticKeyValueGrid
+          items={[
+            { label: "Detection report", value: detectionReport.reportId },
+            { label: "Agent", value: detectionReport.agentId },
+            { label: "Risk profile", value: riskProfile.profileId },
+            { label: "Policy pack", value: policyPack.policyPackId },
+            { label: "Source risk reports", value: sourceRiskReports.length },
+            { label: "Recommended templates", value: detectionReport.recommendedPolicyTemplateIds.length },
+            { label: "Evidence chains", value: detectionReport.evidenceChainIds.length },
+            { label: "Findings", value: detectionReport.findingIds.length },
+            { label: "Generated", value: formatDateTime(detectionReport.generatedAt) },
+          ]}
+        />
+        <DiagnosticTable
+          columns={[
+            { header: "Scenario", render: (scenario) => <code>{scenario.scenarioId}</code> },
+            { header: "Status", render: (scenario) => scenario.status },
+            { header: "Cases", render: (scenario) => <CodeList values={scenario.caseIds} /> },
+            { header: "Findings", render: (scenario) => <CodeList values={scenario.triggeredFindingIds} /> },
+          ]}
+          rowKey={(scenario) => scenario.scenarioId}
+          rows={detectionReport.scenarioSummary}
+        />
+      </DiagnosticSection>
+
+      <DiagnosticSection title="源风险报告" count={sourceRiskReports.length}>
+        <DiagnosticTable
+          columns={[
+            { header: "Risk report", render: (report) => <code>{report.reportId}</code> },
+            { header: "Case", render: (report) => report.caseReport.caseName },
+            { header: "Trace", render: (report) => <code>{report.traceId}</code> },
+            { header: "Level", render: (report) => report.riskLevel },
+            { header: "Findings", render: (report) => <CodeList values={report.findings.map((finding) => finding.findingId)} /> },
+            { header: "Evidence chains", render: (report) => <CodeList values={report.evidenceChains.map((chain) => chain.chainId)} /> },
+          ]}
+          emptyLabel="暂无源风险报告"
+          rowKey={(report) => report.reportId}
+          rows={sourceRiskReports}
+        />
+      </DiagnosticSection>
+
+      <DiagnosticSection title="风险画像弱点" count={riskProfile.weaknesses.length}>
+        <DiagnosticTable
+          columns={[
+            { header: "Weakness", render: (weakness) => <code>{weakness.weaknessId}</code> },
+            { header: "Title", render: (weakness) => weakness.title },
+            { header: "Category", render: (weakness) => weakness.category },
+            { header: "Findings", render: (weakness) => <CodeList values={weakness.sourceFindingIds} /> },
+            { header: "Templates", render: (weakness) => <CodeList values={weakness.recommendedPolicyTemplateIds} /> },
+          ]}
+          rowKey={(weakness) => weakness.weaknessId}
+          rows={riskProfile.weaknesses}
+        />
+      </DiagnosticSection>
+
+      <DiagnosticSection title="SupervisionPolicyPack" count={policyPack.policies.length}>
+        <DiagnosticKeyValueGrid
+          items={[
+            { label: "Policy pack", value: policyPack.policyPackId },
+            { label: "Source detection", value: policyPack.sourceDetectionReportId },
+            { label: "Source risk profile", value: policyPack.sourceRiskProfileId },
+            { label: "Default action", value: policyPack.defaultAction },
+            { label: "Created", value: formatDateTime(policyPack.createdAt) },
+            { label: "Expires", value: policyPack.expiresAt ? formatDateTime(policyPack.expiresAt) : undefined },
+          ]}
+        />
+        <DiagnosticTable
+          columns={[
+            { header: "Policy", render: (policy) => <code>{policy.policyId}</code> },
+            { header: "Template", render: (policy) => policy.sourcePolicyTemplateId ? <code>{policy.sourcePolicyTemplateId}</code> : "-" },
+            { header: "Weaknesses", render: (policy) => <CodeList values={policy.sourceWeaknessIds} /> },
+            { header: "Target", render: (policy) => policy.targetType },
+            { header: "Action", render: (policy) => policy.action },
+            { header: "Risk", render: (policy) => policy.riskLevel },
+            { header: "Reason", render: (policy) => policy.reason },
+          ]}
+          rowKey={(policy) => policy.policyId}
+          rows={policyPack.policies}
+        />
+        <DiagnosticJson value={policyPack.policies.map((policy) => ({
+          policyId: policy.policyId,
+          match: policy.match,
+        }))} />
+      </DiagnosticSection>
+    </DeveloperDiagnostics>
+  );
+}
+
+function CodeList({ values }: { values: string[] }) {
+  if (!values.length) return <span className="muted">-</span>;
+  return (
+    <span className="diagnostic-id-list">
+      {values.map((value, index) => (
+        <code key={`${value}.${index}`}>{value}</code>
+      ))}
+    </span>
   );
 }

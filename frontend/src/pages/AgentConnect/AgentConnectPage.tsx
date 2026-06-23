@@ -1,27 +1,20 @@
 import { useEffect, useState } from "react";
-import { Badge } from "../../components/ui/Badge";
 import { ErrorBlock } from "../../components/ui/StateBlock";
 import { agentGuardApi } from "../../lib/api/client";
 import type {
   AgentAdapterKind,
   AgentCheckResult,
   AgentConnectionConfig,
-  CLineDashboardSummary,
-  LoadState,
-  SystemStatus,
 } from "../../lib/api/types";
 
 type AgentConnectPageProps = {
   config: AgentConnectionConfig;
   onSave: (config: AgentConnectionConfig) => void;
-  summaryState: LoadState<CLineDashboardSummary>;
-  systemState: LoadState<SystemStatus>;
 };
 
 const ADAPTER_OPTIONS: Array<{ value: AgentAdapterKind; label: string }> = [
   { value: "openclaw", label: "OpenClaw CLI" },
   { value: "http_sample", label: "HTTP API Agent" },
-  { value: "mock", label: "Mock Agent" },
 ];
 
 type AgentOption = {
@@ -29,7 +22,6 @@ type AgentOption = {
   name: string;
   agentId: string;
   description: string;
-  endpointLabel: string;
 };
 
 const AGENT_OPTIONS: AgentOption[] = [
@@ -38,40 +30,27 @@ const AGENT_OPTIONS: AgentOption[] = [
     name: "OpenClaw CLI Agent",
     agentId: "agent.openclaw.demo",
     description: "用于检测并生成监督策略包的本地 OpenClaw 智能体。",
-    endpointLabel: "CLI + Realtime MCP",
   },
   {
     adapterKind: "http_sample",
     name: "HTTP Sample Agent",
     agentId: "agent.http_sample.demo",
     description: "用于联调和备用验证的 HTTP 智能体。",
-    endpointLabel: "HTTP 接口",
-  },
-  {
-    adapterKind: "mock",
-    name: "Mock Agent",
-    agentId: "agent.mock.demo",
-    description: "用于离线验证页面和报告展示的内置示例智能体。",
-    endpointLabel: "内置示例",
   },
 ];
 
 export function AgentConnectPage({
   config,
   onSave,
-  summaryState,
-  systemState,
 }: AgentConnectPageProps) {
   const [draft, setDraft] = useState<AgentConnectionConfig>(config);
   const [checking, setChecking] = useState(false);
   const [checkResult, setCheckResult] = useState<AgentCheckResult | undefined>();
   const [checkError, setCheckError] = useState<string | undefined>();
   const [saved, setSaved] = useState(false);
-  const [agentOptions, setAgentOptions] = useState<AgentOption[]>(() => AGENT_OPTIONS);
 
   useEffect(() => {
     setDraft(config);
-    setAgentOptions((current) => upsertAgentOption(current, config));
   }, [config]);
 
   async function checkAgent() {
@@ -90,7 +69,6 @@ export function AgentConnectPage({
   function saveDraft() {
     const next = normalizeConfig(draft);
     setDraft(next);
-    setAgentOptions((current) => upsertAgentOption(current, next));
     onSave(next);
     setSaved(true);
     window.setTimeout(() => setSaved(false), 1600);
@@ -111,11 +89,6 @@ export function AgentConnectPage({
     );
   }
 
-  const latest = summaryState.status === "ready" ? summaryState.data.latestRunGroup : undefined;
-  const openclawReady =
-    systemState.status === "ready" ? systemState.data.features?.openclawAdapter : undefined;
-  const showOpenClawHealth = draft.adapterKind === "openclaw" && openclawReady !== undefined;
-
   return (
     <div className="page-stack fill-page">
       <section className="page-hero agent-hero">
@@ -123,14 +96,6 @@ export function AgentConnectPage({
           <h1>智能体接入</h1>
         </div>
         <div className="hero-actions">
-          <Badge tone={draft.adapterKind === "openclaw" ? "tone-medium" : "tone-neutral"}>
-            {adapterLabel(draft.adapterKind)}
-          </Badge>
-          {showOpenClawHealth ? (
-            <Badge tone={openclawReady ? "tone-low" : "tone-high"}>
-              OpenClaw {openclawReady ? "可用" : "不可用"}
-            </Badge>
-          ) : null}
           <button className="secondary-button" disabled={checking} onClick={() => void checkAgent()}>
             {checking ? "检测中..." : "检测连接"}
           </button>
@@ -140,11 +105,10 @@ export function AgentConnectPage({
         </div>
       </section>
 
-      <section className="workspace-grid agent-workspace">
+      <section className="workspace-main agent-workspace">
         <div className="workspace-main panel grow-panel">
           <div className="section-header compact">
             <h2>接入配置</h2>
-            <Badge>{draft.caseIds.length} 个用例</Badge>
           </div>
 
           <div className="form-grid">
@@ -153,7 +117,7 @@ export function AgentConnectPage({
               <select
                 value={draft.adapterKind}
                 onChange={(event) => {
-                  const selected = agentOptions.find(
+                  const selected = AGENT_OPTIONS.find(
                     (option) => option.adapterKind === event.target.value,
                   );
                   if (selected) selectAgent(selected);
@@ -178,7 +142,7 @@ export function AgentConnectPage({
             </label>
 
             <label className="field">
-              <span>Agent ID</span>
+              <span>智能体 ID</span>
               <input
                 value={draft.agentId}
                 onChange={(event) =>
@@ -219,7 +183,7 @@ export function AgentConnectPage({
                 />
               </label>
               <label className="field wide-field">
-                <span>Gateway URL</span>
+                <span>网关地址</span>
                 <input
                   value={draft.gatewayUrl}
                   onChange={(event) =>
@@ -233,7 +197,7 @@ export function AgentConnectPage({
           {draft.adapterKind === "http_sample" ? (
             <div className="form-grid">
               <label className="field wide-field">
-                <span>HTTP Agent Endpoint</span>
+                <span>HTTP 接口地址</span>
                 <input
                   value={draft.endpointUrl}
                   onChange={(event) =>
@@ -269,94 +233,15 @@ export function AgentConnectPage({
               />
             </label>
           </div>
+
+          {checkResult ? (
+            <div className={`config-check-result ${checkResult.available ? "is-ok" : "is-warn"}`}>
+              <strong>{checkResult.available ? "连接可用" : "连接不可用"}</strong>
+              <p>{checkResult.detail}</p>
+            </div>
+          ) : null}
         </div>
 
-        <aside className="surface-rail">
-          <div className="rail-section">
-            <div className="section-header compact">
-              <div>
-                <p className="eyebrow">接入对象</p>
-                <h2>接入对象</h2>
-              </div>
-              <Badge>{agentOptions.length} 个对象</Badge>
-            </div>
-            <div className="agent-option-list">
-              {agentOptions.map((option) => {
-                const selected = draft.adapterKind === option.adapterKind;
-                return (
-                  <button
-                    className={`agent-option ${selected ? "selected" : ""}`}
-                    key={option.adapterKind}
-                    onClick={() => selectAgent(option)}
-                    type="button"
-                  >
-                    <span className="agent-option-main">
-                      <strong>{option.name}</strong>
-                      <span>{option.endpointLabel}</span>
-                    </span>
-                    <Badge tone={selected ? "tone-medium" : "tone-neutral"}>
-                      {selected ? "已选择" : adapterLabel(option.adapterKind)}
-                    </Badge>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          <div className="rail-section">
-            <p className="eyebrow">当前检测对象</p>
-            <h2>当前检测对象</h2>
-            <div className="rail-list">
-              <div>
-                <span>名称</span>
-                <code>{draft.name || "-"}</code>
-              </div>
-              <div>
-                <span>适配器</span>
-                <code>{draft.adapterKind}</code>
-              </div>
-              <div>
-                <span>最新运行智能体</span>
-                <code>{latest?.agentName ?? latest?.agentId ?? "-"}</code>
-              </div>
-              <div>
-                <span>用例</span>
-                <code>{draft.caseIds.join(", ") || "-"}</code>
-              </div>
-            </div>
-          </div>
-
-          <div className="rail-section">
-            <div className="section-header compact">
-              <h2>连接检测</h2>
-              {checkResult ? (
-                <Badge tone={checkResult.available ? "tone-low" : "tone-high"}>
-                  {checkResult.available ? "可用" : "不可用"}
-                </Badge>
-              ) : (
-                <Badge>待检测</Badge>
-              )}
-            </div>
-            {checkResult ? (
-              <div className="rail-list">
-                <div>
-                  <span>显示名称</span>
-                  <code>{checkResult.displayName}</code>
-                </div>
-                <div>
-                  <span>标准化智能体</span>
-                  <code>{checkResult.normalizedAgent?.agentId ?? "-"}</code>
-                </div>
-                <div>
-                  <span>详情</span>
-                  <code>{checkResult.detail}</code>
-                </div>
-              </div>
-            ) : (
-              <p className="muted">当前接入对象状态。</p>
-            )}
-          </div>
-        </aside>
       </section>
 
       {checkError ? <ErrorBlock title="连接检测失败" message={checkError} /> : null}
@@ -387,23 +272,4 @@ function parseCaseIds(value: string): string[] {
     .split(/[\n,]/)
     .map((item) => item.trim())
     .filter(Boolean);
-}
-
-function upsertAgentOption(options: AgentOption[], config: AgentConnectionConfig): AgentOption[] {
-  const nextOption: AgentOption = {
-    adapterKind: config.adapterKind,
-    name: config.name || adapterLabel(config.adapterKind),
-    agentId: config.agentId,
-    description: config.description,
-    endpointLabel: endpointLabel(config),
-  };
-  const index = options.findIndex((option) => option.adapterKind === config.adapterKind);
-  if (index < 0) return [...options, nextOption];
-  return options.map((option, currentIndex) => (currentIndex === index ? nextOption : option));
-}
-
-function endpointLabel(config: AgentConnectionConfig): string {
-  if (config.adapterKind === "openclaw") return "CLI + Realtime MCP";
-  if (config.adapterKind === "http_sample") return config.endpointUrl || "HTTP endpoint";
-  return "Built-in mock";
 }

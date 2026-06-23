@@ -1,9 +1,8 @@
-import { Badge } from "../../components/ui/Badge";
 import { EmptyBlock } from "../../components/ui/StateBlock";
 import type { CLineDashboardSummary, DetectionDetailView, LoadState } from "../../lib/api/types";
 
 type ProjectOverviewPageProps = {
-  kind: "agent" | "cases" | "configs";
+  kind: "cases" | "configs";
   summaryState: LoadState<CLineDashboardSummary>;
   detectionState: LoadState<DetectionDetailView>;
 };
@@ -33,36 +32,18 @@ export function ProjectOverviewPage({
             <p className="eyebrow">证据中心</p>
             <h1>{titleFor(kind)}</h1>
           </div>
-          <Badge>{latest?.status ?? "暂无运行"}</Badge>
         </div>
-        {kind === "agent" ? (
-          <div className="id-grid">
-            <div>
-              <span>智能体</span>
-              <code>{latest?.agentId ?? "-"}</code>
-            </div>
-            <div>
-              <span>检测报告</span>
-              <code>{latest?.detectionReportId ?? "-"}</code>
-            </div>
-            <div>
-              <span>策略包</span>
-              <code>{latest?.policyPackId ?? "-"}</code>
-            </div>
-            <div>
-              <span>防御报告</span>
-              <code>{latest?.defenseReportId ?? "-"}</code>
-            </div>
-          </div>
-        ) : null}
         {kind === "cases" ? (
           <div className="report-list">
-            {(latest?.caseIds ?? []).map((caseId) => (
-              <div className="report-row" key={caseId}>
-                <code>{caseId}</code>
-                <span>包含在最新运行中</span>
-              </div>
-            ))}
+            {(latest?.caseIds ?? []).length ? (
+              latest?.caseIds.map((caseId) => (
+                <div className="report-row" key={caseId}>
+                  <span>{caseId}</span>
+                </div>
+              ))
+            ) : (
+              <p className="muted">暂无测试用例。</p>
+            )}
           </div>
         ) : null}
         {kind === "configs" ? (
@@ -91,9 +72,6 @@ export function ProjectOverviewPage({
 }
 
 function titleFor(kind: ProjectOverviewPageProps["kind"]): string {
-  if (kind === "agent") {
-    return "智能体接入";
-  }
   if (kind === "cases") {
     return "测试用例";
   }

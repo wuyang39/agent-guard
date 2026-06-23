@@ -2,7 +2,7 @@
  * P2 API view types — 不进入 packages/contracts，除非多端复用。
  */
 
-import type { RiskLevel, RunStatus } from "@agent-guard/contracts";
+import type { ReportFormat, RiskLevel, RunStatus } from "@agent-guard/contracts";
 
 export type P2AdapterKind = "openclaw" | "http_sample" | "mock";
 
@@ -79,7 +79,7 @@ export type P2RunGroup = {
 export type P2ArtifactView = {
   artifactId: string;
   reportId: string;
-  format: "json" | "html";
+  format: ReportFormat;
   label: string;
   url: string;
   generatedAt: string;

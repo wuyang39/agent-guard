@@ -5,6 +5,14 @@ import { success, failure } from "../../response";
 import { getReportEntry, getArtifactEntry } from "../../../storage/fileReportStore";
 import { getRunGroup, getSessionRecords } from "../../../storage/fileRunStore";
 import { isPathInsideDirectory, resolveInsideDirectory } from "../../../storage/pathSafety";
+import {
+  composeReportBundleByBundleId,
+  composeReportBundleForDefenseReport,
+  composeReportBundleForRunGroup,
+  exportReportBundle,
+  getReportBundleExportJob,
+  ReportBundleNotFoundError,
+} from "../../../modules/report/reportBundleComposer";
 
 const REPORTS_BASE = path.resolve(process.cwd(), "outputs", "reports");
 
@@ -51,6 +59,7 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
         usesSyntheticFallback,
         canProveDefenseEffect: sessionRecords.length > 0 && !usesSyntheticFallback,
       };
+      const reportBundle = await composeReportBundleForRunGroup(entry.runGroupId).catch(() => undefined);
 
       const artifacts = await Promise.all(
         entry.artifactIds.map(async (artifactId: string) => {
@@ -76,6 +85,11 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
         policyContextSource,
         evidenceSummary,
         supervisionRecords: sessionRecords,
+        reportBundle,
+        evidenceBundle: reportBundle?.evidenceBundle,
+        traceabilityGraph: reportBundle?.traceabilityGraph,
+        quality: reportBundle?.quality,
+        testContextViews: reportBundle?.testContextViews,
         runtimeSessionSummaries: loadedRuntimeSessions.map((session) => ({
           runtimeSessionId: session.runtimeSessionId,
           policyContextSource: session.policyContextSource,
@@ -94,6 +108,107 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
       reply.code(500);
       return failure("INTERNAL_ERROR", err instanceof Error ? err.message : String(err));
     }
+  });
+
+  app.get("/api/v1/reports/bundles/:bundleId", async (request, reply) => {
+    const { bundleId } = request.params as { bundleId: string };
+    try {
+      return success(await composeReportBundleByBundleId(bundleId));
+    } catch (err) {
+      if (err instanceof ReportBundleNotFoundError) {
+        reply.code(404);
+        return failure("NOT_FOUND", err.message);
+      }
+      reply.code(500);
+      return failure("INTERNAL_ERROR", err instanceof Error ? err.message : String(err));
+    }
+  });
+
+  app.get("/api/v1/test-runs/:runGroupId/report-bundle", async (request, reply) => {
+    const { runGroupId } = request.params as { runGroupId: string };
+    try {
+      return success(await composeReportBundleForRunGroup(runGroupId));
+    } catch (err) {
+      if (err instanceof ReportBundleNotFoundError) {
+        reply.code(404);
+        return failure("NOT_FOUND", err.message);
+      }
+      reply.code(500);
+      return failure("INTERNAL_ERROR", err instanceof Error ? err.message : String(err));
+    }
+  });
+
+  app.get("/api/v1/reports/defense/:reportId/evidence", async (request, reply) => {
+    const { reportId } = request.params as { reportId: string };
+    try {
+      const bundle = await composeReportBundleForDefenseReport(reportId);
+      return success({
+        defenseReportId: reportId,
+        bundleId: bundle.bundleId,
+        evidenceBundle: bundle.evidenceBundle,
+        claims: bundle.claims,
+        traceabilityGraph: bundle.traceabilityGraph,
+        testContextViews: bundle.testContextViews,
+      });
+    } catch (err) {
+      if (err instanceof ReportBundleNotFoundError) {
+        reply.code(404);
+        return failure("NOT_FOUND", err.message);
+      }
+      reply.code(500);
+      return failure("INTERNAL_ERROR", err instanceof Error ? err.message : String(err));
+    }
+  });
+
+  app.get("/api/v1/reports/defense/:reportId/quality", async (request, reply) => {
+    const { reportId } = request.params as { reportId: string };
+    try {
+      const bundle = await composeReportBundleForDefenseReport(reportId);
+      return success({
+        defenseReportId: reportId,
+        bundleId: bundle.bundleId,
+        quality: bundle.quality,
+      });
+    } catch (err) {
+      if (err instanceof ReportBundleNotFoundError) {
+        reply.code(404);
+        return failure("NOT_FOUND", err.message);
+      }
+      reply.code(500);
+      return failure("INTERNAL_ERROR", err instanceof Error ? err.message : String(err));
+    }
+  });
+
+  app.post("/api/v1/reports/defense/:reportId/exports", async (request, reply) => {
+    const { reportId } = request.params as { reportId: string };
+    const body = isObject(request.body) ? request.body : {};
+    const format =
+      body.format === "html" || body.format === "pdf"
+        ? body.format
+        : "markdown";
+    const language = body.language === "zh" ? "zh" : "en";
+    const humanReview = parseHumanReview(body.humanReview);
+    try {
+      const bundle = await composeReportBundleForDefenseReport(reportId);
+      return success(await exportReportBundle(bundle, format, humanReview, language));
+    } catch (err) {
+      if (err instanceof ReportBundleNotFoundError) {
+        reply.code(404);
+        return failure("NOT_FOUND", err.message);
+      }
+      reply.code(500);
+      return failure("INTERNAL_ERROR", err instanceof Error ? err.message : String(err));
+    }
+  });
+
+  app.get("/api/v1/reports/exports/:exportJobId", async (request, reply) => {
+    const { exportJobId } = request.params as { exportJobId: string };
+    const job = getReportBundleExportJob(exportJobId);
+    if (!job) {
+      reply.code(404);
+      return failure("NOT_FOUND", `Export job ${exportJobId} not found`);
+    }
+    return success(job);
   });
 
   // GET /api/v1/reports/detection/:reportId
@@ -155,6 +270,26 @@ async function readOptionalJson(filePath: string): Promise<unknown | undefined> 
   }
 }
 
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseHumanReview(value: unknown) {
+  if (!isObject(value)) return undefined;
+  const rawDecisions = isObject(value.claimDecisions) ? value.claimDecisions : {};
+  const claimDecisions = Object.fromEntries(
+    Object.entries(rawDecisions).filter(([, decision]) =>
+      decision === "accepted" || decision === "needs_changes" || decision === "skipped",
+    ),
+  ) as Record<string, "accepted" | "needs_changes" | "skipped">;
+  return {
+    reviewerNote: typeof value.reviewerNote === "string" ? value.reviewerNote : undefined,
+    reviewedClaimCount: typeof value.reviewedClaimCount === "number" ? value.reviewedClaimCount : Object.keys(claimDecisions).length,
+    reviewedAt: typeof value.reviewedAt === "string" ? value.reviewedAt : undefined,
+    claimDecisions,
+  };
+}
+
 /** 策略查询 + artifact 访问 */
 export async function policyRoutes(app: FastifyInstance): Promise<void> {
   // GET /api/v1/policies/:policyPackId
@@ -208,9 +343,16 @@ export async function artifactRoutes(app: FastifyInstance): Promise<void> {
         );
       }
 
+      if (entry.format === "pdf") {
+        const buffer = await fs.readFile(artifactPath);
+        return reply.type("application/pdf").send(buffer);
+      }
       const raw = await fs.readFile(artifactPath, "utf-8");
       if (entry.format === "html") {
         return reply.type("text/html").send(raw);
+      }
+      if (entry.format === "markdown") {
+        return reply.type("text/markdown; charset=utf-8").send(raw);
       }
       // JSON → 直接返回对象
       return JSON.parse(raw);

@@ -8,7 +8,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { P2ArtifactView } from "../api/types";
-import type { ReportArtifact } from "@agent-guard/contracts";
+import type { ReportArtifact, ReportFormat } from "@agent-guard/contracts";
 import { Mutex } from "../shared";
 import { resolveInsideDirectory } from "./pathSafety";
 
@@ -57,7 +57,7 @@ type ReportIndex = {
 type ArtifactIndexEntry = {
   artifactId: string;
   reportId: string;
-  format: "json" | "html";
+  format: ReportFormat;
   filePath: string;
   label: string;
   generatedAt: string;
@@ -100,7 +100,7 @@ export async function indexArtifact(
   const entry: ArtifactIndexEntry = {
     artifactId: artifact.artifactId,
     reportId: artifact.reportId,
-    format: artifact.format as "json" | "html",
+    format: artifact.format,
     filePath: artifact.path,
     label,
     generatedAt: artifact.generatedAt,

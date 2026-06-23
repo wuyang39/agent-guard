@@ -2,13 +2,20 @@ import type {
   AgentRiskProfile,
   DefenseReport,
   DetectionReport,
+  DefenseClaim,
+  EvidenceBundle,
   InteractionTrace,
+  ReportBundle,
+  ReportFormat,
+  ReportQualitySummary,
   RiskReport,
   RuntimeSupervisionRecord,
   SupervisionAction,
   SupervisionPolicyPack,
   SupervisionTargetType,
   TestRun,
+  TestContextView,
+  TraceabilityGraph,
 } from "@agent-guard/contracts";
 
 export type ApiResponse<T> =
@@ -78,7 +85,7 @@ export type RunProgressView = {
 export type P2ArtifactView = {
   artifactId: string;
   reportId: string;
-  format: "json" | "html";
+  format: ReportFormat;
   label: string;
   url: string;
   generatedAt: string;
@@ -358,6 +365,11 @@ export type DefenseDetailView = {
   runtimeSessionSummaries?: RuntimeSessionSummary[];
   supervisionRecords: RuntimeSupervisionRecord[];
   artifacts: P2ArtifactView[];
+  reportBundle?: ReportBundle;
+  evidenceBundle?: EvidenceBundle;
+  traceabilityGraph?: TraceabilityGraph;
+  quality?: ReportQualitySummary;
+  testContextViews?: TestContextView[];
 };
 
 export type DefenseEvidenceSummary = {
@@ -384,6 +396,49 @@ export type TraceDetailView = {
   relatedRiskReports: RiskReport[];
   relatedFindings: RiskReport["findings"];
   supervisionRecords: RuntimeSupervisionRecord[];
+};
+
+export type ReportBundleEvidenceView = {
+  defenseReportId: string;
+  bundleId: string;
+  evidenceBundle: EvidenceBundle;
+  claims: DefenseClaim[];
+  traceabilityGraph: TraceabilityGraph;
+  testContextViews: TestContextView[];
+};
+
+export type ReportBundleQualityView = {
+  defenseReportId: string;
+  bundleId: string;
+  quality: ReportQualitySummary;
+};
+
+export type ReportBundleExportFormat = "markdown" | "html" | "pdf";
+export type ReportBundleExportLanguage = "zh" | "en";
+
+export type ReportBundleHumanReview = {
+  reviewerNote?: string;
+  claimDecisions?: Record<string, "accepted" | "needs_changes" | "skipped">;
+  reviewedClaimCount: number;
+  reviewedAt: string;
+};
+
+export type ReportBundleExportJob = {
+  exportJobId: string;
+  bundleId: string;
+  reportId: string;
+  format: ReportBundleExportFormat;
+  language: ReportBundleExportLanguage;
+  artifact: {
+    artifactId: string;
+    reportId: string;
+    format: ReportBundleExportFormat;
+    language: ReportBundleExportLanguage;
+    url: string;
+    generatedAt: string;
+  };
+  status: "completed";
+  generatedAt: string;
 };
 
 export type LoadState<T> =

@@ -25,6 +25,7 @@ New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 $env:OPENCLAW_CLI = $openClawCli
 $env:OPENCLAW_HOME = $openClawHome
 $env:OPENCLAW_WORKSPACE = $openClawWorkspace
+$env:VITE_OPENCLAW_CLI_PATH = $openClawCli
 $env:OPENCLAW_TIMEOUT_MS = "15000"
 $env:HTTP_PROXY = ""
 $env:HTTPS_PROXY = ""
@@ -80,7 +81,7 @@ if (-not (Test-PortListening 18789)) {
 `$env:NO_PROXY='*';
 `$env:no_proxy='*';
 Set-Location '$RuntimeRoot';
-.\openclaw-local.cmd gateway run --port 18789 --bind loopback *> '$gatewayLog' 2> '$gatewayErr'
+.\openclaw-local.cmd gateway run --port 18789 --bind loopback --allow-unconfigured *> '$gatewayLog' 2> '$gatewayErr'
 "@
   Write-Host "[1/4] Starting OpenClaw gateway on 127.0.0.1:18789..."
   Start-HiddenPowerShell $gatewayCommand
@@ -101,6 +102,7 @@ if (-not (Test-PortListening 5173)) {
 `$env:OPENCLAW_CLI='$openClawCli';
 `$env:OPENCLAW_HOME='$openClawHome';
 `$env:OPENCLAW_WORKSPACE='$openClawWorkspace';
+`$env:VITE_OPENCLAW_CLI_PATH='$openClawCli';
 `$env:HTTP_PROXY='';
 `$env:HTTPS_PROXY='';
 `$env:ALL_PROXY='';

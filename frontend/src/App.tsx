@@ -1,12 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import type { TestSelectionPlan, TestSelectionRequest } from "@agent-guard/contracts";
+import type { ReportBundle, TestSelectionPlan, TestSelectionRequest } from "@agent-guard/contracts";
 import { agentGuardApi } from "./lib/api/client";
-import {
-  mockDashboardSummary,
-  mockDefenseDetail,
-  mockDetectionDetail,
-  mockTraceDetail,
-} from "./lib/api/mockData";
+import { mockDashboardSummary } from "./lib/api/mockData";
 import type {
   AgentConnectionConfig,
   CLineDashboardSummary,
@@ -25,13 +20,17 @@ import {
   type EvidenceTabKey,
 } from "./pages/EvidenceCenter/EvidenceCenterPage";
 import { RuntimeConfigPage } from "./pages/RuntimeConfig/RuntimeConfigPage";
+import { RunWorkflowPage } from "./pages/RunWorkflow/RunWorkflowPage";
+import { ReportWorkspacePage } from "./pages/ReportWorkspace/ReportWorkspacePage";
 import { LiveSupervisionPage } from "./pages/Supervision/LiveSupervisionPage";
 
 type ViewKey =
   | "agent"
   | "dashboard"
+  | "run-workflow"
   | "supervision"
   | "runtime-config"
+  | "report-workspace"
   | "defense"
   | "evidence";
 
@@ -74,6 +73,9 @@ export function App() {
   const [selectionPlanState, setSelectionPlanState] = useState<LoadState<TestSelectionPlan>>({
     status: "idle",
   });
+  const [reportBundleState, setReportBundleState] = useState<LoadState<ReportBundle>>({
+    status: "idle",
+  });
   const [runGroupsState, setRunGroupsState] = useState<
     LoadState<{ schemaVersion: "mvp-1"; runGroups: CLineRunGroup[] }>
   >({ status: "idle" });
@@ -81,20 +83,6 @@ export function App() {
     status: "idle",
   });
   const [selectedRunGroupId, setSelectedRunGroupId] = useState<string | undefined>();
-
-  const useMock = useCallback(() => {
-    setSummaryState({ status: "ready", data: mockDashboardSummary, source: "mock" });
-    setDetectionState({ status: "ready", data: mockDetectionDetail, source: "mock" });
-    setDefenseState({ status: "ready", data: mockDefenseDetail, source: "mock" });
-    setTraceState({ status: "ready", data: mockTraceDetail, source: "mock" });
-    setSelectionPlanState({ status: "empty", message: "示例数据不包含攻击库选择计划。" });
-    setRunGroupsState({
-      status: "ready",
-      data: { schemaVersion: "mvp-1", runGroups: mockDashboardSummary.recentRunGroups },
-      source: "mock",
-    });
-    setSelectedRunGroupId(mockDashboardSummary.latestRunGroup?.runGroupId);
-  }, []);
 
   const loadDefenseForRunGroup = useCallback(async (runGroup: CLineRunGroup): Promise<void> => {
     if (!runGroup.defenseReportId) {
@@ -120,6 +108,7 @@ export function App() {
   const loadDetailsForRunGroup = useCallback(async (runGroup: CLineRunGroup) => {
     setSelectedRunGroupId(runGroup.runGroupId);
     await loadSelectionPlanForRunGroup(runGroup, setSelectionPlanState);
+    setReportBundleState({ status: "loading" });
 
     if (runGroup.detectionReportId) {
       setDetectionState({ status: "loading" });
@@ -154,6 +143,17 @@ export function App() {
               }),
             )
         : Promise.resolve(),
+      agentGuardApi
+        .reportBundleForRunGroup(runGroup.runGroupId)
+        .then((bundle) =>
+          setReportBundleState({ status: "ready", data: bundle, source: "api" }),
+        )
+        .catch((error) =>
+          setReportBundleState({
+            status: "error",
+            message: error instanceof Error ? error.message : String(error),
+          }),
+        ),
       traceId
         ? agentGuardApi
             .traceDetail(traceId)
@@ -190,6 +190,10 @@ export function App() {
       setTraceState({
         status: "empty",
         message: "尚无调用轨迹。请先生成监督策略包。",
+      });
+      setReportBundleState({
+        status: "empty",
+        message: "尚无报告包。完成一次检测或实时监督后再查看报告工作台。",
       });
       return;
     }
@@ -236,6 +240,7 @@ export function App() {
       setDetectionState({ status: "empty", message: "等待服务数据或示例数据。" });
       setDefenseState({ status: "empty", message: "等待服务数据或示例数据。" });
       setTraceState({ status: "empty", message: "等待服务数据或示例数据。" });
+      setReportBundleState({ status: "empty", message: "等待服务数据或示例数据。" });
       setRunGroupsState({ status: "empty", message: "等待服务数据或示例数据。" });
       setSystemState({
         status: "error",
@@ -255,7 +260,7 @@ export function App() {
       const nextConfig = await saveCurrentAgentConfig();
       const selectionPlan = await createSelectionPlanForConfig(nextConfig);
       setSelectionPlanState({ status: "ready", data: selectionPlan, source: "api" });
-      setView("dashboard");
+      setView("run-workflow");
     } catch (error) {
       setSelectionPlanState({
         status: "error",
@@ -299,7 +304,7 @@ export function App() {
       setRunGroupsState({ status: "ready", data: runGroups, source: "api" });
       setSystemState({ status: "ready", data: system, source: "api" });
       await loadDetails(summary);
-      setView("dashboard");
+      setView("run-workflow");
     } catch (error) {
       setSummaryState((current) =>
         current.status === "ready"
@@ -315,7 +320,7 @@ export function App() {
       );
       setSelectionPlanState({
         status: "error",
-        message: error instanceof Error ? error.message : "LLM 攻击库选择或检测运行失败。",
+        message: error instanceof Error ? error.message : "LLM 攻击库选择或检测编排失败。",
       });
     } finally {
       setRunning(false);
@@ -333,6 +338,9 @@ export function App() {
 
   function acceptRealtimeDefenseReport(detail: DefenseDetailView) {
     setDefenseState({ status: "ready", data: detail, source: "api" });
+    if (detail.reportBundle) {
+      setReportBundleState({ status: "ready", data: detail.reportBundle, source: "api" });
+    }
   }
 
   async function saveAgentConfig(next: AgentConnectionConfig) {
@@ -380,19 +388,6 @@ export function App() {
     );
   }
 
-  function openEvidence(tab: EvidenceTabKey) {
-    setEvidenceTab(tab);
-    setView("evidence");
-  }
-
-  function selectDashboardTarget(target: "detection" | "defense" | "trace") {
-    if (target === "defense") {
-      setView("defense");
-      return;
-    }
-    openEvidence(target);
-  }
-
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -407,6 +402,12 @@ export function App() {
           <button className={view === "dashboard" ? "active" : ""} onClick={() => setView("dashboard")}>
             总览
           </button>
+          <button
+            className={view === "run-workflow" ? "active" : ""}
+            onClick={() => setView("run-workflow")}
+          >
+            检测编排
+          </button>
           <button className={view === "supervision" ? "active" : ""} onClick={() => setView("supervision")}>
             实时监督
           </button>
@@ -415,6 +416,12 @@ export function App() {
             onClick={() => setView("runtime-config")}
           >
             运行配置
+          </button>
+          <button
+            className={view === "report-workspace" ? "active" : ""}
+            onClick={() => setView("report-workspace")}
+          >
+            报告工作台
           </button>
           <button className={view === "defense" ? "active" : ""} onClick={() => setView("defense")}>
             防御报告
@@ -430,34 +437,36 @@ export function App() {
           <AgentConnectPage
             config={agentConfig}
             onSave={saveAgentConfig}
-            summaryState={summaryState}
-            systemState={systemState}
           />
         ) : null}
         {view === "dashboard" ? (
-          <DashboardPage
+          <DashboardPage state={summaryState} />
+        ) : null}
+        {view === "run-workflow" ? (
+          <RunWorkflowPage
             onCreateSelectionPlan={() => void createSelectionPlan()}
             onRun={() => void runE2E()}
-            onSelectView={selectDashboardTarget}
-            onUseMock={useMock}
             planning={planning}
             running={running}
-            state={summaryState}
             selectionPlanState={selectionPlanState}
+            summaryState={summaryState}
           />
         ) : null}
         {view === "supervision" ? (
           <LiveSupervisionPage
             onGoDefense={() => setView("defense")}
-            onGoRuns={() => openEvidence("runs")}
             onReportGenerated={acceptRealtimeDefenseReport}
           />
         ) : null}
         {view === "runtime-config" ? <RuntimeConfigPage /> : null}
+        {view === "report-workspace" ? (
+          <ReportWorkspacePage
+            selectionPlanState={selectionPlanState}
+            state={reportBundleState}
+          />
+        ) : null}
         {view === "defense" ? (
           <DefenseReportPage
-            onGoDetection={() => openEvidence("detection")}
-            onGoTrace={() => openEvidence("trace")}
             state={defenseState}
           />
         ) : null}
@@ -466,12 +475,9 @@ export function App() {
             activeTab={evidenceTab}
             detectionState={detectionState}
             onActivateRealtime={() => void activateRealtimePolicy()}
-            onGoDefense={() => setView("defense")}
-            onRun={() => void runE2E()}
             onSelectRunGroup={(runGroup) => void loadDetailsForRunGroup(runGroup)}
             onTabChange={setEvidenceTab}
             runGroupsState={runGroupsState}
-            running={running || planning}
             selectedRunGroupId={selectedRunGroupId}
             summaryState={summaryState}
             systemState={systemState}
@@ -527,9 +533,16 @@ function loadStoredAgentConfig(): AgentConnectionConfig {
     const raw = localStorage.getItem(AGENT_CONFIG_STORAGE_KEY);
     if (!raw) return defaultAgentConfig;
     const parsed = JSON.parse(raw) as Partial<AgentConnectionConfig>;
+    const migratedOpenClawCliPath =
+      parsed.adapterKind === "openclaw" &&
+      defaultOpenClawCliPath &&
+      parsed.openclawCliPath?.toLowerCase().startsWith("f:\\openclaw\\")
+        ? defaultOpenClawCliPath
+        : parsed.openclawCliPath;
     return {
       ...defaultAgentConfig,
       ...parsed,
+      openclawCliPath: migratedOpenClawCliPath ?? defaultAgentConfig.openclawCliPath,
       caseIds: Array.isArray(parsed.caseIds) && parsed.caseIds.length
         ? parsed.caseIds.filter((item): item is string => typeof item === "string")
         : defaultAgentConfig.caseIds,

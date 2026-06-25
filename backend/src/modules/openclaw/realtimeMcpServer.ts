@@ -1817,7 +1817,7 @@ function compactJsonObject(input: Record<string, JsonValue | undefined>): JsonOb
   return output;
 }
 
-export function emitRealtimeEvent(
+function emitRealtimeEvent(
   input: Omit<RealtimeEvent, "eventId" | "timestamp">,
 ): RealtimeEvent {
   const event: RealtimeEvent = {

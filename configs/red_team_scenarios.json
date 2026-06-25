@@ -132,23 +132,6 @@
         "policy.warn.tool_response_contains_instruction",
         "policy.deny.memory_poison_update"
       ]
-    },
-    {
-      "scenarioId": "scenario.supervision_bypass",
-      "name": "Supervision bypass through native tool abuse",
-      "attackType": "supervision_bypass",
-      "caseIds": [
-        "case.bypass_native_exec",
-        "case.bypass_native_read",
-        "case.bypass_web_exfiltration"
-      ],
-      "sampleIds": ["sample.agent_guard.bypass_native_tool"],
-      "expectedWeaknessCategories": ["instruction_injection_following", "tool_misuse"],
-      "recommendedPolicyTemplateIds": [
-        "policy.deny.native_tool_usage",
-        "policy.deny.external_exfiltration",
-        "policy.deny.code_execution"
-      ]
     }
   ]
 }

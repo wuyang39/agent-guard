@@ -64,6 +64,7 @@ export type RuntimeSettingsSnapshot = {
 let runtimeLlmOverride: RuntimeLlmSettingsInput | undefined;
 let runtimeDownstreamMcpOverride: RuntimeDownstreamMcpSettingsInput | undefined;
 let runtimeSettingsUpdatedAt = new Date(0).toISOString();
+const DEFAULT_LLM_TIMEOUT_MS = 120_000;
 
 export function getRuntimeSettingsSnapshot(
   env: NodeJS.ProcessEnv = process.env,
@@ -105,6 +106,7 @@ export function getResolvedRuntimeLlmSettings(
     env.AGENT_GUARD_LLM_KEY !== undefined ||
     env.AGENT_GUARD_LLM_API_KEY !== undefined ||
     env.AGENT_GUARD_LLM_MODEL !== undefined ||
+    env.AGENT_GUARD_LLM_TIMEOUT_MS !== undefined ||
     env.OPENAI_CHAT_ENDPOINT !== undefined ||
     env.OPENAI_CHAT_KEY !== undefined ||
     env.OPENAI_CHAT_MODEL !== undefined ||
@@ -206,7 +208,7 @@ function normalizeRuntimeLlmSettings(
     endpoint: cleanOptional(input.endpoint),
     apiKey: cleanOptional(input.apiKey),
     model: cleanOptional(input.model) ?? (mode === "mock" ? "mock-tool-profiler" : undefined),
-    timeoutMs: input.timeoutMs && input.timeoutMs > 0 ? Math.floor(input.timeoutMs) : 5000,
+    timeoutMs: input.timeoutMs && input.timeoutMs > 0 ? Math.floor(input.timeoutMs) : DEFAULT_LLM_TIMEOUT_MS,
     source,
   };
 }

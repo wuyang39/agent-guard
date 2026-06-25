@@ -93,7 +93,7 @@ async function loadGeneratedAttackCards(
   await assertGeneratedRuntimeCorpusAvailable();
 
   const candidates = cards
-    .map(mapAttackCardToCandidate)
+    .map((card) => mapAttackCardToCandidate(card, request))
     .filter((candidate) => candidate.enabled)
     .filter(
       (candidate) =>
@@ -108,12 +108,15 @@ async function loadGeneratedAttackCards(
   };
 }
 
-function mapAttackCardToCandidate(card: AttackCaseCard): CandidateCaseCard {
+function mapAttackCardToCandidate(
+  card: AttackCaseCard,
+  request: CandidateCaseLoadRequest,
+): CandidateCaseCard {
   return {
     schemaVersion: "mvp-1",
     caseId: card.caseId,
     caseName: card.caseName,
-    enabled: card.enabled,
+    enabled: card.enabled || request.targetProfile === "full-corpus" || request.targetProfile === "regression",
     runProfiles: [...card.runProfiles],
     attackFamilies: [...card.attackFamilies],
     targetSurfaces: [...card.targetSurfaces],

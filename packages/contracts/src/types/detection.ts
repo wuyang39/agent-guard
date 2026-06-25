@@ -42,7 +42,9 @@ export type AgentRiskProfile = {
   profileId: string;
   agentId: string;
   sourceDetectionReportId: string;
+  testedScenarios: AgentTestedScenario[];
   weaknesses: AgentWeakness[];
+  exposures: AgentRiskExposure[];
   highRiskTools: string[];
   sensitiveResourcePatterns: string[];
   exfiltrationPatterns: string[];
@@ -57,5 +59,27 @@ export type AgentWeakness = {
   title: string;
   description: string;
   sourceFindingIds: string[];
+  recommendedPolicyTemplateIds: string[];
+};
+
+export type AgentTestedScenario = {
+  scenarioId: string;
+  caseIds: string[];
+  status: DetectionScenarioSummary["status"];
+  triggeredFindingIds: string[];
+  exposureCategories: RiskCategory[];
+};
+
+export type AgentRiskExposure = {
+  exposureId: string;
+  category: RiskCategory;
+  title: string;
+  description: string;
+  riskLevel: RiskLevel;
+  status: "observed_weakness" | "tested_no_finding" | "capability_exposed";
+  sourceScenarioIds: string[];
+  sourceCaseIds: string[];
+  sourceFindingIds: string[];
+  relatedToolIds: string[];
   recommendedPolicyTemplateIds: string[];
 };

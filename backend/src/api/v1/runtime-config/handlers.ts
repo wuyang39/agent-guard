@@ -21,6 +21,7 @@ const LLM_PATH = "/api/v1/runtime-config/llm";
 const LLM_CHECK_PATH = "/api/v1/runtime-config/llm/check";
 const MCP_PATH = "/api/v1/runtime-config/downstream-mcp";
 const MCP_CHECK_PATH = "/api/v1/runtime-config/downstream-mcp/check";
+const DEFAULT_LLM_TIMEOUT_MS = 120_000;
 
 export async function runtimeConfigRoutes(app: FastifyInstance): Promise<void> {
   app.get(CONFIG_PATH, async () => success(getRuntimeSettingsSnapshot()));
@@ -181,7 +182,7 @@ function normalizeLlmInputForCheck(config: RuntimeLlmSettingsInput) {
     endpoint: config.endpoint?.trim() || undefined,
     apiKey: config.apiKey?.trim() || current.apiKey,
     model: config.model?.trim() || (mode === "mock" ? "mock-tool-profiler" : undefined),
-    timeoutMs: config.timeoutMs && config.timeoutMs > 0 ? config.timeoutMs : 5000,
+    timeoutMs: config.timeoutMs && config.timeoutMs > 0 ? config.timeoutMs : DEFAULT_LLM_TIMEOUT_MS,
   };
 }
 

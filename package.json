@@ -37,6 +37,8 @@
     "verify:openclaw:realtime": "node --import tsx scripts/verify-openclaw-realtime-mcp.ts",
     "verify:p3:b-gateway": "node --import tsx scripts/verify-p3-b-gateway.ts",
     "verify:p3:b-llm-profiler": "node --import tsx scripts/verify-p3-b-llm-profiler.ts",
+    "verify:p3:b-semantic-scorer": "node --import tsx scripts/verify-p3-b-semantic-scorer.ts",
+    "verify:p3:b-tool-profile-policy": "node --import tsx scripts/verify-p3-b-tool-profile-policy.ts",
     "verify:p3:b-test-selection": "node --import tsx scripts/verify-p3-b-test-selection.ts",
     "verify:shared-llm-config": "node --import tsx scripts/verify-shared-llm-config.ts",
     "verify:p3:c-report": "node --import tsx scripts/verify-p3-c-report.ts",

@@ -70,14 +70,83 @@ const detectionReport = buildDetectionReport({
 });
 const riskProfile = buildAgentRiskProfile(detectionReport);
 const policyPack = buildSupervisionPolicyPack(riskProfile);
+const passedRiskReport: RiskReport = {
+  ...riskReport,
+  reportId: "report.p1.passed_probe",
+  evaluationId: "evaluation.p1.passed_probe",
+  contextId: "ctx.p1.passed_probe",
+  caseId: "case.p1.passed_tool_probe",
+  traceId: "trace.p1.passed_probe",
+  riskLevel: "low",
+  summary: {
+    totalFindings: 0,
+    countsByRiskLevel: { low: 0, medium: 0, high: 0, critical: 0 },
+    countsByCategory: {
+      tool_misuse: 0,
+      unauthorized_access: 0,
+      data_leakage: 0,
+      dangerous_action: 0,
+      instruction_injection_following: 0,
+    },
+  },
+  caseReport: {
+    caseId: "case.p1.passed_tool_probe",
+    caseName: "Passed tool abuse probe",
+    attackEntryType: "malicious_user_prompt",
+    riskLevel: "low",
+    findingIds: [],
+  },
+  findings: [],
+  evidenceChains: [],
+  attackChains: [],
+  highRiskIssues: [],
+  toolCallTrace: {
+    traceId: "trace.p1.passed_probe",
+    steps: [],
+  },
+  attackChainViews: [],
+};
+const passedDetectionReport = buildDetectionReport({
+  agentId: "agent.p1.sample",
+  riskReports: [passedRiskReport],
+});
+const passedRiskProfile = buildAgentRiskProfile(passedDetectionReport, [passedRiskReport]);
+const passedPolicyPack = buildSupervisionPolicyPack(passedRiskProfile);
+const emptyDetectionReport = buildDetectionReport({
+  agentId: "agent.p1.empty",
+  riskReports: [],
+});
+const emptyRiskProfile = buildAgentRiskProfile(emptyDetectionReport, []);
+const emptyPolicyPack = buildSupervisionPolicyPack(emptyRiskProfile);
 
 assert(detectionReport.sourceRiskReportIds.includes(riskReport.reportId), "DetectionReport traces RiskReport");
 assert(riskProfile.sourceDetectionReportId === detectionReport.reportId, "AgentRiskProfile traces DetectionReport");
+assert(riskProfile.exposures.length > 0, "AgentRiskProfile records observed exposures");
 assert(policyPack.sourceRiskProfileId === riskProfile.profileId, "PolicyPack traces RiskProfile");
 assert(policyPack.policies.length > 0, "PolicyPack contains generated policies");
 assert(
   policyPack.policies.some((policy) => policy.action === "deny"),
   "Unauthorized access weakness generates deny policy",
+);
+assert(passedRiskProfile.weaknesses.length === 0, "Passed probe does not create observed weakness");
+assert(passedRiskProfile.exposures.length > 0, "Passed probe still creates tested exposure");
+assert(
+  passedRiskProfile.exposures.some((exposure) => exposure.status === "tested_no_finding"),
+  "Passed probe exposure is marked tested_no_finding",
+);
+assert(passedPolicyPack.policies.length > 0, "Passed probe exposure generates baseline policies");
+assert(
+  passedPolicyPack.policies.every((policy) => policy.sourceWeaknessIds.length > 0),
+  "Baseline policies keep source traceability",
+);
+assert(emptyRiskProfile.weaknesses.length === 0, "Empty probe has no observed weaknesses");
+assert(emptyRiskProfile.exposures.length === 0, "Empty probe has no exposure evidence");
+assert(emptyPolicyPack.policies.length > 0, "Empty profile receives fallback baseline policies");
+assert(
+  emptyPolicyPack.policies.some((policy) =>
+    policy.sourceWeaknessIds.some((sourceId) => sourceId.startsWith("baseline.global.")),
+  ),
+  "Fallback baseline policies keep source traceability",
 );
 
 console.log("PASS: P1 detection -> risk profile -> policy pack verification");

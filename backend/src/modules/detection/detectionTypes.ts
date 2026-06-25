@@ -1,5 +1,7 @@
 export type {
   AgentRiskProfile,
+  AgentRiskExposure,
+  AgentTestedScenario,
   AgentWeakness,
   DetectionReport,
   DetectionRiskSummary,

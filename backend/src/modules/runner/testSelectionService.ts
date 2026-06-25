@@ -157,16 +157,16 @@ export async function createSelectionPlan(
       targetProfile: request.targetProfile,
       selectionMode: request.selectionMode,
       adapterKind: request.adapterKind,
-      maxCaseCount: request.maxCaseCount ?? 7,
+      maxCaseCount: request.maxCaseCount ?? defaultMaxCaseCount(request.targetProfile, request.selectionMode),
       timeBudgetMs: request.timeBudgetMs,
     },
     coverageRequirements: {
-      minCaseCount: request.minCaseCount ?? 3,
+      minCaseCount: request.minCaseCount ?? defaultMinCaseCount(request.targetProfile, request.selectionMode),
       minAttackFamilyCount: 3,
       requiredAttackFamilies: request.requiredAttackFamilies ?? [],
       requiredTargetSurfaces: request.requiredTargetSurfaces ?? [],
     },
-    requestedCaseCount: request.maxCaseCount ?? 7,
+    requestedCaseCount: request.maxCaseCount ?? defaultMaxCaseCount(request.targetProfile, request.selectionMode),
     selectedCaseIds: validation.validCaseIds,
     selectedCasesSummary,
     coverageSnapshot: validation.snapshot,
@@ -176,6 +176,7 @@ export async function createSelectionPlan(
       ruleSelectedCount: ruleResult.selectedCaseIds.length,
       llmAcceptedCount: llmAudit?.acceptedCaseIds.length ?? 0,
       llmRejectedCount: llmAudit?.rejectedCaseIds.length ?? 0,
+      candidatePoolExpandedCount: llmAudit?.candidatePoolSize,
       fallbackUsed: Boolean(llmAudit?.fallbackUsed || fallbackReasons.length),
       ready: validation.snapshot.ready,
     },
@@ -230,8 +231,14 @@ function normalizeSelectionRequest(
     manifestId: input.manifestId,
     targetProfile,
     selectionMode,
-    maxCaseCount: normalizePositiveInteger(input.maxCaseCount, 7),
-    minCaseCount: normalizePositiveInteger(input.minCaseCount, 3),
+    maxCaseCount: normalizePositiveInteger(
+      input.maxCaseCount,
+      defaultMaxCaseCount(targetProfile, selectionMode),
+    ),
+    minCaseCount: normalizePositiveInteger(
+      input.minCaseCount,
+      defaultMinCaseCount(targetProfile, selectionMode),
+    ),
     timeBudgetMs: normalizeOptionalPositiveInteger(input.timeBudgetMs),
     requiredAttackFamilies:
       input.requiredAttackFamilies?.length
@@ -334,6 +341,26 @@ function normalizeOptionalPositiveInteger(
 ): number | undefined {
   if (!Number.isFinite(value) || !value || value <= 0) return undefined;
   return Math.floor(value);
+}
+
+function defaultMaxCaseCount(
+  targetProfile: TestSelectionRequest["targetProfile"],
+  selectionMode: TestSelectionRequest["selectionMode"],
+): number {
+  if (targetProfile === "full-corpus") return selectionMode === "llm_assisted" ? 320 : 160;
+  if (targetProfile === "regression") return selectionMode === "llm_assisted" ? 160 : 80;
+  if (targetProfile === "openclaw") return selectionMode === "llm_assisted" ? 80 : 40;
+  return selectionMode === "llm_assisted" ? 10 : 7;
+}
+
+function defaultMinCaseCount(
+  targetProfile: TestSelectionRequest["targetProfile"],
+  selectionMode: TestSelectionRequest["selectionMode"],
+): number {
+  if (targetProfile === "full-corpus") return selectionMode === "llm_assisted" ? 120 : 64;
+  if (targetProfile === "regression") return selectionMode === "llm_assisted" ? 64 : 32;
+  if (targetProfile === "openclaw") return selectionMode === "llm_assisted" ? 30 : 16;
+  return 3;
 }
 
 function unique(values: string[]): string[] {

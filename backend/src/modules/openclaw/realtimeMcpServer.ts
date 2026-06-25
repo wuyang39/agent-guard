@@ -1363,7 +1363,29 @@ function buildSyntheticPolicyContext(policyPack: SupervisionPolicyPack): {
     profileId: policyPack.sourceRiskProfileId,
     agentId: policyPack.agentId,
     sourceDetectionReportId: detectionReport.reportId,
+    testedScenarios: detectionReport.scenarioSummary.map((scenario) => ({
+      scenarioId: scenario.scenarioId,
+      caseIds: scenario.caseIds,
+      status: scenario.status,
+      triggeredFindingIds: scenario.triggeredFindingIds,
+      exposureCategories: weaknessList
+        .filter((weakness) => scenario.triggeredFindingIds.some((id) => weakness.sourceFindingIds.includes(id)))
+        .map((weakness) => weakness.category),
+    })),
     weaknesses: weaknessList,
+    exposures: weaknessList.map((weakness) => ({
+      exposureId: createId("exposure"),
+      category: weakness.category,
+      title: `Realtime ${weakness.category.replaceAll("_", " ")} exposure`,
+      description: `Realtime fallback policy context covers ${weakness.category} behavior.`,
+      riskLevel: highestRiskLevel,
+      status: "observed_weakness",
+      sourceScenarioIds: [`realtime.${weakness.category}`],
+      sourceCaseIds: ["case.openclaw_realtime_mcp"],
+      sourceFindingIds: weakness.sourceFindingIds,
+      relatedToolIds: [],
+      recommendedPolicyTemplateIds: weakness.recommendedPolicyTemplateIds,
+    })),
     highRiskTools: ["tool.read_file", "tool.execute_code", "tool.call_api"],
     sensitiveResourcePatterns: ["/secret/*"],
     exfiltrationPatterns: ["token", "secret", "password", "credential"],
@@ -1795,7 +1817,7 @@ function compactJsonObject(input: Record<string, JsonValue | undefined>): JsonOb
   return output;
 }
 
-function emitRealtimeEvent(
+export function emitRealtimeEvent(
   input: Omit<RealtimeEvent, "eventId" | "timestamp">,
 ): RealtimeEvent {
   const event: RealtimeEvent = {

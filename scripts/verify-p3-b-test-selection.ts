@@ -125,6 +125,92 @@ async function main(): Promise<void> {
     console.log(`4. mock LLM-assisted plan ok (${llmPlan.selectionPlanId})`);
     passed++;
 
+    const expandedLlmResp = await injectJson(app, "POST", "/api/v1/test-selection/plans", {
+      schemaVersion: "mvp-1",
+      agentId: "agent.verify.selection.expanded",
+      targetProfile: "openclaw",
+      selectionMode: "llm_assisted",
+      requiredAttackFamilies: ["prompt_injection", "data_leakage", "tool_hijack"],
+      adapterKind: "mock",
+    });
+    const expandedLlmPlan = dataRecord(expandedLlmResp).plan as TestSelectionPlan;
+    assert(
+      expandedLlmPlan.requestedCaseCount >= 80,
+      `default LLM-assisted openclaw plan should request a larger set, got ${expandedLlmPlan.requestedCaseCount}`,
+    );
+    assert(
+      expandedLlmPlan.selectedCaseIds.length >= 30,
+      `expanded LLM plan selected too few cases: ${expandedLlmPlan.selectedCaseIds.length}`,
+    );
+    assert(
+      (expandedLlmPlan.llmAudit?.candidatePoolSize ?? 0) >= expandedLlmPlan.selectedCaseIds.length,
+      "LLM audit should record candidate pool size",
+    );
+    assert(
+      (expandedLlmPlan.llmAudit?.qualityHints?.length ?? 0) > 0,
+      "LLM audit should record quality hints",
+    );
+    console.log(`4b. expanded LLM-assisted defaults ok (${expandedLlmPlan.selectedCaseIds.length} cases)`);
+    passed++;
+
+    const fullCorpusResp = await injectJson(app, "POST", "/api/v1/test-selection/plans", {
+      schemaVersion: "mvp-1",
+      agentId: "agent.verify.selection.full_corpus",
+      targetProfile: "full-corpus",
+      selectionMode: "llm_assisted",
+      requiredAttackFamilies: [
+        "prompt_injection",
+        "data_leakage",
+        "tool_hijack",
+        "auth_bypass",
+        "dangerous_action",
+        "model_evasion",
+        "memory_poisoning",
+      ],
+      requiredTargetSurfaces: ["tool_call", "file_access", "api", "network", "memory", "output"],
+      includeExternalTools: true,
+      adapterKind: "openclaw",
+    });
+    const fullCorpusPlan = dataRecord(fullCorpusResp).plan as TestSelectionPlan;
+    assert(
+      fullCorpusPlan.selectionRunSummary.candidateCaseCount >= 2000,
+      `full-corpus plan should see the large A-line pool, got ${fullCorpusPlan.selectionRunSummary.candidateCaseCount}`,
+    );
+    assert(
+      fullCorpusPlan.requestedCaseCount >= 300,
+      `full-corpus LLM plan should request hundreds of cases, got ${fullCorpusPlan.requestedCaseCount}`,
+    );
+    assert(
+      fullCorpusPlan.selectedCaseIds.length >= 300,
+      `full-corpus plan selected too few cases: ${fullCorpusPlan.selectedCaseIds.length}`,
+    );
+    assert(
+      (fullCorpusPlan.llmAudit?.llmSeedCaseCount ?? 0) > 0,
+      "LLM audit should record seed case count",
+    );
+    assert(
+      (fullCorpusPlan.llmAudit?.llmSeedCaseCount ?? 0) < fullCorpusPlan.requestedCaseCount,
+      "LLM should return a compact seed set, not the full requested case count",
+    );
+    assert(
+      fullCorpusPlan.selectionRunSummary.llmAcceptedCount <=
+        (fullCorpusPlan.llmAudit?.llmSeedCaseCount ?? 0),
+      "LLM accepted case count should stay within the seed limit",
+    );
+    assert(
+      (fullCorpusPlan.llmAudit?.llmCandidatePoolSize ?? 0) >=
+        (fullCorpusPlan.llmAudit?.llmSeedCaseCount ?? 0),
+      "LLM shortlist should be at least as large as the seed case count",
+    );
+    assert(
+      (fullCorpusPlan.llmAudit?.ignoredOverLimitCount ?? 0) > 0,
+      "mock LLM should return more ids than the seed limit and audit ignored over-limit ids",
+    );
+    console.log(
+      `4c. full-corpus LLM-assisted plan ok (${fullCorpusPlan.selectedCaseIds.length}/${fullCorpusPlan.selectionRunSummary.candidateCaseCount} cases)`,
+    );
+    passed++;
+
     await verifyInvalidLlmCaseIdRejected();
     console.log("5. invalid LLM caseId rejection ok");
     passed++;
@@ -193,6 +279,39 @@ async function main(): Promise<void> {
     console.log("9. dashboard selectionPlanId linkage ok");
     passed++;
 
+    assert(typeof runGroup.policyPackId === "string", "runGroup policyPackId missing");
+    const reuseResp = await injectJson(app, "POST", "/api/v1/test-runs/e2e", {
+      adapterKind: "mock",
+      agent: { agentId: "agent.verify.selection", name: "P3-B Reuse Policy Mock" },
+      reusePolicyPackId: runGroup.policyPackId,
+      caseIds: rulePlan.selectedCaseIds.slice(0, 2),
+      generateDefenseReport: true,
+    });
+    const reuseRunGroup = dataRecord(reuseResp).runGroup as Record<string, unknown>;
+    assert(
+      reuseRunGroup.policyPackId === runGroup.policyPackId,
+      "reused run should keep source policyPackId",
+    );
+    assert(
+      Array.isArray(reuseRunGroup.riskReportIds) && reuseRunGroup.riskReportIds.length === 0,
+      "reused policy run should skip detection risk reports",
+    );
+    assert(
+      Array.isArray(reuseRunGroup.runtimeSessionIds) &&
+        reuseRunGroup.runtimeSessionIds.length === 2,
+      "reused policy run should supervise requested cases",
+    );
+    assert(
+      typeof reuseRunGroup.defenseReportId === "string",
+      "reused policy run should generate defense report",
+    );
+    console.log(`8b. reusable policyPackId supervision ok (${reuseRunGroup.runGroupId})`);
+    passed++;
+
+    await verifyInvalidReusablePolicyRejected(app);
+    console.log("8c. invalid reusable policyPackId rejection ok");
+    passed++;
+
     const getCompletedPlan = await injectJson(
       app,
       "GET",
@@ -257,6 +376,30 @@ async function verifyInvalidManifestRejected(app: FastifyInstance): Promise<void
       typeof parsed.error === "object" &&
       (parsed.error as Record<string, unknown>).code === "CANDIDATE_CASE_LOAD_FAILED",
     "invalid manifest should return CANDIDATE_CASE_LOAD_FAILED",
+  );
+}
+
+async function verifyInvalidReusablePolicyRejected(app: FastifyInstance): Promise<void> {
+  const res = await app.inject({
+    method: "POST",
+    url: "/api/v1/test-runs/e2e",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      adapterKind: "mock",
+      agent: { name: "P3-B Missing Reuse Policy" },
+      reusePolicyPackId: "policy_pack.missing",
+      caseIds: ["case.resource_injection"],
+      generateDefenseReport: false,
+    }),
+  });
+  const parsed = JSON.parse(res.body) as Record<string, unknown>;
+  assert(res.statusCode === 400, `invalid reuse policy should return 400, got ${res.statusCode}`);
+  assert(parsed.ok === false, "invalid reuse policy response should be failure");
+  assert(
+    parsed.error &&
+      typeof parsed.error === "object" &&
+      (parsed.error as Record<string, unknown>).code === "INVALID_POLICY_PACK",
+    "invalid reuse policy should return INVALID_POLICY_PACK",
   );
 }
 

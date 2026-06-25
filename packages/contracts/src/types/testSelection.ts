@@ -87,6 +87,7 @@ export type SelectionRunSummary = {
   ruleSelectedCount: number;
   llmAcceptedCount: number;
   llmRejectedCount: number;
+  candidatePoolExpandedCount?: number;
   fallbackUsed: boolean;
   ready: boolean;
 };
@@ -114,6 +115,12 @@ export type LlmSelectionAudit = {
   durationMs?: number;
   acceptedCaseIds: string[];
   rejectedCaseIds: string[];
+  candidatePoolSize?: number;
+  llmCandidatePoolSize?: number;
+  llmSeedCaseCount?: number;
+  ignoredOverLimitCount?: number;
+  requestedCaseCount?: number;
+  qualityHints?: string[];
   validationWarnings: string[];
   fallbackUsed: boolean;
 };

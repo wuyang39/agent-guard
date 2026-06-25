@@ -11,6 +11,8 @@ export function RunProgress({ runGroup, compact = false }: RunProgressProps) {
   const totalCases = progress?.totalCases ?? runGroup.caseCount ?? runGroup.caseIds.length;
   const completedCases = progress?.completedCases ?? runGroup.riskReportIds.length;
   const failedCases = progress?.failedCases ?? (runGroup.status === "failed" ? 1 : 0);
+  const skippedCases = progress?.skippedCases ?? 0;
+  const retriedCases = progress?.retriedCases ?? 0;
   const targetPercent = clampPercent(
     progress?.percent ??
       (totalCases > 0
@@ -21,8 +23,15 @@ export function RunProgress({ runGroup, compact = false }: RunProgressProps) {
   );
   const percent = useSmoothPercent(targetPercent, runGroup.runGroupId);
   const runningCaseIds = progress?.runningCaseIds ?? [];
+  const retryingCaseIds = progress?.retryingCaseIds ?? [];
   const currentCases = runningCaseIds.slice(0, 2).join(", ");
   const hiddenCount = Math.max(0, runningCaseIds.length - 2);
+  const latestFailure = progress?.caseFailures?.at(-1);
+  const providerCooldownUntil =
+    progress?.providerCooldownUntil &&
+    new Date(progress.providerCooldownUntil).getTime() > Date.now()
+      ? progress.providerCooldownUntil
+      : undefined;
 
   return (
     <div className={`run-progress${compact ? " compact" : ""}`}>
@@ -30,6 +39,8 @@ export function RunProgress({ runGroup, compact = false }: RunProgressProps) {
         <span>
           {totalCases > 0 ? `${completedCases}/${totalCases}` : completedCases} 完成
           {failedCases ? `，${failedCases} 失败` : ""}
+          {skippedCases ? `，${skippedCases} 跳过` : ""}
+          {retriedCases ? `，${retriedCases} 重试` : ""}
         </span>
         <code>{percent}%</code>
       </div>
@@ -45,6 +56,26 @@ export function RunProgress({ runGroup, compact = false }: RunProgressProps) {
       {!compact && progress?.concurrency ? (
         <p className="field-note">并发: {progress.concurrency}</p>
       ) : null}
+      {!compact && retryingCaseIds.length ? (
+        <p className="field-note">
+          正在等待重试: {retryingCaseIds.slice(0, 2).join(", ")}
+          {retryingCaseIds.length > 2 ? ` 等 ${retryingCaseIds.length} 个用例` : ""}
+        </p>
+      ) : null}
+      {!compact && providerCooldownUntil ? (
+        <p className="field-note">
+          Provider 冷却/退避至: {formatTime(providerCooldownUntil)}
+        </p>
+      ) : null}
+      {!compact && latestFailure ? (
+        <p className="field-note">
+          最近失败: {latestFailure.caseId} · {latestFailure.category} ·
+          {latestFailure.skipped ? " 已跳过继续" : " 已终止"}
+        </p>
+      ) : null}
+      {!compact && progress?.warnings?.length ? (
+        <p className="field-note">{progress.warnings.at(-1)}</p>
+      ) : null}
     </div>
   );
 }
@@ -52,6 +83,16 @@ export function RunProgress({ runGroup, compact = false }: RunProgressProps) {
 function clampPercent(value: number): number {
   if (!Number.isFinite(value)) return 0;
   return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function formatTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleTimeString("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
 }
 
 function useSmoothPercent(targetPercent: number, runGroupId: string): number {

@@ -6,10 +6,13 @@ export async function askRoutes(app: FastifyInstance): Promise<void> {
   // SSE stream — 推送 pending ask
   app.get("/api/v1/supervision/ask/stream", async (request, reply) => {
     const query = request.query as { sessionId?: string };
+    reply.hijack();
     reply.raw.writeHead(200, {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+      "Access-Control-Allow-Origin": "*",
     });
 
     const send = (event: string, data: unknown) => {

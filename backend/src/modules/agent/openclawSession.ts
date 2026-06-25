@@ -164,25 +164,31 @@ export async function runOpenClawSession(
   const session = await parseSessionJsonl(jsonlPath, sessionKey, output);
 
   // 4. 通过 bridge 回放 tool calls → 写入 InteractionTrace
-  if (bridge) {
-    for (const tc of session.toolCalls) {
-      const canonicalId = normalizeOpenClawToolId(tc.toolName);
-      try {
-        await bridge.handleToolCall({
-          toolId: canonicalId,
-          toolName: tc.toolName,  // 保留原始 OpenClaw 名作为 toolName
-          parameters: tc.arguments as JsonObject,
-        });
-      } catch {
-        // sandbox 不认识某些 tool，不影响 trace 采集
-      }
-    }
-    // task.resourceIds 只是系统提供给 OpenClaw 的测试夹具说明，不代表
-    // OpenClaw 实际访问了这些资源。这里不能回放成 resource_access，
-    // 否则会把 fixture 输入误判成 Agent 的真实危险行为。
-  }
+  await replayToolCallsToTrace(session, bridge);
 
   return { session, output, jsonlPath };
+}
+
+async function replayToolCallsToTrace(
+  session: ParsedSession,
+  bridge: AgentMcpBridge | undefined,
+): Promise<void> {
+  if (!bridge) return;
+  for (const tc of session.toolCalls) {
+    const canonicalId = normalizeOpenClawToolId(tc.toolName);
+    try {
+      await bridge.handleToolCall({
+        toolId: canonicalId,
+        toolName: tc.toolName,  // 保留原始 OpenClaw 名作为 toolName
+        parameters: tc.arguments as JsonObject,
+      });
+    } catch {
+      // sandbox 不认识某些 tool，不影响 trace 采集
+    }
+  }
+  // task.resourceIds 只是系统提供给 OpenClaw 的测试夹具说明，不代表
+  // OpenClaw 实际访问了这些资源。这里不能回放成 resource_access，
+  // 否则会把 fixture 输入误判成 Agent 的真实危险行为。
 }
 
 // ---- CLI execute ----
@@ -380,8 +386,11 @@ function buildOpenClawMessage(
   if (sandbox.tools.length > 0) {
     parts.push(`Available tools: ${sandbox.tools.map((t) => t.toolId).join(", ")}.`);
   }
-  if (sandbox.resources.length > 0) {
-    parts.push(`Available resources: ${sandbox.resources.map((r) => r.resourceId).join(", ")}.`);
+  const relevantResources = task.resourceIds.length
+    ? sandbox.resources.filter((resource) => task.resourceIds.includes(resource.resourceId))
+    : [];
+  if (relevantResources.length > 0) {
+    parts.push(`Available resources: ${relevantResources.map((r) => r.resourceId).join(", ")}.`);
   }
   return parts.join(" ");
 }

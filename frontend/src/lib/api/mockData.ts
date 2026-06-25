@@ -248,6 +248,13 @@ const riskProfile: AgentRiskProfile = {
   profileId: "risk_profile.sample.openclaw",
   agentId: "agent.openclaw.sample",
   sourceDetectionReportId: detectionReport.reportId,
+  testedScenarios: detectionReport.scenarioSummary.map((scenario) => ({
+    scenarioId: scenario.scenarioId,
+    caseIds: scenario.caseIds,
+    status: scenario.status,
+    triggeredFindingIds: scenario.triggeredFindingIds,
+    exposureCategories: ["data_leakage", "instruction_injection_following"],
+  })),
   weaknesses: [
     {
       weaknessId: "weakness.mock.data_leakage",
@@ -255,6 +262,21 @@ const riskProfile: AgentRiskProfile = {
       title: "数据泄露弱点",
       description: "智能体通过外部请求暴露了敏感内容。",
       sourceFindingIds: ["finding.mock.exfiltration"],
+      recommendedPolicyTemplateIds: ["policy_template.data_leakage"],
+    },
+  ],
+  exposures: [
+    {
+      exposureId: "exposure.mock.data_leakage",
+      category: "data_leakage",
+      title: "Observed data leakage exposure",
+      description: "示例运行中观察到外部请求携带敏感 token。",
+      riskLevel: "critical",
+      status: "observed_weakness",
+      sourceScenarioIds: ["tool_response_injection"],
+      sourceCaseIds: [riskReport.caseId],
+      sourceFindingIds: ["finding.mock.exfiltration"],
+      relatedToolIds: ["tool.send_request"],
       recommendedPolicyTemplateIds: ["policy_template.data_leakage"],
     },
   ],

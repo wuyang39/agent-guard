@@ -19,6 +19,7 @@ import { reportRoutes, artifactRoutes, policyRoutes } from "./api/v1/reports/han
 import { openClawRealtimeMcpRoutes } from "./api/v1/openclaw/realtime-mcp-handlers";
 import { runtimeConfigRoutes } from "./api/v1/runtime-config/handlers";
 import { openClawPyritOpenAiRoutes } from "./api/v1/openclaw/pyrit-openai-handlers";
+import { nativeSupervisionRoutes } from "./api/v1/openclaw/native-supervision-handlers";
 import { failure } from "./api/response";
 
 export async function buildApp(opts?: {
@@ -72,6 +73,7 @@ export async function buildApp(opts?: {
   await app.register(openClawRealtimeMcpRoutes);
   await app.register(runtimeConfigRoutes);
   await app.register(openClawPyritOpenAiRoutes);
+  await app.register(nativeSupervisionRoutes);
 
   return app;
 }

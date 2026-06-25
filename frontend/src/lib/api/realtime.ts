@@ -1,6 +1,8 @@
 import { apiBaseUrl, request } from "./core";
 import type {
+  AskTimeoutConfig,
   DefenseDetailView,
+  PendingSupervisionAsk,
   RealtimeActivePolicyState,
   RealtimePreparedSession,
 } from "./types";
@@ -9,6 +11,13 @@ export const realtimeApi = {
   liveSupervisionUrl(options?: { includeHistory?: boolean }) {
     const replay = options?.includeHistory ? "1" : "0";
     return `${apiBaseUrl}/api/v1/openclaw/realtime/events/stream?replay=${replay}`;
+  },
+
+  supervisionAskStreamUrl(options?: { sessionId?: string }) {
+    const query = options?.sessionId
+      ? `?sessionId=${encodeURIComponent(options.sessionId)}`
+      : "";
+    return `${apiBaseUrl}/api/v1/supervision/ask/stream${query}`;
   },
 
   realtimeMcpInfo() {
@@ -58,4 +67,14 @@ export const realtimeApi = {
       },
     );
   },
+
+  respondSupervisionAsk(askId: string, decision: "approve" | "reject") {
+    return request<PendingSupervisionAsk>(`/api/v1/supervision/ask/${askId}/respond`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ decision }),
+    });
+  },
 };
+
+export type { AskTimeoutConfig, PendingSupervisionAsk };

@@ -24,12 +24,36 @@ export type P2RunProgress = {
   totalCases: number;
   completedCases: number;
   failedCases: number;
+  skippedCases?: number;
+  retriedCases?: number;
+  retryingCaseIds?: string[];
+  lastFailedCaseId?: string;
+  providerCooldownUntil?: string;
+  warnings?: string[];
+  caseFailures?: P2RunCaseFailure[];
   runningCaseIds: string[];
   lastCompletedCaseId?: string;
   concurrency: number;
   percent: number;
   startedAt: string;
   updatedAt: string;
+};
+
+export type P2RunCaseFailure = {
+  caseId: string;
+  phase: "detecting" | "supervising";
+  reason: string;
+  category:
+    | "provider_timeout"
+    | "provider_cooldown"
+    | "provider_rate_limit"
+    | "transient_provider"
+    | "agent_error"
+    | "fatal";
+  attempts: number;
+  retryable: boolean;
+  skipped: boolean;
+  occurredAt: string;
 };
 
 export type EntityLink = {
@@ -100,6 +124,7 @@ export type RunE2ERequest = {
   };
   caseIds?: string[];
   selectionPlanId?: string;
+  reusePolicyPackId?: string;
   generateDefenseReport: boolean;
 };
 

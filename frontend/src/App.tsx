@@ -9,6 +9,7 @@ import type {
   DefenseDetailView,
   DetectionDetailView,
   LoadState,
+  LiveSupervisionEvent,
   SystemStatus,
   TraceDetailView,
 } from "./lib/api/types";
@@ -35,6 +36,8 @@ type ViewKey =
   | "evidence";
 
 const AGENT_CONFIG_STORAGE_KEY = "agent-guard.agent-config";
+const REALTIME_TOAST_LIMIT = 3;
+const REALTIME_TOAST_TTL_MS = 7000;
 
 const defaultOpenClawCliPath = import.meta.env.VITE_OPENCLAW_CLI_PATH ?? "";
 
@@ -52,6 +55,7 @@ const defaultAgentConfig: AgentConnectionConfig = {
 
 export function App() {
   const [view, setView] = useState<ViewKey>("dashboard");
+  const [supervisionMounted, setSupervisionMounted] = useState(false);
   const [evidenceTab, setEvidenceTab] = useState<EvidenceTabKey>("runs");
   const [agentConfig, setAgentConfig] = useState<AgentConnectionConfig>(() =>
     loadStoredAgentConfig(),
@@ -83,6 +87,7 @@ export function App() {
     status: "idle",
   });
   const [selectedRunGroupId, setSelectedRunGroupId] = useState<string | undefined>();
+  const [realtimeToasts, setRealtimeToasts] = useState<RealtimeToast[]>([]);
 
   const loadDefenseForRunGroup = useCallback(async (runGroup: CLineRunGroup): Promise<void> => {
     if (!runGroup.defenseReportId) {
@@ -333,7 +338,25 @@ export function App() {
     }
     const policyPackId = detectionState.data.policyPack.policyPackId;
     await agentGuardApi.setRealtimeActivePolicy(policyPackId, true);
+    openSupervision();
+  }
+
+  function openSupervision() {
+    setSupervisionMounted(true);
     setView("supervision");
+  }
+
+  function acceptRealtimeEvent(event: LiveSupervisionEvent) {
+    if (!shouldShowRealtimeToast(event)) return;
+    const id = event.eventId ?? `${event.type}.${event.timestamp}.${Math.random().toString(36).slice(2)}`;
+    setRealtimeToasts((current) =>
+      [{ id, event }, ...current.filter((item) => item.id !== id)].slice(0, REALTIME_TOAST_LIMIT),
+    );
+    window.setTimeout(() => dismissRealtimeToast(id), REALTIME_TOAST_TTL_MS);
+  }
+
+  function dismissRealtimeToast(id: string) {
+    setRealtimeToasts((current) => current.filter((item) => item.id !== id));
   }
 
   function acceptRealtimeDefenseReport(detail: DefenseDetailView) {
@@ -408,7 +431,7 @@ export function App() {
           >
             检测编排
           </button>
-          <button className={view === "supervision" ? "active" : ""} onClick={() => setView("supervision")}>
+          <button className={view === "supervision" ? "active" : ""} onClick={openSupervision}>
             实时监督
           </button>
           <button
@@ -452,11 +475,14 @@ export function App() {
             summaryState={summaryState}
           />
         ) : null}
-        {view === "supervision" ? (
-          <LiveSupervisionPage
-            onGoDefense={() => setView("defense")}
-            onReportGenerated={acceptRealtimeDefenseReport}
-          />
+        {supervisionMounted ? (
+          <div hidden={view !== "supervision"}>
+            <LiveSupervisionPage
+              onGoDefense={() => setView("defense")}
+              onRealtimeEvent={acceptRealtimeEvent}
+              onReportGenerated={acceptRealtimeDefenseReport}
+            />
+          </div>
         ) : null}
         {view === "runtime-config" ? <RuntimeConfigPage /> : null}
         {view === "report-workspace" ? (
@@ -485,20 +511,115 @@ export function App() {
           />
         ) : null}
       </main>
+      {realtimeToasts.length ? (
+        <div className="realtime-toast-stack" aria-live="polite">
+          {realtimeToasts.map((toast) => (
+            <article className={`realtime-toast ${realtimeToastTone(toast.event)}`} key={toast.id}>
+              <button
+                aria-label="关闭实时事件提示"
+                className="toast-close"
+                onClick={() => dismissRealtimeToast(toast.id)}
+                type="button"
+              >
+                ×
+              </button>
+              <strong>{realtimeToastTitle(toast.event)}</strong>
+              <p>{realtimeToastMessage(toast.event)}</p>
+              <button className="secondary-button" onClick={openSupervision} type="button">
+                查看实时监督
+              </button>
+            </article>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
 
+type RealtimeToast = {
+  id: string;
+  event: LiveSupervisionEvent;
+};
+
+function shouldShowRealtimeToast(event: LiveSupervisionEvent): boolean {
+  if (event.type === "supervision_decision") return true;
+  if (event.type === "tool_call_result" && event.blocked) return true;
+  if (event.type === "provider_tools_refreshed" || event.type === "provider_refresh_failed") {
+    return true;
+  }
+  return event.type === "live_error" || event.type === "defense_report_generated";
+}
+
+function realtimeToastTitle(event: LiveSupervisionEvent): string {
+  if (event.type === "supervision_decision" && event.action) {
+    return `实时监督判定: ${eventActionLabel(event.action)}`;
+  }
+  if (event.type === "tool_call_result" && event.blocked) {
+    return "工具调用已阻断";
+  }
+  if (event.type === "provider_tools_refreshed") {
+    return "外部 MCP 工具已接入";
+  }
+  if (event.type === "provider_refresh_failed") {
+    return "外部 MCP 接入失败";
+  }
+  if (event.type === "defense_report_generated") {
+    return "防御报告已生成";
+  }
+  return "实时监听异常";
+}
+
+function realtimeToastMessage(event: LiveSupervisionEvent): string {
+  if (event.message) return event.message;
+  if (event.toolId) return `${event.toolId}${event.blocked ? " 被阻断" : " 已完成"}`;
+  if (event.detail && typeof event.detail.toolCount === "number") {
+    return `已加载 ${event.detail.toolCount} 个外部工具`;
+  }
+  if (event.record?.policyId) return `命中策略 ${event.record.policyId}`;
+  return event.runtimeSessionId ? `会话 ${event.runtimeSessionId}` : "收到实时监督事件";
+}
+
+function realtimeToastTone(event: LiveSupervisionEvent): string {
+  if (event.type === "live_error") return "tone-critical";
+  if (event.type === "provider_refresh_failed") return "tone-critical";
+  if (event.blocked || event.action === "deny") return "tone-critical";
+  if (event.action === "ask" || event.action === "redact" || event.action === "warn") {
+    return "tone-high";
+  }
+  return "tone-medium";
+}
+
+function eventActionLabel(action: NonNullable<LiveSupervisionEvent["action"]>): string {
+  const labels: Record<NonNullable<LiveSupervisionEvent["action"]>, string> = {
+    allow: "放行",
+    deny: "阻断",
+    ask: "确认",
+    warn: "告警",
+    redact: "脱敏",
+    isolate: "隔离",
+  };
+  return labels[action];
+}
+
 function buildLlmSelectionRequest(config: AgentConnectionConfig): TestSelectionRequest {
+  const useLargeCorpus = config.adapterKind === "openclaw";
   return {
     schemaVersion: "mvp-1",
     agentId: config.agentId,
-    targetProfile: "openclaw",
+    targetProfile: useLargeCorpus ? "full-corpus" : "regression",
     selectionMode: "llm_assisted",
-    maxCaseCount: 5,
-    minCaseCount: 3,
-    requiredAttackFamilies: ["prompt_injection", "data_leakage", "tool_hijack"],
-    requiredTargetSurfaces: ["tool_call"],
+    maxCaseCount: useLargeCorpus ? 300 : 120,
+    minCaseCount: useLargeCorpus ? 120 : 48,
+    requiredAttackFamilies: [
+      "prompt_injection",
+      "data_leakage",
+      "tool_hijack",
+      "auth_bypass",
+      "dangerous_action",
+      "model_evasion",
+      "memory_poisoning",
+    ],
+    requiredTargetSurfaces: ["tool_call", "file_access", "api", "network", "memory", "output"],
     includeExternalTools: true,
     adapterKind: config.adapterKind,
   };

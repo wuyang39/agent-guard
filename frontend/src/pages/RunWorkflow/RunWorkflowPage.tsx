@@ -39,7 +39,7 @@ export function RunWorkflowPage({
   const canRunSelectionPlan =
     selectionPlanState.status === "ready" && selectionPlanState.data.status === "ready";
   const summary = summaryState.status === "ready" ? summaryState.data : undefined;
-  const latest = summary?.latestRunGroup;
+  const latest = selectWorkflowRunGroup(summary, selectionPlanState);
 
   if (summaryState.status === "loading" || summaryState.status === "idle") {
     return (
@@ -129,6 +129,7 @@ export function RunWorkflowPage({
                   { label: "Trace 数", value: latest.traceIds.length },
                   { label: "Runtime session 数", value: latest.runtimeSessionIds.length },
                   { label: "Artifact 数", value: latest.artifactIds.length },
+                  { label: "错误", value: latest.error },
                   { label: "创建时间", value: formatDateTime(latest.createdAt) },
                   { label: "更新时间", value: formatDateTime(latest.updatedAt) },
                 ]}
@@ -232,8 +233,16 @@ function SelectionPlanPanel({
 
       <div className="id-grid selection-plan-grid">
         <div>
-          <span>样本数量</span>
-          <code>{plan.selectedCaseIds.length}</code>
+          <span>检测样本</span>
+          <code>{plan.selectionRunSummary.selectedCaseCount}</code>
+        </div>
+        <div>
+          <span>请求选样</span>
+          <code>{plan.requestedCaseCount}</code>
+        </div>
+        <div>
+          <span>候选池</span>
+          <code>{plan.selectionRunSummary.candidateCaseCount}</code>
         </div>
         <div>
           <span>攻击类型覆盖</span>
@@ -245,6 +254,11 @@ function SelectionPlanPanel({
           { label: "选择计划", value: plan.selectionPlanId },
           { label: "攻击库", value: plan.corpusManifestId },
           { label: "选择模式", value: plan.mode },
+          { label: "目标画像", value: plan.targetProfile },
+          { label: "请求样本数", value: plan.requestedCaseCount },
+          { label: "候选池规模", value: plan.selectionRunSummary.candidateCaseCount },
+          { label: "LLM 重排池", value: plan.llmAudit?.llmCandidatePoolSize },
+          { label: "LLM 种子数", value: plan.llmAudit?.llmSeedCaseCount },
           { label: "LLM 提供方", value: plan.llmAudit?.provider },
           { label: "规则兜底", value: plan.selectionRunSummary.fallbackUsed },
           { label: "目标面", value: plan.coverageSnapshot.targetSurfaceCount },
@@ -281,10 +295,14 @@ function SelectionPlanDiagnostics({ plan }: { plan: TestSelectionPlan }) {
             { label: "Status", value: plan.status },
             { label: "Ready", value: plan.coverageSnapshot.ready },
             { label: "Candidate cases", value: plan.selectionRunSummary.candidateCaseCount },
+            { label: "Requested cases", value: plan.requestedCaseCount },
             { label: "Selected cases", value: plan.selectionRunSummary.selectedCaseCount },
             { label: "Rule selected", value: plan.selectionRunSummary.ruleSelectedCount },
             { label: "LLM accepted", value: plan.selectionRunSummary.llmAcceptedCount },
             { label: "LLM rejected", value: plan.selectionRunSummary.llmRejectedCount },
+            { label: "LLM candidate pool", value: plan.llmAudit?.llmCandidatePoolSize },
+            { label: "LLM seed limit", value: plan.llmAudit?.llmSeedCaseCount },
+            { label: "LLM over-limit ignored", value: plan.llmAudit?.ignoredOverLimitCount },
             { label: "Fallback used", value: plan.selectionRunSummary.fallbackUsed },
             { label: "LLM provider", value: plan.llmAudit?.provider },
             { label: "LLM model", value: plan.llmAudit?.model },
@@ -353,9 +371,29 @@ function RunGroupDiagnostics({ runGroup }: { runGroup: CLineRunGroup }) {
             { label: "Agent", value: runGroup.agentName ?? runGroup.agentId },
             { label: "Created", value: formatDateTime(runGroup.createdAt) },
             { label: "Updated", value: formatDateTime(runGroup.updatedAt) },
+            { label: "Error", value: runGroup.error },
           ]}
         />
         <DiagnosticJson value={runGroup.progress} emptyLabel="暂无 case 级进度明细" />
+      </DiagnosticSection>
+
+      <DiagnosticSection
+        title="失败与重试样本"
+        count={runGroup.progress?.caseFailures?.length ?? 0}
+      >
+        <DiagnosticTable
+          columns={[
+            { header: "Case", render: (row) => <code>{row.caseId}</code> },
+            { header: "Category", render: (row) => row.category },
+            { header: "Attempts", render: (row) => row.attempts },
+            { header: "Skipped", render: (row) => (row.skipped ? "yes" : "no") },
+            { header: "Retryable", render: (row) => (row.retryable ? "yes" : "no") },
+            { header: "Reason", render: (row) => row.reason },
+          ]}
+          emptyLabel="暂无失败样本"
+          rowKey={(row, index) => `${row.caseId}.${index}`}
+          rows={runGroup.progress?.caseFailures ?? []}
+        />
       </DiagnosticSection>
 
       <DiagnosticSection title="对象 ID 列表">
@@ -378,6 +416,20 @@ function RunGroupDiagnostics({ runGroup }: { runGroup: CLineRunGroup }) {
       </DiagnosticSection>
     </DeveloperDiagnostics>
   );
+}
+
+function selectWorkflowRunGroup(
+  summary: CLineDashboardSummary | undefined,
+  selectionPlanState: LoadState<TestSelectionPlan>,
+): CLineRunGroup | undefined {
+  if (!summary) return undefined;
+  if (selectionPlanState.status !== "ready") return summary.latestRunGroup;
+
+  const selectionPlanId = selectionPlanState.data.selectionPlanId;
+  const matchingRun = summary.recentRunGroups.find(
+    (runGroup) => runGroup.selectionPlanId === selectionPlanId,
+  );
+  return matchingRun;
 }
 
 function selectionPlanLlmStatus(plan: TestSelectionPlan): {

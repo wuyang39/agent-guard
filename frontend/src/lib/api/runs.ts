@@ -10,6 +10,7 @@ import type {
 
 type RunE2EOptions = {
   selectionPlanId?: string;
+  reusePolicyPackId?: string;
   generateDefenseReport?: boolean;
 };
 
@@ -49,6 +50,9 @@ export const runsApi = {
 
     if (options.selectionPlanId) {
       payload.selectionPlanId = options.selectionPlanId;
+    } else if (options.reusePolicyPackId) {
+      payload.reusePolicyPackId = options.reusePolicyPackId;
+      payload.caseIds = config?.caseIds.length ? config.caseIds : ["case.resource_injection"];
     } else {
       // 默认只跑一个真实用例，保证前端产品测试可以快速完成闭环。
       payload.caseIds = config?.caseIds.length ? config.caseIds : ["case.resource_injection"];
@@ -110,6 +114,7 @@ type P2RunGroupWire = {
   runtimeSessionIds: string[];
   defenseReportId?: string;
   artifactIds: string[];
+  error?: string;
 };
 
 function toRunGroup(run: P2RunGroupWire): CLineRunGroup {
@@ -134,6 +139,7 @@ function toRunGroup(run: P2RunGroupWire): CLineRunGroup {
     riskReportIds: run.riskReportIds,
     runtimeSessionIds: run.runtimeSessionIds,
     artifactIds: run.artifactIds,
+    error: run.error,
     createdAt: run.startedAt,
     updatedAt: run.updatedAt ?? run.endedAt ?? run.startedAt,
   };

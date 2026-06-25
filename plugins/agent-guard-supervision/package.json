@@ -1,0 +1,25 @@
+{
+  "name": "@agent-guard/openclaw-supervision-plugin",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "OpenClaw plugin that intercepts native tool calls for Agent Guard supervision",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "rm -rf dist"
+  },
+  "openclaw": {
+    "extensions": ["./dist/index.js"],
+    "compat": {
+      "pluginApi": ">=2026.3.24-beta.2",
+      "minGatewayVersion": "2026.3.24-beta.2"
+    }
+  },
+  "dependencies": {
+    "openclaw": "latest"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  }
+}

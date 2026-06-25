@@ -19,6 +19,7 @@ import type {
 
 const LLM_DRAFT_STORAGE_KEY = "agent-guard.runtime-config.llm-draft";
 const MCP_DRAFT_STORAGE_KEY = "agent-guard.runtime-config.mcp-draft";
+const DEFAULT_LLM_TIMEOUT_MS = 120000;
 
 export function RuntimeConfigPage() {
   const [state, setState] = useState<LoadState<RuntimeConfigSnapshot>>({
@@ -91,7 +92,21 @@ export function RuntimeConfigPage() {
       mode: "openai_compatible",
       endpoint: "https://api.deepseek.com",
       model: "deepseek-v4-flash",
-      timeoutMs: Math.max(current.timeoutMs, 10000),
+      timeoutMs: Math.max(current.timeoutMs, DEFAULT_LLM_TIMEOUT_MS),
+    }));
+  }
+
+  function applyDeepWikiPreset() {
+    setMcpCheck(undefined);
+    setError(undefined);
+    updateMcpDraft((current) => ({
+      ...current,
+      enabled: true,
+      providerId: "deepwiki_public",
+      providerName: "DeepWiki Public MCP",
+      endpointUrl: "https://mcp.deepwiki.com/mcp",
+      timeoutMs: Math.max(current.timeoutMs, 15000),
+      servers: undefined,
     }));
   }
 
@@ -265,7 +280,7 @@ export function RuntimeConfigPage() {
                   onChange={(event) =>
                     updateLlmDraft((current) => ({
                       ...current,
-                      timeoutMs: Number(event.target.value) || 5000,
+                      timeoutMs: Number(event.target.value) || DEFAULT_LLM_TIMEOUT_MS,
                     }))
                   }
                 />
@@ -288,6 +303,11 @@ export function RuntimeConfigPage() {
               <div>
                 <p className="eyebrow">外部 MCP</p>
                 <h2>外部 MCP 配置</h2>
+              </div>
+              <div className="button-row">
+                <button className="secondary-button compact-button" onClick={applyDeepWikiPreset} type="button">
+                  DeepWiki Public
+                </button>
               </div>
             </div>
 
@@ -370,6 +390,7 @@ export function RuntimeConfigPage() {
             { label: "LLM 模式", value: state.data.llm.mode },
             { label: "LLM 接口", value: state.data.llm.endpoint },
             { label: "LLM 模型", value: state.data.llm.model },
+            { label: "LLM 超时", value: state.data.llm.timeoutMs },
             { label: "API Key", value: state.data.llm.hasApiKey ? "已配置" : "未配置" },
             { label: "MCP 来源", value: configSourceLabel(state.data.downstreamMcp.source) },
             { label: "MCP 接入 ID", value: state.data.downstreamMcp.providerId },
@@ -441,7 +462,7 @@ function defaultLlmDraft(): RuntimeLlmConfigInput {
     endpoint: "",
     apiKey: "",
     model: "deepseek-v4-flash",
-    timeoutMs: 5000,
+    timeoutMs: DEFAULT_LLM_TIMEOUT_MS,
   };
 }
 
@@ -470,7 +491,7 @@ function loadStoredLlmDraft(): RuntimeLlmConfigInput | undefined {
           : parsed.mode === "mock"
             ? "openai_compatible"
             : "disabled",
-      timeoutMs: Math.max(1000, Number(parsed.timeoutMs) || 5000),
+      timeoutMs: Math.max(1000, Number(parsed.timeoutMs) || DEFAULT_LLM_TIMEOUT_MS),
     };
   } catch {
     return undefined;
@@ -559,7 +580,7 @@ function normalizeLlmDraft(draft: RuntimeLlmConfigInput): RuntimeLlmConfigInput 
     endpoint: draft.endpoint?.trim() || undefined,
     apiKey: draft.apiKey?.trim() || undefined,
     model: draft.model?.trim() || undefined,
-    timeoutMs: Math.max(1000, Number(draft.timeoutMs) || 5000),
+    timeoutMs: Math.max(1000, Number(draft.timeoutMs) || DEFAULT_LLM_TIMEOUT_MS),
   };
 }
 

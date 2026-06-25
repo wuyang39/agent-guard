@@ -509,6 +509,128 @@ pre {
   min-width: 180px;
 }
 
+.realtime-toast-stack {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 80;
+  display: grid;
+  gap: 10px;
+  width: min(390px, calc(100vw - 32px));
+  pointer-events: none;
+}
+
+.realtime-toast {
+  position: relative;
+  display: grid;
+  gap: 8px;
+  padding: 14px 44px 14px 16px;
+  border: 1px solid #d6e1ed;
+  border-left: 4px solid #2f80ed;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 18px 40px rgba(20, 35, 55, 0.16);
+  pointer-events: auto;
+}
+
+.realtime-toast.tone-critical {
+  border-left-color: #d64545;
+}
+
+.realtime-toast.tone-high {
+  border-left-color: #d9822b;
+}
+
+.realtime-toast.tone-medium {
+  border-left-color: #2f80ed;
+}
+
+.realtime-toast strong {
+  color: #1c2430;
+}
+
+.realtime-toast p {
+  margin: 0;
+  color: #526274;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.toast-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #66758a;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.toast-close:hover {
+  background: #eef3f8;
+  color: #1c2430;
+}
+
+.ask-approval-panel {
+  border-left: 4px solid #d9822b;
+}
+
+.compact-note {
+  margin: 0 0 10px;
+  font-size: 13px;
+}
+
+.ask-card-list {
+  display: grid;
+  gap: 10px;
+}
+
+.ask-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #ecd9b8;
+  border-radius: 8px;
+  background: #fffaf0;
+}
+
+.ask-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ask-card p {
+  margin: 0;
+  color: #526274;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.ask-actions {
+  justify-content: stretch;
+}
+
+.ask-actions button {
+  flex: 1;
+}
+
+.ask-reject-button {
+  border-color: #efc2c6;
+  background: #fff5f6;
+  color: #9f1d28;
+}
+
+.ask-reject-button:hover {
+  border-color: #d64545;
+  background: #ffecef;
+}
+
 .agent-option-list {
   display: grid;
   gap: 10px;

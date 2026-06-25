@@ -61,8 +61,26 @@ export type CLineRunGroup = {
   riskReportIds: string[];
   runtimeSessionIds: string[];
   artifactIds: string[];
+  error?: string;
   createdAt: string;
   updatedAt: string;
+};
+
+export type RunCaseFailureView = {
+  caseId: string;
+  phase: "detecting" | "supervising";
+  reason: string;
+  category:
+    | "provider_timeout"
+    | "provider_cooldown"
+    | "provider_rate_limit"
+    | "transient_provider"
+    | "agent_error"
+    | "fatal";
+  attempts: number;
+  retryable: boolean;
+  skipped: boolean;
+  occurredAt: string;
 };
 
 export type RunProgressView = {
@@ -74,6 +92,13 @@ export type RunProgressView = {
   totalCases: number;
   completedCases: number;
   failedCases: number;
+  skippedCases?: number;
+  retriedCases?: number;
+  retryingCaseIds?: string[];
+  lastFailedCaseId?: string;
+  providerCooldownUntil?: string;
+  warnings?: string[];
+  caseFailures?: RunCaseFailureView[];
   runningCaseIds: string[];
   lastCompletedCaseId?: string;
   concurrency: number;
@@ -219,6 +244,10 @@ export type LiveSupervisionEvent = {
     | "tool_call_started"
     | "supervision_decision"
     | "tool_call_result"
+    | "provider_tools_refreshed"
+    | "provider_refresh_failed"
+    | "supervision_batch_started"
+    | "supervision_batch_completed"
     | "defense_report_generated"
     | "live_error";
   message?: string;
@@ -261,6 +290,29 @@ export type RealtimePreparedSession = {
   policyPackId: string;
   agentId: string;
   startedAt: string;
+};
+
+export type PendingSupervisionAsk = {
+  askId: string;
+  runtimeSessionId: string;
+  agentId: string;
+  policyId: string;
+  policyPackId: string;
+  targetType: string;
+  targetId?: string;
+  payload: Record<string, unknown>;
+  reason: string;
+  riskLevel: RiskReport["riskLevel"];
+  status: "pending" | "approved" | "rejected" | "timeout";
+  finalDecision?: "approved" | "rejected";
+  createdAt: string;
+  resolvedAt?: string;
+  resolvedBy?: string;
+};
+
+export type AskTimeoutConfig = {
+  timeoutMs: number;
+  defaultAction: "reject" | "demo_approve";
 };
 
 export type RuntimeLlmMode = "disabled" | "mock" | "openai_compatible";

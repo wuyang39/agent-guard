@@ -4,7 +4,7 @@
  * 复用现有:
  *   loadTestContexts()  → 加载 TestContext + TestOracle
  *   runTestCase()       → Agent + Sandbox + Monitor + SupervisionBridge
- *   evaluateRisk()      → RiskEvaluationResult
+ *   evaluateRiskWithSemanticScoring() → RiskEvaluationResult
  *   buildRiskReport()   → RiskReport
  *   buildDetectionReport()    → DetectionReport
  *   buildAgentRiskProfile()   → AgentRiskProfile
@@ -20,11 +20,12 @@ import type {
   AgentUnderTest,
   AgentAdapterConfig,
   RiskLevel,
+  ToolCapabilityProfile,
 } from "@agent-guard/contracts";
 import type { TestContext } from "../modules/config/schemas";
 import { loadTestContexts } from "../modules/config/loadTestContext";
 import { runTestCase } from "../modules/runner/testRunner";
-import { evaluateRisk } from "../modules/risk/riskEvaluator";
+import { evaluateRiskWithSemanticScoring } from "../modules/risk/riskEvaluator";
 import { buildRiskReport } from "../modules/report/reportBuilder";
 import { buildDetectionReport } from "../modules/detection/detectionReportBuilder";
 import { buildAgentRiskProfile } from "../modules/detection/agentRiskProfileBuilder";
@@ -38,25 +39,29 @@ import type {
   RunE2ERequest,
   P2RunGroup,
   P2RunProgress,
+  P2RunCaseFailure,
   EntityLink,
 } from "../api/types";
 import { buildInitialRunGroup, saveRunGroup } from "../storage/fileRunStore";
 import type { SupervisionSessionSummary } from "../storage/fileRunStore";
 import { saveSessionRecords } from "../storage/fileRunStore";
-import { indexReport, indexArtifact } from "../storage/fileReportStore";
+import { getReportEntry, indexReport, indexArtifact } from "../storage/fileReportStore";
 import type { AgentAdapter } from "../modules/agent/agentAdapter";
 import { HttpAgentAdapter } from "../modules/agent/httpAgentAdapter";
 import { OpenClawAdapter } from "../modules/agent/openclawAdapter";
+import { buildRuleBasedToolCapabilityProfile } from "../modules/gateway/toolCapabilityProfiler";
 import {
   getRequiredSelectionPlan,
   TestSelectionError,
 } from "../modules/runner/testSelectionService";
 import { updateSelectionPlanStatus } from "../modules/runner/selectionPlanStore";
+import { resolveInsideDirectory } from "../storage/pathSafety";
 
 const CONFIGS_DIR = path.resolve(process.cwd(), "configs");
 const P2_DEMO_CASES_FILE = path.join(CONFIGS_DIR, "p2_demo_cases.json");
 const OUTPUT_DIR = path.resolve(process.cwd(), "outputs", "reports");
 const TRACES_DIR = path.resolve(process.cwd(), "outputs", "traces");
+const MAX_PROGRESS_FAILURES = 24;
 
 export class CaseIdValidationError extends Error {
   constructor(message: string) {
@@ -69,6 +74,13 @@ export class SelectionPlanValidationError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "SelectionPlanValidationError";
+  }
+}
+
+export class PolicyPackReuseError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PolicyPackReuseError";
   }
 }
 
@@ -219,6 +231,7 @@ export async function runE2E(
       Boolean(selectedCaseIdsFromPlan?.some((caseId) => caseId.startsWith("case.generated.")));
     const { contexts, repository } = await loadTestContexts(CONFIGS_DIR, agent, {
       requireGeneratedALineCorpus: requiresGeneratedALineCorpus,
+      includeDisabledGeneratedCases: Boolean(selectedCaseIdsFromPlan?.length),
     });
     const selectedCaseIds = selectedCaseIdsFromPlan?.length
       ? selectedCaseIdsFromPlan
@@ -250,10 +263,101 @@ export async function runE2E(
 
     runGroup.caseCount = targetCases.length;
     runGroup.caseIds = targetCases.map((context) => context.caseId);
+
+    if (request.reusePolicyPackId) {
+      const reused = await loadReusablePolicyContext(request.reusePolicyPackId);
+      const { detectionReport, riskProfile, policyPack } = reused;
+      const isOpenClaw = request.adapterKind === "openclaw";
+
+      runGroup.detectionReportId = detectionReport.reportId;
+      runGroup.riskProfileId = riskProfile.profileId;
+      runGroup.policyPackId = policyPack.policyPackId;
+      runGroup.highestRiskLevel = detectionReport.riskSummary.highestRiskLevel;
+      runGroup.policyContextSource = "stored_detection";
+
+      startRunProgress(
+        runGroup,
+        isOpenClaw ? "policy_ready" : "supervising",
+        targetCases.length,
+        1,
+      );
+      await saveRunGroup(runGroup);
+
+      const allSupervisionRecords = isOpenClaw
+        ? []
+        : await runSupervisionCases({
+            targetCases,
+            agent,
+            adapterConfig,
+            customAdapter,
+            runGroup,
+            policyPack,
+            sourceRunGroupId: reused.sourceRunGroupId,
+          });
+
+      if (runGroup.error) {
+        await saveRunGroup(runGroup);
+        throw new Error(runGroup.error ?? "Supervision pass failed");
+      }
+
+      if (request.generateDefenseReport && !isOpenClaw) {
+        const defenseReport = buildDefenseReport({
+          detectionReport,
+          riskProfile,
+          policyPack,
+          runtimeRecords: allSupervisionRecords,
+        });
+        runGroup.defenseReportId = defenseReport.defenseReportId;
+
+        const runOutputDir = path.join(OUTPUT_DIR, runGroup.runGroupId);
+        const jsonArtifact = await exportDefenseJsonReport(
+          defenseReport,
+          path.join(runOutputDir, "defense-report.json"),
+        );
+        const htmlArtifact = await exportDefenseHtmlReport(
+          defenseReport,
+          path.join(runOutputDir, "defense-report.html"),
+        );
+
+        await indexArtifact(jsonArtifact, "Defense Report (JSON)");
+        await indexArtifact(htmlArtifact, "Defense Report (HTML)");
+        runGroup.artifactIds.push(jsonArtifact.artifactId, htmlArtifact.artifactId);
+        await indexReport({
+          reportId: defenseReport.defenseReportId,
+          reportType: "defense_report",
+          runGroupId: runGroup.runGroupId,
+          artifactIds: [jsonArtifact.artifactId, htmlArtifact.artifactId],
+          generatedAt: defenseReport.generatedAt,
+        });
+        runGroup.phase = "defense_report_ready";
+      }
+
+      runGroup.status = "completed";
+      if (!runGroup.defenseReportId) {
+        runGroup.phase = isOpenClaw ? "policy_ready" : "supervision_completed";
+      }
+      runGroup.endedAt = nowIso();
+      updateRunProgress(runGroup, {
+        phase: "completed",
+        runningCaseIds: [],
+        completedCases: targetCases.length,
+      });
+      const links = buildLinks(runGroup);
+      await saveRunGroup(runGroup);
+      if (runGroup.selectionPlanId) {
+        await updateSelectionPlanStatus(
+          runGroup.selectionPlanId,
+          "completed",
+          { runGroupId: runGroup.runGroupId },
+        );
+      }
+      return { runGroup, links };
+    }
+
     startRunProgress(runGroup, "detecting", targetCases.length, getDetectionConcurrency(request));
     await saveRunGroup(runGroup);
 
-    const riskReports = await runDetectionCasesConcurrently({
+    const detectionResult = await runDetectionCasesConcurrently({
       targetCases,
       agent,
       adapterConfig,
@@ -261,13 +365,16 @@ export async function runE2E(
       runGroup,
       request,
     });
+    const riskReports = detectionResult.riskReports;
 
     // ====== 阶段 2: 检测报告 → 画像 → 策略包 ======
     updateRunProgress(runGroup, {
       phase: "policy_building",
       runningCaseIds: [],
-      completedCases: targetCases.length,
-      failedCases: runGroup.progress?.failedCases ?? 0,
+      completedCases: detectionResult.completedCases,
+      failedCases: detectionResult.failedCases,
+      skippedCases: detectionResult.skippedCases,
+      retriedCases: detectionResult.retriedCases,
     });
     await saveRunGroup(runGroup);
 
@@ -286,6 +393,7 @@ export async function runE2E(
 
     const policyPack = buildSupervisionPolicyPack(riskProfile, {
       policyTemplates: repository.policyTemplates,
+      toolProfiles: buildToolProfilesForPolicyGeneration(targetCases),
     });
     runGroup.policyPackId = policyPack.policyPackId;
     runGroup.highestRiskLevel = getHighestRiskLevel(riskReports);
@@ -301,7 +409,10 @@ export async function runE2E(
     updateRunProgress(runGroup, {
       phase: "completed",
       runningCaseIds: [],
-      completedCases: targetCases.length,
+      completedCases: detectionResult.completedCases,
+      failedCases: detectionResult.failedCases,
+      skippedCases: detectionResult.skippedCases,
+      retriedCases: detectionResult.retriedCases,
     });
     await saveRunGroup(runGroup);
 
@@ -314,66 +425,20 @@ export async function runE2E(
     const isOpenClaw = request.adapterKind === "openclaw";
 
     if (!isOpenClaw) {
-      runGroup.phase = "supervising";
-      await saveRunGroup(runGroup);
-
-      for (const context of targetCases) {
-        const runtimeSessionId = createId("session");
-        const { testRun, supervisionRecords } = await runTestCase(
+      allSupervisionRecords.push(
+        ...(await runSupervisionCases({
+          targetCases,
           agent,
           adapterConfig,
-          context,
-          {
-            supervisionPolicyPack: policyPack,
-            runtimeSessionId,
-            customAdapter,
-            selectionPlanId: runGroup.selectionPlanId,
-          },
-        );
-
-        allSupervisionRecords.push(...supervisionRecords);
-        runGroup.runtimeSessionIds.push(runtimeSessionId);
-
-        if (testRun.status === "failed") {
-          // 监督 pass 失败：记录但继续处理其他 case，最后标记 runGroup failed
-          runGroup.status = "failed";
-          if (!runGroup.error) {
-            runGroup.error = `Supervision pass failed for ${context.caseId}: ${testRun.error ?? "unknown error"}`;
-          }
-        }
-
-        const actionCounts: Record<string, number> = {};
-        let blockedCount = 0;
-        let redactedCount = 0;
-        let askCount = 0;
-
-        for (const rec of supervisionRecords) {
-          actionCounts[rec.action] = (actionCounts[rec.action] ?? 0) + 1;
-          if (rec.action === "deny") blockedCount++;
-          if (rec.action === "redact") redactedCount++;
-          if (rec.action === "ask") askCount++;
-        }
-
-        const sessionSummary: SupervisionSessionSummary = {
-          runtimeSessionId,
-          runGroupId: runGroup.runGroupId,
-          agentId: agent.agentId,
-          policyPackId: policyPack.policyPackId,
-          policyContextSource: "stored_detection",
-          recordCount: supervisionRecords.length,
-          blockedCount,
-          redactedCount,
-          askCount,
-          actionCounts,
-        };
-        await saveSessionRecords(sessionSummary, supervisionRecords);
-      }
-      runGroup.phase = "supervision_completed";
-      await saveRunGroup(runGroup);
+          customAdapter,
+          runGroup,
+          policyPack,
+        })),
+      );
     }
 
     // 监督 pass 失败 → 不生成 DefenseReport，直接终止
-    if (runGroup.status === "failed") {
+    if (runGroup.error) {
       await saveRunGroup(runGroup);
       throw new Error(runGroup.error ?? "Supervision pass failed");
     }
@@ -459,6 +524,36 @@ export async function runE2E(
 
 // ---- helpers ----
 
+type DetectionBatchResult = {
+  riskReports: ReturnType<typeof buildRiskReport>[];
+  completedCases: number;
+  failedCases: number;
+  skippedCases: number;
+  retriedCases: number;
+};
+
+class DetectionCaseError extends Error {
+  readonly category: P2RunCaseFailure["category"];
+  readonly attempts: number;
+  readonly retryable: boolean;
+  readonly skipAllowed: boolean;
+
+  constructor(input: {
+    message: string;
+    category: P2RunCaseFailure["category"];
+    attempts: number;
+    retryable: boolean;
+    skipAllowed: boolean;
+  }) {
+    super(input.message);
+    this.name = "DetectionCaseError";
+    this.category = input.category;
+    this.attempts = input.attempts;
+    this.retryable = input.retryable;
+    this.skipAllowed = input.skipAllowed;
+  }
+}
+
 async function runDetectionCasesConcurrently(input: {
   targetCases: TestContext[];
   agent: AgentUnderTest;
@@ -466,7 +561,7 @@ async function runDetectionCasesConcurrently(input: {
   customAdapter?: AgentAdapter;
   runGroup: P2RunGroup;
   request: RunE2ERequest;
-}): Promise<ReturnType<typeof buildRiskReport>[]> {
+}): Promise<DetectionBatchResult> {
   const {
     targetCases,
     agent,
@@ -481,6 +576,8 @@ async function runDetectionCasesConcurrently(input: {
     new Array(targetCases.length);
   let completedCases = 0;
   let failedCases = 0;
+  let skippedCases = 0;
+  let retriedCases = 0;
   let fatalError: Error | undefined;
 
   await runWithConcurrency(
@@ -493,54 +590,67 @@ async function runDetectionCasesConcurrently(input: {
         runningCaseIds: [...runningCaseIds],
         completedCases,
         failedCases,
+        skippedCases,
+        retriedCases,
       });
       await saveRunGroup(runGroup);
 
       try {
-        const { testRun, trace } = await runTestCase(
+        const result = await runDetectionCaseWithRetry({
           agent,
           adapterConfig,
           context,
-          {
-            customAdapter,
-            selectionPlanId: runGroup.selectionPlanId,
+          customAdapter,
+          runGroup,
+          request,
+          getCounters: () => ({ completedCases, failedCases, skippedCases, retriedCases }),
+          setRetried: () => {
+            retriedCases++;
           },
-        );
+        });
 
-        runGroup.testRunIds.push(testRun.runId);
-        runGroup.traceIds.push(trace.traceId);
+        riskReportsByIndex[index] = result.riskReport;
 
-        // 落盘 trace 文件供 GET /traces/:id 查询
-        await writeTraceFile(trace);
-
-        if (testRun.status === "failed") {
-          throw new Error(testRun.error ?? "Detection test run failed");
-        }
-
-        const evaluation = evaluateRisk(context, trace);
-        const riskReport = buildRiskReport(context, evaluation, trace);
-        riskReportsByIndex[index] = riskReport;
-
-        runGroup.riskReportIds.push(riskReport.reportId);
+        runGroup.riskReportIds.push(result.riskReport.reportId);
         completedCases++;
         updateRunProgress(runGroup, {
           runningCaseIds: [...runningCaseIds],
           completedCases,
           failedCases,
+          skippedCases,
+          retriedCases,
           lastCompletedCaseId: context.caseId,
         });
       } catch (error) {
         failedCases++;
-        const message = error instanceof Error ? error.message : String(error);
-        fatalError = new Error(`Detection pass failed for ${context.caseId}: ${message}`);
-        runGroup.status = "failed";
-        runGroup.phase = "failed";
-        runGroup.error = fatalError.message;
+        const caseError = normalizeDetectionCaseError(error);
+        const skipped = caseError.skipAllowed;
+        if (skipped) {
+          skippedCases++;
+        } else {
+          fatalError = new Error(`Detection pass failed for ${context.caseId}: ${caseError.message}`);
+          runGroup.status = "failed";
+          runGroup.phase = "failed";
+          runGroup.error = fatalError.message;
+        }
+        appendDetectionFailure(runGroup, {
+          caseId: context.caseId,
+          phase: "detecting",
+          reason: caseError.message,
+          category: caseError.category,
+          attempts: caseError.attempts,
+          retryable: caseError.retryable,
+          skipped,
+          occurredAt: nowIso(),
+        });
         updateRunProgress(runGroup, {
-          phase: "failed",
+          phase: fatalError ? "failed" : "detecting",
           runningCaseIds: [...runningCaseIds],
           completedCases,
           failedCases,
+          skippedCases,
+          retriedCases,
+          lastFailedCaseId: context.caseId,
         });
       } finally {
         runningCaseIds.delete(context.caseId);
@@ -548,6 +658,8 @@ async function runDetectionCasesConcurrently(input: {
           runningCaseIds: [...runningCaseIds],
           completedCases,
           failedCases,
+          skippedCases,
+          retriedCases,
         });
         await saveRunGroup(runGroup);
       }
@@ -559,9 +671,336 @@ async function runDetectionCasesConcurrently(input: {
     throw fatalError;
   }
 
-  return riskReportsByIndex.filter(
+  const riskReports = riskReportsByIndex.filter(
     (item): item is ReturnType<typeof buildRiskReport> => Boolean(item),
   );
+  const minSuccessfulCases = getMinimumSuccessfulDetectionCases(request, targetCases.length);
+  if (riskReports.length < minSuccessfulCases) {
+    throw new Error(
+      `Detection pass produced only ${riskReports.length}/${targetCases.length} usable reports; ` +
+      `minimum required is ${minSuccessfulCases}. Failed/skipped cases: ${failedCases}.`,
+    );
+  }
+
+  if (skippedCases > 0) {
+    appendProgressWarning(
+      runGroup,
+      `检测阶段有 ${skippedCases} 个 OpenClaw/Provider 临时失败样本已跳过，策略包基于 ${riskReports.length} 个成功样本生成。`,
+    );
+  }
+
+  return {
+    riskReports,
+    completedCases,
+    failedCases,
+    skippedCases,
+    retriedCases,
+  };
+}
+
+async function runDetectionCaseWithRetry(input: {
+  agent: AgentUnderTest;
+  adapterConfig: AgentAdapterConfig;
+  context: TestContext;
+  customAdapter?: AgentAdapter;
+  runGroup: P2RunGroup;
+  request: RunE2ERequest;
+  getCounters: () => {
+    completedCases: number;
+    failedCases: number;
+    skippedCases: number;
+    retriedCases: number;
+  };
+  setRetried: () => void;
+}): Promise<{ riskReport: ReturnType<typeof buildRiskReport> }> {
+  const {
+    agent,
+    adapterConfig,
+    context,
+    customAdapter,
+    runGroup,
+    request,
+    getCounters,
+    setRetried,
+  } = input;
+  const maxAttempts = getDetectionMaxAttempts(request);
+  let attempt = 0;
+  let countedRetry = false;
+  let lastClassification: ReturnType<typeof classifyDetectionError> | undefined;
+  let lastMessage = "unknown error";
+
+  while (attempt < maxAttempts) {
+    attempt++;
+    const spacingMs = getOpenClawCaseSpacingMs(request, attempt);
+    if (spacingMs > 0) {
+      await sleep(spacingMs);
+    }
+
+    try {
+      return {
+        riskReport: await runSingleDetectionAttempt({
+          agent,
+          adapterConfig,
+          context,
+          customAdapter,
+          runGroup,
+        }),
+      };
+    } catch (error) {
+      lastMessage = error instanceof Error ? error.message : String(error);
+      lastClassification = classifyDetectionError(lastMessage, request);
+      const shouldRetry =
+        lastClassification.retryable && attempt < maxAttempts;
+
+      if (!shouldRetry) {
+        break;
+      }
+
+      if (!countedRetry) {
+        countedRetry = true;
+        setRetried();
+      }
+
+      const delayMs = getDetectionRetryDelayMs(attempt);
+      const cooldownUntil = new Date(Date.now() + delayMs).toISOString();
+      const counters = getCounters();
+      appendProgressWarning(
+        runGroup,
+        `${context.caseId} 遇到 ${lastClassification.category}，${Math.round(delayMs / 1000)}s 后重试。`,
+      );
+      updateRunProgress(runGroup, {
+        runningCaseIds: runGroup.progress?.runningCaseIds ?? [context.caseId],
+        retryingCaseIds: uniqueStrings([
+          ...(runGroup.progress?.retryingCaseIds ?? []),
+          context.caseId,
+        ]),
+        providerCooldownUntil: cooldownUntil,
+        completedCases: counters.completedCases,
+        failedCases: counters.failedCases,
+        skippedCases: counters.skippedCases,
+        retriedCases: counters.retriedCases,
+      });
+      await saveRunGroup(runGroup);
+      await sleep(delayMs);
+      updateRunProgress(runGroup, {
+        retryingCaseIds: (runGroup.progress?.retryingCaseIds ?? []).filter(
+          (caseId) => caseId !== context.caseId,
+        ),
+      });
+      await saveRunGroup(runGroup);
+    }
+  }
+
+  const classification =
+    lastClassification ?? classifyDetectionError(lastMessage, request);
+  throw new DetectionCaseError({
+    message: lastMessage,
+    category: classification.category,
+    attempts: attempt,
+    retryable: classification.retryable,
+    skipAllowed: classification.skipAllowed,
+  });
+}
+
+async function runSingleDetectionAttempt(input: {
+  agent: AgentUnderTest;
+  adapterConfig: AgentAdapterConfig;
+  context: TestContext;
+  customAdapter?: AgentAdapter;
+  runGroup: P2RunGroup;
+}): Promise<ReturnType<typeof buildRiskReport>> {
+  const { agent, adapterConfig, context, customAdapter, runGroup } = input;
+  const { testRun, trace } = await runTestCase(agent, adapterConfig, context, {
+    customAdapter,
+    selectionPlanId: runGroup.selectionPlanId,
+  });
+
+  runGroup.testRunIds.push(testRun.runId);
+  runGroup.traceIds.push(trace.traceId);
+  await writeTraceFile(trace);
+
+  if (testRun.status === "failed") {
+    throw new Error(testRun.error ?? "Detection test run failed");
+  }
+
+  const evaluation = await evaluateRiskWithSemanticScoring(context, trace);
+  return buildRiskReport(context, evaluation, trace);
+}
+
+function normalizeDetectionCaseError(error: unknown): DetectionCaseError {
+  if (error instanceof DetectionCaseError) {
+    return error;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return new DetectionCaseError({
+    message,
+    category: "fatal",
+    attempts: 1,
+    retryable: false,
+    skipAllowed: false,
+  });
+}
+
+async function runSupervisionCases(input: {
+  targetCases: TestContext[];
+  agent: AgentUnderTest;
+  adapterConfig: AgentAdapterConfig;
+  customAdapter?: AgentAdapter;
+  runGroup: P2RunGroup;
+  policyPack: ReturnType<typeof buildSupervisionPolicyPack>;
+  sourceRunGroupId?: string;
+}): Promise<Awaited<ReturnType<typeof runTestCase>>["supervisionRecords"]> {
+  const {
+    targetCases,
+    agent,
+    adapterConfig,
+    customAdapter,
+    runGroup,
+    policyPack,
+    sourceRunGroupId,
+  } = input;
+  const allSupervisionRecords: Awaited<
+    ReturnType<typeof runTestCase>
+  >["supervisionRecords"] = [];
+  let completedCases = 0;
+  let failedCases = 0;
+
+  runGroup.phase = "supervising";
+  startRunProgress(runGroup, "supervising", targetCases.length, 1);
+  await saveRunGroup(runGroup);
+
+  for (const context of targetCases) {
+    updateRunProgress(runGroup, {
+      runningCaseIds: [context.caseId],
+      completedCases,
+      failedCases,
+    });
+    await saveRunGroup(runGroup);
+
+    const runtimeSessionId = createId("session");
+    const { testRun, supervisionRecords } = await runTestCase(
+      agent,
+      adapterConfig,
+      context,
+      {
+        supervisionPolicyPack: policyPack,
+        runtimeSessionId,
+        customAdapter,
+        selectionPlanId: runGroup.selectionPlanId,
+      },
+    );
+
+    allSupervisionRecords.push(...supervisionRecords);
+    runGroup.runtimeSessionIds.push(runtimeSessionId);
+
+    if (testRun.status === "failed") {
+      failedCases++;
+      runGroup.status = "failed";
+      if (!runGroup.error) {
+        runGroup.error = `Supervision pass failed for ${context.caseId}: ${testRun.error ?? "unknown error"}`;
+      }
+    } else {
+      completedCases++;
+    }
+
+    const actionCounts: Record<string, number> = {};
+    let blockedCount = 0;
+    let redactedCount = 0;
+    let askCount = 0;
+
+    for (const rec of supervisionRecords) {
+      actionCounts[rec.action] = (actionCounts[rec.action] ?? 0) + 1;
+      if (rec.action === "deny") blockedCount++;
+      if (rec.action === "redact") redactedCount++;
+      if (rec.action === "ask") askCount++;
+    }
+
+    const sessionSummary: SupervisionSessionSummary = {
+      runtimeSessionId,
+      runGroupId: runGroup.runGroupId,
+      sourceRunGroupId,
+      agentId: agent.agentId,
+      policyPackId: policyPack.policyPackId,
+      policyContextSource: "stored_detection",
+      recordCount: supervisionRecords.length,
+      blockedCount,
+      redactedCount,
+      askCount,
+      actionCounts,
+    };
+    await saveSessionRecords(sessionSummary, supervisionRecords);
+    updateRunProgress(runGroup, {
+      runningCaseIds: [],
+      completedCases,
+      failedCases,
+      lastCompletedCaseId: context.caseId,
+    });
+    await saveRunGroup(runGroup);
+  }
+
+  runGroup.phase = "supervision_completed";
+  updateRunProgress(runGroup, {
+    phase: "completed",
+    runningCaseIds: [],
+    completedCases,
+    failedCases,
+  });
+  await saveRunGroup(runGroup);
+  return allSupervisionRecords;
+}
+
+type ReusablePolicyContext = {
+  sourceRunGroupId: string;
+  detectionReport: ReturnType<typeof buildDetectionReport>;
+  riskProfile: ReturnType<typeof buildAgentRiskProfile>;
+  policyPack: ReturnType<typeof buildSupervisionPolicyPack>;
+};
+
+async function loadReusablePolicyContext(
+  policyPackId: string,
+): Promise<ReusablePolicyContext> {
+  const entry = await getReportEntry(policyPackId);
+  if (!entry || entry.reportType !== "policy_pack") {
+    throw new PolicyPackReuseError(
+      `Policy pack ${policyPackId} was not found in report index.`,
+    );
+  }
+  const runDir = resolveInsideDirectory(OUTPUT_DIR, entry.runGroupId);
+  const [detectionReport, riskProfile, policyPack] = await Promise.all([
+    readJsonFile<ReturnType<typeof buildDetectionReport>>(
+      path.join(runDir, "detection-report.json"),
+    ),
+    readJsonFile<ReturnType<typeof buildAgentRiskProfile>>(
+      path.join(runDir, "agent-risk-profile.json"),
+    ),
+    readJsonFile<ReturnType<typeof buildSupervisionPolicyPack>>(
+      path.join(runDir, "supervision-policy-pack.json"),
+    ),
+  ]);
+  if (!detectionReport || !riskProfile || !policyPack) {
+    throw new PolicyPackReuseError(
+      `Policy pack ${policyPackId} is missing reusable detection artifacts.`,
+    );
+  }
+  if (policyPack.policyPackId !== policyPackId) {
+    throw new PolicyPackReuseError(
+      `Policy pack artifact mismatch: requested ${policyPackId}, loaded ${policyPack.policyPackId}.`,
+    );
+  }
+  return {
+    sourceRunGroupId: entry.runGroupId,
+    detectionReport,
+    riskProfile,
+    policyPack,
+  };
+}
+
+async function readJsonFile<T>(filePath: string): Promise<T | undefined> {
+  try {
+    return JSON.parse(await fs.readFile(filePath, "utf-8")) as T;
+  } catch {
+    return undefined;
+  }
 }
 
 async function runWithConcurrency<T>(
@@ -592,9 +1031,192 @@ function getDetectionConcurrency(request: RunE2ERequest): number {
   if (Number.isFinite(configured) && configured > 0) {
     return Math.max(1, Math.min(Math.floor(configured), 8));
   }
-  if (request.adapterKind === "openclaw") return 2;
+  if (request.adapterKind === "openclaw") return 1;
   if (request.adapterKind === "http_sample") return 4;
   return 6;
+}
+
+function getDetectionMaxAttempts(request: RunE2ERequest): number {
+  if (request.adapterKind !== "openclaw") return 1;
+  const configured = Number(process.env.AGENT_GUARD_OPENCLAW_CASE_MAX_ATTEMPTS);
+  if (Number.isFinite(configured) && configured > 0) {
+    return Math.max(1, Math.min(Math.floor(configured), 5));
+  }
+  return 3;
+}
+
+function getDetectionRetryDelayMs(attempt: number): number {
+  const configured = Number(process.env.AGENT_GUARD_OPENCLAW_RETRY_BASE_MS);
+  const baseMs =
+    Number.isFinite(configured) && configured >= 0
+      ? configured
+      : 15_000;
+  const cappedAttempt = Math.max(1, Math.min(attempt, 4));
+  return Math.min(120_000, baseMs * 2 ** (cappedAttempt - 1));
+}
+
+function getOpenClawCaseSpacingMs(
+  request: RunE2ERequest,
+  attempt: number,
+): number {
+  if (request.adapterKind !== "openclaw") return 0;
+  const configured = Number(process.env.AGENT_GUARD_OPENCLAW_CASE_SPACING_MS);
+  const baseMs =
+    Number.isFinite(configured) && configured >= 0
+      ? configured
+      : 1_500;
+  return attempt === 1 ? baseMs : 0;
+}
+
+function getMinimumSuccessfulDetectionCases(
+  request: RunE2ERequest,
+  totalCases: number,
+): number {
+  if (totalCases <= 0) return 1;
+  if (request.adapterKind !== "openclaw") return totalCases;
+  const configuredRatio = Number(process.env.AGENT_GUARD_OPENCLAW_MIN_SUCCESS_RATIO);
+  const ratio =
+    Number.isFinite(configuredRatio) && configuredRatio > 0 && configuredRatio <= 1
+      ? configuredRatio
+      : 0.7;
+  const configuredAbsolute = Number(process.env.AGENT_GUARD_OPENCLAW_MIN_SUCCESS_CASES);
+  const absolute =
+    Number.isFinite(configuredAbsolute) && configuredAbsolute > 0
+      ? Math.floor(configuredAbsolute)
+      : 1;
+  return Math.min(totalCases, Math.max(absolute, Math.ceil(totalCases * ratio)));
+}
+
+function classifyDetectionError(
+  message: string,
+  request: RunE2ERequest,
+): {
+  category: P2RunCaseFailure["category"];
+  retryable: boolean;
+  skipAllowed: boolean;
+} {
+  if (request.adapterKind !== "openclaw") {
+    return {
+      category: "fatal",
+      retryable: false,
+      skipAllowed: false,
+    };
+  }
+
+  const normalized = message.toLowerCase();
+  if (
+    normalized.includes("cooldown") ||
+    normalized.includes("suspending lanes")
+  ) {
+    return {
+      category: "provider_cooldown",
+      retryable: true,
+      skipAllowed: true,
+    };
+  }
+  if (
+    normalized.includes("timed out") ||
+    normalized.includes("timeout") ||
+    normalized.includes("etimedout")
+  ) {
+    return {
+      category: "provider_timeout",
+      retryable: true,
+      skipAllowed: true,
+    };
+  }
+  if (
+    normalized.includes("rate limit") ||
+    normalized.includes("429") ||
+    normalized.includes("too many requests")
+  ) {
+    return {
+      category: "provider_rate_limit",
+      retryable: true,
+      skipAllowed: true,
+    };
+  }
+  if (
+    normalized.includes("econnreset") ||
+    normalized.includes("socket hang up") ||
+    normalized.includes("gatewayclientrequesterror") ||
+    normalized.includes("all models failed")
+  ) {
+    return {
+      category: "transient_provider",
+      retryable: true,
+      skipAllowed: true,
+    };
+  }
+  if (
+    normalized.includes("cannot execute openclaw cli") ||
+    normalized.includes("cli not available") ||
+    normalized.includes("enoent") ||
+    normalized.includes("spawn enametoolong")
+  ) {
+    return {
+      category: "fatal",
+      retryable: false,
+      skipAllowed: false,
+    };
+  }
+  return {
+    category: "agent_error",
+    retryable: false,
+    skipAllowed: false,
+  };
+}
+
+async function sleep(ms: number): Promise<void> {
+  if (ms <= 0) return;
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function buildToolProfilesForPolicyGeneration(
+  targetCases: TestContext[],
+): ToolCapabilityProfile[] {
+  const byToolId = new Map<string, ToolCapabilityProfile>();
+
+  for (const context of targetCases) {
+    for (const tool of context.sandbox.tools ?? []) {
+      if (byToolId.has(tool.toolId)) continue;
+      const baseProfile = buildRuleBasedToolCapabilityProfile({
+        originalToolName: tool.name ?? tool.toolId,
+        canonicalToolId: tool.toolId,
+        providerType: "agent_guard",
+        description: tool.description,
+        inputSchema: tool.schema,
+      });
+      const riskTagIds = tool.riskTags.map((tag) => tag.tagId);
+      const riskCategories = tool.riskTags.map((tag) => tag.category);
+      byToolId.set(tool.toolId, {
+        ...baseProfile,
+        riskTags: uniqueStrings([
+          ...baseProfile.riskTags,
+          ...riskTagIds,
+          ...riskCategories,
+        ]),
+        sideEffect:
+          tool.sideEffect === "command"
+            ? "destructive"
+            : tool.sideEffect === "network"
+            ? "external"
+            : tool.sideEffect === "read" || tool.sideEffect === "write"
+            ? tool.sideEffect
+            : baseProfile.sideEffect,
+        confidence:
+          tool.riskTags.length > 0 || tool.riskLevel === "high" || tool.riskLevel === "critical"
+            ? "high"
+            : baseProfile.confidence,
+      });
+    }
+  }
+
+  return [...byToolId.values()];
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values.filter((value) => value.trim()))];
 }
 
 function startRunProgress(
@@ -609,6 +1231,11 @@ function startRunProgress(
     totalCases,
     completedCases: 0,
     failedCases: 0,
+    skippedCases: 0,
+    retriedCases: 0,
+    retryingCaseIds: [],
+    warnings: [],
+    caseFailures: [],
     runningCaseIds: [],
     concurrency,
     percent: 0,
@@ -629,6 +1256,8 @@ function updateRunProgress(
   const totalCases = patch.totalCases ?? previous?.totalCases ?? runGroup.caseCount ?? 0;
   const completedCases = patch.completedCases ?? previous?.completedCases ?? 0;
   const failedCases = patch.failedCases ?? previous?.failedCases ?? 0;
+  const skippedCases = patch.skippedCases ?? previous?.skippedCases ?? 0;
+  const retriedCases = patch.retriedCases ?? previous?.retriedCases ?? 0;
   const finishedCases = completedCases + failedCases;
   const percent =
     patch.percent ??
@@ -643,6 +1272,14 @@ function updateRunProgress(
     totalCases,
     completedCases,
     failedCases,
+    skippedCases,
+    retriedCases,
+    retryingCaseIds: patch.retryingCaseIds ?? previous?.retryingCaseIds ?? [],
+    lastFailedCaseId: patch.lastFailedCaseId ?? previous?.lastFailedCaseId,
+    providerCooldownUntil:
+      patch.providerCooldownUntil ?? previous?.providerCooldownUntil,
+    warnings: patch.warnings ?? previous?.warnings ?? [],
+    caseFailures: patch.caseFailures ?? previous?.caseFailures ?? [],
     runningCaseIds: patch.runningCaseIds ?? previous?.runningCaseIds ?? [],
     lastCompletedCaseId: patch.lastCompletedCaseId ?? previous?.lastCompletedCaseId,
     concurrency: patch.concurrency ?? previous?.concurrency ?? getDetectionConcurrency({
@@ -654,6 +1291,21 @@ function updateRunProgress(
     startedAt: previous?.startedAt ?? now,
     updatedAt: now,
   };
+}
+
+function appendProgressWarning(runGroup: P2RunGroup, warning: string): void {
+  const previous = runGroup.progress?.warnings ?? [];
+  const next = uniqueStrings([...previous, warning]).slice(-MAX_PROGRESS_FAILURES);
+  updateRunProgress(runGroup, { warnings: next });
+}
+
+function appendDetectionFailure(
+  runGroup: P2RunGroup,
+  failure: P2RunCaseFailure,
+): void {
+  const previous = runGroup.progress?.caseFailures ?? [];
+  const next = [...previous, failure].slice(-MAX_PROGRESS_FAILURES);
+  updateRunProgress(runGroup, { caseFailures: next });
 }
 
 function buildLinks(runGroup: P2RunGroup): EntityLink[] {

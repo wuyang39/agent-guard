@@ -5,6 +5,7 @@ import {
   runE2E,
   CaseIdValidationError,
   SelectionPlanValidationError,
+  PolicyPackReuseError,
   createInitialE2ERunGroup,
 } from "../../../services/e2eRunService";
 import {
@@ -73,6 +74,10 @@ export async function testRunRoutes(app: FastifyInstance): Promise<void> {
       if (err instanceof SelectionPlanValidationError) {
         reply.code(400);
         return failure("INVALID_SELECTION_PLAN", err.message);
+      }
+      if (err instanceof PolicyPackReuseError) {
+        reply.code(400);
+        return failure("INVALID_POLICY_PACK", err.message);
       }
       request.log.error({ err }, "E2E run failed");
       reply.code(500);

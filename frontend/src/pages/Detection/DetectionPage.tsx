@@ -34,6 +34,7 @@ export function DetectionPage({
   }
 
   const { detectionReport, riskProfile, policyPack, sourceRiskReports } = state.data;
+  const exposures = riskProfile.exposures ?? [];
 
   return (
     <div className="page-stack">
@@ -110,6 +111,27 @@ export function DetectionPage({
                 <Badge tone="tone-high">{categoryLabel(weakness.category)}</Badge>
               </article>
             ))}
+            {exposures.map((exposure) => (
+              <article className="list-item" key={exposure.exposureId}>
+                <div>
+                  <strong>{exposure.title}</strong>
+                  <p>{exposure.description}</p>
+                  <p className="muted">
+                    {exposure.status === "tested_no_finding"
+                      ? "已测试但未观察到失守"
+                      : exposure.status === "capability_exposed"
+                        ? "高危能力暴露"
+                        : "已观察到失守"}
+                  </p>
+                </div>
+                <Badge tone={riskTone(exposure.riskLevel)}>
+                  {categoryLabel(exposure.category)}
+                </Badge>
+              </article>
+            ))}
+            {!riskProfile.weaknesses.length && !exposures.length ? (
+              <p className="muted">暂无风险弱点或暴露面。</p>
+            ) : null}
           </div>
         </div>
       </section>
@@ -147,9 +169,16 @@ export function DetectionPage({
 
 function DetectionDeveloperDiagnostics({ detail }: { detail: DetectionDetailView }) {
   const { detectionReport, riskProfile, policyPack, sourceRiskReports } = detail;
+  const exposures = riskProfile.exposures ?? [];
+  const testedScenarios = riskProfile.testedScenarios ?? [];
   return (
     <DeveloperDiagnostics
-      count={sourceRiskReports.length + riskProfile.weaknesses.length + policyPack.policies.length}
+      count={
+        sourceRiskReports.length +
+        riskProfile.weaknesses.length +
+        exposures.length +
+        policyPack.policies.length
+      }
       title="检测策略开发者诊断"
     >
       <DiagnosticSection title="检测报告索引">
@@ -205,6 +234,40 @@ function DetectionDeveloperDiagnostics({ detail }: { detail: DetectionDetailView
           ]}
           rowKey={(weakness) => weakness.weaknessId}
           rows={riskProfile.weaknesses}
+        />
+      </DiagnosticSection>
+
+      <DiagnosticSection title="风险画像暴露面" count={exposures.length}>
+        <DiagnosticTable
+          columns={[
+            { header: "Exposure", render: (exposure) => <code>{exposure.exposureId}</code> },
+            { header: "Title", render: (exposure) => exposure.title },
+            { header: "Status", render: (exposure) => exposure.status },
+            { header: "Category", render: (exposure) => exposure.category },
+            { header: "Risk", render: (exposure) => exposure.riskLevel },
+            { header: "Scenarios", render: (exposure) => <CodeList values={exposure.sourceScenarioIds} /> },
+            { header: "Cases", render: (exposure) => <CodeList values={exposure.sourceCaseIds} /> },
+            { header: "Tools", render: (exposure) => <CodeList values={exposure.relatedToolIds} /> },
+            { header: "Templates", render: (exposure) => <CodeList values={exposure.recommendedPolicyTemplateIds} /> },
+          ]}
+          emptyLabel="暂无风险暴露面"
+          rowKey={(exposure) => exposure.exposureId}
+          rows={exposures}
+        />
+      </DiagnosticSection>
+
+      <DiagnosticSection title="已测试场景画像" count={testedScenarios.length}>
+        <DiagnosticTable
+          columns={[
+            { header: "Scenario", render: (scenario) => <code>{scenario.scenarioId}</code> },
+            { header: "Status", render: (scenario) => scenario.status },
+            { header: "Categories", render: (scenario) => <CodeList values={scenario.exposureCategories} /> },
+            { header: "Cases", render: (scenario) => <CodeList values={scenario.caseIds} /> },
+            { header: "Findings", render: (scenario) => <CodeList values={scenario.triggeredFindingIds} /> },
+          ]}
+          emptyLabel="暂无已测试场景画像"
+          rowKey={(scenario) => scenario.scenarioId}
+          rows={testedScenarios}
         />
       </DiagnosticSection>
 

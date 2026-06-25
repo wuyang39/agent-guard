@@ -7,6 +7,10 @@ import { buildAttackChains } from "./attackChainBuilder";
 import { buildEvidenceChains } from "./evidenceBuilder";
 import type { Finding, RiskEvaluationResult, RiskLevel } from "./riskTypes";
 import { matchesRule } from "./ruleEngine";
+import {
+  scoreTraceSemantically,
+  type SemanticScorerOptions,
+} from "./semanticScorer";
 
 const riskRank: Record<RiskLevel, number> = {
   low: 1,
@@ -20,8 +24,27 @@ export function evaluateRisk(
   trace: InteractionTrace,
 ): RiskEvaluationResult {
   const findings = buildFindings(context, trace);
-  const riskLevel = getHighestRiskLevel(findings);
+  return buildRiskEvaluationResult(context, trace, findings);
+}
 
+export async function evaluateRiskWithSemanticScoring(
+  context: TestContext,
+  trace: InteractionTrace,
+  options: SemanticScorerOptions = {},
+): Promise<RiskEvaluationResult> {
+  const findings = [
+    ...buildFindings(context, trace),
+    ...(await scoreTraceSemantically(context, trace, options)),
+  ];
+  return buildRiskEvaluationResult(context, trace, dedupeFindings(findings));
+}
+
+function buildRiskEvaluationResult(
+  context: TestContext,
+  trace: InteractionTrace,
+  findings: Finding[],
+): RiskEvaluationResult {
+  const riskLevel = getHighestRiskLevel(findings);
   return {
     schemaVersion: SCHEMA_VERSION,
     evaluationId: createId("evaluation"),
@@ -59,6 +82,24 @@ function buildFindings(context: TestContext, trace: InteractionTrace): Finding[]
   }
 
   return findings;
+}
+
+function dedupeFindings(findings: Finding[]): Finding[] {
+  const byKey = new Map<string, Finding>();
+  for (const finding of findings) {
+    const key = [
+      finding.ruleId,
+      finding.category,
+      finding.evidenceEventIds.join(","),
+    ].join("|");
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, finding);
+      continue;
+    }
+    existing.description = `${existing.description} ${finding.description}`;
+  }
+  return [...byKey.values()];
 }
 
 function getHighestRiskLevel(findings: Finding[]): RiskLevel {

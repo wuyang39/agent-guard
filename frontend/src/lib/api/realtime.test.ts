@@ -16,3 +16,10 @@ test("live supervision stream can explicitly include replay history", () => {
     `${apiBaseUrl}/api/v1/openclaw/realtime/events/stream?replay=1`,
   );
 });
+
+test("ask stream can be scoped to a realtime session", () => {
+  assert.equal(
+    realtimeApi.supervisionAskStreamUrl({ sessionId: "session.demo/1" }),
+    `${apiBaseUrl}/api/v1/supervision/ask/stream?sessionId=session.demo%2F1`,
+  );
+});

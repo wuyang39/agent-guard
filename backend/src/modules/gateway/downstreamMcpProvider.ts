@@ -127,12 +127,15 @@ async function callJsonRpc<T>(
   try {
     const response = await fetch(endpointUrl, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        "accept": "application/json, text/event-stream",
+      },
       body: JSON.stringify({ jsonrpc: "2.0", id: createId("rpc"), method, params }),
       signal: controller.signal,
     });
     const text = await response.text();
-    const parsed = text ? (JSON.parse(text) as JsonRpcResponse<T>) : {};
+    const parsed = text ? parseJsonRpcResponse<T>(text) : {};
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${text.slice(0, 240)}`);
     }
@@ -151,6 +154,21 @@ async function callJsonRpc<T>(
   } finally {
     clearTimeout(timer);
   }
+}
+
+function parseJsonRpcResponse<T>(text: string): JsonRpcResponse<T> {
+  const trimmed = text.trim();
+  if (trimmed.startsWith("event:") || trimmed.startsWith("data:")) {
+    const dataLine = trimmed
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find((line) => line.startsWith("data:"));
+    if (!dataLine) {
+      throw new Error("SSE MCP response missing data line.");
+    }
+    return JSON.parse(dataLine.slice("data:".length).trim()) as JsonRpcResponse<T>;
+  }
+  return JSON.parse(trimmed) as JsonRpcResponse<T>;
 }
 
 function normalizeMcpToolCallResult(result: McpToolCallResult): JsonValue {

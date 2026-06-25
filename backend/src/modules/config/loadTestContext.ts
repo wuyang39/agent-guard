@@ -36,6 +36,7 @@ export type LoadTestContextResult = {
 
 export type LoadTestContextOptions = {
   requireGeneratedALineCorpus?: boolean;
+  includeDisabledGeneratedCases?: boolean;
 };
 
 export class ConfigLoadError extends Error {
@@ -106,7 +107,12 @@ export async function loadTestContexts(
   const index = buildConfigIndex(repository);
   const sandbox = buildSandboxProfile(repository);
   const contexts = repository.testCases
-    .filter((testCase) => testCase.enabled)
+    .filter(
+      (testCase) =>
+        testCase.enabled ||
+        (options.includeDisabledGeneratedCases === true &&
+          testCase.caseId.startsWith("case.generated.")),
+    )
     .map<TestContext>((testCase) => ({
       schemaVersion: SCHEMA_VERSION,
       configVersion: SCHEMA_VERSION,

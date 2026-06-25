@@ -10,8 +10,10 @@ import { DeveloperDetails } from "../../components/ui/DeveloperDetails";
 import { ErrorBlock, LoadingBlock } from "../../components/ui/StateBlock";
 import { agentGuardApi } from "../../lib/api/client";
 import type {
+  AskTimeoutConfig,
   DefenseDetailView,
   LiveSupervisionEvent,
+  PendingSupervisionAsk,
   RealtimeActivePolicyState,
   RealtimePreparedSession,
 } from "../../lib/api/types";
@@ -22,6 +24,7 @@ import { shouldDisplayRealtimeEvent } from "../../lib/models/realtime";
 type LiveSupervisionPageProps = {
   onGoDefense: () => void;
   onReportGenerated: (detail: DefenseDetailView) => void;
+  onRealtimeEvent?: (event: LiveSupervisionEvent) => void;
 };
 
 const REALTIME_EVENT_TYPES: LiveSupervisionEvent["type"][] = [
@@ -31,6 +34,10 @@ const REALTIME_EVENT_TYPES: LiveSupervisionEvent["type"][] = [
   "tool_call_started",
   "supervision_decision",
   "tool_call_result",
+  "provider_tools_refreshed",
+  "provider_refresh_failed",
+  "supervision_batch_started",
+  "supervision_batch_completed",
   "defense_report_generated",
 ];
 
@@ -39,6 +46,7 @@ const REALTIME_MCP_URL = "http://127.0.0.1:3100/api/v1/openclaw/realtime/mcp";
 export function LiveSupervisionPage({
   onGoDefense,
   onReportGenerated,
+  onRealtimeEvent,
 }: LiveSupervisionPageProps) {
   const [activePolicy, setActivePolicy] = useState<RealtimeActivePolicyState | undefined>();
   const [preparedSession, setPreparedSession] = useState<RealtimePreparedSession | undefined>();
@@ -47,12 +55,19 @@ export function LiveSupervisionPage({
   const [includeHistory, setIncludeHistory] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [finalizing, setFinalizing] = useState(false);
+  const [pendingAsks, setPendingAsks] = useState<PendingSupervisionAsk[]>([]);
+  const [askConfig, setAskConfig] = useState<AskTimeoutConfig | undefined>();
+  const [respondingAskIds, setRespondingAskIds] = useState<Set<string>>(() => new Set());
   const sourceRef = useRef<EventSource | undefined>(undefined);
+  const askSourceRef = useRef<EventSource | undefined>(undefined);
 
   useEffect(() => {
     void refreshActivePolicy();
     void prepareSession();
-    return () => sourceRef.current?.close();
+    return () => {
+      sourceRef.current?.close();
+      askSourceRef.current?.close();
+    };
   }, []);
 
   async function refreshActivePolicy() {
@@ -77,6 +92,7 @@ export function LiveSupervisionPage({
     setStatusError(undefined);
     try {
       sourceRef.current?.close();
+      askSourceRef.current?.close();
       setStreaming(false);
       if (preparedSession) {
         await agentGuardApi.resetRealtimeSessions(preparedSession.runtimeSessionId);
@@ -85,6 +101,7 @@ export function LiveSupervisionPage({
         await agentGuardApi.createRealtimeSession(activePolicy?.resolvedPolicyPackId),
       );
       setEvents([]);
+      setPendingAsks([]);
       await refreshActivePolicy();
     } catch (error) {
       setStatusError(error instanceof Error ? error.message : String(error));
@@ -97,7 +114,9 @@ export function LiveSupervisionPage({
 
   function openStream(nextIncludeHistory: boolean) {
     sourceRef.current?.close();
+    askSourceRef.current?.close();
     setEvents([]);
+    setPendingAsks([]);
     setStreaming(true);
     const runtimeSessionId = preparedSession?.runtimeSessionId;
     const source = new EventSource(
@@ -112,6 +131,9 @@ export function LiveSupervisionPage({
           return;
         }
         setEvents((current) => [...current, event]);
+        if (!nextIncludeHistory) {
+          onRealtimeEvent?.(event);
+        }
         if (event.type === "active_policy_updated") {
           void refreshActivePolicy();
         }
@@ -119,15 +141,56 @@ export function LiveSupervisionPage({
     }
 
     source.onerror = () => {
-      setEvents((current) => [
-        ...current,
-        {
-          timestamp: new Date().toISOString(),
-          type: "live_error",
-          message: "实时事件连接失败。",
-        },
-      ]);
+      const errorEvent: LiveSupervisionEvent = {
+        timestamp: new Date().toISOString(),
+        type: "live_error",
+        message: "实时事件连接失败。",
+      };
+      setEvents((current) => [...current, errorEvent]);
+      onRealtimeEvent?.(errorEvent);
       setStreaming(false);
+      source.close();
+    };
+
+    openAskStream(runtimeSessionId);
+  }
+
+  function openAskStream(runtimeSessionId: string | undefined) {
+    askSourceRef.current?.close();
+    const source = new EventSource(
+      agentGuardApi.supervisionAskStreamUrl({ sessionId: runtimeSessionId }),
+    );
+    askSourceRef.current = source;
+
+    source.addEventListener("config", (message) => {
+      setAskConfig(JSON.parse((message as MessageEvent).data) as AskTimeoutConfig);
+    });
+
+    source.addEventListener("ask_decision", (message) => {
+      const ask = JSON.parse((message as MessageEvent).data) as PendingSupervisionAsk;
+      setPendingAsks((current) => upsertAsk(current, ask).filter((item) => item.status === "pending"));
+    });
+
+    source.addEventListener("ask_resolved", (message) => {
+      const ask = JSON.parse((message as MessageEvent).data) as PendingSupervisionAsk;
+      setPendingAsks((current) =>
+        upsertAsk(current, ask).filter((item) => item.status === "pending"),
+      );
+      setRespondingAskIds((current) => {
+        const next = new Set(current);
+        next.delete(ask.askId);
+        return next;
+      });
+    });
+
+    source.onerror = () => {
+      const errorEvent: LiveSupervisionEvent = {
+        timestamp: new Date().toISOString(),
+        type: "live_error",
+        message: "Ask 确认通道连接失败。",
+      };
+      setEvents((current) => [...current, errorEvent]);
+      onRealtimeEvent?.(errorEvent);
       source.close();
     };
   }
@@ -141,7 +204,26 @@ export function LiveSupervisionPage({
 
   function stopStream() {
     sourceRef.current?.close();
+    askSourceRef.current?.close();
     setStreaming(false);
+  }
+
+  async function respondAsk(askId: string, decision: "approve" | "reject") {
+    setRespondingAskIds((current) => new Set(current).add(askId));
+    setStatusError(undefined);
+    try {
+      const resolved = await agentGuardApi.respondSupervisionAsk(askId, decision);
+      setPendingAsks((current) =>
+        upsertAsk(current, resolved).filter((item) => item.status === "pending"),
+      );
+    } catch (error) {
+      setStatusError(error instanceof Error ? error.message : String(error));
+      setRespondingAskIds((current) => {
+        const next = new Set(current);
+        next.delete(askId);
+        return next;
+      });
+    }
   }
 
   async function finalizeReport() {
@@ -300,9 +382,78 @@ export function LiveSupervisionPage({
               </div>
             </div>
           </div>
+
+          <div className="rail-section ask-approval-panel">
+            <div className="section-header compact">
+              <h2>人工确认</h2>
+              <Badge tone={pendingAsks.length ? "tone-high" : "tone-low"}>
+                {pendingAsks.length} 个待处理
+              </Badge>
+            </div>
+            {askConfig ? (
+              <p className="muted compact-note">
+                超时 {Math.round(askConfig.timeoutMs / 1000)} 秒，默认
+                {askConfig.defaultAction === "demo_approve" ? "通过" : "拒绝"}。
+              </p>
+            ) : null}
+            <div className="ask-card-list">
+              {pendingAsks.length ? (
+                pendingAsks.map((ask) => (
+                  <article className="ask-card" key={ask.askId}>
+                    <div className="ask-card-head">
+                      <strong>{ask.targetType}</strong>
+                      <Badge tone={ask.riskLevel === "critical" || ask.riskLevel === "high" ? "tone-high" : "tone-medium"}>
+                        {ask.riskLevel}
+                      </Badge>
+                    </div>
+                    <p>{ask.reason}</p>
+                    <DeveloperDetails
+                      items={[
+                        { label: "Ask", value: ask.askId },
+                        { label: "Policy", value: ask.policyId },
+                        { label: "Target", value: ask.targetId },
+                        { label: "Created", value: formatDateTime(ask.createdAt) },
+                      ]}
+                      title="确认详情"
+                    />
+                    <div className="button-row ask-actions">
+                      <button
+                        className="primary-button"
+                        disabled={respondingAskIds.has(ask.askId)}
+                        onClick={() => void respondAsk(ask.askId, "approve")}
+                        type="button"
+                      >
+                        通过
+                      </button>
+                      <button
+                        className="secondary-button ask-reject-button"
+                        disabled={respondingAskIds.has(ask.askId)}
+                        onClick={() => void respondAsk(ask.askId, "reject")}
+                        type="button"
+                      >
+                        拒绝
+                      </button>
+                    </div>
+                  </article>
+                ))
+              ) : (
+                <p className="muted">出现 ask 策略命中时，会在这里等待你确认。</p>
+              )}
+            </div>
+          </div>
         </aside>
       </section>
     </div>
+  );
+}
+
+function upsertAsk(
+  current: PendingSupervisionAsk[],
+  nextAsk: PendingSupervisionAsk,
+): PendingSupervisionAsk[] {
+  const rest = current.filter((item) => item.askId !== nextAsk.askId);
+  return [nextAsk, ...rest].sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
   );
 }
 
@@ -379,6 +530,18 @@ function summarizeEvent(event: LiveSupervisionEvent): string {
   if (event.type === "active_policy_updated") {
     return "监督策略已更新";
   }
+  if (event.type === "provider_tools_refreshed") {
+    return "外部 MCP 工具已接入";
+  }
+  if (event.type === "provider_refresh_failed") {
+    return "外部 MCP 工具接入失败";
+  }
+  if (event.type === "supervision_batch_started") {
+    return "批量监督测试已开始";
+  }
+  if (event.type === "supervision_batch_completed") {
+    return "批量监督测试已完成";
+  }
   if (event.type === "defense_report_generated") {
     return "防御报告已生成";
   }
@@ -400,6 +563,10 @@ function eventTypeLabel(type: LiveSupervisionEvent["type"]): string {
     tool_call_started: "工具调用开始",
     supervision_decision: "监督判定",
     tool_call_result: "工具调用结果",
+    provider_tools_refreshed: "外部工具已接入",
+    provider_refresh_failed: "外部工具接入失败",
+    supervision_batch_started: "批量测试开始",
+    supervision_batch_completed: "批量测试完成",
     defense_report_generated: "防御报告已生成",
     live_error: "实时连接错误",
   };
@@ -412,6 +579,9 @@ function eventRowClass(event: LiveSupervisionEvent): string {
   }
   if (event.type === "tool_call_result" && event.blocked) {
     return "event-row-deny";
+  }
+  if (event.type === "provider_refresh_failed") {
+    return "event-row-warn";
   }
   if (event.type === "live_error") {
     return "event-row-warn";

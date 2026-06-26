@@ -81,6 +81,14 @@ export const runsApi = {
     );
     return { runGroup: toRunGroup(result.runGroup) };
   },
+
+  async cancelRunGroup(runGroupId: string) {
+    const result = await request<{ runGroup: P2RunGroupWire }>(
+      `/api/v1/test-runs/${encodeURIComponent(runGroupId)}/cancel`,
+      { method: "POST" },
+    );
+    return { runGroup: toRunGroup(result.runGroup) };
+  },
 };
 
 type P2RunGroupWire = {

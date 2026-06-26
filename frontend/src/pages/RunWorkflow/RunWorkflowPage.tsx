@@ -21,25 +21,34 @@ import { formatDateTime } from "../../lib/formatters/time";
 type RunWorkflowPageProps = {
   summaryState: LoadState<CLineDashboardSummary>;
   selectionPlanState: LoadState<TestSelectionPlan>;
+  selectionCaseCount: number;
   running: boolean;
   planning: boolean;
+  canceling: boolean;
   onCreateSelectionPlan: () => void;
+  onCancelRun: (runGroupId: string) => void;
   onRun: () => void;
+  onSelectionCaseCountChange: (caseCount: number) => void;
 };
 
 export function RunWorkflowPage({
   summaryState,
   selectionPlanState,
+  selectionCaseCount,
   running,
   planning,
+  canceling,
   onCreateSelectionPlan,
+  onCancelRun,
   onRun,
+  onSelectionCaseCountChange,
 }: RunWorkflowPageProps) {
   const busy = running || planning;
   const canRunSelectionPlan =
     selectionPlanState.status === "ready" && selectionPlanState.data.status === "ready";
   const summary = summaryState.status === "ready" ? summaryState.data : undefined;
   const latest = selectWorkflowRunGroup(summary, selectionPlanState);
+  const canCancelLatestRun = latest?.status === "running";
 
   if (summaryState.status === "loading" || summaryState.status === "idle") {
     return (
@@ -83,6 +92,42 @@ export function RunWorkflowPage({
                 <h2>编排操作</h2>
               </div>
             </div>
+            <div className="sample-count-control">
+              <label className="field">
+                <span>LLM 选样数量</span>
+                <input
+                  disabled={busy}
+                  max={500}
+                  min={3}
+                  onChange={(event) =>
+                    onSelectionCaseCountChange(Number(event.target.value))
+                  }
+                  step={1}
+                  type="number"
+                  value={selectionCaseCount}
+                />
+                <small className="field-note">
+                  演示可选 10 或 30；完整检测可选 120 或 300。
+                </small>
+              </label>
+              <div className="button-row sample-count-presets">
+                {[10, 30, 120, 300].map((count) => (
+                  <button
+                    className={
+                      selectionCaseCount === count
+                        ? "primary-button compact-button"
+                        : "secondary-button compact-button"
+                    }
+                    disabled={busy}
+                    key={count}
+                    onClick={() => onSelectionCaseCountChange(count)}
+                    type="button"
+                  >
+                    {count}
+                  </button>
+                ))}
+              </div>
+            </div>
             <div className="workflow-action-grid">
               <button
                 className="secondary-button workflow-action-button"
@@ -98,6 +143,16 @@ export function RunWorkflowPage({
               >
                 <strong>{running ? "正在运行检测..." : "运行检测生成策略包"}</strong>
               </button>
+              {canCancelLatestRun ? (
+                <button
+                  className="secondary-button workflow-action-button danger-button"
+                  disabled={canceling}
+                  onClick={() => onCancelRun(latest.runGroupId)}
+                  type="button"
+                >
+                  <strong>{canceling ? "正在停止..." : "停止检测"}</strong>
+                </button>
+              ) : null}
             </div>
         </div>
 

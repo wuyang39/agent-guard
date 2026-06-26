@@ -226,6 +226,7 @@ async function spawnOpenClawAgent(
       child.kill();
       if (!settled) {
         settled = true;
+        clearTimeout(timer);
         reject(new Error(`OpenClaw CLI timed out after ${timeoutMs}ms.`));
       }
     }, timeoutMs + 10_000);

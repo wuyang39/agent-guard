@@ -29,7 +29,11 @@ type EvidenceCenterPageProps = {
   runGroupsState: LoadState<{ schemaVersion: "mvp-1"; runGroups: CLineRunGroup[] }>;
   systemState: LoadState<SystemStatus>;
   selectedRunGroupId?: string;
+  activeRealtimePolicyPackId?: string;
+  activatingRealtimePolicyPackId?: string;
+  realtimePolicyActivationError?: string;
   onActivateRealtime: () => void;
+  onActivateRunPolicy: (runGroup: CLineRunGroup) => void;
   onSelectRunGroup: (runGroup: CLineRunGroup) => void;
 };
 
@@ -51,7 +55,11 @@ export function EvidenceCenterPage({
   runGroupsState,
   systemState,
   selectedRunGroupId,
+  activeRealtimePolicyPackId,
+  activatingRealtimePolicyPackId,
+  realtimePolicyActivationError,
   onActivateRealtime,
+  onActivateRunPolicy,
   onSelectRunGroup,
 }: EvidenceCenterPageProps) {
   const currentTab = TABS.find((tab) => tab.key === activeTab) ?? TABS[0];
@@ -80,7 +88,11 @@ export function EvidenceCenterPage({
 
       {currentTab.key === "runs" ? (
         <TestRunsPage
+          activeRealtimePolicyPackId={activeRealtimePolicyPackId}
+          activatingRealtimePolicyPackId={activatingRealtimePolicyPackId}
+          onActivateRunPolicy={onActivateRunPolicy}
           onSelectRunGroup={onSelectRunGroup}
+          realtimePolicyActivationError={realtimePolicyActivationError}
           selectedRunGroupId={selectedRunGroupId}
           state={runGroupsState}
         />

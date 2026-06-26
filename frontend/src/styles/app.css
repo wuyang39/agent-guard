@@ -739,8 +739,25 @@ pre {
 
 .workflow-action-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 12px;
+}
+
+.sample-count-control {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.sample-count-control .field {
+  min-width: 0;
+}
+
+.sample-count-presets {
+  align-self: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .workflow-action-button {
@@ -770,6 +787,18 @@ pre {
 
 .secondary-button.workflow-action-button span {
   color: #687789;
+}
+
+.danger-button {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.danger-button:hover {
+  border-color: #d64545;
+  background: #ffecef;
+  color: #9f1d28;
 }
 
 .workflow-list .secondary-button {
@@ -1592,6 +1621,22 @@ p {
   min-height: 30px;
   padding: 5px 9px;
   font-size: 12px;
+}
+
+.run-policy-action {
+  white-space: nowrap;
+}
+
+.run-policy-action.active {
+  border-color: #0f766e;
+  background: #effaf7;
+  color: #0f766e;
+}
+
+.run-policy-error {
+  margin: 10px 0 0;
+  color: var(--danger);
+  font-size: 13px;
 }
 
 .badge {
@@ -3254,6 +3299,7 @@ pre {
   .dashboard-latest-panel .metric-grid,
   .defense-workspace .workspace-main,
   .workflow-action-grid,
+  .sample-count-control,
   .decision-grid,
   .run-stage-rail {
     grid-template-columns: 1fr;

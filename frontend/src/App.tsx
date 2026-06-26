@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReportBundle, TestSelectionPlan, TestSelectionRequest } from "@agent-guard/contracts";
 import { agentGuardApi } from "./lib/api/client";
 import { mockDashboardSummary } from "./lib/api/mockData";
@@ -10,6 +10,7 @@ import type {
   DetectionDetailView,
   LoadState,
   LiveSupervisionEvent,
+  RealtimeActivePolicyState,
   SystemStatus,
   TraceDetailView,
 } from "./lib/api/types";
@@ -36,8 +37,12 @@ type ViewKey =
   | "evidence";
 
 const AGENT_CONFIG_STORAGE_KEY = "agent-guard.agent-config";
+const SELECTION_CASE_COUNT_STORAGE_KEY = "agent-guard.selection-case-count";
 const REALTIME_TOAST_LIMIT = 3;
 const REALTIME_TOAST_TTL_MS = 7000;
+const DEFAULT_SELECTION_CASE_COUNT = 30;
+const MIN_SELECTION_CASE_COUNT = 3;
+const MAX_SELECTION_CASE_COUNT = 500;
 
 const defaultOpenClawCliPath = import.meta.env.VITE_OPENCLAW_CLI_PATH ?? "";
 
@@ -60,8 +65,13 @@ export function App() {
   const [agentConfig, setAgentConfig] = useState<AgentConnectionConfig>(() =>
     loadStoredAgentConfig(),
   );
+  const [selectionCaseCount, setSelectionCaseCount] = useState(() =>
+    loadStoredSelectionCaseCount(),
+  );
   const [running, setRunning] = useState(false);
   const [planning, setPlanning] = useState(false);
+  const [canceling, setCanceling] = useState(false);
+  const cancelledRunIdsRef = useRef(new Set<string>());
   const [summaryState, setSummaryState] = useState<LoadState<CLineDashboardSummary>>({
     status: "idle",
   });
@@ -88,6 +98,21 @@ export function App() {
   });
   const [selectedRunGroupId, setSelectedRunGroupId] = useState<string | undefined>();
   const [realtimeToasts, setRealtimeToasts] = useState<RealtimeToast[]>([]);
+  const [activeRealtimePolicy, setActiveRealtimePolicy] =
+    useState<RealtimeActivePolicyState>();
+  const [activatingRealtimePolicyPackId, setActivatingRealtimePolicyPackId] =
+    useState<string>();
+  const [realtimePolicyActivationError, setRealtimePolicyActivationError] =
+    useState<string>();
+
+  const refreshActiveRealtimePolicy = useCallback(async () => {
+    try {
+      const activePolicy = await agentGuardApi.activeRealtimePolicy();
+      setActiveRealtimePolicy(activePolicy);
+    } catch (error) {
+      console.warn("Failed to load active realtime policy", error);
+    }
+  }, []);
 
   const loadDefenseForRunGroup = useCallback(async (runGroup: CLineRunGroup): Promise<void> => {
     if (!runGroup.defenseReportId) {
@@ -258,6 +283,10 @@ export function App() {
     void loadInitial();
   }, [loadInitial]);
 
+  useEffect(() => {
+    void refreshActiveRealtimePolicy();
+  }, [refreshActiveRealtimePolicy]);
+
   async function createSelectionPlan() {
     setPlanning(true);
     setSelectionPlanState({ status: "loading" });
@@ -283,7 +312,8 @@ export function App() {
       const selectionPlan =
         selectionPlanState.status === "ready" &&
         selectionPlanState.data.status === "ready" &&
-        selectionPlanState.data.agentId === nextConfig.agentId
+        selectionPlanState.data.agentId === nextConfig.agentId &&
+        selectionPlanState.data.requestedCaseCount === selectionCaseCount
           ? selectionPlanState.data
           : await createSelectionPlanForConfig(nextConfig);
       setSelectionPlanState({ status: "ready", data: selectionPlan, source: "api" });
@@ -297,8 +327,14 @@ export function App() {
         generateDefenseReport: nextConfig.adapterKind !== "openclaw",
       });
       if (started.runGroup?.runGroupId) {
+        cancelledRunIdsRef.current.delete(started.runGroup.runGroupId);
         acceptRunGroupProgress(started.runGroup);
-        await waitForRunGroup(started.runGroup.runGroupId, 1_200_000, acceptRunGroupProgress);
+        await waitForRunGroup(
+          started.runGroup.runGroupId,
+          1_200_000,
+          acceptRunGroupProgress,
+          () => cancelledRunIdsRef.current.has(started.runGroup.runGroupId),
+        );
       }
       const [summary, runGroups, system] = await Promise.all([
         agentGuardApi.dashboardSummary(),
@@ -332,13 +368,70 @@ export function App() {
     }
   }
 
+  async function cancelRun(runGroupId: string) {
+    setCanceling(true);
+    cancelledRunIdsRef.current.add(runGroupId);
+    try {
+      const result = await agentGuardApi.cancelRunGroup(runGroupId);
+      acceptRunGroupProgress(result.runGroup);
+      const [summary, runGroups, system] = await Promise.all([
+        agentGuardApi.dashboardSummary(),
+        agentGuardApi.runGroups(),
+        agentGuardApi.systemStatus(),
+      ]);
+      setSummaryState({ status: "ready", data: summary, source: "api" });
+      setRunGroupsState({ status: "ready", data: runGroups, source: "api" });
+      setSystemState({ status: "ready", data: system, source: "api" });
+      await loadDetails(summary);
+    } catch (error) {
+      setSelectionPlanState({
+        status: "error",
+        message: error instanceof Error ? error.message : "停止检测失败。",
+      });
+    } finally {
+      setRunning(false);
+      setCanceling(false);
+    }
+  }
+
   async function activateRealtimePolicy() {
     if (detectionState.status !== "ready") {
       return;
     }
     const policyPackId = detectionState.data.policyPack.policyPackId;
-    await agentGuardApi.setRealtimeActivePolicy(policyPackId, true);
-    openSupervision();
+    await activateRealtimePolicyPack(policyPackId, { openSupervisionAfterActivation: true });
+  }
+
+  async function activateRunGroupRealtimePolicy(runGroup: CLineRunGroup) {
+    if (!runGroup.policyPackId) {
+      setRealtimePolicyActivationError(`运行组 ${runGroup.runGroupId} 尚未生成策略包。`);
+      return;
+    }
+    setSelectedRunGroupId(runGroup.runGroupId);
+    await activateRealtimePolicyPack(runGroup.policyPackId, {
+      openSupervisionAfterActivation: false,
+    });
+  }
+
+  async function activateRealtimePolicyPack(
+    policyPackId: string,
+    options: { openSupervisionAfterActivation: boolean },
+  ) {
+    setActivatingRealtimePolicyPackId(policyPackId);
+    setRealtimePolicyActivationError(undefined);
+    try {
+      const activePolicy = await agentGuardApi.setRealtimeActivePolicy(policyPackId, true);
+      setActiveRealtimePolicy(activePolicy);
+      if (options.openSupervisionAfterActivation) {
+        openSupervision();
+      }
+    } catch (error) {
+      setRealtimePolicyActivationError(
+        error instanceof Error ? error.message : String(error),
+      );
+    } finally {
+      setActivatingRealtimePolicyPackId(undefined);
+    }
   }
 
   function openSupervision() {
@@ -391,7 +484,15 @@ export function App() {
   async function createSelectionPlanForConfig(
     config: AgentConnectionConfig,
   ): Promise<TestSelectionPlan> {
-    return agentGuardApi.createTestSelectionPlan(buildLlmSelectionRequest(config));
+    return agentGuardApi.createTestSelectionPlan(
+      buildLlmSelectionRequest(config, selectionCaseCount),
+    );
+  }
+
+  function updateSelectionCaseCount(nextCount: number) {
+    const normalized = normalizeSelectionCaseCount(nextCount);
+    setSelectionCaseCount(normalized);
+    localStorage.setItem(SELECTION_CASE_COUNT_STORAGE_KEY, String(normalized));
   }
 
   function acceptRunGroupProgress(runGroup: CLineRunGroup) {
@@ -468,9 +569,13 @@ export function App() {
         {view === "run-workflow" ? (
           <RunWorkflowPage
             onCreateSelectionPlan={() => void createSelectionPlan()}
+            onCancelRun={(runGroupId) => void cancelRun(runGroupId)}
             onRun={() => void runE2E()}
+            onSelectionCaseCountChange={updateSelectionCaseCount}
+            canceling={canceling}
             planning={planning}
             running={running}
+            selectionCaseCount={selectionCaseCount}
             selectionPlanState={selectionPlanState}
             summaryState={summaryState}
           />
@@ -499,10 +604,14 @@ export function App() {
         {view === "evidence" ? (
           <EvidenceCenterPage
             activeTab={evidenceTab}
+            activeRealtimePolicyPackId={activeRealtimePolicy?.resolvedPolicyPackId}
+            activatingRealtimePolicyPackId={activatingRealtimePolicyPackId}
             detectionState={detectionState}
             onActivateRealtime={() => void activateRealtimePolicy()}
+            onActivateRunPolicy={(runGroup) => void activateRunGroupRealtimePolicy(runGroup)}
             onSelectRunGroup={(runGroup) => void loadDetailsForRunGroup(runGroup)}
             onTabChange={setEvidenceTab}
+            realtimePolicyActivationError={realtimePolicyActivationError}
             runGroupsState={runGroupsState}
             selectedRunGroupId={selectedRunGroupId}
             summaryState={summaryState}
@@ -601,16 +710,45 @@ function eventActionLabel(action: NonNullable<LiveSupervisionEvent["action"]>): 
   return labels[action];
 }
 
-function buildLlmSelectionRequest(config: AgentConnectionConfig): TestSelectionRequest {
+function buildLlmSelectionRequest(
+  config: AgentConnectionConfig,
+  selectionCaseCount: number,
+): TestSelectionRequest {
   const useLargeCorpus = config.adapterKind === "openclaw";
+  const maxCaseCount = normalizeSelectionCaseCount(selectionCaseCount);
+  const requiredAttackFamilies = requiredAttackFamiliesForBudget(maxCaseCount);
+  const requiredTargetSurfaces = requiredTargetSurfacesForBudget(maxCaseCount);
   return {
     schemaVersion: "mvp-1",
     agentId: config.agentId,
-    targetProfile: useLargeCorpus ? "full-corpus" : "regression",
+    targetProfile: selectionTargetProfile(config, maxCaseCount),
     selectionMode: "llm_assisted",
-    maxCaseCount: useLargeCorpus ? 300 : 120,
-    minCaseCount: useLargeCorpus ? 120 : 48,
-    requiredAttackFamilies: [
+    maxCaseCount,
+    minCaseCount: Math.max(3, Math.min(maxCaseCount, useLargeCorpus ? 120 : 48)),
+    requiredAttackFamilies,
+    requiredTargetSurfaces,
+    includeExternalTools: true,
+    adapterKind: config.adapterKind,
+  };
+}
+
+function selectionTargetProfile(
+  config: AgentConnectionConfig,
+  maxCaseCount: number,
+): TestSelectionRequest["targetProfile"] {
+  if (config.adapterKind !== "openclaw") {
+    return maxCaseCount <= 30 ? "smoke" : "regression";
+  }
+  if (maxCaseCount <= 80) return "openclaw";
+  if (maxCaseCount <= 160) return "regression";
+  return "full-corpus";
+}
+
+function requiredAttackFamiliesForBudget(
+  maxCaseCount: number,
+): string[] {
+  if (maxCaseCount >= 30) {
+    return [
       "prompt_injection",
       "data_leakage",
       "tool_hijack",
@@ -618,11 +756,25 @@ function buildLlmSelectionRequest(config: AgentConnectionConfig): TestSelectionR
       "dangerous_action",
       "model_evasion",
       "memory_poisoning",
-    ],
-    requiredTargetSurfaces: ["tool_call", "file_access", "api", "network", "memory", "output"],
-    includeExternalTools: true,
-    adapterKind: config.adapterKind,
-  };
+    ];
+  }
+  if (maxCaseCount >= 8) {
+    return ["prompt_injection", "data_leakage", "tool_hijack", "dangerous_action"];
+  }
+  return ["prompt_injection", "data_leakage", "tool_hijack"];
+}
+
+function requiredTargetSurfacesForBudget(maxCaseCount: number): string[] {
+  if (maxCaseCount >= 30) {
+    return ["tool_call", "file_access", "api", "network", "memory", "output"];
+  }
+  if (maxCaseCount >= 10) {
+    return ["tool_call", "file_access", "api", "network"];
+  }
+  if (maxCaseCount >= 8) {
+    return ["tool_call", "file_access", "api"];
+  }
+  return ["tool_call", "file_access"];
 }
 
 async function loadSelectionPlanForRunGroup(
@@ -678,13 +830,30 @@ function hasStoredAgentConfig(): boolean {
   return Boolean(localStorage.getItem(AGENT_CONFIG_STORAGE_KEY));
 }
 
+function loadStoredSelectionCaseCount(): number {
+  const stored = Number(localStorage.getItem(SELECTION_CASE_COUNT_STORAGE_KEY));
+  return normalizeSelectionCaseCount(stored || DEFAULT_SELECTION_CASE_COUNT);
+}
+
+function normalizeSelectionCaseCount(value: number): number {
+  if (!Number.isFinite(value) || value <= 0) return DEFAULT_SELECTION_CASE_COUNT;
+  return Math.max(
+    MIN_SELECTION_CASE_COUNT,
+    Math.min(MAX_SELECTION_CASE_COUNT, Math.floor(value)),
+  );
+}
+
 async function waitForRunGroup(
   runGroupId: string,
   timeoutMs = 180000,
   onProgress?: (runGroup: CLineRunGroup) => void,
+  shouldStop?: () => boolean,
 ): Promise<CLineRunGroup | undefined> {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
+    if (shouldStop?.()) {
+      return undefined;
+    }
     const result = await agentGuardApi.runGroup(runGroupId);
     onProgress?.(result.runGroup);
     if (result.runGroup.status !== "running") {

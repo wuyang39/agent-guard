@@ -6,6 +6,7 @@ import {
   CaseIdValidationError,
   SelectionPlanValidationError,
   PolicyPackReuseError,
+  cancelRunGroup,
   createInitialE2ERunGroup,
 } from "../../../services/e2eRunService";
 import {
@@ -103,6 +104,19 @@ export async function testRunRoutes(app: FastifyInstance): Promise<void> {
     });
 
     return success({ runs, total: runs.length });
+  });
+
+  // POST /api/v1/test-runs/:runGroupId/cancel
+  app.post("/api/v1/test-runs/:runGroupId/cancel", async (request, reply) => {
+    const { runGroupId } = request.params as { runGroupId: string };
+    const runGroup = await cancelRunGroup(runGroupId);
+
+    if (!runGroup) {
+      reply.code(404);
+      return failure("NOT_FOUND", `Run group ${runGroupId} not found`);
+    }
+
+    return success({ runGroup });
   });
 
   // GET /api/v1/test-runs/:runGroupId

@@ -21,6 +21,7 @@ export type RunTestCaseOptions = {
   supervisionPolicyPack?: SupervisionPolicyPack;
   runtimeSessionId?: string;
   selectionPlanId?: string;
+  signal?: AbortSignal;
   /** 自定义 adapter（如 http_sample / openclaw）。不传则默认 Api + Mock adapters。 */
   customAdapter?: AgentAdapter;
 };
@@ -39,6 +40,9 @@ export async function runTestCase(
   const contextId = testContext.contextId;
   const agentId = agent.agentId;
   const sandboxId = testContext.sandbox.sandboxId;
+  if (options?.signal?.aborted) {
+    throw new Error("Run cancelled by user.");
+  }
 
   // 2. 创建初始对象
   const runId = createId("run");

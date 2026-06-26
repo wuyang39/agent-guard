@@ -15,13 +15,21 @@ import { formatDateTime } from "../../lib/formatters/time";
 type TestRunsPageProps = {
   state: LoadState<{ schemaVersion: "mvp-1"; runGroups: CLineRunGroup[] }>;
   onSelectRunGroup: (runGroup: CLineRunGroup) => void;
+  onActivateRunPolicy: (runGroup: CLineRunGroup) => void;
   selectedRunGroupId?: string;
+  activeRealtimePolicyPackId?: string;
+  activatingRealtimePolicyPackId?: string;
+  realtimePolicyActivationError?: string;
 };
 
 export function TestRunsPage({
   state,
   onSelectRunGroup,
+  onActivateRunPolicy,
   selectedRunGroupId,
+  activeRealtimePolicyPackId,
+  activatingRealtimePolicyPackId,
+  realtimePolicyActivationError,
 }: TestRunsPageProps) {
   if (state.status === "idle" || state.status === "loading") {
     return <LoadingBlock message="正在加载测试运行索引..." />;
@@ -62,42 +70,80 @@ export function TestRunsPage({
                 <th>检测进度</th>
                 <th>用例</th>
                 <th>风险报告</th>
+                <th>策略包</th>
+                <th>策略使用</th>
               </tr>
             </thead>
             <tbody>
               {state.data.runGroups.map((runGroup) => {
                 const selected = selectedRunGroupId === runGroup.runGroupId;
+                const isActivePolicy =
+                  Boolean(runGroup.policyPackId) &&
+                  runGroup.policyPackId === activeRealtimePolicyPackId;
+                const isActivating =
+                  Boolean(runGroup.policyPackId) &&
+                  runGroup.policyPackId === activatingRealtimePolicyPackId;
+                const policyActivation = getRunPolicyActivationState(runGroup);
                 return (
-                <tr
-                  className={`selectable-row${selected ? " selected-row" : ""}`}
-                  key={runGroup.runGroupId}
-                  onClick={() => onSelectRunGroup(runGroup)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      onSelectRunGroup(runGroup);
-                    }
-                  }}
-                  role="button"
-                  tabIndex={0}
-                >
-                  <td>
-                    {formatDateTime(runGroup.updatedAt)}
-                  </td>
-                  <td>
-                    <Badge tone={runPhaseTone(runGroup.phase)}>{runPhaseLabel(runGroup.phase)}</Badge>
-                  </td>
-                  <td className="progress-cell">
-                    <RunProgress runGroup={runGroup} compact />
-                  </td>
-                  <td>{runGroup.caseIds.length}</td>
-                  <td>{runGroup.riskReportIds.length}</td>
-                </tr>
+                  <tr
+                    className={`selectable-row${selected ? " selected-row" : ""}`}
+                    key={runGroup.runGroupId}
+                    onClick={() => onSelectRunGroup(runGroup)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        onSelectRunGroup(runGroup);
+                      }
+                    }}
+                    role="button"
+                    tabIndex={0}
+                  >
+                    <td>
+                      {formatDateTime(runGroup.updatedAt)}
+                    </td>
+                    <td>
+                      <Badge tone={runPhaseTone(runGroup.phase)}>{runPhaseLabel(runGroup.phase)}</Badge>
+                    </td>
+                    <td className="progress-cell">
+                      <RunProgress runGroup={runGroup} compact />
+                    </td>
+                    <td>{runGroup.caseIds.length}</td>
+                    <td>{runGroup.riskReportIds.length}</td>
+                    <td>
+                      <Badge tone={runGroup.policyPackId ? "tone-low" : "tone-neutral"}>
+                        {runGroup.policyPackId ? "已生成" : "未生成"}
+                      </Badge>
+                    </td>
+                    <td>
+                      <button
+                        className={`secondary-button compact-button run-policy-action${
+                          isActivePolicy ? " active" : ""
+                        }`}
+                        disabled={!policyActivation.canUse || isActivePolicy || isActivating}
+                        title={policyActivation.reason}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onSelectRunGroup(runGroup);
+                          onActivateRunPolicy(runGroup);
+                        }}
+                        type="button"
+                      >
+                        {isActivePolicy
+                          ? "当前策略"
+                          : isActivating
+                            ? "使用中"
+                            : policyActivation.label}
+                      </button>
+                    </td>
+                  </tr>
                 );
               })}
             </tbody>
           </table>
         </div>
+        {realtimePolicyActivationError ? (
+          <p className="run-policy-error">{realtimePolicyActivationError}</p>
+        ) : null}
         {selectedRunGroup ? (
           <DeveloperDetails
             items={[
@@ -191,4 +237,51 @@ function CodeList({ values }: { values: string[] }) {
       ))}
     </span>
   );
+}
+
+function getRunPolicyActivationState(runGroup: CLineRunGroup): {
+  canUse: boolean;
+  label: string;
+  reason: string;
+} {
+  if (!runGroup.policyPackId) {
+    return {
+      canUse: false,
+      label: "无策略包",
+      reason: "该运行尚未生成策略包。",
+    };
+  }
+  if (runGroup.adapterKind !== "openclaw") {
+    return {
+      canUse: false,
+      label: "非 OpenClaw",
+      reason: "实时监督当前只接受 OpenClaw 检测生成的策略包。",
+    };
+  }
+  if (runGroup.status === "failed" || runGroup.phase === "failed") {
+    return {
+      canUse: false,
+      label: "运行失败",
+      reason: "失败运行的策略包不能用于实时监督。",
+    };
+  }
+  if (runGroup.phase === "queued" || runGroup.phase === "detecting") {
+    return {
+      canUse: false,
+      label: "未完成",
+      reason: "检测完成并生成策略包后才能用于实时监督。",
+    };
+  }
+  if (runGroup.policyContextSource && runGroup.policyContextSource !== "stored_detection") {
+    return {
+      canUse: false,
+      label: "不可复用",
+      reason: "实时监督只复用真实检测上下文生成的策略包。",
+    };
+  }
+  return {
+    canUse: true,
+    label: "使用策略包",
+    reason: "将该运行生成的策略包设为实时监督当前策略。",
+  };
 }

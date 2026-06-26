@@ -42,7 +42,7 @@ import type {
   P2RunCaseFailure,
   EntityLink,
 } from "../api/types";
-import { buildInitialRunGroup, saveRunGroup } from "../storage/fileRunStore";
+import { buildInitialRunGroup, getRunGroup, saveRunGroup } from "../storage/fileRunStore";
 import type { SupervisionSessionSummary } from "../storage/fileRunStore";
 import { saveSessionRecords } from "../storage/fileRunStore";
 import { getReportEntry, indexReport, indexArtifact } from "../storage/fileReportStore";
@@ -62,6 +62,8 @@ const P2_DEMO_CASES_FILE = path.join(CONFIGS_DIR, "p2_demo_cases.json");
 const OUTPUT_DIR = path.resolve(process.cwd(), "outputs", "reports");
 const TRACES_DIR = path.resolve(process.cwd(), "outputs", "traces");
 const MAX_PROGRESS_FAILURES = 24;
+const RUN_CANCELLED_MESSAGE = "Run cancelled by user.";
+const activeRunControllers = new Map<string, AbortController>();
 
 export class CaseIdValidationError extends Error {
   constructor(message: string) {
@@ -81,6 +83,13 @@ export class PolicyPackReuseError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "PolicyPackReuseError";
+  }
+}
+
+class RunCancelledError extends Error {
+  constructor(message = RUN_CANCELLED_MESSAGE) {
+    super(message);
+    this.name = "RunCancelledError";
   }
 }
 
@@ -138,6 +147,38 @@ export function createInitialE2ERunGroup(request: RunE2ERequest): P2RunGroup {
   );
 }
 
+export async function cancelRunGroup(runGroupId: string): Promise<P2RunGroup | undefined> {
+  const runGroup = await getRunGroup(runGroupId);
+  if (!runGroup) return undefined;
+
+  activeRunControllers.get(runGroupId)?.abort();
+
+  if (runGroup.status !== "running") {
+    return runGroup;
+  }
+
+  runGroup.status = "failed";
+  runGroup.phase = "failed";
+  runGroup.endedAt = nowIso();
+  runGroup.error = RUN_CANCELLED_MESSAGE;
+  appendProgressWarning(runGroup, RUN_CANCELLED_MESSAGE);
+  updateRunProgress(runGroup, {
+    phase: "failed",
+    runningCaseIds: [],
+    retryingCaseIds: [],
+  });
+  await saveRunGroup(runGroup);
+
+  if (runGroup.selectionPlanId) {
+    await updateSelectionPlanStatus(runGroup.selectionPlanId, "failed", {
+      runGroupId: runGroup.runGroupId,
+      error: RUN_CANCELLED_MESSAGE,
+    });
+  }
+
+  return runGroup;
+}
+
 export async function runE2E(
   request: RunE2ERequest,
   existingRunGroup?: P2RunGroup,
@@ -150,8 +191,11 @@ export async function runE2E(
   const runGroup =
     existingRunGroup ?? buildInitialRunGroup(request, provisionalAgentId);
   runGroup.selectionPlanId = request.selectionPlanId;
+  const controller = new AbortController();
+  activeRunControllers.set(runGroup.runGroupId, controller);
 
   try {
+    throwIfRunCancelled(controller.signal);
     if (request.selectionPlanId && request.caseIds?.length) {
       throw new SelectionPlanValidationError(
         "selectionPlanId and caseIds cannot be provided together.",
@@ -293,6 +337,7 @@ export async function runE2E(
             runGroup,
             policyPack,
             sourceRunGroupId: reused.sourceRunGroupId,
+            signal: controller.signal,
           });
 
       if (runGroup.error) {
@@ -364,6 +409,7 @@ export async function runE2E(
       customAdapter,
       runGroup,
       request,
+      signal: controller.signal,
     });
     const riskReports = detectionResult.riskReports;
 
@@ -433,6 +479,7 @@ export async function runE2E(
           customAdapter,
           runGroup,
           policyPack,
+          signal: controller.signal,
         })),
       );
     }
@@ -498,13 +545,19 @@ export async function runE2E(
 
     return { runGroup, links };
   } catch (err) {
+    const errorMessage = isRunCancelledError(err)
+      ? RUN_CANCELLED_MESSAGE
+      : err instanceof Error
+        ? err.message
+        : String(err);
     runGroup.status = "failed";
     runGroup.phase = "failed";
     runGroup.endedAt = nowIso();
-    runGroup.error = err instanceof Error ? err.message : String(err);
+    runGroup.error = errorMessage;
     updateRunProgress(runGroup, {
       phase: "failed",
       runningCaseIds: [],
+      retryingCaseIds: [],
       failedCases: Math.max(runGroup.progress?.failedCases ?? 0, 1),
     });
     await saveRunGroup(runGroup);
@@ -519,6 +572,10 @@ export async function runE2E(
       );
     }
     throw err;
+  } finally {
+    if (activeRunControllers.get(runGroup.runGroupId) === controller) {
+      activeRunControllers.delete(runGroup.runGroupId);
+    }
   }
 }
 
@@ -561,6 +618,7 @@ async function runDetectionCasesConcurrently(input: {
   customAdapter?: AgentAdapter;
   runGroup: P2RunGroup;
   request: RunE2ERequest;
+  signal: AbortSignal;
 }): Promise<DetectionBatchResult> {
   const {
     targetCases,
@@ -569,6 +627,7 @@ async function runDetectionCasesConcurrently(input: {
     customAdapter,
     runGroup,
     request,
+    signal,
   } = input;
   const concurrency = runGroup.progress?.concurrency ?? getDetectionConcurrency(request);
   const runningCaseIds = new Set<string>();
@@ -585,6 +644,7 @@ async function runDetectionCasesConcurrently(input: {
     concurrency,
     async (context, index) => {
       if (fatalError) return;
+      throwIfRunCancelled(signal);
       runningCaseIds.add(context.caseId);
       updateRunProgress(runGroup, {
         runningCaseIds: [...runningCaseIds],
@@ -603,6 +663,7 @@ async function runDetectionCasesConcurrently(input: {
           customAdapter,
           runGroup,
           request,
+          signal,
           getCounters: () => ({ completedCases, failedCases, skippedCases, retriedCases }),
           setRetried: () => {
             retriedCases++;
@@ -622,6 +683,22 @@ async function runDetectionCasesConcurrently(input: {
           lastCompletedCaseId: context.caseId,
         });
       } catch (error) {
+        if (isRunCancelledError(error) || signal.aborted) {
+          fatalError = new RunCancelledError();
+          runGroup.status = "failed";
+          runGroup.phase = "failed";
+          runGroup.error = RUN_CANCELLED_MESSAGE;
+          updateRunProgress(runGroup, {
+            phase: "failed",
+            runningCaseIds: [...runningCaseIds],
+            retryingCaseIds: [],
+            completedCases,
+            failedCases,
+            skippedCases,
+            retriedCases,
+          });
+          return;
+        }
         failedCases++;
         const caseError = normalizeDetectionCaseError(error);
         const skipped = caseError.skipAllowed;
@@ -664,9 +741,10 @@ async function runDetectionCasesConcurrently(input: {
         await saveRunGroup(runGroup);
       }
     },
-    () => fatalError !== undefined,
+    () => fatalError !== undefined || signal.aborted,
   );
 
+  throwIfRunCancelled(signal);
   if (fatalError) {
     throw fatalError;
   }
@@ -705,6 +783,7 @@ async function runDetectionCaseWithRetry(input: {
   customAdapter?: AgentAdapter;
   runGroup: P2RunGroup;
   request: RunE2ERequest;
+  signal: AbortSignal;
   getCounters: () => {
     completedCases: number;
     failedCases: number;
@@ -720,6 +799,7 @@ async function runDetectionCaseWithRetry(input: {
     customAdapter,
     runGroup,
     request,
+    signal,
     getCounters,
     setRetried,
   } = input;
@@ -730,10 +810,11 @@ async function runDetectionCaseWithRetry(input: {
   let lastMessage = "unknown error";
 
   while (attempt < maxAttempts) {
+    throwIfRunCancelled(signal);
     attempt++;
     const spacingMs = getOpenClawCaseSpacingMs(request, attempt);
     if (spacingMs > 0) {
-      await sleep(spacingMs);
+      await sleep(spacingMs, signal);
     }
 
     try {
@@ -744,6 +825,7 @@ async function runDetectionCaseWithRetry(input: {
           context,
           customAdapter,
           runGroup,
+          signal,
         }),
       };
     } catch (error) {
@@ -781,7 +863,7 @@ async function runDetectionCaseWithRetry(input: {
         retriedCases: counters.retriedCases,
       });
       await saveRunGroup(runGroup);
-      await sleep(delayMs);
+      await sleep(delayMs, signal);
       updateRunProgress(runGroup, {
         retryingCaseIds: (runGroup.progress?.retryingCaseIds ?? []).filter(
           (caseId) => caseId !== context.caseId,
@@ -808,12 +890,16 @@ async function runSingleDetectionAttempt(input: {
   context: TestContext;
   customAdapter?: AgentAdapter;
   runGroup: P2RunGroup;
+  signal: AbortSignal;
 }): Promise<ReturnType<typeof buildRiskReport>> {
-  const { agent, adapterConfig, context, customAdapter, runGroup } = input;
+  const { agent, adapterConfig, context, customAdapter, runGroup, signal } = input;
+  throwIfRunCancelled(signal);
   const { testRun, trace } = await runTestCase(agent, adapterConfig, context, {
     customAdapter,
     selectionPlanId: runGroup.selectionPlanId,
+    signal,
   });
+  throwIfRunCancelled(signal);
 
   runGroup.testRunIds.push(testRun.runId);
   runGroup.traceIds.push(trace.traceId);
@@ -849,6 +935,7 @@ async function runSupervisionCases(input: {
   runGroup: P2RunGroup;
   policyPack: ReturnType<typeof buildSupervisionPolicyPack>;
   sourceRunGroupId?: string;
+  signal: AbortSignal;
 }): Promise<Awaited<ReturnType<typeof runTestCase>>["supervisionRecords"]> {
   const {
     targetCases,
@@ -858,6 +945,7 @@ async function runSupervisionCases(input: {
     runGroup,
     policyPack,
     sourceRunGroupId,
+    signal,
   } = input;
   const allSupervisionRecords: Awaited<
     ReturnType<typeof runTestCase>
@@ -870,6 +958,7 @@ async function runSupervisionCases(input: {
   await saveRunGroup(runGroup);
 
   for (const context of targetCases) {
+    throwIfRunCancelled(signal);
     updateRunProgress(runGroup, {
       runningCaseIds: [context.caseId],
       completedCases,
@@ -887,8 +976,10 @@ async function runSupervisionCases(input: {
         runtimeSessionId,
         customAdapter,
         selectionPlanId: runGroup.selectionPlanId,
+        signal,
       },
     );
+    throwIfRunCancelled(signal);
 
     allSupervisionRecords.push(...supervisionRecords);
     runGroup.runtimeSessionIds.push(runtimeSessionId);
@@ -1167,9 +1258,40 @@ function classifyDetectionError(
   };
 }
 
-async function sleep(ms: number): Promise<void> {
+function throwIfRunCancelled(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw new RunCancelledError();
+  }
+}
+
+function isRunCancelledError(error: unknown): boolean {
+  if (error instanceof RunCancelledError) return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return message.toLowerCase().includes("cancelled by user");
+}
+
+async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   if (ms <= 0) return;
-  await new Promise((resolve) => setTimeout(resolve, ms));
+  throwIfRunCancelled(signal);
+  await new Promise<void>((resolve, reject) => {
+    const cleanup = () => {
+      signal?.removeEventListener("abort", onAbort);
+    };
+    const onAbort = () => {
+      clearTimeout(timer);
+      cleanup();
+      reject(new RunCancelledError());
+    };
+    const timer = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, ms);
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 function buildToolProfilesForPolicyGeneration(

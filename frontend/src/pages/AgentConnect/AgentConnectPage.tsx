@@ -13,9 +13,13 @@ type AgentConnectPageProps = {
 };
 
 const ADAPTER_OPTIONS: Array<{ value: AgentAdapterKind; label: string }> = [
-  { value: "openclaw", label: "OpenClaw CLI" },
-  { value: "http_sample", label: "HTTP API Agent" },
+  { value: "openclaw", label: "OpenClaw Runtime" },
+  { value: "http_sample", label: "HTTP Sample" },
+  { value: "mock", label: "Mock" },
 ];
+
+const DEFAULT_AGENT_TIMEOUT_MS = 120000;
+const DEFAULT_OPENCLAW_TIMEOUT_MS = 300000;
 
 type AgentOption = {
   adapterKind: AgentAdapterKind;
@@ -29,13 +33,19 @@ const AGENT_OPTIONS: AgentOption[] = [
     adapterKind: "openclaw",
     name: "OpenClaw CLI Agent",
     agentId: "agent.openclaw.demo",
-    description: "用于检测并生成监督策略包的本地 OpenClaw 智能体。",
+    description: "CLI + realtime MCP",
   },
   {
     adapterKind: "http_sample",
     name: "HTTP Sample Agent",
     agentId: "agent.http_sample.demo",
-    description: "用于联调和备用验证的 HTTP 智能体。",
+    description: "Local HTTP endpoint",
+  },
+  {
+    adapterKind: "mock",
+    name: "Built-in Demo Agent",
+    agentId: "agent.mock.demo",
+    description: "Deterministic fallback",
   },
 ];
 
@@ -93,6 +103,7 @@ export function AgentConnectPage({
     <div className="page-stack fill-page">
       <section className="page-hero agent-hero">
         <div className="hero-copy">
+          <p className="eyebrow">运行环境</p>
           <h1>智能体接入</h1>
         </div>
         <div className="hero-actions">
@@ -106,6 +117,21 @@ export function AgentConnectPage({
       </section>
 
       <section className="workspace-main agent-workspace">
+        <div className="environment-mode-grid">
+          {AGENT_OPTIONS.map((option) => (
+            <button
+              className={`environment-mode-card ${draft.adapterKind === option.adapterKind ? "active" : ""}`}
+              key={option.adapterKind}
+              onClick={() => selectAgent(option)}
+              type="button"
+            >
+              <span>{ADAPTER_OPTIONS.find((item) => item.value === option.adapterKind)?.label}</span>
+              <strong>{option.name}</strong>
+              <small>{option.description}</small>
+            </button>
+          ))}
+        </div>
+
         <div className="workspace-main panel grow-panel">
           <div className="section-header compact">
             <h2>接入配置</h2>
@@ -161,7 +187,7 @@ export function AgentConnectPage({
                 onChange={(event) =>
                   setDraft((current) => ({
                     ...current,
-                    timeoutMs: Number(event.target.value) || 120000,
+                    timeoutMs: Number(event.target.value) || defaultTimeoutMs(current.adapterKind),
                   }))
                 }
               />
@@ -208,6 +234,13 @@ export function AgentConnectPage({
             </div>
           ) : null}
 
+          {draft.adapterKind === "mock" ? (
+            <div className="config-check-result is-ok">
+              <strong>Mock Adapter</strong>
+              <p>OpenClaw 依赖：无</p>
+            </div>
+          ) : null}
+
           <div className="form-grid">
             <label className="field wide-field">
               <span>测试用例</span>
@@ -223,7 +256,7 @@ export function AgentConnectPage({
               />
             </label>
             <label className="field wide-field">
-              <span>说明</span>
+              <span>备注</span>
               <textarea
                 rows={4}
                 value={draft.description}
@@ -262,9 +295,21 @@ function normalizeConfig(config: AgentConnectionConfig): AgentConnectionConfig {
     openclawCliPath: config.openclawCliPath.trim(),
     gatewayUrl: config.gatewayUrl.trim(),
     endpointUrl: config.endpointUrl.trim(),
-    timeoutMs: Math.max(5000, Number(config.timeoutMs) || 120000),
+    timeoutMs: normalizeTimeoutMs(config.adapterKind, config.timeoutMs),
     caseIds: config.caseIds.length ? config.caseIds : ["case.resource_injection"],
   };
+}
+
+function normalizeTimeoutMs(adapterKind: AgentAdapterKind, timeoutMs: number): number {
+  const parsed = Number(timeoutMs);
+  const fallback = defaultTimeoutMs(adapterKind);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  if (adapterKind === "openclaw") return Math.max(DEFAULT_OPENCLAW_TIMEOUT_MS, Math.floor(parsed));
+  return Math.max(5000, Math.floor(parsed));
+}
+
+function defaultTimeoutMs(adapterKind: AgentAdapterKind): number {
+  return adapterKind === "openclaw" ? DEFAULT_OPENCLAW_TIMEOUT_MS : DEFAULT_AGENT_TIMEOUT_MS;
 }
 
 function parseCaseIds(value: string): string[] {

@@ -16,7 +16,7 @@ export function ProjectOverviewPage({
     return (
       <EmptyBlock
         title={titleFor(kind)}
-        message="当前没有可展示的运行数据。先生成监督策略包即可填充该视图。"
+        message="暂无运行数据。"
       />
     );
   }

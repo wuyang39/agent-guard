@@ -125,7 +125,7 @@ function buildCustomAdapter(request: RunE2ERequest): AgentAdapter | undefined {
           process.env.OPENCLAW_GATEWAY_URL ??
           "http://localhost:18789",
         cliPath: request.connection?.cliPath,
-        timeoutMs: request.connection?.timeoutMs ?? 120_000,
+        timeoutMs: request.connection?.timeoutMs ?? 300_000,
       });
     }
     default:

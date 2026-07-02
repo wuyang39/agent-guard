@@ -13,6 +13,8 @@ type AgentConfigIndex = {
 };
 
 const DEFAULT_OPENCLAW_CLI_PATH = process.env.OPENCLAW_CLI?.trim() || undefined;
+const DEFAULT_AGENT_TIMEOUT_MS = 120_000;
+const DEFAULT_OPENCLAW_TIMEOUT_MS = 300_000;
 
 const DEFAULT_AGENT: AgentConnectionConfig = {
   adapterKind: "openclaw",
@@ -22,7 +24,7 @@ const DEFAULT_AGENT: AgentConnectionConfig = {
   openclawCliPath: DEFAULT_OPENCLAW_CLI_PATH,
   gatewayUrl: "http://127.0.0.1:18789",
   endpointUrl: "http://127.0.0.1:7001/agent/run?mode=vulnerable",
-  timeoutMs: 120000,
+  timeoutMs: DEFAULT_OPENCLAW_TIMEOUT_MS,
   caseIds: ["case.resource_injection"],
 };
 
@@ -81,11 +83,23 @@ function sanitizeAgentConfig(input: AgentConnectionConfig): AgentConnectionConfi
     openclawCliPath: input.openclawCliPath?.trim(),
     gatewayUrl: input.gatewayUrl?.trim(),
     endpointUrl: input.endpointUrl?.trim(),
-    timeoutMs: Number(input.timeoutMs) || DEFAULT_AGENT.timeoutMs,
+    timeoutMs: normalizeTimeoutMs(input.adapterKind, input.timeoutMs),
     caseIds: Array.isArray(input.caseIds)
       ? input.caseIds.map((caseId) => caseId.trim()).filter(Boolean)
       : DEFAULT_AGENT.caseIds,
   };
+}
+
+function normalizeTimeoutMs(
+  adapterKind: AgentConnectionConfig["adapterKind"],
+  timeoutMs: number | undefined,
+): number {
+  const parsed = Number(timeoutMs);
+  const fallback =
+    adapterKind === "openclaw" ? DEFAULT_OPENCLAW_TIMEOUT_MS : DEFAULT_AGENT_TIMEOUT_MS;
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  if (adapterKind === "openclaw") return Math.max(DEFAULT_OPENCLAW_TIMEOUT_MS, Math.floor(parsed));
+  return Math.max(5000, Math.floor(parsed));
 }
 
 async function readIndex(): Promise<AgentConfigIndex> {

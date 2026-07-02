@@ -14,6 +14,9 @@ type RunE2EOptions = {
   generateDefenseReport?: boolean;
 };
 
+const DEFAULT_AGENT_TIMEOUT_MS = 120000;
+const DEFAULT_OPENCLAW_TIMEOUT_MS = 300000;
+
 export const runsApi = {
   dashboardSummary() {
     return request<CLineDashboardSummary>("/api/v1/dashboard/summary");
@@ -43,7 +46,7 @@ export const runsApi = {
             ? config.openclawCliPath
             : undefined,
         launchMode: "external_running",
-        timeoutMs: config?.timeoutMs ?? 120000,
+        timeoutMs: normalizeRunTimeoutMs(adapterKind, config?.timeoutMs),
       },
       generateDefenseReport: options.generateDefenseReport ?? adapterKind !== "openclaw",
     };
@@ -90,6 +93,18 @@ export const runsApi = {
     return { runGroup: toRunGroup(result.runGroup) };
   },
 };
+
+function normalizeRunTimeoutMs(
+  adapterKind: AgentConnectionConfig["adapterKind"],
+  timeoutMs: number | undefined,
+): number {
+  const parsed = Number(timeoutMs);
+  const fallback =
+    adapterKind === "openclaw" ? DEFAULT_OPENCLAW_TIMEOUT_MS : DEFAULT_AGENT_TIMEOUT_MS;
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  if (adapterKind === "openclaw") return Math.max(DEFAULT_OPENCLAW_TIMEOUT_MS, Math.floor(parsed));
+  return Math.max(5000, Math.floor(parsed));
+}
 
 type P2RunGroupWire = {
   runGroupId: string;

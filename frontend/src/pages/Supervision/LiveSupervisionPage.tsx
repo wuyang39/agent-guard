@@ -437,7 +437,7 @@ export function LiveSupervisionPage({
                   </article>
                 ))
               ) : (
-                <p className="muted">出现 ask 策略命中时，会在这里等待你确认。</p>
+                <p className="muted">暂无待确认</p>
               )}
             </div>
           </div>

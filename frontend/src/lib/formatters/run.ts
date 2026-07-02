@@ -11,13 +11,13 @@ const phaseLabels: Record<CLineRunGroup["phase"], string> = {
 };
 
 const phaseDescriptions: Record<CLineRunGroup["phase"], string> = {
-  queued: "任务已创建，等待后端开始检测。",
-  detecting: "正在采集调用轨迹并生成检测报告。",
-  policy_ready: "检测完成，监督策略包已生成，等待进入实时监督。",
-  supervising: "实时监督会话正在接收工具调用事件。",
-  supervision_completed: "监督记录已生成，可以生成防御报告。",
-  defense_report_ready: "监督记录已沉淀为防御报告。",
-  failed: "运行失败，请查看运行记录和服务状态。",
+  queued: "排队中",
+  detecting: "采集轨迹",
+  policy_ready: "策略包就绪",
+  supervising: "接收实时事件",
+  supervision_completed: "监督完成",
+  defense_report_ready: "防御报告就绪",
+  failed: "运行失败",
 };
 
 const phaseTones: Record<CLineRunGroup["phase"], string> = {
@@ -33,7 +33,7 @@ const phaseTones: Record<CLineRunGroup["phase"], string> = {
 const adapterLabels: Record<AgentAdapterKind, string> = {
   openclaw: "OpenClaw",
   http_sample: "HTTP Sample",
-  mock: "示例适配器",
+  mock: "Mock",
 };
 
 const policySourceLabels: Record<NonNullable<CLineRunGroup["policyContextSource"]>, string> = {

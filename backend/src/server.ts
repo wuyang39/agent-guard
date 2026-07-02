@@ -8,7 +8,7 @@
 import { buildApp } from "./app";
 
 const PORT = Number(process.env.API_PORT ?? 3100);
-const HOST = process.env.API_HOST ?? "0.0.0.0";
+const HOST = process.env.API_HOST ?? "127.0.0.1";
 
 async function main(): Promise<void> {
   const app = await buildApp();

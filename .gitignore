@@ -27,3 +27,5 @@ outputs/exports/**
 !outputs/exports/.gitkeep
 generated/a-line/tmp/
 generated/a-line/*.tmp.json
+docs/~$*.docx
+docs/~WRL*.tmp

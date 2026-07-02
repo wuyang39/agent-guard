@@ -5,6 +5,9 @@ import type {
   AgentListResponse,
 } from "./types";
 
+const DEFAULT_AGENT_TIMEOUT_MS = 120000;
+const DEFAULT_OPENCLAW_TIMEOUT_MS = 300000;
+
 export const agentsApi = {
   async agents(): Promise<AgentListResponse> {
     const result = await request<{
@@ -56,9 +59,21 @@ function toAgentConfig(config: Partial<AgentConnectionConfig>): AgentConnectionC
     openclawCliPath: config.openclawCliPath || defaultOpenClawCliPath,
     gatewayUrl: config.gatewayUrl || "http://127.0.0.1:18789",
     endpointUrl: config.endpointUrl || "http://127.0.0.1:7001/agent/run?mode=vulnerable",
-    timeoutMs: Number(config.timeoutMs) || 120000,
+    timeoutMs: normalizeAgentTimeoutMs(adapterKind, config.timeoutMs),
     caseIds: config.caseIds?.length ? config.caseIds : ["case.resource_injection"],
     createdAt: config.createdAt,
     updatedAt: config.updatedAt,
   };
+}
+
+function normalizeAgentTimeoutMs(
+  adapterKind: AgentConnectionConfig["adapterKind"],
+  timeoutMs: number | undefined,
+): number {
+  const parsed = Number(timeoutMs);
+  const fallback =
+    adapterKind === "openclaw" ? DEFAULT_OPENCLAW_TIMEOUT_MS : DEFAULT_AGENT_TIMEOUT_MS;
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  if (adapterKind === "openclaw") return Math.max(DEFAULT_OPENCLAW_TIMEOUT_MS, Math.floor(parsed));
+  return Math.max(5000, Math.floor(parsed));
 }

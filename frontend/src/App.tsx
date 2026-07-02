@@ -43,6 +43,8 @@ const REALTIME_TOAST_TTL_MS = 7000;
 const DEFAULT_SELECTION_CASE_COUNT = 30;
 const MIN_SELECTION_CASE_COUNT = 3;
 const MAX_SELECTION_CASE_COUNT = 500;
+const DEFAULT_AGENT_TIMEOUT_MS = 120000;
+const DEFAULT_OPENCLAW_TIMEOUT_MS = 300000;
 
 const defaultOpenClawCliPath = import.meta.env.VITE_OPENCLAW_CLI_PATH ?? "";
 
@@ -50,11 +52,11 @@ const defaultAgentConfig: AgentConnectionConfig = {
   adapterKind: "openclaw",
   agentId: "agent.openclaw.demo",
   name: "OpenClaw CLI Agent",
-  description: "用于检测并生成监督策略包的本地 OpenClaw 智能体。",
+  description: "OpenClaw runtime",
   openclawCliPath: defaultOpenClawCliPath,
   gatewayUrl: "http://127.0.0.1:18789",
   endpointUrl: "http://127.0.0.1:7001/agent/run?mode=vulnerable",
-  timeoutMs: 120000,
+  timeoutMs: DEFAULT_OPENCLAW_TIMEOUT_MS,
   caseIds: ["case.resource_injection"],
 };
 
@@ -118,7 +120,7 @@ export function App() {
     if (!runGroup.defenseReportId) {
       setDefenseState({
         status: "empty",
-        message: `运行组 ${runGroup.runGroupId} 尚未生成防御报告。完成实时监督后再生成防御报告。`,
+        message: `运行组 ${runGroup.runGroupId} 未生成防御报告。`,
       });
       return;
     }
@@ -145,7 +147,7 @@ export function App() {
     } else {
       setDetectionState({
         status: "empty",
-        message: `运行组 ${runGroup.runGroupId} 尚未生成检测报告，当前阶段为 ${runGroup.phase}。`,
+        message: `运行组 ${runGroup.runGroupId} 未生成检测报告。阶段：${runGroup.phase}`,
       });
     }
 
@@ -155,7 +157,7 @@ export function App() {
     } else {
       setTraceState({
         status: "empty",
-        message: `运行组 ${runGroup.runGroupId} 尚未产生调用轨迹。`,
+        message: `运行组 ${runGroup.runGroupId} 未产生调用轨迹。`,
       });
     }
 
@@ -207,23 +209,23 @@ export function App() {
       setSelectedRunGroupId(undefined);
       setSelectionPlanState({
         status: "empty",
-        message: "尚无攻击库选择计划。请先执行 LLM 选样并生成监督策略包。",
+        message: "暂无攻击库选择计划。",
       });
       setDetectionState({
         status: "empty",
-        message: "尚无检测报告。请先生成监督策略包。",
+        message: "暂无检测报告。",
       });
       setDefenseState({
         status: "empty",
-        message: "尚无防御报告。生成策略包并完成实时监督后即可生成防御报告。",
+        message: "暂无防御报告。",
       });
       setTraceState({
         status: "empty",
-        message: "尚无调用轨迹。请先生成监督策略包。",
+        message: "暂无调用轨迹。",
       });
       setReportBundleState({
         status: "empty",
-        message: "尚无报告包。完成一次检测或实时监督后再查看报告工作台。",
+        message: "暂无报告包。",
       });
       return;
     }
@@ -250,7 +252,7 @@ export function App() {
       if (!summary.latestRunGroup) {
         setSummaryState({
           status: "empty",
-          message: "服务已连接，但当前还没有运行记录。",
+          message: "服务已连接，暂无运行记录。",
         });
         await loadDetails(summary);
         return;
@@ -263,18 +265,18 @@ export function App() {
         status: "error",
         message:
           error instanceof Error
-            ? `${error.message}。请确认后端服务已启动，也可以先使用示例数据查看页面。`
-            : "无法连接后端服务。请确认服务已启动，也可以先使用示例数据查看页面。",
+            ? `${error.message}。确认 Agent Guard API 已启动。`
+            : "无法连接 Agent Guard API。",
         fallback: mockDashboardSummary,
       });
-      setDetectionState({ status: "empty", message: "等待服务数据或示例数据。" });
-      setDefenseState({ status: "empty", message: "等待服务数据或示例数据。" });
-      setTraceState({ status: "empty", message: "等待服务数据或示例数据。" });
-      setReportBundleState({ status: "empty", message: "等待服务数据或示例数据。" });
-      setRunGroupsState({ status: "empty", message: "等待服务数据或示例数据。" });
+      setDetectionState({ status: "empty", message: "暂无服务数据。" });
+      setDefenseState({ status: "empty", message: "暂无服务数据。" });
+      setTraceState({ status: "empty", message: "暂无服务数据。" });
+      setReportBundleState({ status: "empty", message: "暂无服务数据。" });
+      setRunGroupsState({ status: "empty", message: "暂无服务数据。" });
       setSystemState({
         status: "error",
-        message: "无法连接系统状态接口。确认 Agent Guard API 是否已启动。",
+        message: "系统状态接口不可用。",
       });
     }
   }, [loadDetails]);
@@ -498,26 +500,24 @@ export function App() {
   function acceptRunGroupProgress(runGroup: CLineRunGroup) {
     setSelectedRunGroupId(runGroup.runGroupId);
     setRunGroupsState((current) => mergeRunGroupListState(current, runGroup));
-    setSummaryState((current) =>
-      current.status === "ready"
-        ? {
-            ...current,
-            data: {
-              ...current.data,
-              latestRunGroup: runGroup,
-              recentRunGroups: mergeRunGroups(current.data.recentRunGroups, runGroup),
-            },
-          }
-        : current,
-    );
+    setSummaryState((current) => mergeDashboardSummaryState(current, runGroup));
   }
+
+  const desktopStatus = desktopServiceStatus(systemState);
 
   return (
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand-block">
-          <strong>Agent Guard</strong>
-          <span>项目控制台</span>
+          <div className="brand-mark">AG</div>
+          <div>
+            <strong>Agent Guard</strong>
+          </div>
+        </div>
+        <div className="sidebar-runtime-card">
+          <span>API</span>
+          <strong>{desktopStatus.apiPort}</strong>
+          <small>{desktopStatus.endpoint}</small>
         </div>
         <nav>
           <button className={view === "agent" ? "active" : ""} onClick={() => setView("agent")}>
@@ -557,6 +557,13 @@ export function App() {
       </aside>
 
       <main className="main-surface">
+        <section className="desktop-topbar" aria-label="桌面运行状态">
+          <div className="desktop-health-strip">
+            <span className={`health-dot ${desktopStatus.tone}`} />
+            <span>{desktopStatus.label}</span>
+            <code>{desktopStatus.endpoint}</code>
+          </div>
+        </section>
         {view === "agent" ? (
           <AgentConnectPage
             config={agentConfig}
@@ -643,6 +650,38 @@ export function App() {
       ) : null}
     </div>
   );
+}
+
+function desktopServiceStatus(state: LoadState<SystemStatus>): {
+  apiPort: string;
+  endpoint: string;
+  label: string;
+  tone: "is-ready" | "is-warn" | "is-loading";
+} {
+  const endpoint = "127.0.0.1:3100";
+  if (state.status === "ready") {
+    const openClawReady = state.data.health?.openclawCli === true;
+    return {
+      apiPort: "3100",
+      endpoint,
+      label: openClawReady ? "服务在线，OpenClaw 可用" : "服务在线，OpenClaw 待配置",
+      tone: openClawReady ? "is-ready" : "is-warn",
+    };
+  }
+  if (state.status === "error") {
+    return {
+      apiPort: "3100",
+      endpoint,
+      label: "等待 API",
+      tone: "is-warn",
+    };
+  }
+  return {
+    apiPort: "3100",
+    endpoint,
+    label: "启动中",
+    tone: "is-loading",
+  };
 }
 
 type RealtimeToast = {
@@ -806,8 +845,9 @@ function loadStoredAgentConfig(): AgentConnectionConfig {
     const raw = localStorage.getItem(AGENT_CONFIG_STORAGE_KEY);
     if (!raw) return defaultAgentConfig;
     const parsed = JSON.parse(raw) as Partial<AgentConnectionConfig>;
+    const adapterKind = parsed.adapterKind ?? defaultAgentConfig.adapterKind;
     const migratedOpenClawCliPath =
-      parsed.adapterKind === "openclaw" &&
+      adapterKind === "openclaw" &&
       defaultOpenClawCliPath &&
       parsed.openclawCliPath?.toLowerCase().startsWith("f:\\openclaw\\")
         ? defaultOpenClawCliPath
@@ -815,11 +855,12 @@ function loadStoredAgentConfig(): AgentConnectionConfig {
     return {
       ...defaultAgentConfig,
       ...parsed,
+      adapterKind,
       openclawCliPath: migratedOpenClawCliPath ?? defaultAgentConfig.openclawCliPath,
       caseIds: Array.isArray(parsed.caseIds) && parsed.caseIds.length
         ? parsed.caseIds.filter((item): item is string => typeof item === "string")
         : defaultAgentConfig.caseIds,
-      timeoutMs: Number(parsed.timeoutMs) || defaultAgentConfig.timeoutMs,
+      timeoutMs: normalizeAgentTimeoutMs(adapterKind, parsed.timeoutMs),
     };
   } catch {
     return defaultAgentConfig;
@@ -892,6 +933,79 @@ function mergeRunGroupListState(
   };
 }
 
+function mergeDashboardSummaryState(
+  current: LoadState<CLineDashboardSummary>,
+  runGroup: CLineRunGroup,
+): LoadState<CLineDashboardSummary> {
+  if (current.status === "ready") {
+    const recentRunGroups = mergeRunGroups(current.data.recentRunGroups, runGroup);
+    return {
+      ...current,
+      data: {
+        ...current.data,
+        latestRunGroup: runGroup,
+        latestRunMetrics:
+          current.data.latestRunMetrics?.runGroupId === runGroup.runGroupId
+            ? current.data.latestRunMetrics
+            : undefined,
+        recentRunGroups,
+        historicalWindow: current.data.historicalWindow
+          ? {
+              ...current.data.historicalWindow,
+              runCount: Math.max(current.data.historicalWindow.runCount, recentRunGroups.length),
+            }
+          : undefined,
+        totals: {
+          ...current.data.totals,
+          runGroups: Math.max(current.data.totals.runGroups, recentRunGroups.length),
+          traces: Math.max(current.data.totals.traces, runGroup.traceIds.length),
+          riskReports: Math.max(current.data.totals.riskReports, runGroup.riskReportIds.length),
+        },
+      },
+    };
+  }
+
+  return {
+    status: "ready",
+    source: "api",
+    data: buildRunningDashboardSummary(runGroup),
+  };
+}
+
+function buildRunningDashboardSummary(runGroup: CLineRunGroup): CLineDashboardSummary {
+  return {
+    schemaVersion: "mvp-1",
+    latestRunGroup: runGroup,
+    recentRunGroups: [runGroup],
+    historicalWindow: {
+      runLimit: 100,
+      runCount: 1,
+    },
+    totals: {
+      runGroups: 1,
+      traces: runGroup.traceIds.length,
+      riskReports: runGroup.riskReportIds.length,
+      findings: 0,
+      blockedActions: 0,
+      redactions: 0,
+      askDecisions: 0,
+      residualRisks: 0,
+    },
+    highestRiskLevel: "low",
+    countsByCategory: emptyRiskCategoryCounts(),
+  };
+}
+
+function emptyRiskCategoryCounts(): CLineDashboardSummary["countsByCategory"] {
+  return {
+    tool_misuse: 0,
+    unauthorized_access: 0,
+    data_leakage: 0,
+    dangerous_action: 0,
+    instruction_injection_following: 0,
+  };
+}
+
 function mergeRunGroups(
   runGroups: CLineRunGroup[],
   next: CLineRunGroup,
@@ -900,4 +1014,18 @@ function mergeRunGroups(
   return [next, ...rest].sort(
     (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
   );
+}
+
+function normalizeAgentTimeoutMs(
+  adapterKind: AgentConnectionConfig["adapterKind"],
+  value: unknown,
+): number {
+  const parsed = Number(value);
+  const fallback =
+    adapterKind === "openclaw" ? DEFAULT_OPENCLAW_TIMEOUT_MS : DEFAULT_AGENT_TIMEOUT_MS;
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  if (adapterKind === "openclaw") {
+    return Math.max(DEFAULT_OPENCLAW_TIMEOUT_MS, Math.floor(parsed));
+  }
+  return Math.max(5000, Math.floor(parsed));
 }

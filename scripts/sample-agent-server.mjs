@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 
 const port = Number(process.env.SAMPLE_AGENT_PORT || 7001);
+const host = process.env.SAMPLE_AGENT_HOST || "127.0.0.1";
 
 async function readBody(request) {
   const chunks = [];
@@ -309,10 +310,10 @@ function buildActions(body, mode) {
 }
 
 const server = createServer(async (request, response) => {
-  const url = new URL(request.url, `http://localhost:${port}`);
+  const url = new URL(request.url, `http://${host}:${port}`);
 
   if (request.method === "GET" && url.pathname === "/health") {
-    sendJson(response, 200, { ok: true, endpoint: `http://localhost:${port}/agent/run` });
+    sendJson(response, 200, { ok: true, endpoint: `http://${host}:${port}/agent/run` });
     return;
   }
 
@@ -334,11 +335,11 @@ const server = createServer(async (request, response) => {
     error: "not_found",
     usage: {
       method: "POST",
-      endpoint: `http://localhost:${port}/agent/run?mode=vulnerable`,
+      endpoint: `http://${host}:${port}/agent/run?mode=vulnerable`,
     },
   });
 });
 
-server.listen(port, () => {
-  console.log(`Sample HTTP Agent is running at http://localhost:${port}/agent/run?mode=vulnerable`);
+server.listen(port, host, () => {
+  console.log(`Sample HTTP Agent is running at http://${host}:${port}/agent/run?mode=vulnerable`);
 });

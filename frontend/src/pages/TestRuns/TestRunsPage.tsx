@@ -43,7 +43,7 @@ export function TestRunsPage({
     return (
       <EmptyBlock
         title="没有测试运行"
-        message="生成监督策略包后，这里会显示运行索引。"
+        message="暂无运行索引。"
       />
     );
   }
@@ -71,7 +71,7 @@ export function TestRunsPage({
                 <th>用例</th>
                 <th>风险报告</th>
                 <th>策略包</th>
-                <th>策略使用</th>
+                <th>实时策略</th>
               </tr>
             </thead>
             <tbody>
@@ -255,33 +255,33 @@ function getRunPolicyActivationState(runGroup: CLineRunGroup): {
     return {
       canUse: false,
       label: "非 OpenClaw",
-      reason: "实时监督当前只接受 OpenClaw 检测生成的策略包。",
+      reason: "仅支持 OpenClaw 策略。",
     };
   }
   if (runGroup.status === "failed" || runGroup.phase === "failed") {
     return {
       canUse: false,
       label: "运行失败",
-      reason: "失败运行的策略包不能用于实时监督。",
+      reason: "运行已失败。",
     };
   }
   if (runGroup.phase === "queued" || runGroup.phase === "detecting") {
     return {
       canUse: false,
       label: "未完成",
-      reason: "检测完成并生成策略包后才能用于实时监督。",
+      reason: "检测未完成。",
     };
   }
   if (runGroup.policyContextSource && runGroup.policyContextSource !== "stored_detection") {
     return {
       canUse: false,
       label: "不可复用",
-      reason: "实时监督只复用真实检测上下文生成的策略包。",
+      reason: "非真实检测策略。",
     };
   }
   return {
     canUse: true,
-    label: "使用策略包",
-    reason: "将该运行生成的策略包设为实时监督当前策略。",
+    label: "设为当前",
+    reason: "设为当前实时监督策略。",
   };
 }

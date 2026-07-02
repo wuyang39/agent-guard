@@ -106,9 +106,6 @@ export function RunWorkflowPage({
                   type="number"
                   value={selectionCaseCount}
                 />
-                <small className="field-note">
-                  演示可选 10 或 30；完整检测可选 120 或 300。
-                </small>
               </label>
               <div className="button-row sample-count-presets">
                 {[10, 30, 120, 300].map((count) => (
@@ -163,7 +160,7 @@ export function RunWorkflowPage({
               <div>
                 <h2>编排阶段</h2>
                 <p className="muted">
-                  {latest ? runPhaseDescription(latest.phase) : "还没有运行记录。"}
+                  {latest ? runPhaseDescription(latest.phase) : "暂无运行记录"}
                 </p>
               </div>
               <Badge tone={latest ? runPhaseTone(latest.phase) : "tone-neutral"}>
@@ -213,9 +210,9 @@ function SelectionPlanPanel({
         <div className="section-header compact">
           <div>
             <h2>用例计划</h2>
-            <p className="muted">运行前先选择测试用例，再执行检测。</p>
+            <p className="muted">暂无用例计划</p>
           </div>
-          <Badge>等待选样</Badge>
+          <Badge>待选样</Badge>
         </div>
       </div>
     );
@@ -229,10 +226,10 @@ function SelectionPlanPanel({
             <h2>用例计划</h2>
             <p className="muted">
               {planning
-                ? "正在选择测试用例并校验覆盖率。"
+                ? "选样中"
                 : running
-                  ? "正在使用当前用例计划运行检测。"
-                  : "正在加载用例计划。"}
+                  ? "检测中"
+                  : "加载中"}
             </p>
           </div>
           <Badge tone="tone-medium">生成中</Badge>

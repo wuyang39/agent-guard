@@ -31,7 +31,7 @@ import {
 } from "./openclawAdapter";
 import { isPathInsideDirectory } from "../../storage/pathSafety";
 
-const DEFAULT_TIMEOUT_MS = Number(process.env.OPENCLAW_TIMEOUT_MS ?? 120_000);
+const DEFAULT_TIMEOUT_MS = Number(process.env.OPENCLAW_TIMEOUT_MS ?? 300_000);
 const JSONL_OUTPUT_DIR = path.resolve(
   process.cwd(),
   "outputs",

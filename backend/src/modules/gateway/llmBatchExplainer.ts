@@ -26,7 +26,7 @@ export async function buildSupervisionBatchExplanationDraft(
   try {
     const response = await opts.llmClient.completeJson({
       system: [
-        "You explain runtime supervision batch results for an Agent Guard gateway.",
+        "You explain runtime supervision batch results for an AgentSleuth gateway.",
         "Do not create final report claims.",
         "Do not change counts, actions, record IDs, or decisions.",
         "Return JSON with summary, keyFindings, and limitations only.",

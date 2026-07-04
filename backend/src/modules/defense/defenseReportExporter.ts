@@ -45,7 +45,7 @@ function renderDefenseHtml(report: DefenseReport): string {
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <title>Agent Guard Defense Report</title>
+  <title>AgentSleuth Defense Report</title>
   <style>
     :root {
       color-scheme: light;
@@ -121,7 +121,7 @@ function renderDefenseHtml(report: DefenseReport): string {
 </head>
 <body>
   <main>
-    <h1>Agent Guard Defense Report</h1>
+    <h1>AgentSleuth Defense Report</h1>
     <div class="grid">
       <div class="metric">Agent<strong>${escapeHtml(report.agentId)}</strong></div>
       <div class="metric">Blocked High Risk<strong>${report.defenseEffectiveness.blockedHighRiskActionCount}</strong></div>

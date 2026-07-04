@@ -21,7 +21,7 @@ export function createSandboxDownstreamProvider(
     providerName: "Sandbox Downstream MCP",
     listTools() {
       return tools.map((tool) => ({
-        originalToolName: stripAgentGuardPrefix(tool.name),
+        originalToolName: stripGatewayPrefix(tool.name),
         canonicalToolId: tool.toolId,
         description: `Downstream sandbox provider tool: ${tool.description}`,
         inputSchema: tool.schema,
@@ -30,7 +30,7 @@ export function createSandboxDownstreamProvider(
   };
 }
 
-function stripAgentGuardPrefix(name: string): string {
+function stripGatewayPrefix(name: string): string {
   return name
     .replace(/^agent_guard_/, "")
     .replace(/^agent[-_ ]?guard[._-]/i, "");

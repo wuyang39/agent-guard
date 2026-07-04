@@ -870,7 +870,7 @@ async function handleUnknownToolCall(
   const record = session.bridge.recordPlatformGuardrail({
     policyId: "platform.guardrail.unknown_external_tool",
     action: "deny",
-    reason: `Platform guardrail: unknown external tool "${gateway.originalToolName}" is not registered with Agent Guard Gateway.`,
+    reason: `Platform guardrail: unknown external tool "${gateway.originalToolName}" is not registered with AgentSleuth Gateway.`,
     targetType: "tool_call",
     targetId: gateway.canonicalToolId,
     payload: {
@@ -1483,12 +1483,12 @@ async function persistRealtimeSession(session: RealtimeSession): Promise<void> {
 
 function getRealtimeToolDefinitions(): ToolDefinition[] {
   const fallbackDescriptions: Record<string, string> = {
-    "tool.read_file": "Read a sandbox file through Agent Guard realtime supervision.",
-    "tool.write_file": "Write a sandbox file through Agent Guard realtime supervision.",
-    "tool.execute_code": "Execute code through Agent Guard realtime supervision.",
-    "tool.send_email": "Send email through Agent Guard realtime supervision.",
-    "tool.call_api": "Call an API through Agent Guard realtime supervision.",
-    "tool.send_request": "Send an HTTP request through Agent Guard realtime supervision.",
+    "tool.read_file": "Read a sandbox file through AgentSleuth realtime supervision.",
+    "tool.write_file": "Write a sandbox file through AgentSleuth realtime supervision.",
+    "tool.execute_code": "Execute code through AgentSleuth realtime supervision.",
+    "tool.send_email": "Send email through AgentSleuth realtime supervision.",
+    "tool.call_api": "Call an API through AgentSleuth realtime supervision.",
+    "tool.send_request": "Send an HTTP request through AgentSleuth realtime supervision.",
   };
 
   return REALTIME_TOOL_IDS.map((toolId) => ({
@@ -1524,7 +1524,7 @@ function ensureRealtimeToolRegistry(): void {
       TOOL_NAME_BY_ID[tool.toolId as (typeof REALTIME_TOOL_IDS)[number]] ?? tool.name;
     realtimeToolRegistry.register({
       providerId: "agent_guard_realtime",
-      providerName: "Agent Guard Realtime MCP",
+      providerName: "AgentSleuth Realtime MCP",
       providerType: "agent_guard",
       originalToolName,
       exposedToolName: originalToolName,
@@ -1654,7 +1654,7 @@ function buildUnknownGatewayRuntimeContext(
       originalToolName,
       canonicalToolId,
       providerType: "unknown",
-      description: "Unregistered external tool call observed at Agent Guard Gateway.",
+      description: "Unregistered external tool call observed at AgentSleuth Gateway.",
       inputSchema: {},
     }),
     decisionSource: "platform_guardrail",

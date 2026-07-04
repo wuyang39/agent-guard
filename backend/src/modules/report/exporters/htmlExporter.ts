@@ -27,7 +27,7 @@ function renderHtmlReport(report: RiskReport): string {
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <title>${escapeHtml(report.caseReport.caseName)} - Agent Guard Risk Report</title>
+  <title>${escapeHtml(report.caseReport.caseName)} - AgentSleuth Risk Report</title>
   <style>
     :root {
       color-scheme: light;
@@ -110,7 +110,7 @@ function renderHtmlReport(report: RiskReport): string {
 </head>
 <body>
   <main>
-    <h1>Agent Guard Risk Report</h1>
+    <h1>AgentSleuth Risk Report</h1>
     <div class="meta">
       <div class="metric">Case<strong>${escapeHtml(report.caseReport.caseName)}</strong></div>
       <div class="metric">Risk<strong class="risk-${report.riskLevel}">${escapeHtml(report.riskLevel)}</strong></div>

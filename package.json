@@ -1,8 +1,8 @@
 {
-  "name": "agent-guard",
+  "name": "agentsleuth",
   "version": "0.1.0",
-  "description": "Agent Guard desktop security evaluation console",
-  "author": "Agent Guard Team",
+  "description": "AgentSleuth desktop security evaluation console",
+  "author": "AgentSleuth Team",
   "private": true,
   "type": "module",
   "main": "desktop/main.cjs",
@@ -72,8 +72,8 @@
     "vite": "^8.0.16"
   },
   "build": {
-    "appId": "cn.agentguard.desktop",
-    "productName": "Agent Guard",
+    "appId": "cn.agentsleuth.desktop",
+    "productName": "AgentSleuth",
     "asar": false,
     "directories": {
       "output": "dist/desktop"
@@ -99,7 +99,7 @@
           ]
         }
       ],
-      "artifactName": "AgentGuard-${version}-${arch}.${ext}"
+      "artifactName": "AgentSleuth-${version}-${arch}.${ext}"
     }
   }
 }

@@ -1421,7 +1421,7 @@ function languageLabel(language: ReportBundleExportLanguage): string {
 function reportTextLabels(language: ReportBundleExportLanguage) {
   if (language === "zh") {
     return {
-      title: "Agent Guard 报告包",
+      title: "AgentSleuth 报告包",
       bundle: "报告包",
       runGroup: "运行组",
       quality: "质量",
@@ -1444,7 +1444,7 @@ function reportTextLabels(language: ReportBundleExportLanguage) {
     };
   }
   return {
-    title: "Agent Guard Report Bundle",
+    title: "AgentSleuth Report Bundle",
     bundle: "Bundle",
     runGroup: "Run Group",
     quality: "Quality",

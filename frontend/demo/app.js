@@ -730,7 +730,7 @@ function renderPolicyGroups() {
   els.riskInput.innerHTML = `
     <p><b>策略来源：</b>${runPayloads.length} 份 RiskReport 与 ${summary.weaknessCount} 类弱点画像</p>
     <p><b>SupervisionPolicyPack：</b>按输入输出过滤、上下文隔离、工具阻断、敏感资源和出站审计聚合展示</p>
-    <p><b>运行形态：</b>策略包加载到 Agent Guard Gateway，后续作为旁路监督依据</p>
+    <p><b>运行形态：</b>策略包加载到 AgentSleuth Gateway，后续作为旁路监督依据</p>
   `;
   els.policyGroupGrid.innerHTML = policyGroups
     .map(
@@ -1001,7 +1001,7 @@ function enterValidationStage() {
   if (!policyBuilt) return;
   els.validationInput.innerHTML = `
     <p><b>旁路监督模式：</b>${esc(verificationModeText())}</p>
-    <p><b>网关形态：</b>Agent Guard Gateway 旁路接入，不改变内置画像测试结果</p>
+    <p><b>网关形态：</b>AgentSleuth Gateway 旁路接入，不改变内置画像测试结果</p>
     <p><b>监督依据：</b>AgentRiskProfile + SupervisionPolicyPack</p>
     <p><b>下一步：</b>开启监督后接入系统外测试流量</p>
     <p><b>策略组：</b>${policyGroups.length} 组</p>
@@ -1040,7 +1040,7 @@ function enterHoldoutStage() {
     <p><b>网关会话：</b>${esc(sessionDisplayName())}</p>
     <p><b>旁路监督模式：</b>${esc(verificationModeText(selectedSupervisionMode()))}</p>
     <p><b>系统外用例：</b>${holdoutCaseIds().join("、")}</p>
-    <p><b>External Attack Runner：</b>模拟独立进程向 Agent Guard Gateway 发送外部攻击流量。</p>
+    <p><b>External Attack Runner：</b>模拟独立进程向 AgentSleuth Gateway 发送外部攻击流量。</p>
     <p><b>目标：</b>实时观察 Agent 行为、策略命中、告警与阻断记录。</p>
   `;
   els.externalRunnerCommand.textContent = externalRunnerCommand();
@@ -1066,7 +1066,7 @@ function runHoldout() {
   els.runHoldoutButton.disabled = true;
   els.stopExternalRunnerButton.disabled = false;
   setRunnerStatus("running", "外部攻击进程运行中");
-  els.flowStatus.textContent = "外部攻击流量正在通过 Agent Guard Gateway";
+  els.flowStatus.textContent = "外部攻击流量正在通过 AgentSleuth Gateway";
 
   externalEventSource.onmessage = (message) => {
     const event = JSON.parse(message.data);

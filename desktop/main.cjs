@@ -10,6 +10,7 @@ const API_BASE = `http://127.0.0.1:${API_PORT}`;
 const FRONTEND_BASE = `http://127.0.0.1:${FRONTEND_PORT}`;
 const HEALTH_TIMEOUT_MS = 45000;
 const POLL_INTERVAL_MS = 450;
+const PRODUCT_NAME = "AgentSleuth";
 
 const isDev = !app.isPackaged || process.env.AGENT_GUARD_DESKTOP_DEV === "1";
 const appRoot = app.isPackaged ? app.getAppPath() : path.resolve(__dirname, "..");
@@ -18,7 +19,7 @@ const childProcesses = [];
 let mainWindow;
 let shuttingDown = false;
 
-app.setAppUserModelId("cn.agentguard.desktop");
+app.setAppUserModelId("cn.agentsleuth.desktop");
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
@@ -36,7 +37,7 @@ app.whenReady().then(async () => {
     applyBundledOpenClawDefaults();
     if (process.env.AGENT_GUARD_DESKTOP_SMOKE === "1") {
       await ensureServicesReady();
-      console.log("Agent Guard desktop smoke check passed.");
+      console.log(`${PRODUCT_NAME} desktop smoke check passed.`);
       shutdownChildren();
       app.quit();
       return;
@@ -66,7 +67,7 @@ function createMainWindow() {
     height: 940,
     minWidth: 1180,
     minHeight: 760,
-    title: "Agent Guard",
+    title: PRODUCT_NAME,
     backgroundColor: "#081111",
     show: false,
     autoHideMenuBar: true,
@@ -115,31 +116,18 @@ async function ensureServicesReady() {
 
   const sampleHealthUrl = `http://127.0.0.1:${SAMPLE_PORT}/health`;
   const apiStatusUrl = `${API_BASE}/api/v1/system/status`;
-  const serviceChecks = [
-    isHttpReady(sampleHealthUrl).then((ready) => {
-      if (!ready) {
-        startNodeChild("sample-agent", ["scripts/sample-agent-server.mjs"], {
-          SAMPLE_AGENT_PORT: SAMPLE_PORT,
-          SAMPLE_AGENT_HOST: "127.0.0.1",
-        });
-      }
-      return waitForHttp(sampleHealthUrl, "Sample Agent");
-    }),
-    isApiReady(apiStatusUrl).then((ready) => {
-      if (!ready) {
-        startNodeChild("api", ["--import", "tsx", "backend/src/server.ts"], {
-          API_PORT,
-          API_HOST: "127.0.0.1",
-          SAMPLE_AGENT_PORT: SAMPLE_PORT,
-          SAMPLE_AGENT_HOST: "127.0.0.1",
-          VITE_AGENT_GUARD_API_BASE: API_BASE,
-        });
-      }
-      return waitForApi(apiStatusUrl, "Agent Guard API");
-    }),
-  ];
+  ensureSampleAgentReadyOptional(sampleHealthUrl);
 
-  await Promise.all(serviceChecks);
+  if (!(await isApiReady(apiStatusUrl))) {
+    startNodeChild("api", ["--import", "tsx", "backend/src/server.ts"], {
+      API_PORT,
+      API_HOST: "127.0.0.1",
+      SAMPLE_AGENT_PORT: SAMPLE_PORT,
+      SAMPLE_AGENT_HOST: "127.0.0.1",
+      VITE_AGENT_GUARD_API_BASE: API_BASE,
+    });
+  }
+  await waitForApi(apiStatusUrl, `${PRODUCT_NAME} API`);
 
   if (isDev && !(await isHttpReady(FRONTEND_BASE))) {
     startNodeChild(
@@ -158,8 +146,26 @@ async function ensureServicesReady() {
         VITE_OPENCLAW_CLI_PATH: process.env.OPENCLAW_CLI || "",
       },
     );
-    await waitForHttp(FRONTEND_BASE, "Agent Guard Frontend");
+    await waitForHttp(FRONTEND_BASE, `${PRODUCT_NAME} Frontend`);
   }
+}
+
+function ensureSampleAgentReadyOptional(sampleHealthUrl) {
+  void (async () => {
+    if (!(await isHttpReady(sampleHealthUrl))) {
+      startNodeChild("sample-agent", ["scripts/sample-agent-server.mjs"], {
+        SAMPLE_AGENT_PORT: SAMPLE_PORT,
+        SAMPLE_AGENT_HOST: "127.0.0.1",
+      });
+    }
+    await waitForHttp(sampleHealthUrl, "Sample Agent");
+  })().catch((error) => {
+    console.warn(
+      `[desktop:sample-agent] optional service unavailable: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  });
 }
 
 function startNodeChild(label, args, extraEnv = {}) {
@@ -268,7 +274,7 @@ function buildBootScreenUrl() {
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
-  <title>Agent Guard</title>
+  <title>${PRODUCT_NAME}</title>
   <style>
     :root { color-scheme: light; }
     * { box-sizing: border-box; }
@@ -322,7 +328,7 @@ function buildBootScreenUrl() {
 </head>
 <body>
   <main>
-    <strong>Agent Guard</strong>
+    <strong>${PRODUCT_NAME}</strong>
     <p>启动本地服务</p>
     <div class="bar" aria-hidden="true"></div>
   </main>
@@ -334,7 +340,7 @@ function buildBootScreenUrl() {
 async function showStartupError(error) {
   await dialog.showMessageBox({
     type: "error",
-    title: "Agent Guard 启动失败",
+    title: `${PRODUCT_NAME} 启动失败`,
     message: "桌面程序未能启动本地服务。",
     detail: error instanceof Error ? error.stack || error.message : String(error),
   });

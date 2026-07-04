@@ -45,6 +45,7 @@ const MIN_SELECTION_CASE_COUNT = 3;
 const MAX_SELECTION_CASE_COUNT = 500;
 const DEFAULT_AGENT_TIMEOUT_MS = 120000;
 const DEFAULT_OPENCLAW_TIMEOUT_MS = 300000;
+const PRODUCT_NAME = "AgentSleuth";
 
 const defaultOpenClawCliPath = import.meta.env.VITE_OPENCLAW_CLI_PATH ?? "";
 
@@ -265,8 +266,8 @@ export function App() {
         status: "error",
         message:
           error instanceof Error
-            ? `${error.message}。确认 Agent Guard API 已启动。`
-            : "无法连接 Agent Guard API。",
+            ? `${error.message}。确认 AgentSleuth API 已启动。`
+            : "无法连接 AgentSleuth API。",
         fallback: mockDashboardSummary,
       });
       setDetectionState({ status: "empty", message: "暂无服务数据。" });
@@ -509,9 +510,9 @@ export function App() {
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand-block">
-          <div className="brand-mark">AG</div>
+          <div className="brand-mark">AS</div>
           <div>
-            <strong>Agent Guard</strong>
+            <strong>{PRODUCT_NAME}</strong>
           </div>
         </div>
         <div className="sidebar-runtime-card">

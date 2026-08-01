@@ -1,0 +1,382 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import type { NativeGuardLeaseActivation, NativeGuardStatus } from "@agent-guard/contracts";
+import {
+  OpenClawControlClientError,
+  createOpenClawControlClient,
+  type OpenClawCommandRunner,
+} from "./openclawControlClient";
+
+const TOKEN = "gateway-token-that-must-stay-secret";
+
+test("rejects non-loopback and ambiguous gateway URLs before making a request", async () => {
+  let calls = 0;
+  const client = createOpenClawControlClient({
+    gatewayToken: TOKEN,
+    fetch: async () => {
+      calls += 1;
+      return jsonResponse(readyStatus());
+    },
+  });
+
+  for (const url of [
+    "https://example.com",
+    "ftp://127.0.0.1",
+    "http://user:pass@localhost",
+    "http://localhost?next=evil",
+    "http://127.0.0.1/#fragment",
+    "http://127.0.0.2",
+    "http://2130706433",
+    "http://127.1",
+  ]) {
+    await assert.rejects(() => client.status(url), hasCode("OPENCLAW_CONTROL_INVALID_GATEWAY"));
+  }
+  assert.equal(calls, 0);
+});
+
+test("converts ws loopback URLs, fixes the status route, and sends bearer auth without redirects", async () => {
+  let request: { url: string; init?: RequestInit } | undefined;
+  const client = createOpenClawControlClient({
+    gatewayToken: TOKEN,
+    fetch: async (input, init) => {
+      request = { url: String(input), init };
+      return jsonResponse({ ...readyStatus(), ignoredPluginField: TOKEN });
+    },
+  });
+
+  const status = await client.status("ws://127.0.0.1:18789/untrusted/base");
+
+  assert.equal(request?.url, "http://127.0.0.1:18789/agent-guard/native-guard/v1/status");
+  assert.equal(new Headers(request?.init?.headers).get("authorization"), `Bearer ${TOKEN}`);
+  assert.equal(new Headers(request?.init?.headers).get("cache-control"), "no-store");
+  assert.equal(request?.init?.redirect, "error");
+  assert.equal(request?.init?.method, "GET");
+  assert.deepEqual(status, readyStatus());
+  assert.equal(request?.url.includes(TOKEN), false);
+});
+
+test("uses fixed POST routes and stable operation-bound idempotency keys", async () => {
+  const requests: Array<{ url: string; init?: RequestInit }> = [];
+  const client = createOpenClawControlClient({
+    env: { OPENCLAW_GATEWAY_TOKEN: TOKEN },
+    fetch: async (input, init) => {
+      requests.push({ url: String(input), init });
+      return jsonResponse(activeStatus(ACTIVATION));
+    },
+  });
+
+  await client.activate("wss://[::1]:18789/base", ACTIVATION);
+  await client.activate("wss://[::1]:18789/base", ACTIVATION);
+  await client.renew("https://localhost:18789/base", ACTIVATION);
+
+  assert.deepEqual(
+    requests.map((entry) => new URL(entry.url).pathname),
+    [
+      "/agent-guard/native-guard/v1/leases/activate",
+      "/agent-guard/native-guard/v1/leases/activate",
+      "/agent-guard/native-guard/v1/leases/renew",
+    ],
+  );
+  const keys = requests.map((entry) => new Headers(entry.init?.headers).get("x-idempotency-key"));
+  assert.equal(keys[0], keys[1]);
+  assert.notEqual(keys[0], keys[2]);
+  assert.equal(new Headers(requests[0].init?.headers).get("content-type"), "application/json");
+  assert.deepEqual(JSON.parse(String(requests[0].init?.body)), ACTIVATION);
+});
+
+test("rejects oversized response bodies from content-length and streaming readers", async () => {
+  const byLength = createOpenClawControlClient({
+    gatewayToken: TOKEN,
+    fetch: async () => new Response("{}", {
+      status: 200,
+      headers: { "content-type": "application/json", "content-length": "65537" },
+    }),
+  });
+  await assert.rejects(() => byLength.status("http://localhost"), hasCode("OPENCLAW_CONTROL_RESPONSE_TOO_LARGE"));
+
+  const bytes = new TextEncoder().encode("x".repeat(65_537));
+  const byStream = createOpenClawControlClient({
+    gatewayToken: TOKEN,
+    fetch: async () => new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(bytes.subarray(0, 40_000));
+        controller.enqueue(bytes.subarray(40_000));
+        controller.close();
+      },
+    }), { status: 200, headers: { "content-type": "application/json" } }),
+  });
+  await assert.rejects(() => byStream.status("http://localhost"), hasCode("OPENCLAW_CONTROL_RESPONSE_TOO_LARGE"));
+});
+
+test("times out requests and redacts tokens from transport failures", async () => {
+  const timed = createOpenClawControlClient({
+    gatewayToken: TOKEN,
+    timeoutMs: 5,
+    fetch: async (_input, init) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+    }),
+  });
+  await assert.rejects(() => timed.status("http://localhost"), hasCode("OPENCLAW_CONTROL_TIMEOUT"));
+
+  const failed = createOpenClawControlClient({
+    gatewayToken: TOKEN,
+    fetch: async () => { throw new Error(`transport exposed ${TOKEN}`); },
+  });
+  await assert.rejects(
+    () => failed.status("http://localhost"),
+    (error: unknown) => error instanceof Error && !error.message.includes(TOKEN) &&
+      (error as OpenClawControlClientError).code === "OPENCLAW_CONTROL_UNAVAILABLE",
+  );
+
+  const spoofed = createOpenClawControlClient({
+    gatewayToken: TOKEN,
+    fetch: async () => {
+      throw new OpenClawControlClientError("CUSTOM_TRANSPORT", `spoofed ${TOKEN}`);
+    },
+  });
+  await assert.rejects(
+    () => spoofed.status("http://localhost"),
+    (error: unknown) => error instanceof Error && !error.message.includes(TOKEN),
+  );
+});
+
+test("times out a stalled response stream", async () => {
+  const client = createOpenClawControlClient({
+    gatewayToken: TOKEN,
+    timeoutMs: 5,
+    fetch: async () => new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("{"));
+      },
+    }), { status: 200, headers: { "content-type": "application/json" } }),
+  });
+
+  await assert.rejects(
+    () => client.status("http://localhost"),
+    hasCode("OPENCLAW_CONTROL_TIMEOUT"),
+  );
+});
+
+test("does not accept a new version without the enabled Trusted Tool Policy contract", async () => {
+  const runner = commandRunner([
+    result("OpenClaw 2026.7.2\n"),
+    result(JSON.stringify([{ id: "agent-guard-supervision", enabled: true, hooks: ["before_tool_call"] }])),
+  ]);
+  const client = createOpenClawControlClient({ gatewayToken: TOKEN, commandRunner: runner });
+
+  const capability = await client.inspectCapabilities({ cliPath: "openclaw", isolatedProfile: false });
+
+  assert.equal(capability.openclawVersion, "2026.7.2");
+  assert.equal(capability.supportsNativeGuard, false);
+  assert.equal(capability.finalizerAssurance, "unverified");
+});
+
+test("accepts the exact Agent Guard admission contract from a nested plugin manifest", async () => {
+  const plugin = {
+    id: "agent-guard-supervision",
+    enabled: true,
+    hooks: ["before_tool_call"],
+    manifest: { contracts: { trustedToolPolicies: ["agent-guard-admission"] } },
+  };
+  const client = createOpenClawControlClient({
+    gatewayToken: TOKEN,
+    commandRunner: commandRunner([result("2026.7.2"), result(JSON.stringify([plugin]))]),
+  });
+
+  const capability = await client.inspectCapabilities({ isolatedProfile: false });
+
+  assert.equal(capability.supportsNativeGuard, true);
+  assert.equal(capability.finalizerAssurance, "exclusive_before_hook");
+});
+
+test("requires version 2026.7.2 or newer even when the plugin contract is present", async () => {
+  const client = createOpenClawControlClient({
+    gatewayToken: TOKEN,
+    commandRunner: commandRunner([
+      result("2026.6.1"),
+      result(JSON.stringify([agentGuardPlugin()])),
+    ]),
+  });
+  const capability = await client.inspectCapabilities({ isolatedProfile: false });
+  assert.equal(capability.supportsNativeGuard, false);
+  assert.equal(capability.openclawVersion, "2026.6.1");
+
+  const prerelease = createOpenClawControlClient({
+    gatewayToken: TOKEN,
+    commandRunner: commandRunner([
+      result("2026.7.2-beta.1"),
+      result(JSON.stringify([agentGuardPlugin()])),
+    ]),
+  });
+  const prereleaseCapability = await prerelease.inspectCapabilities({ isolatedProfile: false });
+  assert.equal(prereleaseCapability.openclawVersion, "2026.7.2-beta.1");
+  assert.equal(prereleaseCapability.supportsNativeGuard, false);
+});
+
+test("reports an exclusive hook and detects a second enabled before_tool_call plugin", async () => {
+  const exclusive = createOpenClawControlClient({
+    gatewayToken: TOKEN,
+    commandRunner: commandRunner([result("2026.7.3"), result(JSON.stringify([agentGuardPlugin()]))]),
+  });
+  assert.deepEqual(await exclusive.inspectCapabilities({ isolatedProfile: false }), {
+    openclawVersion: "2026.7.3",
+    supportsNativeGuard: true,
+    finalizerAssurance: "exclusive_before_hook",
+    conflictingPluginIds: [],
+  });
+
+  const conflicting = createOpenClawControlClient({
+    gatewayToken: TOKEN,
+    commandRunner: commandRunner([
+      result("2026.7.3"),
+      result(JSON.stringify([agentGuardPlugin(), { id: "other-guard", enabled: true, hooks: ["before_tool_call"] }])),
+    ]),
+  });
+  const capability = await conflicting.inspectCapabilities({ isolatedProfile: false });
+  assert.equal(capability.finalizerAssurance, "unverified");
+  assert.deepEqual(capability.conflictingPluginIds, ["other-guard"]);
+});
+
+test("grants isolated assurance only for the exact enabled Agent Guard allowlist", async () => {
+  const exact = createOpenClawControlClient({
+    gatewayToken: TOKEN,
+    commandRunner: commandRunner([result("2026.8.0"), result(JSON.stringify({ plugins: [agentGuardPlugin()] }))]),
+  });
+  assert.equal(
+    (await exact.inspectCapabilities({ isolatedProfile: true })).finalizerAssurance,
+    "isolated_profile",
+  );
+
+  const extra = createOpenClawControlClient({
+    gatewayToken: TOKEN,
+    commandRunner: commandRunner([
+      result("2026.8.0"),
+      result(JSON.stringify({ plugins: [agentGuardPlugin(), { id: "unrelated", enabled: true, hooks: [] }] })),
+    ]),
+  });
+  assert.equal(
+    (await extra.inspectCapabilities({ isolatedProfile: true })).finalizerAssurance,
+    "unverified",
+  );
+});
+
+test("bounds injected CLI runners and reports malformed, oversized, and failed output stably", async () => {
+  const timed = createOpenClawControlClient({
+    gatewayToken: TOKEN,
+    timeoutMs: 5,
+    commandRunner: async () => new Promise(() => undefined),
+  });
+  await assert.rejects(
+    () => timed.inspectCapabilities({ isolatedProfile: false }),
+    hasCode("OPENCLAW_CLI_FAILED"),
+  );
+
+  for (const results of [
+    [result("2026.7.2"), result("not-json")],
+    [result("2026.7.2"), result("x".repeat(65_537))],
+    [result("2026.7.2"), result("", 1)],
+    [result("2026.7.2", 0), { exitCode: 0, stdout: "x".repeat(40_000), stderr: "x".repeat(40_000) }],
+  ]) {
+    const client = createOpenClawControlClient({
+      gatewayToken: TOKEN,
+      commandRunner: commandRunner(results),
+    });
+    await assert.rejects(
+      () => client.inspectCapabilities({ isolatedProfile: false }),
+      (error: unknown) => error instanceof OpenClawControlClientError &&
+        !error.message.includes(TOKEN),
+    );
+  }
+});
+
+test("passes CLI arguments separately and preserves the resolver's no-shell invocation", async () => {
+  const calls: Parameters<OpenClawCommandRunner>[0][] = [];
+  const runner: OpenClawCommandRunner = async (input) => {
+    calls.push(input);
+    return calls.length === 1 ? result("2026.7.2") : result(JSON.stringify([agentGuardPlugin()]));
+  };
+  const client = createOpenClawControlClient({ gatewayToken: TOKEN, commandRunner: runner });
+
+  await client.inspectCapabilities({
+    cliPath: process.execPath,
+    env: { INSPECTION_MARKER: "separate-value" },
+    isolatedProfile: false,
+  });
+
+  assert.equal(calls[0].shell, false);
+  assert.deepEqual(calls[0].args, ["--version"]);
+  assert.deepEqual(calls[1].args, ["plugins", "list", "--json"]);
+  assert.equal(calls[0].env.INSPECTION_MARKER, "separate-value");
+});
+
+function agentGuardPlugin(): Record<string, unknown> {
+  return {
+    id: "agent-guard-supervision",
+    enabled: true,
+    hooks: ["before_tool_call"],
+    contracts: { trustedToolPolicies: ["agent-guard-admission"] },
+  };
+}
+
+function commandRunner(results: Array<{ exitCode: number; stdout: string; stderr: string }>): OpenClawCommandRunner {
+  let index = 0;
+  return async () => results[index++] ?? result("", 1);
+}
+
+function result(stdout: string, exitCode = 0): { exitCode: number; stdout: string; stderr: string } {
+  return { exitCode, stdout, stderr: "" };
+}
+
+function jsonResponse(value: unknown): Response {
+  return new Response(JSON.stringify(value), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+function hasCode(code: string): (error: unknown) => boolean {
+  return (error) => error instanceof OpenClawControlClientError && error.code === code;
+}
+
+function readyStatus(): NativeGuardStatus {
+  return {
+    coverage: "ready",
+    finalizerAssurance: "exclusive_before_hook",
+    openclawVersion: "2026.7.2",
+    pluginVersion: "1.0.0",
+    activeLeaseCount: 0,
+    conflictingPluginIds: [],
+  };
+}
+
+function activeStatus(activation: NativeGuardLeaseActivation): NativeGuardStatus {
+  return {
+    ...readyStatus(),
+    coverage: "active",
+    activeLeaseCount: 1,
+    activeLease: {
+      leaseId: activation.leaseId,
+      rootSessionKey: activation.rootSessionKey,
+      mode: activation.mode,
+      policyPackId: activation.policyPackId,
+      expiresAt: activation.expiresAt,
+    },
+  };
+}
+
+const ACTIVATION: NativeGuardLeaseActivation = {
+  schemaVersion: "native-guard-1",
+  leaseId: "lease-1",
+  leaseEpoch: 3,
+  rootSessionKey: "agent:main",
+  mode: "supervision",
+  scope: "session_tree",
+  policyPackId: "policy-1",
+  policyPackDigest: "sha256:policy",
+  backendUrl: "http://127.0.0.1:3000",
+  decisionPublicKey: "public-key",
+  failurePolicy: { lowRisk: "warn", highRisk: "deny", unknownRisk: "deny" },
+  issuedAt: "2026-08-02T00:00:00.000Z",
+  expiresAt: "2026-08-02T00:05:00.000Z",
+  credential: "lease-secret",
+};

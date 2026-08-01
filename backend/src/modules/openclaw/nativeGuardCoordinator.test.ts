@@ -256,6 +256,42 @@ test("keeps the lease unusable after plugin activation ACK until final backend c
   assert.equal(isLeaseUsable(fixture.coordinator, leaseId), true);
 });
 
+test("does not let activation reclaim active phase after public revoke takes ownership", async () => {
+  const fixture = coordinatorFixture();
+  const activateStarted = deferred<void>();
+  const releaseActivate = deferred<void>();
+  const revokeStarted = deferred<void>();
+  const releaseRevoke = deferred<void>();
+  fixture.controlClient.activate = async (_gatewayUrl, activation) => {
+    fixture.activationCalls.push(activation);
+    activateStarted.resolve();
+    await releaseActivate.promise;
+    return status("active", activation.leaseId, activation);
+  };
+  fixture.controlClient.revoke = async () => {
+    revokeStarted.resolve();
+    await releaseRevoke.promise;
+    return status("ready");
+  };
+
+  const activating = fixture.coordinator.activate(supervisionInput());
+  await activateStarted.promise;
+  const leaseId = fixture.activationCalls[0].leaseId;
+  const revoking = fixture.coordinator.revoke(leaseId);
+  await revokeStarted.promise;
+  releaseActivate.resolve();
+  const outcome = await operationOutcome(activating);
+  const usableWhileRevoking = isLeaseUsable(fixture.coordinator, leaseId);
+  releaseRevoke.resolve();
+  await revoking;
+
+  assert.equal(outcome.resolved, false);
+  assert.equal(outcome.code, "NATIVE_GUARD_ACTIVATION_FAILED");
+  assert.equal(usableWhileRevoking, false);
+  assert.equal(isLeaseUsable(fixture.coordinator, leaseId), false);
+  assert.equal(fixture.leaseService.status().activeLeaseCount, 0);
+});
+
 test("re-inspects renewal capability before rotation and fails closed before plugin renew", async () => {
   const fixture = coordinatorFixture();
   await fixture.coordinator.activate(supervisionInput());
@@ -356,6 +392,43 @@ test("marks renewal unusable before awaits and rejects a concurrent renew withou
   assert.equal(fixture.renewCalls.length, 1);
   assert.equal(fixture.leaseService.status().activeLeaseCount, 1);
   assert.equal(isLeaseUsable(fixture.coordinator, leaseId), true);
+});
+
+test("does not let renewal overwrite revoking phase or return active", async () => {
+  const fixture = coordinatorFixture();
+  await fixture.coordinator.activate(supervisionInput());
+  const leaseId = fixture.activationCalls[0].leaseId;
+  const renewStarted = deferred<void>();
+  const releaseRenew = deferred<void>();
+  const revokeStarted = deferred<void>();
+  const releaseRevoke = deferred<void>();
+  fixture.controlClient.renew = async (_gatewayUrl, activation) => {
+    fixture.renewCalls.push(activation);
+    renewStarted.resolve();
+    await releaseRenew.promise;
+    return status("active", activation.leaseId, activation);
+  };
+  fixture.controlClient.revoke = async () => {
+    revokeStarted.resolve();
+    await releaseRevoke.promise;
+    return status("ready");
+  };
+
+  const renewing = fixture.coordinator.renew(leaseId);
+  await renewStarted.promise;
+  const revoking = fixture.coordinator.revoke(leaseId);
+  await revokeStarted.promise;
+  releaseRenew.resolve();
+  const outcome = await operationOutcome(renewing);
+  const usableWhileRevoking = isLeaseUsable(fixture.coordinator, leaseId);
+  releaseRevoke.resolve();
+  await revoking;
+
+  assert.equal(outcome.resolved, false);
+  assert.equal(outcome.code, "NATIVE_GUARD_RENEW_FAILED");
+  assert.equal(usableWhileRevoking, false);
+  assert.equal(isLeaseUsable(fixture.coordinator, leaseId), false);
+  assert.equal(fixture.leaseService.status().activeLeaseCount, 0);
 });
 
 test("enforces one managed lease and refuses activation over unmanaged backend state", async () => {
@@ -1014,4 +1087,19 @@ function isLeaseUsable(
     isLeaseUsable?: (candidateLeaseId: string) => boolean;
   };
   return candidate.isLeaseUsable?.(leaseId) === true;
+}
+
+async function operationOutcome(operation: Promise<unknown>): Promise<{
+  resolved: boolean;
+  code?: string;
+}> {
+  try {
+    await operation;
+    return { resolved: true };
+  } catch (error) {
+    return {
+      resolved: false,
+      ...(error instanceof NativeGuardCoordinatorError ? { code: error.code } : {}),
+    };
+  }
 }

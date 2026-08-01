@@ -317,6 +317,12 @@ export function createNativeGuardCoordinator(
         leases.set(activation.leaseId, managed);
         try {
           const pluginStatus = await options.controlClient.activate(options.gatewayUrl, activation);
+          if (!ownsManagedPhase(leases, managed, "activating")) {
+            throw coordinatorError(
+              "NATIVE_GUARD_ACTIVATION_FAILED",
+              "OpenClaw native guard activation lost lease ownership.",
+            );
+          }
           if (!pluginConfirmsActivation(pluginStatus, activation)) {
             throw coordinatorError(
               "NATIVE_GUARD_ACTIVATION_FAILED",
@@ -324,11 +330,29 @@ export function createNativeGuardCoordinator(
             );
           }
           const freshCapability = await inspectCompatibleCapability(capability);
+          if (!ownsManagedPhase(leases, managed, "activating")) {
+            throw coordinatorError(
+              "NATIVE_GUARD_ACTIVATION_FAILED",
+              "OpenClaw native guard activation lost lease ownership.",
+            );
+          }
           managed.capability = freshCapability;
+          if (!ownsManagedPhase(leases, managed, "activating")) {
+            throw coordinatorError(
+              "NATIVE_GUARD_ACTIVATION_FAILED",
+              "OpenClaw native guard activation lost lease ownership.",
+            );
+          }
           if (!backendConfirmsSingleManagedLease(options.leaseService, managed)) {
             throw coordinatorError(
               "NATIVE_GUARD_BACKEND_CHANGED",
               "Native guard backend lease changed before activation committed.",
+            );
+          }
+          if (!ownsManagedPhase(leases, managed, "activating")) {
+            throw coordinatorError(
+              "NATIVE_GUARD_ACTIVATION_FAILED",
+              "OpenClaw native guard activation lost lease ownership.",
             );
           }
           managed.phase = "active";
@@ -337,6 +361,12 @@ export function createNativeGuardCoordinator(
             pluginStatus,
           ));
         } catch {
+          if (!ownsManagedPhase(leases, managed, "activating")) {
+            throw coordinatorError(
+              "NATIVE_GUARD_ACTIVATION_FAILED",
+              "OpenClaw native guard activation lost lease ownership.",
+            );
+          }
           const backendRevocationCompleted = await compensateManagedLease(managed);
           setLastStatus(backendRevocationCompleted
             ? postCleanupStatus(capability)
@@ -360,9 +390,27 @@ export function createNativeGuardCoordinator(
       let activation: NativeGuardLeaseActivation | undefined;
       try {
         const preRenewCapability = await inspectCompatibleCapability(managed.capability);
+        if (!ownsManagedPhase(leases, managed, "renewing")) {
+          throw coordinatorError(
+            "NATIVE_GUARD_RENEW_FAILED",
+            "Native guard renewal lost lease ownership.",
+          );
+        }
         managed.capability = preRenewCapability;
         activation = options.leaseService.renew(leaseId, ttlMs);
+        if (!ownsManagedPhase(leases, managed, "renewing")) {
+          throw coordinatorError(
+            "NATIVE_GUARD_RENEW_FAILED",
+            "Native guard renewal lost lease ownership.",
+          );
+        }
         const pluginStatus = await options.controlClient.renew(managed.gatewayUrl, activation);
+        if (!ownsManagedPhase(leases, managed, "renewing")) {
+          throw coordinatorError(
+            "NATIVE_GUARD_RENEW_FAILED",
+            "Native guard renewal lost lease ownership.",
+          );
+        }
         if (!pluginConfirmsActivation(pluginStatus, activation)) {
           throw coordinatorError(
             "NATIVE_GUARD_RENEW_FAILED",
@@ -370,15 +418,32 @@ export function createNativeGuardCoordinator(
           );
         }
         const postRenewCapability = await inspectCompatibleCapability(preRenewCapability);
+        if (!ownsManagedPhase(leases, managed, "renewing")) {
+          throw coordinatorError(
+            "NATIVE_GUARD_RENEW_FAILED",
+            "Native guard renewal lost lease ownership.",
+          );
+        }
         Object.assign(
           managed,
           managedLeaseMetadata(activation, managed.gatewayUrl, postRenewCapability),
         );
-        managed.phase = "activating";
+        if (!ownsManagedPhase(leases, managed, "renewing")) {
+          throw coordinatorError(
+            "NATIVE_GUARD_RENEW_FAILED",
+            "Native guard renewal lost lease ownership.",
+          );
+        }
         if (!backendConfirmsSingleManagedLease(options.leaseService, managed)) {
           throw coordinatorError(
             "NATIVE_GUARD_BACKEND_CHANGED",
             "Native guard backend lease changed before renewal committed.",
+          );
+        }
+        if (!ownsManagedPhase(leases, managed, "renewing")) {
+          throw coordinatorError(
+            "NATIVE_GUARD_RENEW_FAILED",
+            "Native guard renewal lost lease ownership.",
           );
         }
         managed.phase = "active";
@@ -387,6 +452,12 @@ export function createNativeGuardCoordinator(
           pluginStatus,
         ));
       } catch {
+        if (!ownsManagedPhase(leases, managed, "renewing")) {
+          throw coordinatorError(
+            "NATIVE_GUARD_RENEW_FAILED",
+            "Native guard renewal lost lease ownership.",
+          );
+        }
         const backendRevocationCompleted = await compensateManagedLease(managed);
         setLastStatus(backendRevocationCompleted
           ? postCleanupStatus(managed.capability)
@@ -750,6 +821,14 @@ function managedLeaseMetadata(
     gatewayUrl,
     capability,
   };
+}
+
+function ownsManagedPhase(
+  leases: Map<string, ManagedLease>,
+  managed: ManagedLease,
+  phase: "activating" | "renewing",
+): boolean {
+  return leases.get(managed.leaseId) === managed && managed.phase === phase;
 }
 
 function backendConfirmsManagedLease(

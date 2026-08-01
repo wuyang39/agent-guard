@@ -5,6 +5,7 @@ export * from "./types/corpus";
 export * from "./types/defense";
 export * from "./types/detection";
 export * from "./types/gateway";
+export * from "./types/nativeGuard";
 export * from "./types/policy";
 export * from "./types/report";
 export * from "./types/risk";

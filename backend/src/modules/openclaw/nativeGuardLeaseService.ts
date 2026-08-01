@@ -36,6 +36,7 @@ export type ActiveNativeGuardLease = Omit<
   NativeGuardLeaseActivation,
   "credential"
 > & {
+  state: "active";
   policyPack: SupervisionPolicyPack;
 };
 
@@ -52,7 +53,7 @@ export type NativeGuardLeaseService = {
 };
 
 export type NativeGuardLeaseServiceOptions = {
-  now?: () => Date;
+  now?: () => number | Date;
 };
 
 type StoredLease = {
@@ -85,7 +86,12 @@ export function createNativeGuardLeaseService(
   const sessions = new Map<string, SessionBinding>();
 
   function currentTimeMs(): number {
-    return now().getTime();
+    const value = now();
+    const timeMs = value instanceof Date ? value.getTime() : value;
+    if (!Number.isFinite(timeMs)) {
+      throw new RangeError("Native guard clock returned an invalid time");
+    }
+    return timeMs;
   }
 
   function cleanExpired(): void {
@@ -140,6 +146,7 @@ export function createNativeGuardLeaseService(
 
   function activeLeaseFor(lease: StoredLease): ActiveNativeGuardLease {
     return {
+      state: "active",
       schemaVersion: "native-guard-1",
       leaseId: lease.leaseId,
       leaseEpoch: lease.leaseEpoch,
@@ -284,6 +291,13 @@ export function createNativeGuardLeaseService(
 
     endSession(sessionKey: string): void {
       cleanExpired();
+      const binding = sessions.get(sessionKey);
+      if (!binding) return;
+      const lease = leases.get(binding.leaseId);
+      if (lease?.rootSessionKey === sessionKey) {
+        removeLease(binding.leaseId);
+        return;
+      }
       removeSessionTree(sessionKey, sessions);
     },
 

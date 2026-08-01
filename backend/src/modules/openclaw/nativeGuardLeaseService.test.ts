@@ -18,7 +18,7 @@ const BACKEND_URL = "http://127.0.0.1:3100";
 
 test("manages a session-tree lease through authentication, renewal, and expiry", () => {
   let nowMs = Date.parse("2026-08-01T00:00:00.000Z");
-  const service = createNativeGuardLeaseService({ now: () => new Date(nowMs) });
+  const service = createNativeGuardLeaseService({ now: () => nowMs });
   const policyPack = buildPolicyPack();
   const policyPackDigest = digestJson(policyPack);
 
@@ -64,6 +64,7 @@ test("manages a session-tree lease through authentication, renewal, and expiry",
     created.activation.leaseId,
     created.activation.credential,
   );
+  assert.equal(active?.state, "active");
   assert.equal(active?.leaseEpoch, 1);
   assert.notEqual(active?.policyPack, policyPack);
   assert.deepEqual(active?.policyPack, policyPack);
@@ -77,6 +78,7 @@ test("manages a session-tree lease through authentication, renewal, and expiry",
     true,
   );
   assert.equal(service.resolveBySession(CHILD_SESSION_KEY)?.leaseId, created.activation.leaseId);
+  assert.equal(service.resolveBySession(CHILD_SESSION_KEY)?.state, "active");
 
   nowMs += 60_000;
   const renewed = service.renew(created.activation.leaseId, 300_000);
@@ -114,6 +116,10 @@ test("revocation invalidates authentication", () => {
     backendUrl: BACKEND_URL,
   });
 
+  assert.equal(
+    service.authenticate(created.activation.leaseId, created.activation.credential)?.state,
+    "active",
+  );
   assert.equal(service.revoke(created.activation.leaseId), true);
   assert.equal(
     service.authenticate(created.activation.leaseId, created.activation.credential),
@@ -140,6 +146,7 @@ describe("security and recovery boundaries", () => {
       service.bindChild(second.leaseId, second.rootSessionKey, "agent:guard:child"),
       true,
     );
+    assert.equal(service.resolveBySession("agent:guard:child")?.state, "active");
     assert.equal(
       service.bindChild(first.leaseId, first.rootSessionKey, "agent:guard:child"),
       false,
@@ -259,7 +266,17 @@ describe("security and recovery boundaries", () => {
     assert.throws(() => service.renew(revoked.leaseId));
   });
 
-  test("ends only the requested session subtree", () => {
+  test("rejects invalid clock values before exposing lease state", () => {
+    for (const now of [() => Number.NaN, () => new Date(Number.NaN)]) {
+      const service = createNativeGuardLeaseService({ now });
+      assert.throws(() => service.status(), {
+        name: "RangeError",
+        message: "Native guard clock returned an invalid time",
+      });
+    }
+  });
+
+  test("ends a child subtree but revokes the lease when the root session ends", () => {
     const service = createNativeGuardLeaseService({
       now: () => new Date("2026-08-01T00:00:00.000Z"),
     });
@@ -278,11 +295,20 @@ describe("security and recovery boundaries", () => {
     assert.equal(service.resolveBySession(sibling)?.leaseId, root.leaseId);
 
     assert.equal(service.bindChild(root.leaseId, ROOT_SESSION_KEY, child), true);
+    const response = buildDecisionResponse(root);
+    assert.match(service.signDecision(root.leaseId, response), /^[A-Za-z0-9_-]+$/);
     service.endSession(ROOT_SESSION_KEY);
     assert.equal(service.resolveBySession(ROOT_SESSION_KEY), undefined);
     assert.equal(service.resolveBySession(child), undefined);
     assert.equal(service.resolveBySession(sibling), undefined);
-    assert.equal(service.authenticate(root.leaseId, root.credential)?.leaseId, root.leaseId);
+    assert.equal(service.authenticate(root.leaseId, root.credential), undefined);
+    assert.throws(() => service.signDecision(root.leaseId, response));
+    assert.deepEqual(service.status(), {
+      coverage: "ready",
+      finalizerAssurance: "unverified",
+      activeLeaseCount: 0,
+    });
+    assert.equal(service.revoke(root.leaseId), false);
   });
 
   test("signs only decisions bound to the current active lease epoch and policy", () => {

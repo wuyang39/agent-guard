@@ -33,6 +33,68 @@ test("persists events and paired records in append order", async () => {
   });
 });
 
+test("syncs active appends and hardens existing file permissions", async () => {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "native-events-"));
+  try {
+    const event = buildEvent({
+      eventId: "event.durable-append",
+      leaseId: "lease.durable-append",
+    });
+    const filePath = path.join(rootDir, `${event.leaseId}.jsonl`);
+    await fs.writeFile(filePath, "", { encoding: "utf8", mode: 0o644 });
+    let syncedPath: string | undefined;
+    const store = createNativeGuardEventStore({
+      rootDir,
+      fileHooks: {
+        afterAppendSync({ targetPath }) {
+          syncedPath = targetPath;
+        },
+      },
+    });
+
+    assert.equal(await store.append(event), true);
+    assert.equal(syncedPath, filePath);
+    if (process.platform !== "win32") {
+      const mode = (await fs.stat(filePath)).mode & 0o777;
+      assert.equal(mode, 0o600);
+    }
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("rescans after a post-sync append error without duplicating the durable row", async () => {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "native-events-"));
+  try {
+    let failAfterSync = true;
+    const event = buildEvent({
+      eventId: "event.post-sync-ambiguous",
+      leaseId: "lease.post-sync-ambiguous",
+    });
+    const store = createNativeGuardEventStore({
+      rootDir,
+      fileHooks: {
+        afterAppendSync() {
+          if (failAfterSync) {
+            failAfterSync = false;
+            throw new Error("injected post-sync append error");
+          }
+        },
+      },
+    });
+
+    await assert.rejects(store.append(event), /injected post-sync append error/);
+    assert.equal(await store.append(event), false);
+    const persisted = await fs.readFile(
+      path.join(rootDir, `${event.leaseId}.jsonl`),
+      "utf8",
+    );
+    assert.equal(persisted.trim().split("\n").length, 1);
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
 test("deduplicates concurrent and restarted appends across the whole store", async () => {
   const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "native-events-"));
   try {
@@ -64,7 +126,7 @@ test("rejects a reused event id with different sanitized content", async () => {
     await assert.rejects(
       store.append({
         ...original,
-        detail: { action: "allow", reasonCode: "changed" },
+        detail: { ...original.detail, action: "allow", reasonCode: "changed" },
       }),
       /conflict/i,
     );
@@ -149,7 +211,7 @@ test("quarantines a corrupt crash tail and preserves its valid prefix", async ()
     });
     await fs.writeFile(
       path.join(rootDir, "lease.crash-tail.jsonl"),
-      `${JSON.stringify({ sequence: 50, event: prefixEvent })}\n{broken`,
+      `${JSON.stringify({ sequence: 50, event: prefixEvent })}\n{"credential":"raw-tail-credential","pem":"-----BEGIN PRIVATE KEY----- raw-tail-private-key`,
       "utf8",
     );
 
@@ -166,7 +228,16 @@ test("quarantines a corrupt crash tail and preserves its valid prefix", async ()
       true,
     );
     const files = await fs.readdir(rootDir);
-    assert.ok(files.some((file) => file.startsWith("lease.crash-tail.jsonl.corrupt-")));
+    const quarantine = files.find((file) =>
+      file.startsWith("lease.crash-tail.jsonl.corrupt-"),
+    );
+    assert.ok(quarantine);
+    const quarantineContent = await fs.readFile(
+      path.join(rootDir, quarantine),
+      "utf8",
+    );
+    assert.equal(quarantineContent.includes("raw-tail-credential"), false);
+    assert.equal(quarantineContent.includes("raw-tail-private-key"), false);
     const repaired = await fs.readFile(
       path.join(rootDir, "lease.crash-tail.jsonl"),
       "utf8",
@@ -177,6 +248,102 @@ test("quarantines a corrupt crash tail and preserves its valid prefix", async ()
       healthyEvent,
       prefixEvent,
     ]);
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("keeps corrupt active JSONL intact when atomic replacement fails", async () => {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "native-events-"));
+  try {
+    const prefixEvent = buildEvent({
+      eventId: "event.atomic-corrupt-prefix",
+      leaseId: "lease.atomic-corrupt",
+    });
+    const activePath = path.join(rootDir, "lease.atomic-corrupt.jsonl");
+    const original = `${JSON.stringify({ sequence: 1, event: prefixEvent })}\n{"token":"raw-corrupt-token"`;
+    await fs.writeFile(activePath, original, "utf8");
+    const store = createNativeGuardEventStore({
+      rootDir,
+      fileHooks: {
+        async beforeAtomicRename({ kind }) {
+          if (kind === "active") throw new Error("injected active rename failure");
+        },
+      },
+    });
+
+    await assert.rejects(store.listBySession(prefixEvent.sessionKey), /injected active rename failure/);
+    assert.equal(await fs.readFile(activePath, "utf8"), original);
+    const files = await fs.readdir(rootDir);
+    const quarantine = files.find((file) =>
+      file.startsWith("lease.atomic-corrupt.jsonl.corrupt-"),
+    );
+    assert.ok(quarantine);
+    const quarantineContent = await fs.readFile(
+      path.join(rootDir, quarantine),
+      "utf8",
+    );
+    assert.equal(quarantineContent.includes("raw-corrupt-token"), false);
+    assert.equal(files.some((file) => file.includes(".tmp-")), false);
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("does not truncate a legacy JSONL when atomic rewrite fails", async () => {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "native-events-"));
+  try {
+    const event = buildEvent({
+      eventId: "event.atomic-legacy",
+      leaseId: "lease.atomic-legacy",
+      detail: {
+        ...buildEvent().detail,
+        toolName: "curl Bearer raw-legacy-token",
+        unexpected: "legacy-extra",
+      },
+    });
+    const activePath = path.join(rootDir, "lease.atomic-legacy.jsonl");
+    const original = `${JSON.stringify({ sequence: 1, event })}\n`;
+    await fs.writeFile(activePath, original, "utf8");
+    const store = createNativeGuardEventStore({
+      rootDir,
+      fileHooks: {
+        async beforeAtomicRename({ kind }) {
+          if (kind === "active") throw new Error("injected legacy rename failure");
+        },
+      },
+    });
+
+    await assert.rejects(store.listByRun(event.runId!), /injected legacy rename failure/);
+    assert.equal(await fs.readFile(activePath, "utf8"), original);
+    const files = await fs.readdir(rootDir);
+    assert.equal(files.some((file) => file.includes(".tmp-")), false);
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("ignores an unsafe lease JSONL name without blocking healthy files", async () => {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "native-events-"));
+  try {
+    await fs.writeFile(
+      path.join(rootDir, "..unsafe.jsonl"),
+      "raw-invalid-lease-secret",
+      "utf8",
+    );
+    const healthyEvent = buildEvent({
+      eventId: "event.safe-amid-unsafe",
+      leaseId: "lease.safe-amid-unsafe",
+      runId: "run.safe-amid-unsafe",
+    });
+    await fs.writeFile(
+      path.join(rootDir, "lease.safe-amid-unsafe.jsonl"),
+      `${JSON.stringify({ sequence: 1, event: healthyEvent })}\n`,
+      "utf8",
+    );
+
+    const store = createNativeGuardEventStore({ rootDir });
+    assert.deepEqual(await store.listByRun("run.safe-amid-unsafe"), [healthyEvent]);
   } finally {
     await fs.rm(rootDir, { recursive: true, force: true });
   }
@@ -255,13 +422,116 @@ test("rejects invalid event and record schemas before persistence", async () => 
   });
 });
 
+test("preserves and scrubs the typed Task10 tool-outcome shape", async () => {
+  await withStore(async ({ rootDir, store }) => {
+    const event = buildEvent({
+      eventId: "event.tool-outcome",
+      type: "tool_outcome",
+      detail: {
+        finalParamsDigest: "a".repeat(64),
+        error: "Authorization: Bearer outcome-error-secret",
+        durationMs: 12.5,
+        resultDigest: "b".repeat(64),
+        resultPreview: "token=outcome-preview-secret",
+        unexpected: "drop-outcome-extra",
+      },
+    });
+    delete event.decisionId;
+
+    assert.equal(await store.append(event), true);
+    const [saved] = await store.listByRun(event.runId!);
+    assert.deepEqual(saved.detail, {
+      finalParamsDigest: "a".repeat(64),
+      error: "Authorization=[REDACTED]",
+      durationMs: 12.5,
+      resultDigest: "b".repeat(64),
+      resultPreview: "token=[REDACTED]",
+    });
+    const persisted = await fs.readFile(
+      path.join(rootDir, `${event.leaseId}.jsonl`),
+      "utf8",
+    );
+    assert.equal(persisted.includes("outcome-error-secret"), false);
+    assert.equal(persisted.includes("outcome-preview-secret"), false);
+    assert.equal(persisted.includes("drop-outcome-extra"), false);
+  });
+});
+
+test("defensively truncates oversized tool-outcome previews to 8 KiB", async () => {
+  await withStore(async ({ store }) => {
+    const event = buildEvent({
+      eventId: "event.tool-outcome-large-preview",
+      type: "tool_outcome",
+      detail: {
+        finalParamsDigest: "a".repeat(64),
+        durationMs: 1,
+        resultDigest: "b".repeat(64),
+        resultPreview: `token=preview-secret ${"界".repeat(4_000)}`,
+      },
+    });
+    delete event.decisionId;
+
+    assert.equal(await store.append(event), true);
+    const [saved] = await store.listByRun(event.runId!);
+    assert.ok(
+      Buffer.byteLength(saved.detail.resultPreview as string, "utf8") <= 8 * 1024,
+    );
+    assert.equal(
+      (saved.detail.resultPreview as string).includes("preview-secret"),
+      false,
+    );
+  });
+});
+
+test("rejects missing typed decision and tool-outcome fields", async () => {
+  await withStore(async ({ store }) => {
+    const invalidDecision = buildEvent({
+      eventId: "event.invalid-decision-shape",
+      detail: { action: "deny", reasonCode: "policy_deny" },
+    });
+    delete invalidDecision.decisionId;
+    await assert.rejects(
+      store.append(invalidDecision),
+      /decision/i,
+    );
+    await assert.rejects(
+      store.append(buildEvent({
+        eventId: "event.invalid-redact-shape",
+        detail: {
+          requestId: "req.redact",
+          action: "redact",
+          reasonCode: "policy_redact",
+          targetType: "api_call",
+          toolName: "web_fetch",
+          paramsDigest: "a".repeat(64),
+        },
+      })),
+      /rewritten.*digest/i,
+    );
+    const invalidOutcome = buildEvent({
+        eventId: "event.invalid-outcome-shape",
+        type: "tool_outcome",
+        detail: { durationMs: -1 },
+      });
+    delete invalidOutcome.toolCallId;
+    delete invalidOutcome.decisionId;
+    await assert.rejects(
+      store.append(invalidOutcome),
+      /tool.outcome/i,
+    );
+  });
+});
+
 test("projects evidence fields and scrubs secret patterns from retained values", async () => {
   await withStore(async ({ rootDir, store }) => {
     const event = buildEvent({
       detail: {
+        requestId: "request.evidence",
         action: "deny",
         reasonCode: "policy_deny",
+        targetType: "api_call",
         toolName: "curl Bearer tool-secret-value",
+        paramsDigest: "c".repeat(64),
         message: "Cookie: session=cookie-secret-value",
         value: {
           credential: "nested-credential-secret",
@@ -324,9 +594,12 @@ test("scrubs and rewrites valid legacy envelopes while loading", async () => {
       leaseId: "lease.legacy-secret",
       runId: "run.legacy-secret",
       detail: {
+        requestId: "request.legacy",
         action: "deny",
         reasonCode: "policy_deny",
+        targetType: "api_call",
         toolName: "curl Bearer legacy-tool-token",
+        paramsDigest: "d".repeat(64),
         unexpected: "legacy-unknown-value",
       },
     });
@@ -364,7 +637,10 @@ test("rejects cycles and unsupported JSON values", async () => {
     await assert.rejects(
       store.append(buildEvent({
         eventId: "event.unsupported",
-        detail: { callback: () => undefined },
+        detail: {
+          ...buildEvent().detail,
+          callback: () => undefined,
+        },
       })),
       /support|json/i,
     );
@@ -458,7 +734,14 @@ function buildEvent(
     toolCallId: "tool-call.1",
     decisionId: "decision.1",
     timestamp: "2026-08-01T00:00:01.000Z",
-    detail: { action: "deny", reasonCode: "policy_deny" },
+    detail: {
+      requestId: "request.1",
+      action: "deny",
+      reasonCode: "policy_deny",
+      targetType: "tool_call",
+      toolName: "shell",
+      paramsDigest: "a".repeat(64),
+    },
     ...overrides,
   };
 }

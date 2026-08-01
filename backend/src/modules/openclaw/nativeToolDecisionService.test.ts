@@ -151,6 +151,14 @@ test("normalizes trusted metadata without reserved-name bypasses or LLM use", ()
     assert.equal(normalizeNativeToolAction({ toolName }).targetType, "api_call", toolName);
   }
   assert.equal(normalizeNativeToolAction({ toolName: "custom", toolKind: "shell" }).targetType, "code_execution");
+  assert.equal(
+    normalizeNativeToolAction({
+      toolName: "custom",
+      toolKind: "code_mode_exec",
+      toolInputKind: "typescript",
+    }).targetType,
+    "code_execution",
+  );
   assert.equal(normalizeNativeToolAction({ toolName: "custom", toolInputKind: "apply_patch" }).targetType, "file_write");
   assert.equal(normalizeNativeToolAction({ toolName: "custom", providerId: "browser" }).targetType, "tool_call");
   const unknown = normalizeNativeToolAction({ toolName: "mystery" });
@@ -340,6 +348,152 @@ test("never treats a first-attempt false append as persisted success", async () 
     hasCode("NATIVE_GUARD_REPLAY_CONFLICT"),
   );
   assert.equal(appendCalls, 1);
+});
+
+test("fails closed when the global pending decision count is exhausted", async () => {
+  const fixture = createFixture({
+    maxPendingDecisions: 1,
+    eventStore: {
+      async append() {
+        throw new Error("ambiguous pending write");
+      },
+    },
+  });
+  await assert.rejects(
+    fixture.service.decide(fixture.request(), fixture.credential),
+    /ambiguous pending write/,
+  );
+  const policyPack = buildPolicyPack({});
+  const second = fixture.leaseService.create({
+    rootSessionKey: "session.pending-second",
+    mode: "supervision",
+    policyPack,
+    policyPackDigest: digestJson(policyPack),
+    backendUrl: "http://127.0.0.1:4310",
+  }).activation;
+  const request = fixture.request({
+    requestId: "req.pending-second",
+    leaseId: second.leaseId,
+    leaseEpoch: second.leaseEpoch,
+    sessionKey: second.rootSessionKey,
+    toolCallId: "call.pending-second",
+    params: { body: "payload-secret-value" },
+  });
+  await assert.rejects(
+    fixture.service.decide(request, second.credential),
+    (error: unknown) => {
+      assert.ok(error instanceof NativeToolDecisionError);
+      assert.equal(error.code, "NATIVE_GUARD_PENDING_LIMIT");
+      assert.equal(JSON.stringify(error).includes("payload-secret-value"), false);
+      return true;
+    },
+  );
+});
+
+test("fails closed before append when one pending envelope exceeds the byte limit", async () => {
+  let appendCalls = 0;
+  const fixture = createFixture({
+    maxPendingBytes: 1,
+    eventStore: {
+      async append() {
+        appendCalls += 1;
+        return true;
+      },
+    },
+  });
+  await assert.rejects(
+    fixture.service.decide(
+      fixture.request({ params: { body: "oversized-payload-secret" } }),
+      fixture.credential,
+    ),
+    hasCode("NATIVE_GUARD_PENDING_LIMIT"),
+  );
+  assert.equal(appendCalls, 0);
+});
+
+test("clears ambiguous pending state after renewal while keeping old ids tombstoned", async () => {
+  let appendCalls = 0;
+  const fixture = createFixture({
+    maxPendingDecisions: 1,
+    eventStore: {
+      async append() {
+        appendCalls += 1;
+        if (appendCalls === 1) throw new Error("ambiguous pending write");
+        return true;
+      },
+    },
+  });
+  await assert.rejects(
+    fixture.service.decide(fixture.request(), fixture.credential),
+    /ambiguous pending write/,
+  );
+  const renewed = fixture.leaseService.renew(fixture.activation.leaseId);
+  const result = await fixture.service.decide(
+    fixture.request({
+      requestId: "req.after-pending-renew",
+      toolCallId: "call.after-pending-renew",
+      leaseEpoch: renewed.leaseEpoch,
+    }),
+    renewed.credential,
+  );
+  assert.equal(result.response.leaseEpoch, renewed.leaseEpoch);
+  await assert.rejects(
+    fixture.service.decide(
+      fixture.request({ leaseEpoch: renewed.leaseEpoch }),
+      renewed.credential,
+    ),
+    hasCode("NATIVE_GUARD_REPLAY_CONFLICT"),
+  );
+});
+
+test("clears revoked and expired pending state before authenticating another lease", async () => {
+  for (const lifecycle of ["revoke", "expire"] as const) {
+    let leaseNowMs = LEASE_NOW_MS;
+    let decisionNowMs = LEASE_NOW_MS + 500;
+    let appendCalls = 0;
+    const fixture = createFixture({
+      leaseNow: () => leaseNowMs,
+      decisionNow: () => new Date(decisionNowMs).toISOString(),
+      ttlMs: 1_000,
+      maxPendingDecisions: 1,
+      eventStore: {
+        async append() {
+          appendCalls += 1;
+          if (appendCalls === 1) throw new Error("ambiguous pending write");
+          return true;
+        },
+      },
+    });
+    await assert.rejects(
+      fixture.service.decide(fixture.request(), fixture.credential),
+      /ambiguous pending write/,
+    );
+    if (lifecycle === "revoke") {
+      fixture.leaseService.revoke(fixture.activation.leaseId);
+    } else {
+      leaseNowMs += 2_000;
+      decisionNowMs = leaseNowMs;
+    }
+    const policyPack = buildPolicyPack({});
+    const next = fixture.leaseService.create({
+      rootSessionKey: `session.after-${lifecycle}`,
+      mode: "supervision",
+      policyPack,
+      policyPackDigest: digestJson(policyPack),
+      backendUrl: "http://127.0.0.1:4310",
+    }).activation;
+    const result = await fixture.service.decide(
+      fixture.request({
+        requestId: `req.after-${lifecycle}`,
+        leaseId: next.leaseId,
+        leaseEpoch: next.leaseEpoch,
+        sessionKey: next.rootSessionKey,
+        toolCallId: `call.after-${lifecycle}`,
+      }),
+      next.credential,
+    );
+    assert.equal(result.response.leaseId, next.leaseId);
+  }
 });
 
 test("keeps request and tool-call tombstones across lease renewal", async () => {
@@ -708,6 +862,8 @@ type FixtureOptions = {
   leaseNow?: () => number;
   decisionNow?: () => string;
   ttlMs?: number;
+  maxPendingDecisions?: number;
+  maxPendingBytes?: number;
 };
 
 function createFixture(options: FixtureOptions = {}) {
@@ -739,6 +895,8 @@ function createFixture(options: FixtureOptions = {}) {
     now: options.decisionNow ?? (() => DECISION_NOW),
     createId: (prefix) => `${prefix}.${++id}`,
     maxRequestsPerLease: options.maxRequestsPerLease,
+    maxPendingDecisions: options.maxPendingDecisions,
+    maxPendingBytes: options.maxPendingBytes,
     beforeSign: options.beforeSign,
   });
 

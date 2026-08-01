@@ -24,6 +24,8 @@ import type { NativeGuardLeaseService } from "./nativeGuardLeaseService";
 
 const DEFAULT_MAX_SKEW_MS = 30_000;
 const DEFAULT_MAX_REQUESTS_PER_LEASE = 1_000;
+const DEFAULT_MAX_PENDING_DECISIONS = 1_000;
+const DEFAULT_MAX_PENDING_BYTES = 16 * 1024 * 1024;
 const DANGEROUS_PATH_SEGMENTS = new Set([
   "__proto__",
   "prototype",
@@ -40,6 +42,7 @@ const CODE_EXECUTION_NAMES = new Set([
   "execute_command",
   "execute_code",
   "code_execution",
+  "code_mode_exec",
 ]);
 const FILE_WRITE_NAMES = new Set([
   "write",
@@ -98,6 +101,9 @@ type LeaseTombstones = {
 type PendingDecision = {
   leaseId: string;
   leaseEpoch: number;
+  sessionKey: string;
+  expiresAtMs: number;
+  estimatedBytes: number;
   requestId: string;
   toolCallId: string;
   requestDigest: string;
@@ -141,6 +147,8 @@ export type NativeToolDecisionServiceOptions = {
   createId?: (prefix: string) => string;
   maxSkewMs?: number;
   maxRequestsPerLease?: number;
+  maxPendingDecisions?: number;
+  maxPendingBytes?: number;
   beforeSign?: (request: Readonly<NativeToolDecisionRequest>) => Promise<void>;
 };
 
@@ -205,10 +213,43 @@ export function createNativeToolDecisionService(
     options.maxRequestsPerLease ?? DEFAULT_MAX_REQUESTS_PER_LEASE,
     "maxRequestsPerLease",
   );
+  const maxPendingDecisions = positiveInteger(
+    options.maxPendingDecisions ?? DEFAULT_MAX_PENDING_DECISIONS,
+    "maxPendingDecisions",
+  );
+  const maxPendingBytes = positiveInteger(
+    options.maxPendingBytes ?? DEFAULT_MAX_PENDING_BYTES,
+    "maxPendingBytes",
+  );
   const caches = new Map<string, LeaseCache>();
   const tombstones = new Map<string, LeaseTombstones>();
   const pendingDecisions = new Map<string, PendingDecision>();
   const inFlightDecisions = new Map<string, InFlightDecision>();
+  let pendingBytes = 0;
+
+  function deletePending(pending: PendingDecision): void {
+    const key = pendingKey(pending.leaseId, pending.requestId);
+    if (pendingDecisions.get(key) !== pending) return;
+    pendingDecisions.delete(key);
+    pendingBytes = Math.max(0, pendingBytes - pending.estimatedBytes);
+  }
+
+  function cleanPendingDecisions(nowMs: number): void {
+    for (const pending of pendingDecisions.values()) {
+      if (pending.expiresAtMs <= nowMs) {
+        deletePending(pending);
+        continue;
+      }
+      const active = options.leaseService.resolveBySession(pending.sessionKey);
+      if (
+        !active ||
+        active.leaseId !== pending.leaseId ||
+        active.leaseEpoch !== pending.leaseEpoch
+      ) {
+        deletePending(pending);
+      }
+    }
+  }
 
   async function persistPending(
     pending: PendingDecision,
@@ -225,7 +266,7 @@ export function createNativeToolDecisionService(
       structuredClone(pending.result.record),
     );
     if (!appended && !wasRetry) {
-      pendingDecisions.delete(pendingKey(pending.leaseId, pending.requestId));
+      deletePending(pending);
       throw decisionError(
         "NATIVE_GUARD_EVENT_CONFLICT",
         "Native guard decision event could not be persisted uniquely",
@@ -247,7 +288,7 @@ export function createNativeToolDecisionService(
       result: structuredClone(pending.result),
     });
     cache.toolCalls.set(pending.toolCallId, pending.requestId);
-    pendingDecisions.delete(pendingKey(pending.leaseId, pending.requestId));
+    deletePending(pending);
     return structuredClone(pending.result);
   }
 
@@ -438,9 +479,27 @@ export function createNativeToolDecisionService(
           },
         };
         const result = { response, record };
+        const expiresAtMs = Date.parse(lease.expiresAt);
+        const estimatedBytes = Buffer.byteLength(
+          JSON.stringify({ event, result }),
+          "utf8",
+        );
+        if (
+          pendingDecisions.size >= maxPendingDecisions ||
+          estimatedBytes > maxPendingBytes ||
+          pendingBytes + estimatedBytes > maxPendingBytes
+        ) {
+          throw decisionError(
+            "NATIVE_GUARD_PENDING_LIMIT",
+            "Native guard pending decision capacity was reached",
+          );
+        }
         const pendingDecision: PendingDecision = {
           leaseId: request.leaseId,
           leaseEpoch: request.leaseEpoch,
+          sessionKey: request.sessionKey,
+          expiresAtMs,
+          estimatedBytes,
           requestId: request.requestId,
           toolCallId: request.toolCallId,
           requestDigest,
@@ -449,10 +508,11 @@ export function createNativeToolDecisionService(
           attempted: false,
         };
         pendingDecisions.set(pendingId, pendingDecision);
+        pendingBytes += estimatedBytes;
         return persistPending(
           pendingDecision,
           cacheKey,
-          Date.parse(lease.expiresAt),
+          expiresAtMs,
         );
   }
 
@@ -462,6 +522,7 @@ export function createNativeToolDecisionService(
       credential: string,
     ): Promise<DecisionResult> {
       const decisionTime = readNow(now);
+      cleanPendingDecisions(decisionTime.timeMs);
       const requestTimeMs = validateRequest(request);
       const lease = authenticateAndBind(options.leaseService, request, credential);
       let requestDigest: string;

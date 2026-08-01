@@ -46,6 +46,18 @@ const RECORD_TARGETS = new Set<RuntimeSupervisionRecord["targetType"]>([
   "code_execution",
   "agent_message",
 ]);
+const NATIVE_ACTIONS = new Set(["allow", "warn", "deny", "ask", "redact"]);
+const COVERAGE_VALUES = new Set([
+  "off",
+  "ready",
+  "active",
+  "recovery",
+  "conditional",
+  "unsupported",
+  "misconfigured",
+]);
+const HEX_DIGEST = /^[a-f0-9]{64}$/i;
+const MAX_RESULT_PREVIEW_BYTES = 8 * 1024;
 const COMMON_DETAIL_FIELDS = ["reasonCode", "message", "value"] as const;
 const DETAIL_FIELDS: Record<NativeGuardEvent["type"], readonly string[]> = {
   decision: [
@@ -112,7 +124,10 @@ const DETAIL_FIELDS: Record<NativeGuardEvent["type"], readonly string[]> = {
     "outcome",
     "success",
     "durationMs",
+    "finalParamsDigest",
     "resultDigest",
+    "resultPreview",
+    "error",
     "errorCode",
     "riskTags",
   ],
@@ -169,6 +184,18 @@ export type NativeGuardEventStore = {
 
 export type NativeGuardEventStoreOptions = {
   rootDir?: string;
+  fileHooks?: NativeGuardEventStoreFileHooks;
+};
+
+export type NativeGuardEventStoreFileHooks = {
+  beforeAtomicRename?: (context: {
+    kind: "active" | "quarantine";
+    targetPath: string;
+    tempPath: string;
+  }) => void | Promise<void>;
+  afterAppendSync?: (context: {
+    targetPath: string;
+  }) => void | Promise<void>;
 };
 
 export class NativeGuardEventConflictError extends Error {
@@ -196,7 +223,7 @@ export function createNativeGuardEventStore(
       eventIds.clear();
       envelopes.length = 0;
       nextSequence = 1;
-      loading = loadExisting(rootDir, eventIds, envelopes)
+      loading = loadExisting(rootDir, eventIds, envelopes, options.fileHooks)
         .then(() => {
           nextSequence =
             envelopes.reduce(
@@ -246,7 +273,21 @@ export function createNativeGuardEventStore(
         }
         const filePath = eventFilePath(rootDir, stored.event.leaseId);
         await fs.mkdir(rootDir, { recursive: true });
-        await fs.appendFile(filePath, `${JSON.stringify(stored)}\n`, "utf8");
+        try {
+          await appendDurably(
+            filePath,
+            `${JSON.stringify(stored)}\n`,
+            options.fileHooks,
+          );
+        } catch (error) {
+          coordination.generation += 1;
+          loading = undefined;
+          loadedGeneration = -1;
+          eventIds.clear();
+          envelopes.length = 0;
+          nextSequence = 1;
+          throw error;
+        }
         eventIds.add(stored.event.eventId);
         envelopes.push(stored);
         nextSequence += 1;
@@ -308,6 +349,23 @@ export function createNativeGuardEventStore(
   };
 }
 
+async function appendDurably(
+  filePath: string,
+  content: string,
+  fileHooks?: NativeGuardEventStoreFileHooks,
+): Promise<void> {
+  let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
+  try {
+    handle = await fs.open(filePath, "a", 0o600);
+    await handle.chmod(0o600);
+    await handle.writeFile(content, { encoding: "utf8" });
+    await handle.sync();
+    await fileHooks?.afterAppendSync?.({ targetPath: filePath });
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
+
 function coordinationFor(rootDir: string): RootCoordination {
   const key = process.platform === "win32" ? rootDir.toLowerCase() : rootDir;
   let coordination = rootCoordinations.get(key);
@@ -322,33 +380,39 @@ async function loadExisting(
   rootDir: string,
   eventIds: Set<string>,
   envelopes: StoredEnvelope[],
+  fileHooks?: NativeGuardEventStoreFileHooks,
 ): Promise<void> {
   await fs.mkdir(rootDir, { recursive: true });
   const entries = await fs.readdir(rootDir, { withFileTypes: true });
   for (const entry of entries) {
     if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
     const leaseId = entry.name.slice(0, -".jsonl".length);
-    assertLeaseId(leaseId);
+    if (!SAFE_LEASE_ID.test(leaseId)) continue;
     const filePath = eventFilePath(rootDir, leaseId);
     const content = await fs.readFile(filePath, "utf8");
     const lines = content.split("\n");
     if (lines.at(-1) === "") lines.pop();
     const validLines: string[] = [];
-    let corrupt = false;
+    let corruption: { line: number; reasonCode: string } | undefined;
     let needsRewrite = false;
 
     for (let index = 0; index < lines.length; index += 1) {
       const line = lines[index];
       if (!line) {
-        corrupt = true;
+        corruption = { line: index + 1, reasonCode: "empty_line" };
         break;
       }
       let parsed: unknown;
       try {
         parsed = JSON.parse(line);
+      } catch {
+        corruption = { line: index + 1, reasonCode: "invalid_json" };
+        break;
+      }
+      try {
         assertValidStoredEnvelope(parsed, leaseId);
       } catch {
-        corrupt = true;
+        corruption = { line: index + 1, reasonCode: "invalid_schema" };
         break;
       }
       const envelope = sanitizeEnvelope(parsed as StoredEnvelope);
@@ -356,17 +420,23 @@ async function loadExisting(
       if (safeLine !== line) needsRewrite = true;
       assertNonEmptyId(envelope.event.eventId, "event id");
       if (eventIds.has(envelope.event.eventId)) {
-        corrupt = true;
+        corruption = { line: index + 1, reasonCode: "duplicate_event_id" };
         break;
       }
       eventIds.add(envelope.event.eventId);
       envelopes.push(envelope);
       validLines.push(safeLine);
     }
-    if (corrupt) {
-      await quarantineAndRepair(rootDir, filePath, validLines);
+    if (corruption) {
+      await quarantineAndRepair(
+        rootDir,
+        filePath,
+        validLines,
+        corruption,
+        fileHooks,
+      );
     } else if (needsRewrite) {
-      await rewriteJsonl(filePath, validLines);
+      await rewriteJsonl(filePath, validLines, "active", fileHooks);
     }
   }
   envelopes.sort((left, right) => {
@@ -379,21 +449,62 @@ async function quarantineAndRepair(
   rootDir: string,
   filePath: string,
   validLines: string[],
+  corruption: { line: number; reasonCode: string },
+  fileHooks?: NativeGuardEventStoreFileHooks,
 ): Promise<void> {
   const quarantinePath = resolveInsideDirectory(
     rootDir,
     `${path.basename(filePath)}.corrupt-${randomUUID()}`,
   );
-  await fs.rename(filePath, quarantinePath);
-  await rewriteJsonl(filePath, validLines);
+  const metadata = JSON.stringify({
+    schemaVersion: "native-guard-quarantine-1",
+    sourceFile: path.basename(filePath),
+    validPrefixCount: validLines.length,
+    corruption,
+  });
+  await atomicWriteFile(
+    quarantinePath,
+    `${validLines.join("\n")}${validLines.length > 0 ? "\n" : ""}${metadata}\n`,
+    "quarantine",
+    fileHooks,
+  );
+  await rewriteJsonl(filePath, validLines, "active", fileHooks);
 }
 
 async function rewriteJsonl(
   filePath: string,
   validLines: string[],
+  kind: "active" | "quarantine",
+  fileHooks?: NativeGuardEventStoreFileHooks,
 ): Promise<void> {
   const content = validLines.length > 0 ? `${validLines.join("\n")}\n` : "";
-  await fs.writeFile(filePath, content, "utf8");
+  await atomicWriteFile(filePath, content, kind, fileHooks);
+}
+
+async function atomicWriteFile(
+  targetPath: string,
+  content: string,
+  kind: "active" | "quarantine",
+  fileHooks?: NativeGuardEventStoreFileHooks,
+): Promise<void> {
+  const directory = path.dirname(targetPath);
+  const tempPath = resolveInsideDirectory(
+    directory,
+    `.${path.basename(targetPath)}.tmp-${randomUUID()}`,
+  );
+  let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
+  try {
+    handle = await fs.open(tempPath, "wx", 0o600);
+    await handle.writeFile(content, { encoding: "utf8" });
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    await fileHooks?.beforeAtomicRename?.({ kind, targetPath, tempPath });
+    await fs.rename(tempPath, targetPath);
+  } finally {
+    await handle?.close().catch(() => undefined);
+    await fs.rm(tempPath, { force: true }).catch(() => undefined);
+  }
 }
 
 function eventFilePath(rootDir: string, leaseId: string): string {
@@ -438,8 +549,36 @@ function projectEvent(event: NativeGuardEvent): NativeGuardEvent {
     ...(event.toolCallId === undefined ? {} : { toolCallId: event.toolCallId }),
     ...(event.decisionId === undefined ? {} : { decisionId: event.decisionId }),
     timestamp: event.timestamp,
-    detail: pickFields(event.detail, DETAIL_FIELDS[event.type]),
+    detail: projectEventDetail(event.type, event.detail),
   };
+}
+
+function projectEventDetail(
+  type: NativeGuardEvent["type"],
+  detail: Record<string, unknown>,
+): Record<string, unknown> {
+  switch (type) {
+    case "decision":
+    case "lease_activated":
+    case "lease_renewed":
+    case "lease_recovery":
+    case "lease_revoked":
+    case "approval_requested":
+    case "approval_resolved":
+    case "sandbox_attested":
+    case "coverage_changed":
+      return pickFields(detail, DETAIL_FIELDS[type]);
+    case "tool_outcome": {
+      const projected = pickFields(detail, DETAIL_FIELDS[type]);
+      if (typeof projected.resultPreview === "string") {
+        projected.resultPreview = truncateUtf8(
+          projected.resultPreview,
+          MAX_RESULT_PREVIEW_BYTES,
+        );
+      }
+      return projected;
+    }
+  }
 }
 
 function projectRecord(
@@ -645,6 +784,125 @@ function assertValidEvent(
   if (!isPlainObject(event.detail) || !isJsonTree(event.detail)) {
     throw new Error("Native guard event detail is invalid JSON");
   }
+  assertTypedEvent(event.type as NativeGuardEvent["type"], event);
+}
+
+function assertTypedEvent(
+  type: NativeGuardEvent["type"],
+  event: Record<string, unknown>,
+): void {
+  const detail = event.detail as Record<string, unknown>;
+  switch (type) {
+    case "decision":
+      requireEventId(event.toolCallId, "decision toolCallId");
+      requireEventId(event.decisionId, "decision decisionId");
+      for (const field of [
+        "requestId",
+        "reasonCode",
+        "targetType",
+        "toolName",
+      ] as const) {
+        requireDetailString(detail, field, "decision");
+      }
+      if (!NATIVE_ACTIONS.has(detail.action as string)) {
+        throw new Error("Native guard decision action is invalid");
+      }
+      if (!RECORD_TARGETS.has(detail.targetType as RuntimeSupervisionRecord["targetType"])) {
+        throw new Error("Native guard decision targetType is invalid");
+      }
+      requireDigest(detail.paramsDigest, "decision paramsDigest");
+      if (detail.action === "redact") {
+        requireDigest(
+          detail.rewrittenParamsDigest,
+          "decision rewritten params digest",
+        );
+      } else if (detail.rewrittenParamsDigest !== undefined) {
+        requireDigest(
+          detail.rewrittenParamsDigest,
+          "decision rewritten params digest",
+        );
+      }
+      return;
+    case "tool_outcome":
+      requireEventId(event.toolCallId, "tool outcome toolCallId");
+      requireDigest(detail.finalParamsDigest, "tool outcome finalParamsDigest");
+      requireDigest(detail.resultDigest, "tool outcome resultDigest");
+      if (
+        typeof detail.durationMs !== "number" ||
+        !Number.isFinite(detail.durationMs) ||
+        detail.durationMs < 0
+      ) {
+        throw new Error("Native guard tool outcome durationMs is invalid");
+      }
+      assertOptionalDetailString(detail, "error", "tool outcome");
+      assertOptionalDetailString(detail, "resultPreview", "tool outcome");
+      return;
+    case "lease_activated":
+    case "lease_renewed":
+    case "lease_recovery":
+    case "lease_revoked":
+      if (!Number.isSafeInteger(detail.leaseEpoch) || (detail.leaseEpoch as number) <= 0) {
+        throw new Error(`Native guard ${type} leaseEpoch is invalid`);
+      }
+      return;
+    case "approval_requested":
+      requireEventId(event.toolCallId, "approval requested toolCallId");
+      requireDetailString(detail, "approvalId", "approval requested");
+      return;
+    case "approval_resolved":
+      requireEventId(event.toolCallId, "approval resolved toolCallId");
+      requireDetailString(detail, "approvalId", "approval resolved");
+      requireDetailString(detail, "status", "approval resolved");
+      return;
+    case "sandbox_attested":
+      requireDetailString(detail, "status", "sandbox attestation");
+      requireDetailString(detail, "configDigest", "sandbox attestation");
+      return;
+    case "coverage_changed":
+      if (!COVERAGE_VALUES.has(detail.coverage as string)) {
+        throw new Error("Native guard coverage change coverage is invalid");
+      }
+      return;
+  }
+}
+
+function requireEventId(value: unknown, label: string): void {
+  if (!isNonEmptyString(value)) throw new Error(`Native guard ${label} is required`);
+}
+
+function requireDetailString(
+  detail: Record<string, unknown>,
+  field: string,
+  context: string,
+): void {
+  if (!isNonEmptyString(detail[field])) {
+    throw new Error(`Native guard ${context} detail ${field} is required`);
+  }
+}
+
+function assertOptionalDetailString(
+  detail: Record<string, unknown>,
+  field: string,
+  context: string,
+): void {
+  if (detail[field] !== undefined && typeof detail[field] !== "string") {
+    throw new Error(`Native guard ${context} detail ${field} is invalid`);
+  }
+}
+
+function requireDigest(value: unknown, label: string): void {
+  if (typeof value !== "string" || !HEX_DIGEST.test(value)) {
+    throw new Error(`Native guard ${label} must be a 64 character hex digest`);
+  }
+}
+
+function truncateUtf8(value: string, maxBytes: number): string {
+  if (Buffer.byteLength(value, "utf8") <= maxBytes) return value;
+  let end = Math.min(value.length, maxBytes);
+  while (end > 0 && Buffer.byteLength(value.slice(0, end), "utf8") > maxBytes) {
+    end -= 1;
+  }
+  return value.slice(0, end);
 }
 
 function assertValidRecord(value: unknown): void {

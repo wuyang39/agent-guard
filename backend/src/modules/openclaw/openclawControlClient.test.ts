@@ -160,7 +160,7 @@ test("times out a stalled response stream", async () => {
 test("does not accept a new version without the enabled Trusted Tool Policy contract", async () => {
   const runner = commandRunner([
     result("OpenClaw 2026.7.2\n"),
-    result(JSON.stringify([{ id: "agent-guard-supervision", enabled: true, hooks: ["before_tool_call"] }])),
+    result(JSON.stringify([{ id: "agent-guard-supervision", enabled: true, hookNames: ["before_tool_call"] }])),
   ]);
   const client = createOpenClawControlClient({ gatewayToken: TOKEN, commandRunner: runner });
 
@@ -175,7 +175,7 @@ test("accepts the exact Agent Guard admission contract from a nested plugin mani
   const plugin = {
     id: "agent-guard-supervision",
     enabled: true,
-    hooks: ["before_tool_call"],
+    hookNames: ["before_tool_call"],
     manifest: { contracts: { trustedToolPolicies: ["agent-guard-admission"] } },
   };
   const client = createOpenClawControlClient({
@@ -187,6 +187,63 @@ test("accepts the exact Agent Guard admission contract from a nested plugin mani
 
   assert.equal(capability.supportsNativeGuard, true);
   assert.equal(capability.finalizerAssurance, "exclusive_before_hook");
+});
+
+test("rejects non-exact Trusted Tool Policy contract declarations", async () => {
+  const invalidPlugins = [
+    {
+      id: "agent-guard-supervision",
+      enabled: true,
+      hookNames: ["before_tool_call"],
+      contracts: { trustedToolPolicies: ["agent-guard-admission", "extra-policy"] },
+    },
+    {
+      id: "agent-guard-supervision",
+      enabled: true,
+      hookNames: ["before_tool_call"],
+      contracts: { trustedToolPolicies: true },
+    },
+    {
+      id: "agent-guard-supervision",
+      enabled: true,
+      hookNames: ["before_tool_call"],
+      trustedToolPolicyContract: "native-guard-1",
+    },
+    {
+      id: "agent-guard-supervision",
+      enabled: true,
+      hookNames: ["before_tool_call"],
+      capabilities: { trustedToolPolicy: { contract: "native-guard-1" } },
+    },
+  ];
+
+  for (const plugin of invalidPlugins) {
+    const client = createOpenClawControlClient({
+      gatewayToken: TOKEN,
+      commandRunner: commandRunner([result("2026.7.2"), result(JSON.stringify([plugin]))]),
+    });
+    const capability = await client.inspectCapabilities({ isolatedProfile: false });
+    assert.equal(capability.supportsNativeGuard, false);
+    assert.equal(capability.finalizerAssurance, "unverified");
+  }
+});
+
+test("requires the exact before_tool_call string in hookNames", async () => {
+  const plugin = {
+    id: "agent-guard-supervision",
+    enabled: true,
+    hookNames: [{ name: "before_tool_call" }],
+    contracts: { trustedToolPolicies: ["agent-guard-admission"] },
+  };
+  const client = createOpenClawControlClient({
+    gatewayToken: TOKEN,
+    commandRunner: commandRunner([result("2026.7.2"), result(JSON.stringify([plugin]))]),
+  });
+
+  const capability = await client.inspectCapabilities({ isolatedProfile: false });
+
+  assert.equal(capability.supportsNativeGuard, true);
+  assert.equal(capability.finalizerAssurance, "unverified");
 });
 
 test("requires version 2026.7.2 or newer even when the plugin contract is present", async () => {
@@ -229,7 +286,7 @@ test("reports an exclusive hook and detects a second enabled before_tool_call pl
     gatewayToken: TOKEN,
     commandRunner: commandRunner([
       result("2026.7.3"),
-      result(JSON.stringify([agentGuardPlugin(), { id: "other-guard", enabled: true, hooks: ["before_tool_call"] }])),
+      result(JSON.stringify([agentGuardPlugin(), { id: "other-guard", enabled: true, hookNames: ["before_tool_call"] }])),
     ]),
   });
   const capability = await conflicting.inspectCapabilities({ isolatedProfile: false });
@@ -251,7 +308,7 @@ test("grants isolated assurance only for the exact enabled Agent Guard allowlist
     gatewayToken: TOKEN,
     commandRunner: commandRunner([
       result("2026.8.0"),
-      result(JSON.stringify({ plugins: [agentGuardPlugin(), { id: "unrelated", enabled: true, hooks: [] }] })),
+      result(JSON.stringify({ plugins: [agentGuardPlugin(), { id: "unrelated", enabled: true, hookNames: [] }] })),
     ]),
   });
   assert.equal(
@@ -313,7 +370,7 @@ function agentGuardPlugin(): Record<string, unknown> {
   return {
     id: "agent-guard-supervision",
     enabled: true,
-    hooks: ["before_tool_call"],
+    hookNames: ["before_tool_call"],
     contracts: { trustedToolPolicies: ["agent-guard-admission"] },
   };
 }

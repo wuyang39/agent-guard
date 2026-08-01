@@ -16,7 +16,7 @@ const REVOKE_PATH = "/agent-guard/native-guard/v1/leases/revoke";
 const DEFAULT_TIMEOUT_MS = 2_000;
 const MAX_RESPONSE_BYTES = 64 * 1024;
 const AGENT_GUARD_PLUGIN_ID = "agent-guard-supervision";
-const TRUSTED_TOOL_POLICY_CONTRACT = "native-guard-1";
+const TRUSTED_TOOL_POLICY_ID = "agent-guard-admission";
 
 export type NativeGuardFinalizerAssurance = NativeGuardStatus["finalizerAssurance"];
 
@@ -461,10 +461,14 @@ function versionAtLeast(version: string, minimum: readonly [number, number, numb
 }
 
 function hasBeforeToolCallHook(plugin: Record<string, unknown>): boolean {
-  if (!Array.isArray(plugin.hooks)) return false;
-  return plugin.hooks.some((hook) =>
+  if (
+    Array.isArray(plugin.hookNames) &&
+    plugin.hookNames.some((hook) => hook === "before_tool_call")
+  ) return true;
+  return Array.isArray(plugin.hooks) && plugin.hooks.some((hook) =>
     hook === "before_tool_call" ||
-    (isRecord(hook) && (hook.id === "before_tool_call" || hook.name === "before_tool_call")));
+    (isRecord(hook) &&
+      (hook.id === "before_tool_call" || hook.name === "before_tool_call")));
 }
 
 function hasTrustedToolPolicyContract(plugin: Record<string, unknown>): boolean {
@@ -473,28 +477,9 @@ function hasTrustedToolPolicyContract(plugin: Record<string, unknown>): boolean 
     const policies = manifest.contracts.trustedToolPolicies;
     if (
       Array.isArray(policies) &&
-      policies.some((policy) => policy === "agent-guard-admission")
+      policies.length === 1 &&
+      policies[0] === TRUSTED_TOOL_POLICY_ID
     ) return true;
-  }
-  if (plugin.trustedToolPolicyContract === TRUSTED_TOOL_POLICY_CONTRACT) return true;
-  for (const containerName of ["capabilities", "contracts"] as const) {
-    const container = plugin[containerName];
-    if (isRecord(container)) {
-      for (const key of ["trustedToolPolicy", "trusted_tool_policy"] as const) {
-        const capability = container[key];
-        if (
-          capability === TRUSTED_TOOL_POLICY_CONTRACT ||
-          (isRecord(capability) && capability.contract === TRUSTED_TOOL_POLICY_CONTRACT)
-        ) return true;
-      }
-    }
-    if (Array.isArray(container) && container.some((capability) =>
-      capability === `trusted-tool-policy:${TRUSTED_TOOL_POLICY_CONTRACT}` ||
-      (isRecord(capability) &&
-        (capability.id === "trusted-tool-policy" || capability.id === "trusted_tool_policy") &&
-        capability.contract === TRUSTED_TOOL_POLICY_CONTRACT))) {
-      return true;
-    }
   }
   return false;
 }

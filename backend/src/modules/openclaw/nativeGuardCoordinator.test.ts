@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import type {
   NativeGuardLeaseActivation,
@@ -86,7 +87,7 @@ test("rejects a plugin activation status for another lease and rolls back", asyn
   assert.equal(fixture.leaseService.status().activeLeaseCount, 0);
 });
 
-test("revokes the backend first and treats offline repeated plugin revocation as idempotent", async () => {
+test("deletes the backend lease after an offline plugin revoke and keeps repeats idempotent", async () => {
   const fixture = coordinatorFixture({ revokeError: new Error("offline") });
   await fixture.coordinator.activate(supervisionInput());
   const leaseId = fixture.activationCalls[0].leaseId;
@@ -99,6 +100,88 @@ test("revokes the backend first and treats offline repeated plugin revocation as
   assert.equal(first.reasonCode, "NATIVE_GUARD_PLUGIN_REVOKE_UNCONFIRMED");
   assert.equal(second.coverage, "ready");
   assert.equal(fixture.revokeCalls.length, 1);
+});
+
+test("marks a lease revoking before awaiting the plugin, then deletes the backend secret", async () => {
+  const fixture = coordinatorFixture();
+  await fixture.coordinator.activate(supervisionInput());
+  const activation = fixture.activationCalls[0];
+  const pluginStarted = deferred<void>();
+  const releasePlugin = deferred<void>();
+  const order: string[] = [];
+  const revokeBackend = fixture.leaseService.revoke.bind(fixture.leaseService);
+  fixture.leaseService.revoke = (leaseId) => {
+    order.push("backend");
+    return revokeBackend(leaseId);
+  };
+  fixture.controlClient.revoke = async (_gatewayUrl, leaseId) => {
+    order.push("plugin");
+    pluginStarted.resolve();
+    assert.equal(
+      typeof fixture.coordinator.isLeaseRevoking === "function" &&
+        fixture.coordinator.isLeaseRevoking(leaseId),
+      true,
+    );
+    await releasePlugin.promise;
+    return status("ready");
+  };
+
+  const revoking = fixture.coordinator.revoke(activation.leaseId);
+  await pluginStarted.promise;
+
+  assert.deepEqual(order, ["plugin"]);
+  assert.equal(fixture.coordinator.isLeaseRevoking(activation.leaseId), true);
+  assert.ok(fixture.leaseService.authenticate(activation.leaseId, activation.credential));
+
+  releasePlugin.resolve();
+  const result = await revoking;
+  assert.deepEqual(order, ["plugin", "backend"]);
+  assert.equal(fixture.leaseService.status().activeLeaseCount, 0);
+  assert.equal(fixture.coordinator.isLeaseRevoking(activation.leaseId), false);
+  assert.equal(result.coverage, "ready");
+});
+
+test("deletes the backend lease and warns when plugin revoke still reports active", async () => {
+  const fixture = coordinatorFixture();
+  await fixture.coordinator.activate(supervisionInput());
+  const activation = fixture.activationCalls[0];
+  fixture.controlClient.revoke = async () => status("active", activation.leaseId, activation);
+
+  const result = await fixture.coordinator.revoke(activation.leaseId);
+
+  assert.equal(fixture.leaseService.status().activeLeaseCount, 0);
+  assert.equal(result.coverage, "ready");
+  assert.equal(result.reasonCode, "NATIVE_GUARD_PLUGIN_REVOKE_UNCONFIRMED");
+});
+
+test("treats an already expired backend lease as an idempotent revoke success", async () => {
+  const fixture = coordinatorFixture();
+  await fixture.coordinator.activate({ ...supervisionInput(), ttlMs: 1 });
+  const leaseId = fixture.activationCalls[0].leaseId;
+  fixture.advanceTime(2);
+
+  const result = await fixture.coordinator.revoke(leaseId);
+
+  assert.equal(result.coverage, "ready");
+  assert.equal(fixture.coordinator.isLeaseRevoking(leaseId), false);
+  assert.equal(fixture.leaseService.status().activeLeaseCount, 0);
+});
+
+test("keeps the revoking gate set when backend deletion throws", async () => {
+  const fixture = coordinatorFixture();
+  await fixture.coordinator.activate(supervisionInput());
+  const leaseId = fixture.activationCalls[0].leaseId;
+  fixture.leaseService.revoke = () => {
+    throw new Error("backend-revoke-secret");
+  };
+
+  await assert.rejects(
+    () => fixture.coordinator.revoke(leaseId),
+    (error: unknown) => error instanceof NativeGuardCoordinatorError &&
+      error.code === "NATIVE_GUARD_REVOKE_FAILED" &&
+      !error.message.includes("backend-revoke-secret"),
+  );
+  assert.equal(fixture.coordinator.isLeaseRevoking(leaseId), true);
 });
 
 test("redacts dependency errors while revoking an unknown lease", async () => {
@@ -167,6 +250,80 @@ test("does not promote backend conditional status unless plugin and lease identi
 
   assert.equal(combined.coverage, "conditional");
   assert.equal(combined.reasonCode, "NATIVE_GUARD_STATUS_MISMATCH");
+});
+
+test("re-inspects hook order on every status and keeps the actual backend count", async () => {
+  const fixture = coordinatorFixture();
+  await fixture.coordinator.activate(supervisionInput());
+  fixture.capability = {
+    ...verifiedCapability(),
+    finalizerAssurance: "unverified",
+    conflictingPluginIds: ["late-before-hook"],
+  };
+
+  const combined = await fixture.coordinator.status();
+
+  assert.equal(combined.coverage, "conditional");
+  assert.equal(combined.finalizerAssurance, "unverified");
+  assert.equal(combined.activeLeaseCount, 1);
+  assert.deepEqual(combined.conflictingPluginIds, ["late-before-hook"]);
+  assert.equal(fixture.statusCalls, 0);
+  assert.equal(fixture.inspectCalls, 2);
+});
+
+test("reports a fresh unsupported capability without hiding an existing backend lease", async () => {
+  const fixture = coordinatorFixture();
+  await fixture.coordinator.activate(supervisionInput());
+  fixture.capability = {
+    ...verifiedCapability(),
+    openclawVersion: "2026.6.1",
+    supportsNativeGuard: false,
+    finalizerAssurance: "unverified",
+  };
+
+  const combined = await fixture.coordinator.status();
+
+  assert.equal(combined.coverage, "unsupported");
+  assert.equal(combined.activeLeaseCount, 1);
+  assert.equal(fixture.statusCalls, 0);
+});
+
+test("returns conditional with the backend count when fresh CLI inspection is unavailable", async () => {
+  const fixture = coordinatorFixture();
+  await fixture.coordinator.activate(supervisionInput());
+  fixture.capabilityError = new Error("CLI leaked fresh-capability-secret");
+
+  const combined = await fixture.coordinator.status();
+
+  assert.equal(combined.coverage, "conditional");
+  assert.equal(combined.activeLeaseCount, 1);
+  assert.equal(combined.reasonCode, "NATIVE_GUARD_CAPABILITY_UNAVAILABLE");
+  assert.equal(JSON.stringify(combined).includes("fresh-capability-secret"), false);
+  assert.equal(fixture.statusCalls, 0);
+});
+
+test("uses fresh verified metadata and resolves backend state without retaining credentials", async () => {
+  const fixture = coordinatorFixture();
+  await fixture.coordinator.activate(supervisionInput());
+  fixture.capability = { ...verifiedCapability(), openclawVersion: "2026.8.0" };
+  const resolveBySession = fixture.leaseService.resolveBySession.bind(fixture.leaseService);
+  let resolveCalls = 0;
+  fixture.leaseService.resolveBySession = (sessionKey) => {
+    resolveCalls += 1;
+    return resolveBySession(sessionKey);
+  };
+  fixture.leaseService.authenticate = () => {
+    throw new Error("status must not retain or authenticate with a raw credential");
+  };
+
+  const combined = await fixture.coordinator.status();
+  const source = await readFile(new URL("./nativeGuardCoordinator.ts", import.meta.url), "utf8");
+  const managedLeaseType = /type ManagedLease = \{([\s\S]*?)\n\};/.exec(source)?.[1] ?? "";
+
+  assert.equal(combined.coverage, "active");
+  assert.equal(combined.openclawVersion, "2026.8.0");
+  assert.equal(resolveCalls, 1);
+  assert.doesNotMatch(managedLeaseType, /\bactivation\b|\bcredential\b/);
 });
 
 test("loads an exact stored supervision pack and uses the deterministic baseline for detection", async () => {
@@ -254,15 +411,27 @@ function coordinatorFixture(options: {
   activationMismatch?: boolean;
   renewMismatch?: boolean;
 } = {}) {
-  const leaseService = createNativeGuardLeaseService({ now: () => Date.parse("2026-08-02T00:00:00.000Z") });
+  let nowMs = Date.parse("2026-08-02T00:00:00.000Z");
+  const leaseService = createNativeGuardLeaseService({ now: () => nowMs });
   const policyPack = storedPolicyPack();
   const activationCalls: NativeGuardLeaseActivation[] = [];
   const renewCalls: NativeGuardLeaseActivation[] = [];
   const revokeCalls: string[] = [];
   let pluginStatus = status("ready");
+  let capability = options.capability ?? verifiedCapability();
+  let capabilityError: Error | undefined;
+  let inspectCalls = 0;
+  let statusCalls = 0;
   const controlClient = {
-    inspectCapabilities: async () => options.capability ?? verifiedCapability(),
-    status: async () => pluginStatus,
+    inspectCapabilities: async () => {
+      inspectCalls += 1;
+      if (capabilityError) throw capabilityError;
+      return capability;
+    },
+    status: async () => {
+      statusCalls += 1;
+      return pluginStatus;
+    },
     activate: async (_gatewayUrl: string, activation: NativeGuardLeaseActivation) => {
       activationCalls.push(activation);
       if (options.activateError) throw options.activateError;
@@ -293,13 +462,27 @@ function coordinatorFixture(options: {
   });
   return {
     coordinator,
+    controlClient,
     leaseService,
     activationCalls,
     renewCalls,
     revokeCalls,
+    advanceTime(deltaMs: number) { nowMs += deltaMs; },
+    get capability() { return capability; },
+    set capability(value: NativeGuardCapability) { capability = value; },
+    get capabilityError() { return capabilityError; },
+    set capabilityError(value: Error | undefined) { capabilityError = value; },
+    get inspectCalls() { return inspectCalls; },
+    get statusCalls() { return statusCalls; },
     get pluginStatus() { return pluginStatus; },
     set pluginStatus(value: NativeGuardStatus) { pluginStatus = value; },
   };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((innerResolve) => { resolve = innerResolve; });
+  return { promise, resolve };
 }
 
 function verifiedCapability(): NativeGuardCapability {

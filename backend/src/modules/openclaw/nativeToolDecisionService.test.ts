@@ -764,6 +764,89 @@ test("fails with lease-changed when renewal or revocation wins before signing", 
   }
 });
 
+for (const race of ["renew", "revoke"] as const) {
+  test(`fails with lease-changed when ${race} wins during event append`, async () => {
+    let entered!: () => void;
+    let release!: () => void;
+    const appendEntered = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const appendBlocker = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let appendCalls = 0;
+    const fixture = createFixture({
+      maxPendingDecisions: 1,
+      eventStore: {
+        async append() {
+          appendCalls += 1;
+          if (appendCalls === 1) {
+            entered();
+            await appendBlocker;
+          }
+          return true;
+        },
+      },
+    });
+    const pendingResult = fixture.service.decide(
+      fixture.request(),
+      fixture.credential,
+    );
+    await appendEntered;
+    const renewed = race === "renew"
+      ? fixture.leaseService.renew(fixture.activation.leaseId)
+      : undefined;
+    if (race === "revoke") {
+      fixture.leaseService.revoke(fixture.activation.leaseId);
+    }
+    release();
+
+    await assert.rejects(
+      pendingResult,
+      hasCode("NATIVE_GUARD_LEASE_CHANGED"),
+    );
+
+    if (renewed) {
+      await assert.rejects(
+        fixture.service.decide(
+          fixture.request({ leaseEpoch: renewed.leaseEpoch }),
+          renewed.credential,
+        ),
+        hasCode("NATIVE_GUARD_REPLAY_CONFLICT"),
+      );
+      const next = await fixture.service.decide(
+        fixture.request({
+          requestId: "req.after-append-renew",
+          toolCallId: "call.after-append-renew",
+          leaseEpoch: renewed.leaseEpoch,
+        }),
+        renewed.credential,
+      );
+      assert.equal(next.response.leaseEpoch, renewed.leaseEpoch);
+    } else {
+      const policyPack = buildPolicyPack({});
+      const nextLease = fixture.leaseService.create({
+        rootSessionKey: "session.after-append-revoke",
+        mode: "supervision",
+        policyPack,
+        policyPackDigest: digestJson(policyPack),
+        backendUrl: "http://127.0.0.1:4310",
+      }).activation;
+      const next = await fixture.service.decide(
+        fixture.request({
+          requestId: "req.after-append-revoke",
+          leaseId: nextLease.leaseId,
+          leaseEpoch: nextLease.leaseEpoch,
+          sessionKey: nextLease.rootSessionKey,
+          toolCallId: "call.after-append-revoke",
+        }),
+        nextLease.credential,
+      );
+      assert.equal(next.response.leaseId, nextLease.leaseId);
+    }
+  });
+}
+
 test("does not let a slow lease block decisions for another lease", async () => {
   let hookCalls = 0;
   let entered!: () => void;

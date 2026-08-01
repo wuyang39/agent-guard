@@ -15,7 +15,13 @@ const DEFAULT_ROOT = path.resolve(
   "native-guard",
   "events",
 );
-const SAFE_LEASE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const SAFE_LEASE_ID_BODY = "[A-Za-z0-9][A-Za-z0-9._-]{0,127}";
+const SAFE_LEASE_ID = new RegExp(`^${SAFE_LEASE_ID_BODY}$`);
+const UUID_V4_BODY =
+  "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
+const STALE_ATOMIC_TEMP = new RegExp(
+  `^\\.${SAFE_LEASE_ID_BODY}\\.jsonl(?:\\.corrupt-${UUID_V4_BODY})?\\.tmp-${UUID_V4_BODY}$`,
+);
 const SENSITIVE_KEY = /(authorization|credential|privatekey|apikey|token|secret|password|cookie)/i;
 const EVENT_TYPES = new Set<NativeGuardEvent["type"]>([
   "lease_activated",
@@ -385,6 +391,11 @@ async function loadExisting(
   await fs.mkdir(rootDir, { recursive: true });
   const entries = await fs.readdir(rootDir, { withFileTypes: true });
   for (const entry of entries) {
+    if (entry.isFile() && STALE_ATOMIC_TEMP.test(entry.name)) {
+      await fs.rm(resolveInsideDirectory(rootDir, entry.name), { force: true });
+    }
+  }
+  for (const entry of entries) {
     if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
     const leaseId = entry.name.slice(0, -".jsonl".length);
     if (!SAFE_LEASE_ID.test(leaseId)) continue;
@@ -677,7 +688,9 @@ function sanitizeValue(value: unknown, ancestors: Set<object>): unknown {
   ) {
     return value;
   }
-  if (typeof value === "string") return scrubString(value);
+  if (typeof value === "string") {
+    return scrubString(normalizeWellFormedUnicode(value));
+  }
   if (typeof value === "number") {
     if (!Number.isFinite(value)) {
       throw new TypeError("Native guard events support finite JSON numbers only");
@@ -708,9 +721,10 @@ function sanitizeValue(value: unknown, ancestors: Set<object>): unknown {
 
     const result: Record<string, unknown> = {};
     for (const [key, entry] of Object.entries(value)) {
+      const safeKey = normalizeWellFormedUnicode(key);
       const sanitized = sanitizeValue(entry, ancestors);
-      Object.defineProperty(result, key, {
-        value: isSensitiveKey(key) ? "[REDACTED]" : sanitized,
+      Object.defineProperty(result, safeKey, {
+        value: isSensitiveKey(safeKey) ? "[REDACTED]" : sanitized,
         enumerable: true,
         configurable: true,
         writable: true,
@@ -738,6 +752,27 @@ function scrubString(value: string): string {
       /\b(api[_-]?key|token|secret|password|credential)\b["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;}\]]+)/gi,
       "$1=[REDACTED]",
     );
+}
+
+function normalizeWellFormedUnicode(value: string): string {
+  let normalized = "";
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        normalized += value[index] + value[index + 1];
+        index += 1;
+      } else {
+        normalized += "\uFFFD";
+      }
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      normalized += "\uFFFD";
+    } else {
+      normalized += value[index];
+    }
+  }
+  return normalized;
 }
 
 function assertValidStoredEnvelope(
@@ -897,12 +932,15 @@ function requireDigest(value: unknown, label: string): void {
 }
 
 function truncateUtf8(value: string, maxBytes: number): string {
-  if (Buffer.byteLength(value, "utf8") <= maxBytes) return value;
-  let end = Math.min(value.length, maxBytes);
-  while (end > 0 && Buffer.byteLength(value.slice(0, end), "utf8") > maxBytes) {
-    end -= 1;
+  let bytes = 0;
+  let truncated = "";
+  for (const codePoint of value) {
+    const codePointBytes = Buffer.byteLength(codePoint, "utf8");
+    if (bytes + codePointBytes > maxBytes) break;
+    truncated += codePoint;
+    bytes += codePointBytes;
   }
-  return value.slice(0, end);
+  return truncated;
 }
 
 function assertValidRecord(value: unknown): void {

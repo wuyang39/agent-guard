@@ -349,6 +349,33 @@ test("ignores an unsafe lease JSONL name without blocking healthy files", async 
   }
 });
 
+test("removes only strictly named stale atomic temp files on startup", async () => {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "native-events-"));
+  try {
+    const firstUuid = "11111111-1111-4111-8111-111111111111";
+    const secondUuid = "22222222-2222-4222-8222-222222222222";
+    const stale = [
+      `.lease.stale.jsonl.tmp-${firstUuid}`,
+      `.lease.stale.jsonl.corrupt-${firstUuid}.tmp-${secondUuid}`,
+    ];
+    const preserved = [
+      `user.tmp-${firstUuid}`,
+      `.lease.stale.jsonl.tmp-not-a-uuid`,
+    ];
+    for (const fileName of [...stale, ...preserved]) {
+      await fs.writeFile(path.join(rootDir, fileName), "test", "utf8");
+    }
+
+    const store = createNativeGuardEventStore({ rootDir });
+    assert.deepEqual(await store.listByRun("run.none"), []);
+    const remaining = new Set(await fs.readdir(rootDir));
+    for (const fileName of stale) assert.equal(remaining.has(fileName), false);
+    for (const fileName of preserved) assert.equal(remaining.has(fileName), true);
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
 test("isolates an interior corrupt schema without losing other leases", async () => {
   const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "native-events-"));
   try {
@@ -480,6 +507,57 @@ test("defensively truncates oversized tool-outcome previews to 8 KiB", async () 
       (saved.detail.resultPreview as string).includes("preview-secret"),
       false,
     );
+  });
+});
+
+test("truncates UTF-8 previews only at Unicode code-point boundaries", async () => {
+  await withStore(async ({ store }) => {
+    for (const [asciiLength, keepsEmoji] of [
+      [8_188, true],
+      [8_189, false],
+    ] as const) {
+      const event = buildEvent({
+        eventId: `event.unicode-preview.${asciiLength}`,
+        type: "tool_outcome",
+        detail: {
+          finalParamsDigest: "a".repeat(64),
+          durationMs: 1,
+          resultDigest: "b".repeat(64),
+          resultPreview: `${"a".repeat(asciiLength)}😀`,
+        },
+      });
+      delete event.decisionId;
+      assert.equal(await store.append(event), true);
+      assert.equal(await store.append(structuredClone(event)), false);
+      const saved = (await store.listByRun(event.runId!)).find(
+        ({ eventId }) => eventId === event.eventId,
+      )!;
+      const preview = saved.detail.resultPreview as string;
+      assert.equal(preview.includes("😀"), keepsEmoji);
+      assert.equal(hasUnpairedSurrogate(preview), false);
+      assert.ok(Buffer.byteLength(preview, "utf8") <= 8 * 1024);
+    }
+  });
+});
+
+test("normalizes isolated surrogates before persistence and canonical dedupe", async () => {
+  await withStore(async ({ rootDir, store }) => {
+    const event = buildEvent({
+      eventId: "event.unpaired-surrogate",
+      detail: {
+        ...buildEvent().detail,
+        toolName: "bad\uD800name",
+      },
+    });
+    assert.equal(await store.append(event), true);
+    assert.equal(await store.append(structuredClone(event)), false);
+    const [saved] = await store.listByRun(event.runId!);
+    assert.equal(saved.detail.toolName, "bad�name");
+    const persisted = await fs.readFile(
+      path.join(rootDir, `${event.leaseId}.jsonl`),
+      "utf8",
+    );
+    assert.equal(persisted.toLowerCase().includes("\\ud800"), false);
   });
 });
 
@@ -764,4 +842,18 @@ function buildRecord(
     createdAt: "2026-08-01T00:00:01.000Z",
     ...overrides,
   };
+}
+
+function hasUnpairedSurrogate(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (next < 0xdc00 || next > 0xdfff) return true;
+      index += 1;
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      return true;
+    }
+  }
+  return false;
 }

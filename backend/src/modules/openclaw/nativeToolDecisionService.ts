@@ -255,6 +255,9 @@ export function createNativeToolDecisionService(
     pending: PendingDecision,
     cacheKey: string,
     expiresAtMs: number,
+    request: NativeToolDecisionRequest,
+    credential: string,
+    evaluatedLease: ActiveLeaseSnapshot,
   ): Promise<{
     response: NativeToolDecisionResponse;
     record: RuntimeSupervisionRecord;
@@ -265,6 +268,26 @@ export function createNativeToolDecisionService(
       structuredClone(pending.event),
       structuredClone(pending.result.record),
     );
+    try {
+      assertLeaseUnchanged(
+        options.leaseService,
+        request,
+        credential,
+        evaluatedLease,
+      );
+      const signed = pending.result.response;
+      if (
+        signed.leaseId !== evaluatedLease.leaseId ||
+        signed.leaseEpoch !== evaluatedLease.leaseEpoch ||
+        signed.policyPackId !== evaluatedLease.policyPackId ||
+        signed.policyPackDigest !== evaluatedLease.policyPackDigest
+      ) {
+        throw leaseChanged();
+      }
+    } catch (error) {
+      deletePending(pending);
+      throw error;
+    }
     if (!appended && !wasRetry) {
       deletePending(pending);
       throw decisionError(
@@ -331,7 +354,14 @@ export function createNativeToolDecisionService(
               "Native guard request identity conflicts with a pending decision",
             );
           }
-          return persistPending(pending, cacheKey, Date.parse(lease.expiresAt));
+          return persistPending(
+            pending,
+            cacheKey,
+            Date.parse(lease.expiresAt),
+            request,
+            credential,
+            lease,
+          );
         }
         if (cache?.toolCalls.has(request.toolCallId)) {
           throw decisionError(
@@ -513,6 +543,9 @@ export function createNativeToolDecisionService(
           pendingDecision,
           cacheKey,
           expiresAtMs,
+          request,
+          credential,
+          lease,
         );
   }
 
@@ -1052,6 +1085,13 @@ function authenticationFailed(): NativeToolDecisionError {
   return decisionError(
     "NATIVE_GUARD_AUTHENTICATION_FAILED",
     "Native guard authentication failed",
+  );
+}
+
+function leaseChanged(): NativeToolDecisionError {
+  return decisionError(
+    "NATIVE_GUARD_LEASE_CHANGED",
+    "Native guard lease changed before decision completion",
   );
 }
 

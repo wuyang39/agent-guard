@@ -9,6 +9,7 @@ import type {
   RuntimeSupervisionRecord,
   SupervisionAction,
   SupervisionPolicy,
+  SupervisionPolicyPack,
   SupervisionTargetType,
   ToolCapabilityProfile,
   ToolProviderType,
@@ -16,7 +17,6 @@ import type {
 } from "@agent-guard/contracts";
 import { digestJson } from "@agent-guard/native-guard-protocol";
 import { createId as defaultCreateId } from "../../shared/ids";
-import { Mutex } from "../../shared/mutex";
 import { findMatchingPolicies } from "../supervisor/policyEngine";
 import { recordSupervisionDecision } from "../supervisor/supervisionRecorder";
 import type { SupervisionRuntimeAction } from "../supervisor/supervisorTypes";
@@ -28,6 +28,41 @@ const DANGEROUS_PATH_SEGMENTS = new Set([
   "__proto__",
   "prototype",
   "constructor",
+]);
+const CODE_EXECUTION_NAMES = new Set([
+  "exec",
+  "process",
+  "shell",
+  "bash",
+  "run_command",
+  "powershell",
+  "cmd",
+  "execute_command",
+  "execute_code",
+  "code_execution",
+]);
+const FILE_WRITE_NAMES = new Set([
+  "write",
+  "edit",
+  "write_file",
+  "edit_file",
+  "apply_patch",
+  "create_file",
+  "patch",
+  "file_write",
+]);
+const API_CALL_NAMES = new Set([
+  "web_fetch",
+  "web_search",
+  "http_request",
+  "fetch",
+  "curl",
+  "browser",
+  "browser_navigate",
+  "network",
+  "call_api",
+  "send_request",
+  "api_call",
 ]);
 
 type EventAppender = {
@@ -54,6 +89,41 @@ type LeaseCache = {
   toolCalls: Map<string, string>;
 };
 
+type LeaseTombstones = {
+  expiresAtMs: number;
+  requestIds: Set<string>;
+  toolCallIds: Set<string>;
+};
+
+type PendingDecision = {
+  leaseId: string;
+  leaseEpoch: number;
+  requestId: string;
+  toolCallId: string;
+  requestDigest: string;
+  event: NativeGuardEvent;
+  result: {
+    response: NativeToolDecisionResponse;
+    record: RuntimeSupervisionRecord;
+  };
+  attempted: boolean;
+};
+
+type DecisionResult = {
+  response: NativeToolDecisionResponse;
+  record: RuntimeSupervisionRecord;
+};
+
+type ActiveLeaseSnapshot = NonNullable<
+  ReturnType<NativeGuardLeaseService["authenticate"]>
+>;
+
+type InFlightDecision = {
+  leaseEpoch: number;
+  requestDigest: string;
+  promise: Promise<DecisionResult>;
+};
+
 export type NativeToolDecisionService = {
   decide(
     request: NativeToolDecisionRequest,
@@ -71,7 +141,7 @@ export type NativeToolDecisionServiceOptions = {
   createId?: (prefix: string) => string;
   maxSkewMs?: number;
   maxRequestsPerLease?: number;
-  beforeSign?: () => Promise<void>;
+  beforeSign?: (request: Readonly<NativeToolDecisionRequest>) => Promise<void>;
 };
 
 export type NormalizedNativeToolAction = {
@@ -100,20 +170,19 @@ export function normalizeNativeToolAction(metadata: {
     metadata.toolName,
     metadata.toolKind,
     metadata.toolInputKind,
-    metadata.providerId,
-  ].filter((value): value is string => typeof value === "string");
+  ]
+    .filter((value): value is string => typeof value === "string")
+    .map(canonicalOperationName);
 
-  if (values.some((value) => hasMetadataTerm(value, ["exec", "process"]))) {
+  if (values.some((value) => CODE_EXECUTION_NAMES.has(value))) {
     return { targetType: "code_execution", riskTags: [], llmAssisted: false };
   }
   if (
-    values.some((value) =>
-      hasMetadataTerm(value, ["write", "edit", "apply_patch"]),
-    )
+    values.some((value) => FILE_WRITE_NAMES.has(value))
   ) {
     return { targetType: "file_write", riskTags: [], llmAssisted: false };
   }
-  if (values.some((value) => hasMetadataTerm(value, ["network", "browser"]))) {
+  if (values.some((value) => API_CALL_NAMES.has(value))) {
     return { targetType: "api_call", riskTags: [], llmAssisted: false };
   }
   return {
@@ -137,30 +206,68 @@ export function createNativeToolDecisionService(
     "maxRequestsPerLease",
   );
   const caches = new Map<string, LeaseCache>();
-  const mutex = new Mutex();
+  const tombstones = new Map<string, LeaseTombstones>();
+  const pendingDecisions = new Map<string, PendingDecision>();
+  const inFlightDecisions = new Map<string, InFlightDecision>();
 
-  return {
-    async decide(
-      request: NativeToolDecisionRequest,
-      credential: string,
-    ): Promise<{
-      response: NativeToolDecisionResponse;
-      record: RuntimeSupervisionRecord;
-    }> {
-      return mutex.run(async () => {
-        const decisionTime = readNow(now);
-        const requestTimeMs = validateRequest(request);
-        const lease = authenticateAndBind(options.leaseService, request, credential);
+  async function persistPending(
+    pending: PendingDecision,
+    cacheKey: string,
+    expiresAtMs: number,
+  ): Promise<{
+    response: NativeToolDecisionResponse;
+    record: RuntimeSupervisionRecord;
+  }> {
+    const wasRetry = pending.attempted;
+    pending.attempted = true;
+    const appended = await options.eventStore.append(
+      structuredClone(pending.event),
+      structuredClone(pending.result.record),
+    );
+    if (!appended && !wasRetry) {
+      pendingDecisions.delete(pendingKey(pending.leaseId, pending.requestId));
+      throw decisionError(
+        "NATIVE_GUARD_EVENT_CONFLICT",
+        "Native guard decision event could not be persisted uniquely",
+      );
+    }
+
+    let cache = caches.get(cacheKey);
+    cache ??= {
+      leaseId: pending.leaseId,
+      leaseEpoch: pending.leaseEpoch,
+      expiresAtMs,
+      requests: new Map(),
+      toolCalls: new Map(),
+    };
+    caches.set(cacheKey, cache);
+    cache.requests.set(pending.requestId, {
+      requestDigest: pending.requestDigest,
+      toolCallId: pending.toolCallId,
+      result: structuredClone(pending.result),
+    });
+    cache.toolCalls.set(pending.toolCallId, pending.requestId);
+    pendingDecisions.delete(pendingKey(pending.leaseId, pending.requestId));
+    return structuredClone(pending.result);
+  }
+
+  async function executeDecision(
+    request: NativeToolDecisionRequest,
+    credential: string,
+    decisionTime: { iso: string; timeMs: number },
+    requestTimeMs: number,
+    lease: ActiveLeaseSnapshot,
+    requestDigest: string,
+  ): Promise<DecisionResult> {
         cleanCaches(caches, decisionTime.timeMs, request.leaseId, request.leaseEpoch);
+        const activeTombstones = tombstones.get(request.leaseId);
+        if (activeTombstones) {
+          activeTombstones.expiresAtMs = Date.parse(lease.expiresAt);
+        }
+        cleanTombstones(tombstones, decisionTime.timeMs);
 
         const cacheKey = leaseCacheKey(request.leaseId, request.leaseEpoch);
-        let cache = caches.get(cacheKey);
-        let requestDigest: string;
-        try {
-          requestDigest = digestJson(request);
-        } catch {
-          throw invalidRequest("Native guard request identity is not canonical JSON");
-        }
+        const cache = caches.get(cacheKey);
         const prior = cache?.requests.get(request.requestId);
         if (prior) {
           if (prior.requestDigest !== requestDigest) {
@@ -171,10 +278,37 @@ export function createNativeToolDecisionService(
           }
           return structuredClone(prior.result);
         }
+        const pendingId = pendingKey(request.leaseId, request.requestId);
+        const pending = pendingDecisions.get(pendingId);
+        if (pending) {
+          if (
+            pending.leaseEpoch !== request.leaseEpoch ||
+            pending.requestDigest !== requestDigest
+          ) {
+            throw decisionError(
+              "NATIVE_GUARD_REPLAY_CONFLICT",
+              "Native guard request identity conflicts with a pending decision",
+            );
+          }
+          return persistPending(pending, cacheKey, Date.parse(lease.expiresAt));
+        }
         if (cache?.toolCalls.has(request.toolCallId)) {
           throw decisionError(
             "NATIVE_GUARD_TOOL_CALL_REPLAY",
             "Native guard tool call was already submitted under another request",
+          );
+        }
+        let leaseTombstones = tombstones.get(request.leaseId);
+        if (leaseTombstones?.requestIds.has(request.requestId)) {
+          throw decisionError(
+            "NATIVE_GUARD_REPLAY_CONFLICT",
+            "Native guard request id was already used during this lease",
+          );
+        }
+        if (leaseTombstones?.toolCallIds.has(request.toolCallId)) {
+          throw decisionError(
+            "NATIVE_GUARD_TOOL_CALL_REPLAY",
+            "Native guard tool call id was already used during this lease",
           );
         }
         if (Math.abs(decisionTime.timeMs - requestTimeMs) > maxSkewMs) {
@@ -183,7 +317,10 @@ export function createNativeToolDecisionService(
             "Native guard request timestamp is outside the accepted window",
           );
         }
-        if (cache && cache.requests.size >= maxRequestsPerLease) {
+        if (
+          leaseTombstones &&
+          leaseTombstones.requestIds.size >= maxRequestsPerLease
+        ) {
           throw decisionError(
             "NATIVE_GUARD_CACHE_LIMIT",
             "Native guard replay cache capacity was reached",
@@ -227,6 +364,8 @@ export function createNativeToolDecisionService(
             request.params,
             normalized.targetType,
             matching,
+            lease.policyPack,
+            runtimeAction,
           );
           rewrittenParamsDigest = digestJson(rewrittenParams);
         }
@@ -249,7 +388,17 @@ export function createNativeToolDecisionService(
           decidedAt: decisionTime.iso,
         };
 
-        await options.beforeSign?.();
+        leaseTombstones ??= {
+          expiresAtMs: Date.parse(lease.expiresAt),
+          requestIds: new Set(),
+          toolCallIds: new Set(),
+        };
+        leaseTombstones.expiresAtMs = Date.parse(lease.expiresAt);
+        leaseTombstones.requestIds.add(request.requestId);
+        leaseTombstones.toolCallIds.add(request.toolCallId);
+        tombstones.set(request.leaseId, leaseTombstones);
+
+        await options.beforeSign?.(request);
         assertLeaseUnchanged(options.leaseService, request, credential, lease);
         let signature: string;
         try {
@@ -288,30 +437,74 @@ export function createNativeToolDecisionService(
             ...(rewrittenParamsDigest ? { rewrittenParamsDigest } : {}),
           },
         };
-        if (!(await options.eventStore.append(event, record))) {
-          throw decisionError(
-            "NATIVE_GUARD_EVENT_CONFLICT",
-            "Native guard decision event could not be persisted uniquely",
-          );
-        }
-
-        cache ??= {
+        const result = { response, record };
+        const pendingDecision: PendingDecision = {
           leaseId: request.leaseId,
           leaseEpoch: request.leaseEpoch,
-          expiresAtMs: Date.parse(lease.expiresAt),
-          requests: new Map(),
-          toolCalls: new Map(),
-        };
-        caches.set(cacheKey, cache);
-        const result = { response, record };
-        cache.requests.set(request.requestId, {
-          requestDigest,
+          requestId: request.requestId,
           toolCallId: request.toolCallId,
-          result: structuredClone(result),
-        });
-        cache.toolCalls.set(request.toolCallId, request.requestId);
-        return result;
+          requestDigest,
+          event,
+          result,
+          attempted: false,
+        };
+        pendingDecisions.set(pendingId, pendingDecision);
+        return persistPending(
+          pendingDecision,
+          cacheKey,
+          Date.parse(lease.expiresAt),
+        );
+  }
+
+  return {
+    async decide(
+      request: NativeToolDecisionRequest,
+      credential: string,
+    ): Promise<DecisionResult> {
+      const decisionTime = readNow(now);
+      const requestTimeMs = validateRequest(request);
+      const lease = authenticateAndBind(options.leaseService, request, credential);
+      let requestDigest: string;
+      try {
+        requestDigest = digestJson(request);
+      } catch {
+        throw invalidRequest("Native guard request identity is not canonical JSON");
+      }
+
+      const flightKey = pendingKey(request.leaseId, request.requestId);
+      const existing = inFlightDecisions.get(flightKey);
+      if (existing) {
+        if (
+          existing.leaseEpoch !== request.leaseEpoch ||
+          existing.requestDigest !== requestDigest
+        ) {
+          throw decisionError(
+            "NATIVE_GUARD_REPLAY_CONFLICT",
+            "Native guard request identity conflicts with an active decision",
+          );
+        }
+        return existing.promise;
+      }
+
+      let tracked!: Promise<DecisionResult>;
+      tracked = executeDecision(
+        request,
+        credential,
+        decisionTime,
+        requestTimeMs,
+        lease,
+        requestDigest,
+      ).finally(() => {
+        if (inFlightDecisions.get(flightKey)?.promise === tracked) {
+          inFlightDecisions.delete(flightKey);
+        }
       });
+      inFlightDecisions.set(flightKey, {
+        leaseEpoch: request.leaseEpoch,
+        requestDigest,
+        promise: tracked,
+      });
+      return tracked;
     },
   };
 }
@@ -486,12 +679,15 @@ function redactParameters(
   params: Record<string, unknown>,
   targetType: SupervisionTargetType,
   matchingPolicies: SupervisionPolicy[],
+  policyPack: SupervisionPolicyPack,
+  runtimeAction: SupervisionRuntimeAction,
 ): Record<string, unknown> {
   const rewritten = structuredClone(params);
   let rewriteCount = 0;
   for (const policy of matchingPolicies) {
     if (policy.action !== "redact") continue;
     for (const matcher of policy.match.matchers ?? []) {
+      if (!didMatcherMatch(policyPack, policy, matcher, runtimeAction)) continue;
       const segments = resolveRedactionPath(
         matcher.fieldPath,
         targetType,
@@ -531,6 +727,22 @@ function redactParameters(
   return rewritten;
 }
 
+function didMatcherMatch(
+  policyPack: SupervisionPolicyPack,
+  policy: SupervisionPolicy,
+  matcher: NonNullable<SupervisionPolicy["match"]["matchers"]>[number],
+  runtimeAction: SupervisionRuntimeAction,
+): boolean {
+  const singleMatcherPolicy: SupervisionPolicy = {
+    ...policy,
+    match: { ...policy.match, relation: "all", matchers: [matcher] },
+  };
+  return findMatchingPolicies(
+    { ...policyPack, policies: [singleMatcherPolicy] },
+    runtimeAction,
+  ).length === 1;
+}
+
 function resolveRedactionPath(
   fieldPath: string,
   targetType: SupervisionTargetType,
@@ -546,7 +758,9 @@ function resolveRedactionPath(
   }
 
   const direct = fieldPath.slice(payloadPrefix.length).split(".");
-  if (direct.length !== 1 || Object.hasOwn(params, direct[0])) return direct;
+  if (direct.length !== 1 || typeof params[direct[0]] === "string") {
+    return direct;
+  }
   const alias = redactionAlias(targetType, direct[0], params);
   return alias ? [alias] : direct;
 }
@@ -560,11 +774,11 @@ function redactionAlias(
     targetType === "api_call" && payloadField === "data"
       ? ["body"]
       : targetType === "file_write" && payloadField === "contentPreview"
-        ? ["content"]
+        ? ["content", "patch"]
         : targetType === "code_execution" && payloadField === "codePreview"
           ? ["code", "command"]
           : [];
-  return candidates.find((candidate) => Object.hasOwn(params, candidate));
+  return candidates.find((candidate) => typeof params[candidate] === "string");
 }
 
 function buildRuntimePayload(
@@ -593,7 +807,9 @@ function buildRuntimePayload(
         url: stringParam(request.params.url) ?? "",
         data:
           stringParam(request.params.data) ?? stringParam(request.params.body),
-      };
+        toolName: request.toolName,
+        parameters: params,
+      } as RuntimeActionPayload;
     default:
       return {
         toolId: request.toolName,
@@ -675,6 +891,15 @@ function cleanCaches(
   }
 }
 
+function cleanTombstones(
+  tombstones: Map<string, LeaseTombstones>,
+  nowMs: number,
+): void {
+  for (const [leaseId, state] of tombstones) {
+    if (state.expiresAtMs <= nowMs) tombstones.delete(leaseId);
+  }
+}
+
 function readNow(now: () => string | Date): { iso: string; timeMs: number } {
   const value = now();
   const iso = value instanceof Date ? value.toISOString() : value;
@@ -696,12 +921,10 @@ function assertRequiredString(value: unknown, label: string): asserts value is s
   }
 }
 
-function hasMetadataTerm(value: string, terms: string[]): boolean {
-  const normalized = value.toLowerCase();
-  return terms.some((term) => {
-    if (term === "apply_patch" && normalized.includes("apply_patch")) return true;
-    return new RegExp(`(^|[^a-z0-9])${term}([^a-z0-9]|$)`).test(normalized);
-  });
+function canonicalOperationName(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  const separator = normalized.lastIndexOf("__");
+  return separator >= 0 ? normalized.slice(separator + 2) : normalized;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -751,6 +974,10 @@ function operationFor(
 
 function leaseCacheKey(leaseId: string, epoch: number): string {
   return `${leaseId}:${epoch}`;
+}
+
+function pendingKey(leaseId: string, requestId: string): string {
+  return `${leaseId}:${requestId}`;
 }
 
 function positiveInteger(value: number, label: string): number {

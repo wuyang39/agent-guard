@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { createPublicKey } from "node:crypto";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import type {
   NativeGuardEvent,
@@ -15,6 +18,7 @@ import {
   verifyNativeGuardPayload,
 } from "@agent-guard/native-guard-protocol";
 import { createNativeGuardLeaseService } from "./nativeGuardLeaseService";
+import { createNativeGuardEventStore } from "../../storage/nativeGuardEventStore";
 import {
   createNativeToolDecisionService,
   NativeToolDecisionError,
@@ -110,12 +114,45 @@ test("uses the default action when no policy matches", async () => {
 });
 
 test("normalizes trusted metadata without reserved-name bypasses or LLM use", () => {
-  assert.equal(normalizeNativeToolAction({ toolName: "exec" }).targetType, "code_execution");
-  assert.equal(normalizeNativeToolAction({ toolName: "agw__process" }).targetType, "code_execution");
-  assert.equal(normalizeNativeToolAction({ toolKind: "write" }).targetType, "file_write");
-  assert.equal(normalizeNativeToolAction({ toolInputKind: "apply_patch" }).targetType, "file_write");
-  assert.equal(normalizeNativeToolAction({ providerId: "browser" }).targetType, "api_call");
-  assert.equal(normalizeNativeToolAction({ toolName: "agent_guard__network" }).targetType, "api_call");
+  for (const toolName of [
+    "exec",
+    "process",
+    "shell",
+    "bash",
+    "run_command",
+    "powershell",
+    "cmd",
+    "execute_command",
+    "agent_guard__shell",
+  ]) {
+    assert.equal(normalizeNativeToolAction({ toolName }).targetType, "code_execution", toolName);
+  }
+  for (const toolName of [
+    "write_file",
+    "edit_file",
+    "apply_patch",
+    "create_file",
+    "patch",
+    "agw__write_file",
+  ]) {
+    assert.equal(normalizeNativeToolAction({ toolName }).targetType, "file_write", toolName);
+  }
+  for (const toolName of [
+    "web_fetch",
+    "web_search",
+    "http_request",
+    "fetch",
+    "curl",
+    "browser",
+    "browser_navigate",
+    "network",
+    "agw__web_fetch",
+  ]) {
+    assert.equal(normalizeNativeToolAction({ toolName }).targetType, "api_call", toolName);
+  }
+  assert.equal(normalizeNativeToolAction({ toolName: "custom", toolKind: "shell" }).targetType, "code_execution");
+  assert.equal(normalizeNativeToolAction({ toolName: "custom", toolInputKind: "apply_patch" }).targetType, "file_write");
+  assert.equal(normalizeNativeToolAction({ toolName: "custom", providerId: "browser" }).targetType, "tool_call");
   const unknown = normalizeNativeToolAction({ toolName: "mystery" });
   assert.equal(unknown.targetType, "tool_call");
   assert.deepEqual(unknown.riskTags, ["unknown_side_effect"]);
@@ -210,27 +247,176 @@ test("replays identical requests once and rejects request/tool-call identity con
   );
 });
 
-test("invalidates old replay entries after renewal and fails closed at the cache bound", async () => {
-  const fixture = createFixture({ maxRequestsPerLease: 1 });
-  await fixture.service.decide(fixture.request(), fixture.credential);
+test("retries the same signed envelope after an ambiguous append failure", async () => {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "native-decision-"));
+  try {
+    const delegate = createNativeGuardEventStore({ rootDir });
+    const attempts: Array<{
+      event: NativeGuardEvent;
+      record?: RuntimeSupervisionRecord;
+    }> = [];
+    let throwAfterWrite = true;
+    const fixture = createFixture({
+      eventStore: {
+        async append(event, record) {
+          attempts.push(structuredClone({ event, record }));
+          const appended = await delegate.append(event, record);
+          if (throwAfterWrite) {
+            throwAfterWrite = false;
+            throw new Error("ambiguous append result");
+          }
+          return appended;
+        },
+      },
+    });
+    const request = fixture.request();
+
+    await assert.rejects(
+      fixture.service.decide(request, fixture.credential),
+      /ambiguous append result/,
+    );
+    const result = await fixture.service.decide(request, fixture.credential);
+
+    assert.equal(attempts.length, 2);
+    assert.deepEqual(attempts[1], attempts[0]);
+    assert.equal(result.response.decisionId, attempts[0].event.decisionId);
+    assert.deepEqual(await delegate.listByRun("run.1"), [attempts[0].event]);
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("keeps an ambiguous old-epoch request tombstoned after renewal", async () => {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "native-decision-"));
+  try {
+    const delegate = createNativeGuardEventStore({ rootDir });
+    let throwAfterWrite = true;
+    const fixture = createFixture({
+      eventStore: {
+        async append(event, record) {
+          const appended = await delegate.append(event, record);
+          if (throwAfterWrite) {
+            throwAfterWrite = false;
+            throw new Error("ambiguous append result");
+          }
+          return appended;
+        },
+      },
+    });
+    await assert.rejects(
+      fixture.service.decide(fixture.request(), fixture.credential),
+      /ambiguous append result/,
+    );
+    const renewed = fixture.leaseService.renew(fixture.activation.leaseId);
+    await assert.rejects(
+      fixture.service.decide(
+        fixture.request({ leaseEpoch: renewed.leaseEpoch }),
+        renewed.credential,
+      ),
+      hasCode("NATIVE_GUARD_REPLAY_CONFLICT"),
+    );
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("never treats a first-attempt false append as persisted success", async () => {
+  let appendCalls = 0;
+  const fixture = createFixture({
+    eventStore: {
+      async append() {
+        appendCalls += 1;
+        return false;
+      },
+    },
+  });
+  const request = fixture.request();
   await assert.rejects(
-    fixture.service.decide(
-      fixture.request({ requestId: "req.2", toolCallId: "call.2" }),
-      fixture.credential,
-    ),
-    hasCode("NATIVE_GUARD_CACHE_LIMIT"),
+    fixture.service.decide(request, fixture.credential),
+    hasCode("NATIVE_GUARD_EVENT_CONFLICT"),
   );
+  await assert.rejects(
+    fixture.service.decide(request, fixture.credential),
+    hasCode("NATIVE_GUARD_REPLAY_CONFLICT"),
+  );
+  assert.equal(appendCalls, 1);
+});
+
+test("keeps request and tool-call tombstones across lease renewal", async () => {
+  const fixture = createFixture({ maxRequestsPerLease: 3 });
+  await fixture.service.decide(fixture.request(), fixture.credential);
 
   const renewed = fixture.leaseService.renew(fixture.activation.leaseId);
   await assert.rejects(
     fixture.service.decide(fixture.request(), fixture.credential),
     hasCode("NATIVE_GUARD_AUTHENTICATION_FAILED"),
   );
+  await assert.rejects(
+    fixture.service.decide(
+      fixture.request({ leaseEpoch: renewed.leaseEpoch }),
+      renewed.credential,
+    ),
+    hasCode("NATIVE_GUARD_REPLAY_CONFLICT"),
+  );
+  await assert.rejects(
+    fixture.service.decide(
+      fixture.request({
+        requestId: "req.2",
+        leaseEpoch: renewed.leaseEpoch,
+      }),
+      renewed.credential,
+    ),
+    hasCode("NATIVE_GUARD_TOOL_CALL_REPLAY"),
+  );
   const renewedResult = await fixture.service.decide(
-    fixture.request({ leaseEpoch: renewed.leaseEpoch }),
+    fixture.request({
+      requestId: "req.2",
+      toolCallId: "call.2",
+      leaseEpoch: renewed.leaseEpoch,
+    }),
     renewed.credential,
   );
   assert.equal(renewedResult.response.leaseEpoch, renewed.leaseEpoch);
+});
+
+test("enforces replay capacity across lease epochs", async () => {
+  const fixture = createFixture({ maxRequestsPerLease: 1 });
+  await fixture.service.decide(fixture.request(), fixture.credential);
+  const renewed = fixture.leaseService.renew(fixture.activation.leaseId);
+  await assert.rejects(
+    fixture.service.decide(
+      fixture.request({
+        requestId: "req.after-renew",
+        toolCallId: "call.after-renew",
+        leaseEpoch: renewed.leaseEpoch,
+      }),
+      renewed.credential,
+    ),
+    hasCode("NATIVE_GUARD_CACHE_LIMIT"),
+  );
+});
+
+test("extends tombstone lifetime to a renewed lease expiry", async () => {
+  let leaseNowMs = LEASE_NOW_MS;
+  let decisionNowMs = LEASE_NOW_MS + 500;
+  const fixture = createFixture({
+    leaseNow: () => leaseNowMs,
+    decisionNow: () => new Date(decisionNowMs).toISOString(),
+    ttlMs: 2_000,
+  });
+  await fixture.service.decide(fixture.request(), fixture.credential);
+
+  leaseNowMs += 1_000;
+  const renewed = fixture.leaseService.renew(fixture.activation.leaseId, 5_000);
+  leaseNowMs += 2_000;
+  decisionNowMs = leaseNowMs;
+  await assert.rejects(
+    fixture.service.decide(
+      fixture.request({ leaseEpoch: renewed.leaseEpoch }),
+      renewed.credential,
+    ),
+    hasCode("NATIVE_GUARD_REPLAY_CONFLICT"),
+  );
 });
 
 test("merges multiple nested redactions and fails closed for unsafe or ineffective paths", async () => {
@@ -309,6 +495,101 @@ test("maps matched api_call payload data redaction back to the original body", a
   assert.equal(result.record.targetType, "api_call");
 });
 
+test("redacts the string fallback when the primary api data field is non-string", async () => {
+  const policy = {
+    ...buildPolicy("redact", "payload.data", "secret"),
+    targetType: "api_call" as const,
+  };
+  const fixture = createFixture({ policies: [policy] });
+  const result = await fixture.service.decide(
+    fixture.request({
+      toolName: "http_request",
+      params: {
+        method: "POST",
+        url: "https://example.test/submit",
+        data: null,
+        body: "token=secret",
+      },
+    }),
+    fixture.credential,
+  );
+
+  assert.deepEqual(result.response.rewrittenParams, {
+    method: "POST",
+    url: "https://example.test/submit",
+    data: null,
+    body: "[REDACTED]",
+  });
+});
+
+test("redacts file and code fallback fields selected by runtime payloads", async () => {
+  for (const scenario of [
+    {
+      toolName: "write_file",
+      targetType: "file_write" as const,
+      fieldPath: "payload.contentPreview",
+      params: { content: null, patch: "replace secret" },
+      expected: { content: null, patch: "[REDACTED]" },
+    },
+    {
+      toolName: "execute_command",
+      targetType: "code_execution" as const,
+      fieldPath: "payload.codePreview",
+      params: { code: null, command: "echo secret" },
+      expected: { code: null, command: "[REDACTED]" },
+    },
+  ]) {
+    const policy = {
+      ...buildPolicy("redact", scenario.fieldPath, "secret"),
+      targetType: scenario.targetType,
+    };
+    const fixture = createFixture({ policies: [policy] });
+    const result = await fixture.service.decide(
+      fixture.request({ toolName: scenario.toolName, params: scenario.params }),
+      fixture.credential,
+    );
+    assert.deepEqual(result.response.rewrittenParams, scenario.expected);
+  }
+});
+
+test("redacts only matchers that actually matched in a relation-any policy", async () => {
+  const policy = buildPolicy(
+    "redact",
+    "payload.parameters.request.body",
+    "secret",
+  );
+  policy.match = {
+    relation: "any",
+    matchers: [
+      {
+        fieldPath: "payload.parameters.request.body",
+        operator: "contains",
+        value: "secret",
+      },
+      {
+        fieldPath: "payload.parameters.publicValue",
+        operator: "contains",
+        value: "secret",
+      },
+    ],
+  };
+  const fixture = createFixture({ policies: [policy] });
+  const result = await fixture.service.decide(
+    fixture.request({
+      params: {
+        request: { body: "token=secret" },
+        publicValue: "keep me",
+      },
+    }),
+    fixture.credential,
+  );
+
+  assert.deepEqual(result.response.rewrittenParams, {
+    request: { body: "[REDACTED]" },
+    publicValue: "keep me",
+  });
+});
+
 test("fails with lease-changed when renewal or revocation wins before signing", async () => {
   for (const race of ["renew", "revoke"] as const) {
     let fixture: ReturnType<typeof createFixture>;
@@ -329,22 +610,118 @@ test("fails with lease-changed when renewal or revocation wins before signing", 
   }
 });
 
+test("does not let a slow lease block decisions for another lease", async () => {
+  let hookCalls = 0;
+  let entered!: () => void;
+  let release!: () => void;
+  const hookEntered = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const blocker = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const fixture = createFixture({
+    beforeSign: async () => {
+      hookCalls += 1;
+      if (hookCalls === 1) {
+        entered();
+        await blocker;
+      }
+    },
+  });
+  const policyPack = buildPolicyPack({});
+  const second = fixture.leaseService.create({
+    rootSessionKey: "session.second",
+    mode: "supervision",
+    policyPack,
+    policyPackDigest: digestJson(policyPack),
+    backendUrl: "http://127.0.0.1:4310",
+  }).activation;
+
+  const firstPromise = fixture.service.decide(
+    fixture.request(),
+    fixture.credential,
+  );
+  await hookEntered;
+  const secondPromise = fixture.service.decide(
+    fixture.request({
+      requestId: "req.second",
+      leaseId: second.leaseId,
+      leaseEpoch: second.leaseEpoch,
+      sessionKey: second.rootSessionKey,
+      toolCallId: "call.second",
+    }),
+    second.credential,
+  );
+  const secondFinishedFirst = await Promise.race([
+    secondPromise.then(() => true),
+    new Promise<false>((resolve) => setTimeout(() => resolve(false), 50)),
+  ]);
+  release();
+  await Promise.allSettled([firstPromise, secondPromise]);
+  assert.equal(secondFinishedFirst, true);
+});
+
+test("singleflights concurrent copies of the same request", async () => {
+  let hookCalls = 0;
+  let entered!: () => void;
+  let release!: () => void;
+  const hookEntered = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const blocker = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const fixture = createFixture({
+    beforeSign: async () => {
+      hookCalls += 1;
+      entered();
+      await blocker;
+    },
+  });
+  const request = fixture.request();
+  const first = fixture.service.decide(request, fixture.credential);
+  await hookEntered;
+  const second = fixture.service.decide(
+    structuredClone(request),
+    fixture.credential,
+  );
+  release();
+
+  const [firstResult, secondResult] = await Promise.all([first, second]);
+  assert.deepEqual(secondResult, firstResult);
+  assert.equal(hookCalls, 1);
+  assert.equal(fixture.appended.length, 1);
+});
+
 type FixtureOptions = {
   policies?: SupervisionPolicy[];
   defaultAction?: SupervisionAction;
   maxRequestsPerLease?: number;
   beforeSign?: () => Promise<void>;
+  eventStore?: {
+    append(
+      event: NativeGuardEvent,
+      record?: RuntimeSupervisionRecord,
+    ): Promise<boolean>;
+  };
+  leaseNow?: () => number;
+  decisionNow?: () => string;
+  ttlMs?: number;
 };
 
 function createFixture(options: FixtureOptions = {}) {
   const policyPack = buildPolicyPack(options);
-  const leaseService = createNativeGuardLeaseService({ now: () => LEASE_NOW_MS });
+  const leaseService = createNativeGuardLeaseService({
+    now: options.leaseNow ?? (() => LEASE_NOW_MS),
+  });
   const activation = leaseService.create({
     rootSessionKey: "session.root",
     mode: "supervision",
     policyPack,
     policyPackDigest: digestJson(policyPack),
     backendUrl: "http://127.0.0.1:4310",
+    ttlMs: options.ttlMs,
   }).activation;
   const appended: Array<{
     event: NativeGuardEvent;
@@ -353,13 +730,13 @@ function createFixture(options: FixtureOptions = {}) {
   let id = 0;
   const service = createNativeToolDecisionService({
     leaseService,
-    eventStore: {
+    eventStore: options.eventStore ?? {
       async append(event, record) {
         appended.push({ event, record });
         return true;
       },
     },
-    now: () => DECISION_NOW,
+    now: options.decisionNow ?? (() => DECISION_NOW),
     createId: (prefix) => `${prefix}.${++id}`,
     maxRequestsPerLease: options.maxRequestsPerLease,
     beforeSign: options.beforeSign,
@@ -419,7 +796,7 @@ function buildPolicy(
     sourceWeaknessIds: ["weakness.native"],
     name: `${action} policy`,
     description: "Native decision fixture.",
-    targetType: "tool_call",
+    targetType: "api_call",
     action,
     riskLevel: "high",
     match: {

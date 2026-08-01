@@ -45,15 +45,30 @@ test("deduplicates concurrent and restarted appends across the whole store", asy
 
     const restarted = createNativeGuardEventStore({ rootDir });
     assert.equal(await restarted.append(event), false);
-    assert.equal(
-      await restarted.append(
+    await assert.rejects(
+      restarted.append(
         buildEvent({ eventId: event.eventId, leaseId: "lease.other" }),
       ),
-      false,
+      /conflict/i,
     );
   } finally {
     await fs.rm(rootDir, { recursive: true, force: true });
   }
+});
+
+test("rejects a reused event id with different sanitized content", async () => {
+  await withStore(async ({ store }) => {
+    const original = buildEvent({ eventId: "event.conflict" });
+    assert.equal(await store.append(original), true);
+    assert.equal(await store.append(structuredClone(original)), false);
+    await assert.rejects(
+      store.append({
+        ...original,
+        detail: { action: "allow", reasonCode: "changed" },
+      }),
+      /conflict/i,
+    );
+  });
 });
 
 test("preserves global append order across lease files after restart", async () => {
@@ -108,40 +123,161 @@ test("serializes duplicate appends across store instances", async () => {
   }
 });
 
-test("rejects unsafe lease paths and corrupt existing JSONL", async () => {
-  await withStore(async ({ rootDir, store }) => {
+test("rejects unsafe lease paths", async () => {
+  await withStore(async ({ store }) => {
     await assert.rejects(
       store.append(buildEvent({ leaseId: "../escape" })),
       /lease id/i,
     );
+  });
+});
+
+test("quarantines a corrupt crash tail and preserves its valid prefix", async () => {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "native-events-"));
+  try {
+    const healthy = createNativeGuardEventStore({ rootDir });
+    const healthyEvent = buildEvent({
+      eventId: "event.healthy",
+      leaseId: "lease.healthy",
+      runId: "run.recovery",
+    });
+    assert.equal(await healthy.append(healthyEvent), true);
+    const prefixEvent = buildEvent({
+      eventId: "event.prefix",
+      leaseId: "lease.crash-tail",
+      runId: "run.recovery",
+    });
     await fs.writeFile(
-      path.join(rootDir, "lease.corrupt.jsonl"),
-      `${JSON.stringify({ event: buildEvent({ leaseId: "lease.corrupt" }) })}\n{broken`,
+      path.join(rootDir, "lease.crash-tail.jsonl"),
+      `${JSON.stringify({ sequence: 50, event: prefixEvent })}\n{broken`,
       "utf8",
     );
 
     const restarted = createNativeGuardEventStore({ rootDir });
+    assert.deepEqual(await restarted.listByRun("run.recovery"), [
+      healthyEvent,
+      prefixEvent,
+    ]);
+    assert.equal(
+      await restarted.append(buildEvent({
+        eventId: "event.after-recovery",
+        leaseId: "lease.healthy",
+      })),
+      true,
+    );
+    const files = await fs.readdir(rootDir);
+    assert.ok(files.some((file) => file.startsWith("lease.crash-tail.jsonl.corrupt-")));
+    const repaired = await fs.readFile(
+      path.join(rootDir, "lease.crash-tail.jsonl"),
+      "utf8",
+    );
+    assert.equal(repaired.trim().split("\n").length, 1);
+    const cleanRestart = createNativeGuardEventStore({ rootDir });
+    assert.deepEqual(await cleanRestart.listByRun("run.recovery"), [
+      healthyEvent,
+      prefixEvent,
+    ]);
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("isolates an interior corrupt schema without losing other leases", async () => {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "native-events-"));
+  try {
+    const healthy = createNativeGuardEventStore({ rootDir });
+    const healthyEvent = buildEvent({
+      eventId: "event.healthy.interior",
+      leaseId: "lease.healthy",
+      runId: "run.interior",
+    });
+    assert.equal(await healthy.append(healthyEvent), true);
+    const prefixEvent = buildEvent({
+      eventId: "event.interior.prefix",
+      leaseId: "lease.interior",
+      runId: "run.interior",
+    });
+    const discardedEvent = buildEvent({
+      eventId: "event.interior.discarded",
+      leaseId: "lease.interior",
+      runId: "run.interior",
+    });
+    await fs.writeFile(
+      path.join(rootDir, "lease.interior.jsonl"),
+      [
+        JSON.stringify({ sequence: 20, event: prefixEvent }),
+        JSON.stringify({ sequence: 21, event: { ...prefixEvent, schemaVersion: "bad" } }),
+        JSON.stringify({ sequence: 22, event: discardedEvent }),
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const restarted = createNativeGuardEventStore({ rootDir });
+    assert.deepEqual(await restarted.listByRun("run.interior"), [
+      healthyEvent,
+      prefixEvent,
+    ]);
+    assert.equal(
+      await restarted.append(buildEvent({
+        eventId: "event.healthy.after-interior",
+        leaseId: "lease.healthy",
+      })),
+      true,
+    );
+    const files = await fs.readdir(rootDir);
+    assert.ok(files.some((file) => file.startsWith("lease.interior.jsonl.corrupt-")));
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("rejects invalid event and record schemas before persistence", async () => {
+  await withStore(async ({ store }) => {
     await assert.rejects(
-      restarted.append(buildEvent({ eventId: "event.after-corruption" })),
-      /corrupt/i,
+      store.append(buildEvent({ type: "unknown" as never })),
+      /event type|schema/i,
+    );
+    await assert.rejects(
+      store.append(buildEvent({
+        eventId: "event.bad-time",
+        timestamp: "2026-08-01T00:00:01Z",
+      })),
+      /timestamp/i,
+    );
+    await assert.rejects(
+      store.append(
+        buildEvent({ eventId: "event.bad-record" }),
+        buildRecord({ action: "execute" as never }),
+      ),
+      /record action|schema/i,
     );
   });
 });
 
-test("redacts nested secrets in persisted detail and gateway", async () => {
+test("projects evidence fields and scrubs secret patterns from retained values", async () => {
   await withStore(async ({ rootDir, store }) => {
     const event = buildEvent({
       detail: {
-        authorization: "Bearer event-secret",
-        nested: {
-          private_key: "private-secret",
-          cookie: "cookie-secret",
-          "x-api-key": "api-key-secret",
-          okay: "visible",
+        action: "deny",
+        reasonCode: "policy_deny",
+        toolName: "curl Bearer tool-secret-value",
+        message: "Cookie: session=cookie-secret-value",
+        value: {
+          credential: "nested-credential-secret",
+          note: "ordinary secret handling remains visible",
         },
+        unexpected: "drop-this-field",
       },
     });
     const record = buildRecord({
+      decisionReason: [
+        "ordinary secret handling remains visible",
+        "token=record-token-value",
+        'api_key="multi word raw value"',
+        "Authorization: Basic cmF3OnNlY3JldA==",
+        "-----BEGIN PRIVATE KEY-----\nprivate-key-value\n-----END PRIVATE KEY-----",
+      ].join("; "),
       gateway: {
         providerId: "provider.1",
         credential: "gateway-secret",
@@ -155,19 +291,66 @@ test("redacts nested secrets in persisted detail and gateway", async () => {
       "utf8",
     );
     for (const secret of [
-      "event-secret",
-      "private-secret",
-      "cookie-secret",
-      "api-key-secret",
+      "tool-secret-value",
+      "cookie-secret-value",
+      "nested-credential-secret",
       "gateway-secret",
       "password-secret",
       "token-secret",
+      "record-token-value",
+      "word raw value",
+      "cmF3OnNlY3JldA==",
+      "private-key-value",
+      "drop-this-field",
     ]) {
       assert.equal(persisted.includes(secret), false);
     }
     assert.match(persisted, /\[REDACTED\]/);
-    assert.match(persisted, /visible/);
+    assert.match(persisted, /ordinary secret handling remains visible/);
+    const [saved] = await store.listByRun(event.runId!);
+    assert.equal(Object.hasOwn(saved.detail, "unexpected"), false);
+    assert.equal(
+      (saved.detail.value as Record<string, unknown>).credential,
+      "[REDACTED]",
+    );
   });
+});
+
+test("scrubs and rewrites valid legacy envelopes while loading", async () => {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "native-events-"));
+  try {
+    const event = buildEvent({
+      eventId: "event.legacy-secret",
+      leaseId: "lease.legacy-secret",
+      runId: "run.legacy-secret",
+      detail: {
+        action: "deny",
+        reasonCode: "policy_deny",
+        toolName: "curl Bearer legacy-tool-token",
+        unexpected: "legacy-unknown-value",
+      },
+    });
+    const record = buildRecord({
+      decisionReason: "password=legacy-record-password",
+    });
+    const filePath = path.join(rootDir, "lease.legacy-secret.jsonl");
+    await fs.writeFile(
+      filePath,
+      `${JSON.stringify({ sequence: 1, event, record })}\n`,
+      "utf8",
+    );
+
+    const store = createNativeGuardEventStore({ rootDir });
+    const [saved] = await store.listByRun("run.legacy-secret");
+    assert.equal(Object.hasOwn(saved.detail, "unexpected"), false);
+    const rewritten = await fs.readFile(filePath, "utf8");
+    assert.equal(rewritten.includes("legacy-tool-token"), false);
+    assert.equal(rewritten.includes("legacy-record-password"), false);
+    assert.equal(rewritten.includes("legacy-unknown-value"), false);
+    assert.match(rewritten, /\[REDACTED\]/);
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
 });
 
 test("rejects cycles and unsupported JSON values", async () => {
@@ -208,6 +391,27 @@ test("notifies subscribers once only after successful first append", async () =>
     );
     assert.deepEqual(received, [event.eventId]);
   });
+});
+
+test("shares notifications across same-root instances and catches async listeners", async () => {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "native-events-"));
+  try {
+    const subscriberStore = createNativeGuardEventStore({ rootDir });
+    const writerStore = createNativeGuardEventStore({ rootDir });
+    const received: string[] = [];
+    subscriberStore.subscribe(async (event) => {
+      received.push(event.eventId);
+      await Promise.resolve();
+      throw new Error("async listener failure");
+    });
+
+    const event = buildEvent({ eventId: "event.shared-listener" });
+    assert.equal(await writerStore.append(event), true);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(received, [event.eventId]);
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
 });
 
 test("does not reserve an event id when persistence fails", async () => {

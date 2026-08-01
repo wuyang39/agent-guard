@@ -1,7 +1,10 @@
 import type { JsonObject, JsonValue } from "@agent-guard/contracts";
+import safeRegex from "safe-regex2";
 import type { FieldMatcher } from "../risk/riskTypes";
 import type { SupervisionPolicy, SupervisionPolicyPack } from "../policy/policyTypes";
 import type { SupervisionRuntimeAction } from "./supervisorTypes";
+
+const MAX_POLICY_REGEX_LENGTH = 256;
 
 export function findMatchingPolicies(
   policyPack: SupervisionPolicyPack,
@@ -122,8 +125,15 @@ function safeDecodeURIComponent(value: string): string {
 }
 
 function matchesRegex(actual: string, pattern: string): boolean {
+  if (!pattern || pattern.length > MAX_POLICY_REGEX_LENGTH) {
+    return false;
+  }
+
   try {
-    return new RegExp(pattern).test(actual);
+    if (!safeRegex(pattern)) {
+      return false;
+    }
+    return new RegExp(pattern).test(actual.slice(0, 65_536));
   } catch {
     return false;
   }

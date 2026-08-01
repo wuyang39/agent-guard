@@ -48,7 +48,7 @@ test("manages a session-tree lease through authentication, renewal, and expiry",
     unknownRisk: "deny",
   });
   assert.deepEqual(created.status, {
-    coverage: "active",
+    coverage: "conditional",
     finalizerAssurance: "unverified",
     activeLeaseCount: 1,
     activeLease: {
@@ -58,6 +58,7 @@ test("manages a session-tree lease through authentication, renewal, and expiry",
       policyPackId: policyPack.policyPackId,
       expiresAt: "2026-08-01T00:05:00.000Z",
     },
+    reasonCode: "NATIVE_GUARD_FINALIZER_UNVERIFIED",
   });
 
   const active = service.authenticate(
@@ -184,6 +185,9 @@ describe("security and recovery boundaries", () => {
     for (const expiresAt of [
       "not-a-date",
       "",
+      "August 2, 2026 00:00:00 UTC",
+      "2026-08-02T08:00:00+08:00",
+      "2026-08-02T00:00:00Z",
       "2026-08-01T00:00:00.000Z",
       "2026-07-31T23:59:59.999Z",
     ]) {
@@ -267,7 +271,12 @@ describe("security and recovery boundaries", () => {
   });
 
   test("rejects invalid clock values before exposing lease state", () => {
-    for (const now of [() => Number.NaN, () => new Date(Number.NaN)]) {
+    for (const now of [
+      () => Number.NaN,
+      () => 8_640_000_000_000_001,
+      () => 1.5,
+      () => new Date(Number.NaN),
+    ]) {
       const service = createNativeGuardLeaseService({ now });
       assert.throws(() => service.status(), {
         name: "RangeError",
@@ -309,6 +318,40 @@ describe("security and recovery boundaries", () => {
       activeLeaseCount: 0,
     });
     assert.equal(service.revoke(root.leaseId), false);
+  });
+
+  test("ends a deeply nested child subtree without recursive stack overflow", () => {
+    const service = createNativeGuardLeaseService({
+      now: () => Date.parse("2026-08-01T00:00:00.000Z"),
+    });
+    const root = createLease(service, "agent:guard:deep-root");
+    const other = createLease(service, "agent:guard:other-root");
+    const depth = 20_000;
+    let parentSessionKey = root.rootSessionKey;
+
+    for (let index = 0; index < depth; index += 1) {
+      const childSessionKey = `agent:guard:deep-child:${index}`;
+      assert.equal(
+        service.bindChild(root.leaseId, parentSessionKey, childSessionKey),
+        true,
+      );
+      parentSessionKey = childSessionKey;
+    }
+
+    service.endSession("agent:guard:deep-child:0");
+    for (let index = 0; index < depth; index += 1) {
+      assert.equal(service.resolveBySession(`agent:guard:deep-child:${index}`), undefined);
+    }
+    assert.equal(
+      service.authenticate(root.leaseId, root.credential)?.state,
+      "active",
+    );
+    assert.equal(
+      service.authenticate(other.leaseId, other.credential)?.state,
+      "active",
+    );
+    assert.equal(service.status().activeLeaseCount, 2);
+    assert.equal(service.status().coverage, "conditional");
   });
 
   test("signs only decisions bound to the current active lease epoch and policy", () => {

@@ -88,7 +88,11 @@ export function createNativeGuardLeaseService(
   function currentTimeMs(): number {
     const value = now();
     const timeMs = value instanceof Date ? value.getTime() : value;
-    if (!Number.isFinite(timeMs)) {
+    if (
+      !Number.isFinite(timeMs) ||
+      !Number.isInteger(timeMs) ||
+      Math.abs(timeMs) > 8_640_000_000_000_000
+    ) {
       throw new RangeError("Native guard clock returned an invalid time");
     }
     return timeMs;
@@ -168,7 +172,7 @@ export function createNativeGuardLeaseService(
     cleanExpired();
     const activeLease = leases.values().next().value as StoredLease | undefined;
     return {
-      coverage: activeLease ? "active" : "ready",
+      coverage: activeLease ? "conditional" : "ready",
       finalizerAssurance: "unverified",
       activeLeaseCount: leases.size,
       ...(activeLease
@@ -181,6 +185,9 @@ export function createNativeGuardLeaseService(
               expiresAt: new Date(activeLease.expiresAtMs).toISOString(),
             },
           }
+        : {}),
+      ...(activeLease
+        ? { reasonCode: "NATIVE_GUARD_FINALIZER_UNVERIFIED" }
         : {}),
     };
   }
@@ -347,7 +354,11 @@ function readPolicyExpiry(
     throw new TypeError("Native guard policy pack expiry must be an ISO timestamp");
   }
   const expiresAtMs = Date.parse(policyPack.expiresAt);
-  if (!Number.isFinite(expiresAtMs) || expiresAtMs <= currentTimeMs) {
+  if (
+    !Number.isFinite(expiresAtMs) ||
+    new Date(expiresAtMs).toISOString() !== policyPack.expiresAt ||
+    expiresAtMs <= currentTimeMs
+  ) {
     throw new RangeError("Native guard policy pack must expire in the future");
   }
   return expiresAtMs;
@@ -377,14 +388,24 @@ function removeSessionTree(
   sessionKey: string,
   sessions: Map<string, SessionBinding>,
 ): void {
-  const binding = sessions.get(sessionKey);
-  if (!binding) return;
+  const rootBinding = sessions.get(sessionKey);
+  if (!rootBinding) return;
 
-  for (const childSessionKey of binding.children) {
-    removeSessionTree(childSessionKey, sessions);
+  if (rootBinding.parentSessionKey) {
+    sessions.get(rootBinding.parentSessionKey)?.children.delete(sessionKey);
   }
-  if (binding.parentSessionKey) {
-    sessions.get(binding.parentSessionKey)?.children.delete(sessionKey);
+  const leaseId = rootBinding.leaseId;
+  const pending = [sessionKey];
+  const visited = new Set<string>();
+  while (pending.length > 0) {
+    const currentSessionKey = pending.pop();
+    if (currentSessionKey === undefined || visited.has(currentSessionKey)) continue;
+    visited.add(currentSessionKey);
+    const binding = sessions.get(currentSessionKey);
+    if (!binding || binding.leaseId !== leaseId) continue;
+    for (const childSessionKey of binding.children) {
+      pending.push(childSessionKey);
+    }
+    sessions.delete(currentSessionKey);
   }
-  sessions.delete(sessionKey);
 }

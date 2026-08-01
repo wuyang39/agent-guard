@@ -242,8 +242,88 @@ test("requires the exact before_tool_call string in hookNames", async () => {
 
   const capability = await client.inspectCapabilities({ isolatedProfile: false });
 
-  assert.equal(capability.supportsNativeGuard, true);
+  assert.equal(capability.supportsNativeGuard, false);
   assert.equal(capability.finalizerAssurance, "unverified");
+});
+
+test("rejects hooks alias-only Agent Guard declarations and ignores alias-only conflicts", async () => {
+  const aliasOnlyAgent = {
+    id: "agent-guard-supervision",
+    enabled: true,
+    hooks: ["before_tool_call"],
+    contracts: { trustedToolPolicies: ["agent-guard-admission"] },
+  };
+  const unsupported = createOpenClawControlClient({
+    gatewayToken: TOKEN,
+    commandRunner: commandRunner([
+      result("2026.7.2"),
+      result(JSON.stringify([aliasOnlyAgent])),
+    ]),
+  });
+  assert.deepEqual(await unsupported.inspectCapabilities({ isolatedProfile: false }), {
+    openclawVersion: "2026.7.2",
+    supportsNativeGuard: false,
+    finalizerAssurance: "unverified",
+    conflictingPluginIds: [],
+  });
+
+  const aliasConflict = createOpenClawControlClient({
+    gatewayToken: TOKEN,
+    commandRunner: commandRunner([
+      result("2026.7.2"),
+      result(JSON.stringify([
+        agentGuardPlugin(),
+        { id: "alias-only-other", enabled: true, hooks: ["before_tool_call"] },
+      ])),
+    ]),
+  });
+  assert.deepEqual(await aliasConflict.inspectCapabilities({ isolatedProfile: false }), {
+    openclawVersion: "2026.7.2",
+    supportsNativeGuard: true,
+    finalizerAssurance: "exclusive_before_hook",
+    conflictingPluginIds: [],
+  });
+});
+
+test("rejects mixed Trusted Tool Policy declarations when any present location is invalid", async () => {
+  const exact = { trustedToolPolicies: ["agent-guard-admission"] };
+  const extra = { trustedToolPolicies: ["agent-guard-admission", "extra-policy"] };
+  const plugins = [
+    {
+      id: "agent-guard-supervision",
+      enabled: true,
+      hookNames: ["before_tool_call"],
+      contracts: exact,
+      manifest: { contracts: extra },
+    },
+    {
+      id: "agent-guard-supervision",
+      enabled: true,
+      hookNames: ["before_tool_call"],
+      contracts: extra,
+      manifest: { contracts: exact },
+    },
+    {
+      id: "agent-guard-supervision",
+      enabled: true,
+      hookNames: ["before_tool_call"],
+      contracts: exact,
+      manifest: { contracts: { trustedToolPolicies: false } },
+    },
+  ];
+
+  for (const plugin of plugins) {
+    const client = createOpenClawControlClient({
+      gatewayToken: TOKEN,
+      commandRunner: commandRunner([
+        result("2026.7.2"),
+        result(JSON.stringify([plugin])),
+      ]),
+    });
+    const capability = await client.inspectCapabilities({ isolatedProfile: false });
+    assert.equal(capability.supportsNativeGuard, false);
+    assert.equal(capability.finalizerAssurance, "unverified");
+  }
 });
 
 test("requires version 2026.7.2 or newer even when the plugin contract is present", async () => {

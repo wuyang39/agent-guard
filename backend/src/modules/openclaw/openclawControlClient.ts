@@ -177,11 +177,13 @@ export function createOpenClawControlClient(
       const openclawVersion = parseVersion(versionResult.stdout);
       const plugins = parsePluginList(pluginResult.stdout);
       const agentGuard = plugins.find((plugin) => plugin.id === AGENT_GUARD_PLUGIN_ID);
-      const agentGuardReady = Boolean(
-        agentGuard?.enabled && hasTrustedToolPolicyContract(agentGuard.raw),
-      );
       const agentGuardHasBeforeHook = Boolean(
         agentGuard?.enabled && hasBeforeToolCallHook(agentGuard.raw),
+      );
+      const agentGuardReady = Boolean(
+        agentGuard?.enabled &&
+        agentGuardHasBeforeHook &&
+        hasTrustedToolPolicyContract(agentGuard.raw),
       );
       const conflicts = plugins
         .filter((plugin) =>
@@ -461,27 +463,24 @@ function versionAtLeast(version: string, minimum: readonly [number, number, numb
 }
 
 function hasBeforeToolCallHook(plugin: Record<string, unknown>): boolean {
-  if (
+  return (
     Array.isArray(plugin.hookNames) &&
     plugin.hookNames.some((hook) => hook === "before_tool_call")
-  ) return true;
-  return Array.isArray(plugin.hooks) && plugin.hooks.some((hook) =>
-    hook === "before_tool_call" ||
-    (isRecord(hook) &&
-      (hook.id === "before_tool_call" || hook.name === "before_tool_call")));
+  );
 }
 
 function hasTrustedToolPolicyContract(plugin: Record<string, unknown>): boolean {
+  const declarations: unknown[] = [];
   for (const manifest of [plugin, plugin.manifest]) {
     if (!isRecord(manifest) || !isRecord(manifest.contracts)) continue;
-    const policies = manifest.contracts.trustedToolPolicies;
-    if (
-      Array.isArray(policies) &&
-      policies.length === 1 &&
-      policies[0] === TRUSTED_TOOL_POLICY_ID
-    ) return true;
+    if (Object.hasOwn(manifest.contracts, "trustedToolPolicies")) {
+      declarations.push(manifest.contracts.trustedToolPolicies);
+    }
   }
-  return false;
+  return declarations.length > 0 && declarations.every((policies) =>
+    Array.isArray(policies) &&
+    policies.length === 1 &&
+    policies[0] === TRUSTED_TOOL_POLICY_ID);
 }
 
 async function executeCli(

@@ -33,6 +33,7 @@ test("revokes the backend lease when plugin activation fails", async () => {
 
 test("keeps coordinator errors credential-free when rollback dependencies also fail", async () => {
   const fixture = coordinatorFixture({ activateError: new Error("plugin failure") });
+  const revokeBackend = fixture.leaseService.revoke.bind(fixture.leaseService);
   fixture.leaseService.revoke = () => {
     throw new Error("backend exposed rollback-secret");
   };
@@ -44,6 +45,13 @@ test("keeps coordinator errors credential-free when rollback dependencies also f
       !error.message.includes("rollback-secret"),
   );
   assert.equal(fixture.revokeCalls.length, 1);
+  assert.equal(fixture.coordinator.isLeaseRevoking(fixture.activationCalls[0].leaseId), true);
+  assert.equal(fixture.leaseService.status().activeLeaseCount, 1);
+
+  fixture.leaseService.revoke = revokeBackend;
+  await fixture.coordinator.revoke(fixture.activationCalls[0].leaseId);
+  assert.equal(fixture.coordinator.isLeaseRevoking(fixture.activationCalls[0].leaseId), false);
+  assert.equal(fixture.leaseService.status().activeLeaseCount, 0);
 });
 
 test("activates only after verified preflight and renews the plugin with rotated credentials", async () => {
@@ -85,6 +93,157 @@ test("rejects a plugin activation status for another lease and rolls back", asyn
     hasCoordinatorCode("NATIVE_GUARD_ACTIVATION_FAILED"),
   );
   assert.equal(fixture.leaseService.status().activeLeaseCount, 0);
+});
+
+test("requires activation acknowledgements to match every credential-free lease field", async () => {
+  const mismatches: Array<Record<string, unknown>> = [
+    { leaseEpoch: 99 },
+    { rootSessionKey: "agent:wrong-root" },
+    { mode: "detection" },
+    { policyPackId: "wrong-policy" },
+    { policyPackDigest: "wrong-digest" },
+    { expiresAt: "2026-08-02T00:04:00.000Z" },
+  ];
+  for (const activationAckOverrides of mismatches) {
+    const fixture = coordinatorFixture({ activationAckOverrides });
+    await assert.rejects(
+      () => fixture.coordinator.activate(supervisionInput()),
+      hasCoordinatorCode("NATIVE_GUARD_ACTIVATION_FAILED"),
+    );
+    assert.equal(fixture.leaseService.status().activeLeaseCount, 0);
+  }
+});
+
+test("requires renewed acknowledgements to match the rotated epoch and digest", async () => {
+  for (const renewAckOverrides of [{ leaseEpoch: 1 }, { policyPackDigest: "stale-digest" }]) {
+    const fixture = coordinatorFixture({ renewAckOverrides });
+    await fixture.coordinator.activate(supervisionInput());
+    await assert.rejects(
+      () => fixture.coordinator.renew(fixture.activationCalls[0].leaseId),
+      hasCoordinatorCode("NATIVE_GUARD_RENEW_FAILED"),
+    );
+    assert.equal(fixture.leaseService.status().activeLeaseCount, 0);
+  }
+});
+
+test("re-inspects capability after activation ACK and compensates any change", async () => {
+  for (const capabilityAfterActivate of [
+    {
+      ...verifiedCapability(),
+      finalizerAssurance: "unverified" as const,
+      conflictingPluginIds: ["late-hook"],
+    },
+    {
+      ...verifiedCapability(),
+      finalizerAssurance: "isolated_profile" as const,
+    },
+  ]) {
+    const fixture = coordinatorFixture({ capabilityAfterActivate });
+    await assert.rejects(
+      () => fixture.coordinator.activate(supervisionInput()),
+      hasCoordinatorCode("NATIVE_GUARD_ACTIVATION_FAILED"),
+    );
+    assert.equal(fixture.inspectCalls, 2);
+    assert.equal(fixture.leaseService.status().activeLeaseCount, 0);
+  }
+});
+
+test("re-inspects renewal capability before rotation and fails closed before plugin renew", async () => {
+  const fixture = coordinatorFixture();
+  await fixture.coordinator.activate(supervisionInput());
+  fixture.capability = {
+    ...verifiedCapability(),
+    finalizerAssurance: "unverified",
+    conflictingPluginIds: ["pre-renew-hook"],
+  };
+
+  await assert.rejects(
+    () => fixture.coordinator.renew(fixture.activationCalls[0].leaseId),
+    hasCoordinatorCode("NATIVE_GUARD_RENEW_FAILED"),
+  );
+
+  assert.equal(fixture.renewCalls.length, 0);
+  assert.equal(fixture.leaseService.status().activeLeaseCount, 0);
+});
+
+test("re-inspects capability after renewal ACK and revokes the rotated lease on change", async () => {
+  const fixture = coordinatorFixture({
+    capabilityAfterRenew: {
+      ...verifiedCapability(),
+      supportsNativeGuard: false,
+      finalizerAssurance: "unverified",
+    },
+  });
+  await fixture.coordinator.activate(supervisionInput());
+
+  await assert.rejects(
+    () => fixture.coordinator.renew(fixture.activationCalls[0].leaseId),
+    hasCoordinatorCode("NATIVE_GUARD_RENEW_FAILED"),
+  );
+
+  assert.equal(fixture.renewCalls.length, 1);
+  assert.equal(fixture.leaseService.status().activeLeaseCount, 0);
+  assert.equal(fixture.coordinator.isLeaseRevoking(fixture.activationCalls[0].leaseId), false);
+});
+
+test("enforces one managed lease and refuses activation over unmanaged backend state", async () => {
+  const fixture = coordinatorFixture();
+  await fixture.coordinator.activate(supervisionInput());
+  await assert.rejects(
+    () => fixture.coordinator.activate({
+      ...supervisionInput(),
+      rootSessionKey: "agent:second",
+    }),
+    hasCoordinatorCode("NATIVE_GUARD_ALREADY_ACTIVE"),
+  );
+  assert.equal(fixture.activationCalls.length, 1);
+  assert.equal(fixture.leaseService.status().activeLeaseCount, 1);
+
+  const unmanaged = coordinatorFixture();
+  createUnmanagedLease(unmanaged.leaseService, "agent:unmanaged");
+  await assert.rejects(
+    () => unmanaged.coordinator.activate(supervisionInput()),
+    hasCoordinatorCode("NATIVE_GUARD_ALREADY_ACTIVE"),
+  );
+  assert.equal(unmanaged.activationCalls.length, 0);
+  assert.equal(unmanaged.leaseService.status().activeLeaseCount, 1);
+});
+
+test("reserves the single managed lease slot across concurrent activation preflight", async () => {
+  const fixture = coordinatorFixture();
+  const inspectStarted = deferred<void>();
+  const releaseInspect = deferred<void>();
+  let inspectCall = 0;
+  fixture.controlClient.inspectCapabilities = async () => {
+    inspectCall += 1;
+    if (inspectCall === 1) {
+      inspectStarted.resolve();
+      await releaseInspect.promise;
+    }
+    return verifiedCapability();
+  };
+
+  const first = fixture.coordinator.activate(supervisionInput());
+  await inspectStarted.promise;
+  let assertionError: unknown;
+  try {
+    await assert.rejects(
+      () => fixture.coordinator.activate({
+        ...supervisionInput(),
+        rootSessionKey: "agent:concurrent-second",
+      }),
+      hasCoordinatorCode("NATIVE_GUARD_ALREADY_ACTIVE"),
+    );
+  } catch (error) {
+    assertionError = error;
+  } finally {
+    releaseInspect.resolve();
+  }
+  await Promise.allSettled([first]);
+  if (assertionError) throw assertionError;
+
+  assert.equal(fixture.activationCalls.length, 1);
+  assert.equal(fixture.leaseService.status().activeLeaseCount, 1);
 });
 
 test("deletes the backend lease after an offline plugin revoke and keeps repeats idempotent", async () => {
@@ -184,6 +343,29 @@ test("keeps the revoking gate set when backend deletion throws", async () => {
   assert.equal(fixture.coordinator.isLeaseRevoking(leaseId), true);
 });
 
+test("keeps activation and renewal rollback records revoking until backend cleanup retries", async () => {
+  const renewal = coordinatorFixture({ renewMismatch: true });
+  await renewal.coordinator.activate(supervisionInput());
+  const leaseId = renewal.activationCalls[0].leaseId;
+  const revokeBackend = renewal.leaseService.revoke.bind(renewal.leaseService);
+  renewal.leaseService.revoke = () => {
+    throw new Error("rollback-delete-failed");
+  };
+
+  await assert.rejects(
+    () => renewal.coordinator.renew(leaseId),
+    hasCoordinatorCode("NATIVE_GUARD_RENEW_FAILED"),
+  );
+  assert.equal(renewal.coordinator.isLeaseRevoking(leaseId), true);
+  assert.equal(renewal.leaseService.status().activeLeaseCount, 1);
+
+  renewal.leaseService.revoke = revokeBackend;
+  const retried = await renewal.coordinator.revoke(leaseId);
+  assert.equal(retried.coverage, "ready");
+  assert.equal(renewal.coordinator.isLeaseRevoking(leaseId), false);
+  assert.equal(renewal.leaseService.status().activeLeaseCount, 0);
+});
+
 test("redacts dependency errors while revoking an unknown lease", async () => {
   const fixture = coordinatorFixture();
   fixture.leaseService.revoke = () => {
@@ -252,6 +434,42 @@ test("does not promote backend conditional status unless plugin and lease identi
   assert.equal(combined.reasonCode, "NATIVE_GUARD_STATUS_MISMATCH");
 });
 
+test("reports anomalous backend multiplicity honestly and never promotes it active", async () => {
+  const fixture = coordinatorFixture();
+  await fixture.coordinator.activate(supervisionInput());
+  createUnmanagedLease(fixture.leaseService, "agent:unexpected-second");
+
+  const combined = await fixture.coordinator.status();
+
+  assert.equal(combined.coverage, "conditional");
+  assert.equal(combined.activeLeaseCount, 2);
+});
+
+test("uses the real backend count after managed and unknown revocations", async () => {
+  const fixture = coordinatorFixture();
+  await fixture.coordinator.activate(supervisionInput());
+  createUnmanagedLease(fixture.leaseService, "agent:unexpected-second");
+  const managedLeaseId = fixture.activationCalls[0].leaseId;
+
+  const managedResult = await fixture.coordinator.revoke(managedLeaseId);
+  assert.notEqual(managedResult.coverage, "ready");
+  assert.equal(managedResult.activeLeaseCount, 1);
+
+  const unknownResult = await fixture.coordinator.revoke("unknown-lease");
+  assert.notEqual(unknownResult.coverage, "ready");
+  assert.equal(unknownResult.activeLeaseCount, 1);
+});
+
+test("does not reuse a stale zero lastStatus when an unknown revoke finds backend state", async () => {
+  const fixture = coordinatorFixture();
+  createUnmanagedLease(fixture.leaseService, "agent:unmanaged-only");
+
+  const result = await fixture.coordinator.revoke("unknown-lease");
+
+  assert.equal(result.coverage, "conditional");
+  assert.equal(result.activeLeaseCount, 1);
+});
+
 test("re-inspects hook order on every status and keeps the actual backend count", async () => {
   const fixture = coordinatorFixture();
   await fixture.coordinator.activate(supervisionInput());
@@ -268,7 +486,7 @@ test("re-inspects hook order on every status and keeps the actual backend count"
   assert.equal(combined.activeLeaseCount, 1);
   assert.deepEqual(combined.conflictingPluginIds, ["late-before-hook"]);
   assert.equal(fixture.statusCalls, 0);
-  assert.equal(fixture.inspectCalls, 2);
+  assert.equal(fixture.inspectCalls, 3);
 });
 
 test("reports a fresh unsupported capability without hiding an existing backend lease", async () => {
@@ -410,6 +628,10 @@ function coordinatorFixture(options: {
   revokeError?: Error;
   activationMismatch?: boolean;
   renewMismatch?: boolean;
+  activationAckOverrides?: Record<string, unknown>;
+  renewAckOverrides?: Record<string, unknown>;
+  capabilityAfterActivate?: NativeGuardCapability;
+  capabilityAfterRenew?: NativeGuardCapability;
 } = {}) {
   let nowMs = Date.parse("2026-08-02T00:00:00.000Z");
   const leaseService = createNativeGuardLeaseService({ now: () => nowMs });
@@ -435,12 +657,24 @@ function coordinatorFixture(options: {
     activate: async (_gatewayUrl: string, activation: NativeGuardLeaseActivation) => {
       activationCalls.push(activation);
       if (options.activateError) throw options.activateError;
-      pluginStatus = status("active", options.activationMismatch ? "other-lease" : activation.leaseId, activation);
+      pluginStatus = status(
+        "active",
+        options.activationMismatch ? "other-lease" : activation.leaseId,
+        activation,
+        options.activationAckOverrides,
+      );
+      if (options.capabilityAfterActivate) capability = options.capabilityAfterActivate;
       return pluginStatus;
     },
     renew: async (_gatewayUrl: string, activation: NativeGuardLeaseActivation) => {
       renewCalls.push(activation);
-      pluginStatus = status("active", options.renewMismatch ? "stale-lease" : activation.leaseId, activation);
+      pluginStatus = status(
+        "active",
+        options.renewMismatch ? "stale-lease" : activation.leaseId,
+        activation,
+        options.renewAckOverrides,
+      );
+      if (options.capabilityAfterRenew) capability = options.capabilityAfterRenew;
       return pluginStatus;
     },
     revoke: async (_gatewayUrl: string, leaseId: string) => {
@@ -502,6 +736,7 @@ function status(
   coverage: NativeGuardStatus["coverage"],
   leaseId?: string,
   activation?: NativeGuardLeaseActivation,
+  activeLeaseOverrides: Record<string, unknown> = {},
 ): NativeGuardStatus {
   return {
     coverage,
@@ -512,14 +747,31 @@ function status(
       ? {
           activeLease: {
             leaseId,
+            leaseEpoch: activation?.leaseEpoch ?? 1,
             rootSessionKey: activation?.rootSessionKey ?? "agent:supervision",
             mode: activation?.mode ?? "supervision",
             policyPackId: activation?.policyPackId ?? "stored-policy",
+            policyPackDigest: activation?.policyPackDigest ?? digestJson(storedPolicyPack()),
             expiresAt: activation?.expiresAt ?? "2026-08-02T00:05:00.000Z",
+            ...activeLeaseOverrides,
           },
         }
       : {}),
   };
+}
+
+function createUnmanagedLease(
+  leaseService: ReturnType<typeof createNativeGuardLeaseService>,
+  rootSessionKey: string,
+): NativeGuardLeaseActivation {
+  const policyPack = storedPolicyPack();
+  return leaseService.create({
+    rootSessionKey,
+    mode: "supervision",
+    policyPack,
+    policyPackDigest: digestJson(policyPack),
+    backendUrl: "http://127.0.0.1:3000/api/v1/openclaw/native-guard/decision",
+  }).activation;
 }
 
 function storedPolicyPack(): SupervisionPolicyPack {

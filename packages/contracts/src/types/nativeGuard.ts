@@ -100,9 +100,11 @@ export type NativeGuardStatus = {
   conflictingPluginIds?: string[];
   activeLease?: {
     leaseId: string;
+    leaseEpoch: number;
     rootSessionKey: string;
     mode: NativeGuardMode;
     policyPackId: string;
+    policyPackDigest: string;
     expiresAt: string;
   };
   reasonCode?: string;

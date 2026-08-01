@@ -179,9 +179,11 @@ export function createNativeGuardLeaseService(
         ? {
             activeLease: {
               leaseId: activeLease.leaseId,
+              leaseEpoch: activeLease.leaseEpoch,
               rootSessionKey: activeLease.rootSessionKey,
               mode: activeLease.mode,
               policyPackId: activeLease.policyPack.policyPackId,
+              policyPackDigest: activeLease.policyPackDigest,
               expiresAt: new Date(activeLease.expiresAtMs).toISOString(),
             },
           }

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import path from "node:path";
 import type {
   NativeGuardLeaseActivation,
   NativeGuardStatus,
@@ -121,6 +122,8 @@ export function createOpenClawControlClient(
         signal: controller.signal,
       });
       if (!response.ok) {
+        controller.abort();
+        await cancelResponseBody(response);
         throw controlError(
           "OPENCLAW_CONTROL_HTTP_ERROR",
           `OpenClaw control endpoint returned HTTP ${String(response.status)}.`,
@@ -294,6 +297,7 @@ async function readLimitedJson(response: Response, signal: AbortSignal): Promise
   if (contentLength !== null) {
     const length = Number(contentLength);
     if (!Number.isSafeInteger(length) || length < 0 || length > MAX_RESPONSE_BYTES) {
+      await cancelResponseBody(response);
       throw controlError(
         "OPENCLAW_CONTROL_RESPONSE_TOO_LARGE",
         "OpenClaw control response exceeded the size limit.",
@@ -302,6 +306,7 @@ async function readLimitedJson(response: Response, signal: AbortSignal): Promise
   }
   const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
   if (!contentType.includes("application/json")) {
+    await cancelResponseBody(response);
     throw controlError("OPENCLAW_CONTROL_INVALID_RESPONSE", "OpenClaw control response was not JSON.");
   }
 
@@ -396,9 +401,11 @@ function parseNativeGuardStatus(value: unknown): NativeGuardStatus {
     ...(isRecord(value.activeLease)
       ? { activeLease: {
           leaseId: value.activeLease.leaseId as string,
+          leaseEpoch: value.activeLease.leaseEpoch as number,
           rootSessionKey: value.activeLease.rootSessionKey as string,
           mode: value.activeLease.mode as "detection" | "supervision",
           policyPackId: value.activeLease.policyPackId as string,
+          policyPackDigest: value.activeLease.policyPackDigest as string,
           expiresAt: value.activeLease.expiresAt as string,
         } }
       : {}),
@@ -411,9 +418,12 @@ function validActiveLease(value: unknown): boolean {
   return value === undefined || (
     isRecord(value) &&
     nonEmptyString(value.leaseId) &&
+    Number.isSafeInteger(value.leaseEpoch) &&
+    (value.leaseEpoch as number) > 0 &&
     nonEmptyString(value.rootSessionKey) &&
     (value.mode === "detection" || value.mode === "supervision") &&
     nonEmptyString(value.policyPackId) &&
+    nonEmptyString(value.policyPackDigest) &&
     nonEmptyString(value.expiresAt)
   );
 }
@@ -434,6 +444,10 @@ function parsePluginList(stdout: string): ParsedPlugin[] {
       ? value.plugins
       : undefined;
   if (!entries || !entries.every((entry) => isRecord(entry) && nonEmptyString(entry.id))) {
+    throw controlError("OPENCLAW_CLI_INVALID_OUTPUT", "OpenClaw plugin inventory was invalid.");
+  }
+  const ids = entries.map((entry) => entry.id as string);
+  if (new Set(ids).size !== ids.length) {
     throw controlError("OPENCLAW_CLI_INVALID_OUTPUT", "OpenClaw plugin inventory was invalid.");
   }
   return entries.map((entry) => ({
@@ -540,7 +554,7 @@ function runCommand(input: OpenClawCommandInput): Promise<OpenClawCommandResult>
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      child.kill();
+      terminateProcessTree(child);
       reject(new Error("OpenClaw CLI inspection failed."));
     };
     const append = (current: string, chunk: Buffer | string): string => {
@@ -562,6 +576,30 @@ function runCommand(input: OpenClawCommandInput): Promise<OpenClawCommandResult>
       resolve({ exitCode: exitCode ?? -1, stdout, stderr });
     });
   });
+}
+
+function terminateProcessTree(child: ChildProcess): void {
+  if (process.platform === "win32" && child.pid) {
+    const systemRoot = process.env.SystemRoot;
+    const taskkillPath = systemRoot && path.win32.isAbsolute(systemRoot)
+      ? path.win32.join(systemRoot, "System32", "taskkill.exe")
+      : "C:\\Windows\\System32\\taskkill.exe";
+    try {
+      spawnSync(taskkillPath, ["/pid", String(child.pid), "/t", "/f"], {
+        windowsHide: true,
+        shell: false,
+        stdio: "ignore",
+        timeout: 2_000,
+      });
+    } catch {
+      // Fall through to the direct child kill when taskkill is unavailable.
+    }
+  }
+  try {
+    child.kill(process.platform === "win32" ? undefined : "SIGKILL");
+  } catch {
+    // The process may already have exited between timeout detection and cleanup.
+  }
 }
 
 function assertOutputLimit(value: string): void {
@@ -593,6 +631,14 @@ function optionalStringArray(value: unknown): boolean {
 
 function controlError(code: string, message: string): OpenClawControlClientError {
   return new OpenClawControlClientError(code, message);
+}
+
+async function cancelResponseBody(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel();
+  } catch {
+    // Rejection paths never surface body cancellation failures.
+  }
 }
 
 function safeControlErrorMessage(code: string): string {

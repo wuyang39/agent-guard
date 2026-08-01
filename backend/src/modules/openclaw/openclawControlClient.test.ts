@@ -84,6 +84,31 @@ test("uses fixed POST routes and stable operation-bound idempotency keys", async
   assert.deepEqual(JSON.parse(String(requests[0].init?.body)), ACTIVATION);
 });
 
+test("requires and projects the complete credential-free active lease acknowledgement", async () => {
+  const complete = activeStatus(ACTIVATION);
+  const projectedClient = createOpenClawControlClient({
+    gatewayToken: TOKEN,
+    fetch: async () => jsonResponse({ ...complete, ignored: "plugin-body" }),
+  });
+  const projected = await projectedClient.status("http://localhost");
+  assert.equal(projected.activeLease?.leaseEpoch, ACTIVATION.leaseEpoch);
+  assert.equal(projected.activeLease?.policyPackDigest, ACTIVATION.policyPackDigest);
+  assert.equal("credential" in (projected.activeLease ?? {}), false);
+
+  for (const field of ["leaseEpoch", "policyPackDigest"] as const) {
+    const invalid = structuredClone(complete) as NativeGuardStatus;
+    delete (invalid.activeLease as unknown as Record<string, unknown>)[field];
+    const client = createOpenClawControlClient({
+      gatewayToken: TOKEN,
+      fetch: async () => jsonResponse(invalid),
+    });
+    await assert.rejects(
+      () => client.status("http://localhost"),
+      hasCode("OPENCLAW_CONTROL_INVALID_RESPONSE"),
+    );
+  }
+});
+
 test("rejects oversized response bodies from content-length and streaming readers", async () => {
   const byLength = createOpenClawControlClient({
     gatewayToken: TOKEN,
@@ -106,6 +131,25 @@ test("rejects oversized response bodies from content-length and streaming reader
     }), { status: 200, headers: { "content-type": "application/json" } }),
   });
   await assert.rejects(() => byStream.status("http://localhost"), hasCode("OPENCLAW_CONTROL_RESPONSE_TOO_LARGE"));
+});
+
+test("cancels rejected HTTP, declared-oversize, and invalid-content response bodies", async () => {
+  for (const response of [
+    cancellableResponse({ status: 500, contentType: "application/json" }),
+    cancellableResponse({
+      status: 200,
+      contentType: "application/json",
+      contentLength: "65537",
+    }),
+    cancellableResponse({ status: 200, contentType: "text/plain" }),
+  ]) {
+    const client = createOpenClawControlClient({
+      gatewayToken: TOKEN,
+      fetch: async () => response.value,
+    });
+    await assert.rejects(() => client.status("http://localhost"));
+    assert.equal(response.cancelled(), 1);
+  }
 });
 
 test("times out requests and redacts tokens from transport failures", async () => {
@@ -446,6 +490,30 @@ test("passes CLI arguments separately and preserves the resolver's no-shell invo
   assert.equal(calls[0].env.INSPECTION_MARKER, "separate-value");
 });
 
+test("rejects every duplicate plugin id in the CLI inventory", async () => {
+  const inventories = [
+    [agentGuardPlugin(), agentGuardPlugin()],
+    [
+      agentGuardPlugin(),
+      { id: "duplicate-other", enabled: false, hookNames: [] },
+      { id: "duplicate-other", enabled: true, hookNames: ["before_tool_call"] },
+    ],
+  ];
+  for (const inventory of inventories) {
+    const client = createOpenClawControlClient({
+      gatewayToken: TOKEN,
+      commandRunner: commandRunner([
+        result("2026.7.2"),
+        result(JSON.stringify(inventory)),
+      ]),
+    });
+    await assert.rejects(
+      () => client.inspectCapabilities({ isolatedProfile: false }),
+      hasCode("OPENCLAW_CLI_INVALID_OUTPUT"),
+    );
+  }
+});
+
 function agentGuardPlugin(): Record<string, unknown> {
   return {
     id: "agent-guard-supervision",
@@ -471,6 +539,29 @@ function jsonResponse(value: unknown): Response {
   });
 }
 
+function cancellableResponse(options: {
+  status: number;
+  contentType: string;
+  contentLength?: string;
+}) {
+  let cancelCount = 0;
+  const value = new Response(new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode("{}"));
+    },
+    cancel() {
+      cancelCount += 1;
+    },
+  }), {
+    status: options.status,
+    headers: {
+      "content-type": options.contentType,
+      ...(options.contentLength ? { "content-length": options.contentLength } : {}),
+    },
+  });
+  return { value, cancelled: () => cancelCount };
+}
+
 function hasCode(code: string): (error: unknown) => boolean {
   return (error) => error instanceof OpenClawControlClientError && error.code === code;
 }
@@ -493,9 +584,11 @@ function activeStatus(activation: NativeGuardLeaseActivation): NativeGuardStatus
     activeLeaseCount: 1,
     activeLease: {
       leaseId: activation.leaseId,
+      leaseEpoch: activation.leaseEpoch,
       rootSessionKey: activation.rootSessionKey,
       mode: activation.mode,
       policyPackId: activation.policyPackId,
+      policyPackDigest: activation.policyPackDigest,
       expiresAt: activation.expiresAt,
     },
   };

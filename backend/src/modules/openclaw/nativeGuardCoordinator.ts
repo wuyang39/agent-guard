@@ -71,10 +71,11 @@ type ManagedLease = {
   rootSessionKey: string;
   mode: NativeGuardMode;
   policyPackId: string;
+  policyPackDigest: string;
   expiresAt: string;
   gatewayUrl: string;
   capability: NativeGuardCapability;
-  phase: "active" | "revoking";
+  phase: "activating" | "active" | "revoking";
 };
 
 export function createNativeGuardCoordinator(
@@ -87,6 +88,7 @@ export function createNativeGuardCoordinator(
     finalizerAssurance: "unverified",
     activeLeaseCount: 0,
   };
+  let activationReserved = false;
 
   function setLastStatus(status: NativeGuardStatus): NativeGuardStatus {
     lastStatus = structuredClone(status);
@@ -110,6 +112,16 @@ export function createNativeGuardCoordinator(
           }
         : {}),
     };
+  }
+
+  function postCleanupStatus(
+    capability: NativeGuardCapability,
+    warning = false,
+  ): NativeGuardStatus {
+    const activeLeaseCount = safeBackendLeaseCount(options.leaseService);
+    return activeLeaseCount === 0
+      ? readyStatus(capability, warning)
+      : mismatchStatus(capability, activeLeaseCount);
   }
 
   async function inspectForActivation(): Promise<NativeGuardCapability> {
@@ -196,78 +208,122 @@ export function createNativeGuardCoordinator(
     };
   }
 
-  async function compensateActivation(leaseId: string): Promise<boolean> {
+  async function compensateManagedLease(managed: ManagedLease): Promise<boolean> {
+    managed.phase = "revoking";
     let backendRevocationCompleted = false;
     try {
-      options.leaseService.revoke(leaseId);
+      options.leaseService.revoke(managed.leaseId);
       backendRevocationCompleted = true;
     } catch {
       // Keep cleanup errors contained so no dependency message can expose credentials.
     }
     try {
-      await options.controlClient.revoke(options.gatewayUrl, leaseId);
+      await options.controlClient.revoke(managed.gatewayUrl, managed.leaseId);
     } catch {
       // Plugin cleanup is best effort; the return value records backend invalidation.
     }
-    leases.delete(leaseId);
+    if (backendRevocationCompleted) leases.delete(managed.leaseId);
     return backendRevocationCompleted;
+  }
+
+  async function inspectCompatibleCapability(
+    expected: NativeGuardCapability,
+  ): Promise<NativeGuardCapability> {
+    let fresh: NativeGuardCapability;
+    try {
+      fresh = await options.controlClient.inspectCapabilities(options.capabilityInput);
+    } catch {
+      throw coordinatorError(
+        "NATIVE_GUARD_CAPABILITY_CHANGED",
+        "OpenClaw native guard capability changed during the lease operation.",
+      );
+    }
+    if (!capabilitiesCompatible(expected, fresh)) {
+      throw coordinatorError(
+        "NATIVE_GUARD_CAPABILITY_CHANGED",
+        "OpenClaw native guard capability changed during the lease operation.",
+      );
+    }
+    return fresh;
   }
 
   return {
     async activate(input: ActivateNativeGuardInput): Promise<NativeGuardStatus> {
-      const capability = await inspectForActivation();
-      let policy: Awaited<ReturnType<typeof resolvePolicy>>;
-      try {
-        policy = await resolvePolicy(input);
-      } catch (error) {
-        setLastStatus(readyStatus(capability));
-        throw error;
-      }
-
-      let activation: NativeGuardLeaseActivation;
-      try {
-        activation = options.leaseService.create({
-          rootSessionKey: input.rootSessionKey,
-          mode: input.mode,
-          policyPack: policy.policyPack,
-          policyPackDigest: policy.policyPackDigest,
-          backendUrl: options.backendUrl,
-          ttlMs: input.ttlMs,
-        }).activation;
-      } catch {
-        setLastStatus(readyStatus(capability));
+      const existingBackendCount = safeBackendLeaseCount(options.leaseService);
+      if (activationReserved || leases.size > 0 || existingBackendCount !== 0) {
+        setLastStatus({
+          coverage: "conditional",
+          finalizerAssurance: "unverified",
+          activeLeaseCount: existingBackendCount,
+          reasonCode: "NATIVE_GUARD_ALREADY_ACTIVE",
+        });
         throw coordinatorError(
-          "NATIVE_GUARD_ACTIVATION_FAILED",
-          "Native guard backend lease activation failed.",
+          "NATIVE_GUARD_ALREADY_ACTIVE",
+          "A native guard lease is already managed or active in the backend.",
         );
       }
-
+      activationReserved = true;
       try {
-        const pluginStatus = await options.controlClient.activate(options.gatewayUrl, activation);
-        if (!pluginConfirmsActivation(pluginStatus, activation)) {
+        const capability = await inspectForActivation();
+        let policy: Awaited<ReturnType<typeof resolvePolicy>>;
+        try {
+          policy = await resolvePolicy(input);
+        } catch (error) {
+          setLastStatus(readyStatus(capability));
+          throw error;
+        }
+
+        let activation: NativeGuardLeaseActivation;
+        try {
+          activation = options.leaseService.create({
+            rootSessionKey: input.rootSessionKey,
+            mode: input.mode,
+            policyPack: policy.policyPack,
+            policyPackDigest: policy.policyPackDigest,
+            backendUrl: options.backendUrl,
+            ttlMs: input.ttlMs,
+          }).activation;
+        } catch {
+          setLastStatus(readyStatus(capability));
           throw coordinatorError(
             "NATIVE_GUARD_ACTIVATION_FAILED",
-            "OpenClaw did not confirm the native guard lease.",
+            "Native guard backend lease activation failed.",
           );
         }
-        leases.set(activation.leaseId, {
+
+        const managed: ManagedLease = {
           ...managedLeaseMetadata(activation, options.gatewayUrl, capability),
-          phase: "active" as const,
-        });
-        return setLastStatus(activeStatus(
-          capability,
-          pluginStatus,
-          safeBackendLeaseCount(options.leaseService),
-        ));
-      } catch {
-        const backendRevocationCompleted = await compensateActivation(activation.leaseId);
-        setLastStatus(backendRevocationCompleted
-          ? readyStatus(capability)
-          : rollbackFailedStatus(capability, safeBackendLeaseCount(options.leaseService)));
-        throw coordinatorError(
-          "NATIVE_GUARD_ACTIVATION_FAILED",
-          "OpenClaw native guard activation failed and was rolled back.",
-        );
+          phase: "activating",
+        };
+        leases.set(activation.leaseId, managed);
+        try {
+          const pluginStatus = await options.controlClient.activate(options.gatewayUrl, activation);
+          if (!pluginConfirmsActivation(pluginStatus, activation)) {
+            throw coordinatorError(
+              "NATIVE_GUARD_ACTIVATION_FAILED",
+              "OpenClaw did not confirm the native guard lease.",
+            );
+          }
+          const freshCapability = await inspectCompatibleCapability(capability);
+          managed.capability = freshCapability;
+          managed.phase = "active";
+          return setLastStatus(activeStatus(
+            freshCapability,
+            pluginStatus,
+            safeBackendLeaseCount(options.leaseService),
+          ));
+        } catch {
+          const backendRevocationCompleted = await compensateManagedLease(managed);
+          setLastStatus(backendRevocationCompleted
+            ? postCleanupStatus(capability)
+            : rollbackFailedStatus(capability, safeBackendLeaseCount(options.leaseService)));
+          throw coordinatorError(
+            "NATIVE_GUARD_ACTIVATION_FAILED",
+            "OpenClaw native guard activation failed and was rolled back.",
+          );
+        }
+      } finally {
+        activationReserved = false;
       }
     },
 
@@ -278,6 +334,8 @@ export function createNativeGuardCoordinator(
       }
       let activation: NativeGuardLeaseActivation | undefined;
       try {
+        const preRenewCapability = await inspectCompatibleCapability(managed.capability);
+        managed.capability = preRenewCapability;
         activation = options.leaseService.renew(leaseId, ttlMs);
         const pluginStatus = await options.controlClient.renew(managed.gatewayUrl, activation);
         if (!pluginConfirmsActivation(pluginStatus, activation)) {
@@ -286,32 +344,21 @@ export function createNativeGuardCoordinator(
             "OpenClaw did not confirm the renewed native guard lease.",
           );
         }
+        const postRenewCapability = await inspectCompatibleCapability(preRenewCapability);
         Object.assign(
           managed,
-          managedLeaseMetadata(activation, managed.gatewayUrl, managed.capability),
+          managedLeaseMetadata(activation, managed.gatewayUrl, postRenewCapability),
         );
+        managed.phase = "active";
         return setLastStatus(activeStatus(
-          managed.capability,
+          postRenewCapability,
           pluginStatus,
           safeBackendLeaseCount(options.leaseService),
         ));
       } catch {
-        // Deleting the backend secret first invalidates both the old and rotated credentials.
-        let backendRevocationCompleted = false;
-        try {
-          options.leaseService.revoke(leaseId);
-          backendRevocationCompleted = true;
-        } catch {
-          // Remote cleanup still runs, and the public error remains credential-free.
-        }
-        try {
-          await options.controlClient.revoke(managed.gatewayUrl, leaseId);
-        } catch {
-          // The remote plugin may be offline; backend revocation remains authoritative.
-        }
-        leases.delete(leaseId);
+        const backendRevocationCompleted = await compensateManagedLease(managed);
         setLastStatus(backendRevocationCompleted
-          ? readyStatus(managed.capability)
+          ? postCleanupStatus(managed.capability)
           : rollbackFailedStatus(
               managed.capability,
               safeBackendLeaseCount(options.leaseService),
@@ -334,13 +381,18 @@ export function createNativeGuardCoordinator(
             "Native guard backend revocation could not be confirmed.",
           );
         }
-        if (lastStatus.activeLeaseCount === 0) return setLastStatus(lastStatus);
+        const backendStatus = safeBackendStatus(options.leaseService);
+        if (backendStatus.activeLeaseCount > 0) {
+          return setLastStatus({
+            coverage: "conditional",
+            finalizerAssurance: "unverified",
+            openclawVersion: lastStatus.openclawVersion,
+            activeLeaseCount: backendStatus.activeLeaseCount,
+            reasonCode: "NATIVE_GUARD_STATUS_MISMATCH",
+          });
+        }
         const { activeLease: _activeLease, ...withoutActiveLease } = lastStatus;
-        return setLastStatus({
-          ...withoutActiveLease,
-          coverage: "ready",
-          activeLeaseCount: 0,
-        });
+        return setLastStatus({ ...withoutActiveLease, coverage: "ready", activeLeaseCount: 0 });
       }
       managed.phase = "revoking";
       let pluginConfirmed = false;
@@ -371,7 +423,7 @@ export function createNativeGuardCoordinator(
         );
       }
       leases.delete(leaseId);
-      return setLastStatus(readyStatus(managed.capability, !pluginConfirmed));
+      return setLastStatus(postCleanupStatus(managed.capability, !pluginConfirmed));
     },
 
     async status(): Promise<NativeGuardStatus> {
@@ -415,6 +467,9 @@ export function createNativeGuardCoordinator(
           reasonCode: "NATIVE_GUARD_HOOK_ORDER_UNVERIFIED",
         });
       }
+      if (leases.size > 1 || backendStatus.activeLeaseCount > 1) {
+        return setLastStatus(mismatchStatus(capability, backendStatus.activeLeaseCount));
+      }
 
       let pluginStatus: NativeGuardStatus;
       try {
@@ -434,6 +489,8 @@ export function createNativeGuardCoordinator(
         const backendLease = options.leaseService.resolveBySession(managed.rootSessionKey);
         if (
           managed.phase === "active" &&
+          leases.size === 1 &&
+          backendStatus.activeLeaseCount === 1 &&
           backendConfirmsManagedLease(backendLease, managed) &&
           pluginConfirmsManagedLease(pluginStatus, managed)
         ) {
@@ -613,8 +670,27 @@ function pluginConfirmsActivation(
     status.coverage === "active" &&
     status.activeLeaseCount === 1 &&
     status.activeLease?.leaseId === activation.leaseId &&
+    status.activeLease.leaseEpoch === activation.leaseEpoch &&
+    status.activeLease.rootSessionKey === activation.rootSessionKey &&
     status.activeLease.mode === activation.mode &&
-    status.activeLease.policyPackId === activation.policyPackId
+    status.activeLease.policyPackId === activation.policyPackId &&
+    status.activeLease.policyPackDigest === activation.policyPackDigest &&
+    status.activeLease.expiresAt === activation.expiresAt
+  );
+}
+
+function capabilitiesCompatible(
+  expected: NativeGuardCapability,
+  fresh: NativeGuardCapability,
+): boolean {
+  return (
+    expected.supportsNativeGuard &&
+    fresh.supportsNativeGuard &&
+    expected.finalizerAssurance !== "unverified" &&
+    fresh.finalizerAssurance === expected.finalizerAssurance &&
+    expected.openclawVersion === fresh.openclawVersion &&
+    expected.conflictingPluginIds.length === 0 &&
+    fresh.conflictingPluginIds.length === 0
   );
 }
 
@@ -629,6 +705,7 @@ function managedLeaseMetadata(
     rootSessionKey: activation.rootSessionKey,
     mode: activation.mode,
     policyPackId: activation.policyPackId,
+    policyPackDigest: activation.policyPackDigest,
     expiresAt: activation.expiresAt,
     gatewayUrl,
     capability,
@@ -646,6 +723,7 @@ function backendConfirmsManagedLease(
     backendLease.rootSessionKey === managed.rootSessionKey &&
     backendLease.mode === managed.mode &&
     backendLease.policyPackId === managed.policyPackId &&
+    backendLease.policyPackDigest === managed.policyPackDigest &&
     backendLease.expiresAt === managed.expiresAt,
   );
 }
@@ -658,9 +736,11 @@ function pluginConfirmsManagedLease(
     status.coverage === "active" &&
     status.activeLeaseCount > 0 &&
     status.activeLease?.leaseId === managed.leaseId &&
+    status.activeLease.leaseEpoch === managed.leaseEpoch &&
     status.activeLease.rootSessionKey === managed.rootSessionKey &&
     status.activeLease.mode === managed.mode &&
     status.activeLease.policyPackId === managed.policyPackId &&
+    status.activeLease.policyPackDigest === managed.policyPackDigest &&
     status.activeLease.expiresAt === managed.expiresAt
   );
 }

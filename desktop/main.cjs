@@ -1,4 +1,5 @@
-const { app, BrowserWindow, dialog, shell } = require("electron");
+const { app, BrowserWindow, dialog, session, shell } = require("electron");
+const { randomBytes } = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
@@ -11,6 +12,7 @@ const FRONTEND_BASE = `http://127.0.0.1:${FRONTEND_PORT}`;
 const HEALTH_TIMEOUT_MS = 45000;
 const POLL_INTERVAL_MS = 450;
 const PRODUCT_NAME = "AgentSleuth";
+const CONTROL_TOKEN = process.env.AGENT_GUARD_CONTROL_TOKEN || randomBytes(32).toString("base64url");
 
 const isDev = !app.isPackaged || process.env.AGENT_GUARD_DESKTOP_DEV === "1";
 const appRoot = app.isPackaged ? app.getAppPath() : path.resolve(__dirname, "..");
@@ -35,6 +37,7 @@ app.whenReady().then(async () => {
   try {
     process.chdir(appRoot);
     applyBundledOpenClawDefaults();
+    installApiControlTokenHeader();
     if (process.env.AGENT_GUARD_DESKTOP_SMOKE === "1") {
       await ensureServicesReady();
       console.log(`${PRODUCT_NAME} desktop smoke check passed.`);
@@ -125,6 +128,7 @@ async function ensureServicesReady() {
       SAMPLE_AGENT_PORT: SAMPLE_PORT,
       SAMPLE_AGENT_HOST: "127.0.0.1",
       VITE_AGENT_GUARD_API_BASE: API_BASE,
+      AGENT_GUARD_CONTROL_TOKEN: CONTROL_TOKEN,
     });
   }
   await waitForApi(apiStatusUrl, `${PRODUCT_NAME} API`);
@@ -148,6 +152,22 @@ async function ensureServicesReady() {
     );
     await waitForHttp(FRONTEND_BASE, `${PRODUCT_NAME} Frontend`);
   }
+}
+
+function installApiControlTokenHeader() {
+  session.defaultSession.webRequest.onBeforeSendHeaders(
+    { urls: [`${API_BASE}/*`] },
+    (details, callback) => {
+      const requestHeaders = { ...details.requestHeaders };
+      for (const name of Object.keys(requestHeaders)) {
+        if (name.toLowerCase() === "x-agent-guard-control-token") {
+          delete requestHeaders[name];
+        }
+      }
+      requestHeaders["X-Agent-Guard-Control-Token"] = CONTROL_TOKEN;
+      callback({ requestHeaders });
+    },
+  );
 }
 
 function ensureSampleAgentReadyOptional(sampleHealthUrl) {

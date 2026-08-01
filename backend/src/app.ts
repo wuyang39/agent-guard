@@ -6,6 +6,7 @@
  */
 
 import Fastify from "fastify";
+import type { FastifyServerOptions } from "fastify";
 import cors from "@fastify/cors";
 import { systemRoutes } from "./api/v1/system/handlers";
 import { dashboardRoutes } from "./api/v1/dashboard/handlers";
@@ -19,22 +20,58 @@ import { reportRoutes, artifactRoutes, policyRoutes } from "./api/v1/reports/han
 import { openClawRealtimeMcpRoutes } from "./api/v1/openclaw/realtime-mcp-handlers";
 import { runtimeConfigRoutes } from "./api/v1/runtime-config/handlers";
 import { openClawPyritOpenAiRoutes } from "./api/v1/openclaw/pyrit-openai-handlers";
+import {
+  createNativeGuardRouteDependencies,
+  openClawNativeGuardRoutes,
+  type NativeGuardRouteDependencies,
+} from "./api/v1/openclaw/native-guard-handlers";
 import { failure } from "./api/response";
 
 export async function buildApp(opts?: {
-  logger?: boolean | Record<string, unknown>;
+  logger?: FastifyServerOptions["logger"];
+  nativeGuardDependencies?: NativeGuardRouteDependencies;
 }) {
+  const nativeGuardDependencies =
+    opts?.nativeGuardDependencies ?? createNativeGuardRouteDependencies();
+  const redaction = {
+    paths: [
+      "req.headers.authorization",
+      "req.headers['x-agent-guard-control-token']",
+      "authorization",
+      "['x-agent-guard-control-token']",
+    ],
+    censor: "[REDACTED]",
+  };
+  const logger = opts?.logger === false
+    ? false
+    : typeof opts?.logger === "object"
+      ? { ...opts.logger, redact: redaction }
+      : {
+          level: process.env.LOG_LEVEL ?? "info",
+          redact: redaction,
+          transport:
+            process.env.NODE_ENV === "production"
+              ? undefined
+              : { target: "pino-pretty", options: { colorize: true } },
+        };
   const app = Fastify({
-    logger: opts?.logger ?? {
-      level: process.env.LOG_LEVEL ?? "info",
-      transport:
-        process.env.NODE_ENV === "production"
-          ? undefined
-          : { target: "pino-pretty", options: { colorize: true } },
-    },
+    logger,
   });
 
   // ---- 插件 ----
+  app.addHook("onRequest", async (request, reply) => {
+    if (
+      request.url.startsWith("/api/v1/openclaw/native-guard/") &&
+      request.headers.origin !== undefined &&
+      !nativeGuardDependencies.allowedOrigins.includes(request.headers.origin)
+    ) {
+      return reply.code(403).send(failure(
+        "NATIVE_GUARD_ORIGIN_FORBIDDEN",
+        "Native guard request origin is not allowed.",
+      ));
+    }
+  });
+
   await app.register(cors, {
     origin: true,
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
@@ -58,7 +95,10 @@ export async function buildApp(opts?: {
   });
 
   // ---- 路由 ----
-  await app.register(systemRoutes);
+  await app.register(systemRoutes, {
+    nativeGuardStatusProvider: () =>
+      nativeGuardDependencies.coordinator.getLastStatus(),
+  });
   await app.register(dashboardRoutes);
   await app.register(agentRoutes);
   await app.register(testSelectionRoutes);
@@ -72,6 +112,7 @@ export async function buildApp(opts?: {
   await app.register(openClawRealtimeMcpRoutes);
   await app.register(runtimeConfigRoutes);
   await app.register(openClawPyritOpenAiRoutes);
+  await app.register(openClawNativeGuardRoutes, nativeGuardDependencies);
 
   return app;
 }

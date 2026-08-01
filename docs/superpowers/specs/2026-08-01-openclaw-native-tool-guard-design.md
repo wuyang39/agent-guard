@@ -170,6 +170,7 @@ OpenClaw 当前没有公开的“所有普通 Hook 之后再次运行 Trusted Po
 type NativeGuardLease = {
   schemaVersion: "native-guard-1";
   leaseId: string;
+  leaseEpoch: number;
   rootSessionKey: string;
   mode: "detection" | "supervision";
   scope: "session_tree";
@@ -177,6 +178,11 @@ type NativeGuardLease = {
   policyPackDigest: string;
   backendUrl: string;
   decisionPublicKey: string;
+  failurePolicy: {
+    lowRisk: "allow" | "warn";
+    highRisk: "deny";
+    unknownRisk: "deny";
+  };
   issuedAt: string;
   expiresAt: string;
   credential: string;
@@ -231,6 +237,7 @@ type NativeToolDecisionRequest = {
   schemaVersion: "native-guard-1";
   requestId: string;
   leaseId: string;
+  leaseEpoch: number;
   sessionKey: string;
   runId?: string;
   toolCallId: string;
@@ -255,6 +262,7 @@ type NativeToolDecisionResponse = {
   decisionId: string;
   requestId: string;
   leaseId: string;
+  leaseEpoch: number;
   policyPackId: string;
   policyPackDigest: string;
   action: "allow" | "warn" | "deny" | "ask" | "redact";

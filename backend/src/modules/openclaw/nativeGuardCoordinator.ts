@@ -306,11 +306,16 @@ export function createNativeGuardCoordinator(
           }
           const freshCapability = await inspectCompatibleCapability(capability);
           managed.capability = freshCapability;
+          if (!backendConfirmsSingleManagedLease(options.leaseService, managed)) {
+            throw coordinatorError(
+              "NATIVE_GUARD_BACKEND_CHANGED",
+              "Native guard backend lease changed before activation committed.",
+            );
+          }
           managed.phase = "active";
           return setLastStatus(activeStatus(
             freshCapability,
             pluginStatus,
-            safeBackendLeaseCount(options.leaseService),
           ));
         } catch {
           const backendRevocationCompleted = await compensateManagedLease(managed);
@@ -349,11 +354,17 @@ export function createNativeGuardCoordinator(
           managed,
           managedLeaseMetadata(activation, managed.gatewayUrl, postRenewCapability),
         );
+        managed.phase = "activating";
+        if (!backendConfirmsSingleManagedLease(options.leaseService, managed)) {
+          throw coordinatorError(
+            "NATIVE_GUARD_BACKEND_CHANGED",
+            "Native guard backend lease changed before renewal committed.",
+          );
+        }
         managed.phase = "active";
         return setLastStatus(activeStatus(
           postRenewCapability,
           pluginStatus,
-          safeBackendLeaseCount(options.leaseService),
         ));
       } catch {
         const backendRevocationCompleted = await compensateManagedLease(managed);
@@ -497,7 +508,6 @@ export function createNativeGuardCoordinator(
           return setLastStatus(activeStatus(
             capability,
             pluginStatus,
-            backendStatus.activeLeaseCount,
           ));
         }
         return setLastStatus(mismatchStatus(capability, backendStatus.activeLeaseCount));
@@ -728,6 +738,23 @@ function backendConfirmsManagedLease(
   );
 }
 
+function backendConfirmsSingleManagedLease(
+  leaseService: NativeGuardLeaseService,
+  managed: ManagedLease,
+): boolean {
+  try {
+    return (
+      leaseService.status().activeLeaseCount === 1 &&
+      backendConfirmsManagedLease(
+        leaseService.resolveBySession(managed.rootSessionKey),
+        managed,
+      )
+    );
+  } catch {
+    return false;
+  }
+}
+
 function pluginConfirmsManagedLease(
   status: NativeGuardStatus,
   managed: ManagedLease,
@@ -759,14 +786,13 @@ function pluginConfirmsRevoke(
 function activeStatus(
   capability: NativeGuardCapability,
   pluginStatus: NativeGuardStatus,
-  activeLeaseCount: number,
 ): NativeGuardStatus {
   return {
     coverage: "active",
     finalizerAssurance: capability.finalizerAssurance,
     openclawVersion: capability.openclawVersion,
     pluginVersion: pluginStatus.pluginVersion,
-    activeLeaseCount,
+    activeLeaseCount: 1,
     conflictingPluginIds: [...capability.conflictingPluginIds],
     activeLease: pluginStatus.activeLease,
   };

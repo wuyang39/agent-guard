@@ -51,6 +51,7 @@ export type NativeGuardCoordinator = {
   renew(leaseId: string, ttlMs?: number): Promise<NativeGuardStatus>;
   revoke(leaseId: string): Promise<NativeGuardStatus>;
   status(): Promise<NativeGuardStatus>;
+  isLeaseUsable(leaseId: string): boolean;
   isLeaseRevoking(leaseId: string): boolean;
   getLastStatus(): NativeGuardStatus;
 };
@@ -75,7 +76,7 @@ type ManagedLease = {
   expiresAt: string;
   gatewayUrl: string;
   capability: NativeGuardCapability;
-  phase: "activating" | "active" | "revoking";
+  phase: "activating" | "active" | "renewing" | "revoking";
 };
 
 export function createNativeGuardCoordinator(
@@ -118,10 +119,20 @@ export function createNativeGuardCoordinator(
     capability: NativeGuardCapability,
     warning = false,
   ): NativeGuardStatus {
-    const activeLeaseCount = safeBackendLeaseCount(options.leaseService);
-    return activeLeaseCount === 0
+    const backend = readBackendStatus(options.leaseService);
+    if (!backend.available) {
+      return backendUnavailableStatus(lastStatus, capability);
+    }
+    return backend.status.activeLeaseCount === 0
       ? readyStatus(capability, warning)
-      : mismatchStatus(capability, activeLeaseCount);
+      : mismatchStatus(capability, backend.status.activeLeaseCount);
+  }
+
+  function rollbackStatus(capability: NativeGuardCapability): NativeGuardStatus {
+    const backend = readBackendStatus(options.leaseService);
+    return backend.available
+      ? rollbackFailedStatus(capability, backend.status.activeLeaseCount)
+      : backendUnavailableStatus(lastStatus, capability);
   }
 
   async function inspectForActivation(): Promise<NativeGuardCapability> {
@@ -249,7 +260,15 @@ export function createNativeGuardCoordinator(
 
   return {
     async activate(input: ActivateNativeGuardInput): Promise<NativeGuardStatus> {
-      const existingBackendCount = safeBackendLeaseCount(options.leaseService);
+      const backend = readBackendStatus(options.leaseService);
+      if (!backend.available) {
+        setLastStatus(backendUnavailableStatus(lastStatus));
+        throw coordinatorError(
+          "NATIVE_GUARD_BACKEND_STATUS_UNAVAILABLE",
+          "Native guard backend status is unavailable.",
+        );
+      }
+      const existingBackendCount = backend.status.activeLeaseCount;
       if (activationReserved || leases.size > 0 || existingBackendCount !== 0) {
         setLastStatus({
           coverage: "conditional",
@@ -321,7 +340,7 @@ export function createNativeGuardCoordinator(
           const backendRevocationCompleted = await compensateManagedLease(managed);
           setLastStatus(backendRevocationCompleted
             ? postCleanupStatus(capability)
-            : rollbackFailedStatus(capability, safeBackendLeaseCount(options.leaseService)));
+            : rollbackStatus(capability));
           throw coordinatorError(
             "NATIVE_GUARD_ACTIVATION_FAILED",
             "OpenClaw native guard activation failed and was rolled back.",
@@ -337,6 +356,7 @@ export function createNativeGuardCoordinator(
       if (!managed || managed.phase !== "active") {
         throw coordinatorError("NATIVE_GUARD_RENEW_FAILED", "Native guard lease is not managed.");
       }
+      managed.phase = "renewing";
       let activation: NativeGuardLeaseActivation | undefined;
       try {
         const preRenewCapability = await inspectCompatibleCapability(managed.capability);
@@ -370,10 +390,7 @@ export function createNativeGuardCoordinator(
         const backendRevocationCompleted = await compensateManagedLease(managed);
         setLastStatus(backendRevocationCompleted
           ? postCleanupStatus(managed.capability)
-          : rollbackFailedStatus(
-              managed.capability,
-              safeBackendLeaseCount(options.leaseService),
-            ));
+          : rollbackStatus(managed.capability));
         throw coordinatorError(
           "NATIVE_GUARD_RENEW_FAILED",
           "Native guard renewal failed closed and the lease was revoked.",
@@ -392,13 +409,16 @@ export function createNativeGuardCoordinator(
             "Native guard backend revocation could not be confirmed.",
           );
         }
-        const backendStatus = safeBackendStatus(options.leaseService);
-        if (backendStatus.activeLeaseCount > 0) {
+        const backend = readBackendStatus(options.leaseService);
+        if (!backend.available) {
+          return setLastStatus(backendUnavailableStatus(lastStatus));
+        }
+        if (backend.status.activeLeaseCount > 0) {
           return setLastStatus({
             coverage: "conditional",
             finalizerAssurance: "unverified",
             openclawVersion: lastStatus.openclawVersion,
-            activeLeaseCount: backendStatus.activeLeaseCount,
+            activeLeaseCount: backend.status.activeLeaseCount,
             reasonCode: "NATIVE_GUARD_STATUS_MISMATCH",
           });
         }
@@ -424,10 +444,7 @@ export function createNativeGuardCoordinator(
         }
       }
       if (backendRevocationFailed) {
-        setLastStatus(rollbackFailedStatus(
-          managed.capability,
-          safeBackendLeaseCount(options.leaseService),
-        ));
+        setLastStatus(rollbackStatus(managed.capability));
         throw coordinatorError(
           "NATIVE_GUARD_REVOKE_FAILED",
           "Native guard backend revocation could not be confirmed.",
@@ -439,7 +456,11 @@ export function createNativeGuardCoordinator(
 
     async status(): Promise<NativeGuardStatus> {
       const managed = firstManagedLease(leases);
-      const backendStatus = safeBackendStatus(options.leaseService);
+      const backend = readBackendStatus(options.leaseService);
+      if (!backend.available) {
+        return setLastStatus(backendUnavailableStatus(lastStatus, managed?.capability));
+      }
+      const backendStatus = backend.status;
       let capability: NativeGuardCapability;
       try {
         capability = await options.controlClient.inspectCapabilities(options.capabilityInput);
@@ -497,7 +518,12 @@ export function createNativeGuardCoordinator(
       }
 
       if (managed) {
-        const backendLease = options.leaseService.resolveBySession(managed.rootSessionKey);
+        let backendLease: ReturnType<NativeGuardLeaseService["resolveBySession"]>;
+        try {
+          backendLease = options.leaseService.resolveBySession(managed.rootSessionKey);
+        } catch {
+          return setLastStatus(backendUnavailableStatus(lastStatus, capability));
+        }
         if (
           managed.phase === "active" &&
           leases.size === 1 &&
@@ -531,6 +557,10 @@ export function createNativeGuardCoordinator(
         conflictingPluginIds: [...capability.conflictingPluginIds],
         reasonCode: "NATIVE_GUARD_PLUGIN_NOT_READY",
       });
+    },
+
+    isLeaseUsable(leaseId: string): boolean {
+      return leases.get(leaseId)?.phase === "active";
     },
 
     isLeaseRevoking(leaseId: string): boolean {
@@ -826,25 +856,32 @@ function rollbackFailedStatus(
   };
 }
 
-function safeBackendLeaseCount(leaseService: NativeGuardLeaseService): number {
+type BackendStatusRead =
+  | { available: true; status: NativeGuardStatus }
+  | { available: false };
+
+function readBackendStatus(leaseService: NativeGuardLeaseService): BackendStatusRead {
   try {
-    return leaseService.status().activeLeaseCount;
+    return { available: true, status: leaseService.status() };
   } catch {
-    return 0;
+    return { available: false };
   }
 }
 
-function safeBackendStatus(leaseService: NativeGuardLeaseService): NativeGuardStatus {
-  try {
-    return leaseService.status();
-  } catch {
-    return {
-      coverage: "conditional",
-      finalizerAssurance: "unverified",
-      activeLeaseCount: 0,
-      reasonCode: "NATIVE_GUARD_BACKEND_STATUS_UNAVAILABLE",
-    };
-  }
+function backendUnavailableStatus(
+  previous: NativeGuardStatus,
+  capability?: NativeGuardCapability,
+): NativeGuardStatus {
+  return {
+    coverage: previous.activeLeaseCount > 0 ? "conditional" : "misconfigured",
+    finalizerAssurance: capability?.finalizerAssurance ?? "unverified",
+    openclawVersion: capability?.openclawVersion ?? previous.openclawVersion,
+    activeLeaseCount: previous.activeLeaseCount,
+    conflictingPluginIds: capability
+      ? [...capability.conflictingPluginIds]
+      : previous.conflictingPluginIds,
+    reasonCode: "NATIVE_GUARD_BACKEND_STATUS_UNAVAILABLE",
+  };
 }
 
 function firstManagedLease(

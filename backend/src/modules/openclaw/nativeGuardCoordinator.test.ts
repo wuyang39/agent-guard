@@ -31,6 +31,70 @@ test("revokes the backend lease when plugin activation fails", async () => {
   assert.equal(fixture.revokeCalls.length, 1);
 });
 
+test("fails activation before capability, plugin, or lease creation when backend status is unavailable", async () => {
+  const fixture = coordinatorFixture();
+  let createCalls = 0;
+  const createLease = fixture.leaseService.create.bind(fixture.leaseService);
+  fixture.leaseService.create = (input) => {
+    createCalls += 1;
+    return createLease(input);
+  };
+  fixture.leaseService.status = () => {
+    throw new Error("backend-status-secret");
+  };
+
+  await assert.rejects(
+    () => fixture.coordinator.activate(supervisionInput()),
+    (error: unknown) => error instanceof NativeGuardCoordinatorError &&
+      error.code === "NATIVE_GUARD_BACKEND_STATUS_UNAVAILABLE" &&
+      !error.message.includes("backend-status-secret"),
+  );
+
+  assert.equal(createCalls, 0);
+  assert.equal(fixture.inspectCalls, 0);
+  assert.equal(fixture.activationCalls.length, 0);
+  assert.equal(fixture.coordinator.getLastStatus().coverage, "misconfigured");
+  assert.equal(
+    fixture.coordinator.getLastStatus().reasonCode,
+    "NATIVE_GUARD_BACKEND_STATUS_UNAVAILABLE",
+  );
+});
+
+test("reports backend status unavailability without querying or promoting the plugin", async () => {
+  const fixture = coordinatorFixture();
+  fixture.leaseService.status = () => {
+    throw new Error("backend-health-secret");
+  };
+
+  const result = await fixture.coordinator.status();
+
+  assert.equal(result.coverage, "misconfigured");
+  assert.equal(result.reasonCode, "NATIVE_GUARD_BACKEND_STATUS_UNAVAILABLE");
+  assert.equal(JSON.stringify(result).includes("backend-health-secret"), false);
+  assert.equal(fixture.inspectCalls, 0);
+  assert.equal(fixture.statusCalls, 0);
+});
+
+test("does not turn post-cleanup or unknown-revoke backend failures into ready", async () => {
+  const managed = coordinatorFixture();
+  await managed.coordinator.activate(supervisionInput());
+  const revokeBackend = managed.leaseService.revoke.bind(managed.leaseService);
+  managed.leaseService.revoke = (leaseId) => {
+    const result = revokeBackend(leaseId);
+    managed.leaseService.status = () => { throw new Error("post-cleanup-secret"); };
+    return result;
+  };
+  const cleaned = await managed.coordinator.revoke(managed.activationCalls[0].leaseId);
+  assert.notEqual(cleaned.coverage, "ready");
+  assert.equal(cleaned.reasonCode, "NATIVE_GUARD_BACKEND_STATUS_UNAVAILABLE");
+
+  const unknown = coordinatorFixture();
+  unknown.leaseService.status = () => { throw new Error("unknown-status-secret"); };
+  const unknownResult = await unknown.coordinator.revoke("unknown-lease");
+  assert.equal(unknownResult.coverage, "misconfigured");
+  assert.equal(unknownResult.reasonCode, "NATIVE_GUARD_BACKEND_STATUS_UNAVAILABLE");
+});
+
 test("keeps coordinator errors credential-free when rollback dependencies also fail", async () => {
   const fixture = coordinatorFixture({ activateError: new Error("plugin failure") });
   const revokeBackend = fixture.leaseService.revoke.bind(fixture.leaseService);
@@ -172,6 +236,26 @@ test("fails activation closed when the backend lease expires while plugin ACK is
   assert.equal(fixture.coordinator.isLeaseRevoking(fixture.activationCalls[0].leaseId), false);
 });
 
+test("keeps the lease unusable after plugin activation ACK until final backend commit", async () => {
+  const fixture = coordinatorFixture();
+  const ackStarted = deferred<void>();
+  const releaseAck = deferred<void>();
+  fixture.controlClient.activate = async (_gatewayUrl, activation) => {
+    fixture.activationCalls.push(activation);
+    ackStarted.resolve();
+    await releaseAck.promise;
+    return status("active", activation.leaseId, activation);
+  };
+
+  const activating = fixture.coordinator.activate(supervisionInput());
+  await ackStarted.promise;
+  const leaseId = fixture.activationCalls[0].leaseId;
+  assert.equal(isLeaseUsable(fixture.coordinator, leaseId), false);
+  releaseAck.resolve();
+  await activating;
+  assert.equal(isLeaseUsable(fixture.coordinator, leaseId), true);
+});
+
 test("re-inspects renewal capability before rotation and fails closed before plugin renew", async () => {
   const fixture = coordinatorFixture();
   await fixture.coordinator.activate(supervisionInput());
@@ -235,6 +319,43 @@ test("fails renewal closed when a second backend lease appears while plugin ACK 
   assert.equal(fixture.leaseService.status().activeLeaseCount, 1);
   assert.equal(fixture.coordinator.isLeaseRevoking(leaseId), false);
   assert.equal(fixture.coordinator.getLastStatus().coverage, "conditional");
+});
+
+test("marks renewal unusable before awaits and rejects a concurrent renew without side effects", async () => {
+  const fixture = coordinatorFixture();
+  await fixture.coordinator.activate(supervisionInput());
+  const leaseId = fixture.activationCalls[0].leaseId;
+  const ackStarted = deferred<void>();
+  const releaseAck = deferred<void>();
+  fixture.controlClient.renew = async (_gatewayUrl, activation) => {
+    fixture.renewCalls.push(activation);
+    if (fixture.renewCalls.length === 1) {
+      ackStarted.resolve();
+      await releaseAck.promise;
+    }
+    return status("active", activation.leaseId, activation);
+  };
+
+  const firstRenew = fixture.coordinator.renew(leaseId);
+  await ackStarted.promise;
+  assert.equal(isLeaseUsable(fixture.coordinator, leaseId), false);
+  let assertionError: unknown;
+  try {
+    await assert.rejects(
+      () => fixture.coordinator.renew(leaseId),
+      hasCoordinatorCode("NATIVE_GUARD_RENEW_FAILED"),
+    );
+  } catch (error) {
+    assertionError = error;
+  } finally {
+    releaseAck.resolve();
+  }
+  await Promise.allSettled([firstRenew]);
+  if (assertionError) throw assertionError;
+
+  assert.equal(fixture.renewCalls.length, 1);
+  assert.equal(fixture.leaseService.status().activeLeaseCount, 1);
+  assert.equal(isLeaseUsable(fixture.coordinator, leaseId), true);
 });
 
 test("enforces one managed lease and refuses activation over unmanaged backend state", async () => {
@@ -595,6 +716,30 @@ test("uses fresh verified metadata and resolves backend state without retaining 
   assert.doesNotMatch(managedLeaseType, /\bactivation\b|\bcredential\b/);
 });
 
+test("contains resolveBySession failures in final commit and public status gates", async () => {
+  const activation = coordinatorFixture();
+  activation.leaseService.resolveBySession = () => {
+    throw new Error("resolve-activation-secret");
+  };
+  await assert.rejects(
+    () => activation.coordinator.activate(supervisionInput()),
+    (error: unknown) => error instanceof NativeGuardCoordinatorError &&
+      error.code === "NATIVE_GUARD_ACTIVATION_FAILED" &&
+      !error.message.includes("resolve-activation-secret"),
+  );
+  assert.equal(activation.leaseService.status().activeLeaseCount, 0);
+
+  const health = coordinatorFixture();
+  await health.coordinator.activate(supervisionInput());
+  health.leaseService.resolveBySession = () => {
+    throw new Error("resolve-health-secret");
+  };
+  const result = await health.coordinator.status();
+  assert.equal(result.coverage, "conditional");
+  assert.equal(result.reasonCode, "NATIVE_GUARD_BACKEND_STATUS_UNAVAILABLE");
+  assert.equal(JSON.stringify(result).includes("resolve-health-secret"), false);
+});
+
 test("loads an exact stored supervision pack and uses the deterministic baseline for detection", async () => {
   const fixture = coordinatorFixture();
   await assert.rejects(
@@ -859,4 +1004,14 @@ function runtimeAction(targetType: "api_call" | "file_write" | "code_execution",
 
 function hasCoordinatorCode(code: string): (error: unknown) => boolean {
   return (error) => error instanceof NativeGuardCoordinatorError && error.code === code;
+}
+
+function isLeaseUsable(
+  coordinator: ReturnType<typeof createNativeGuardCoordinator>,
+  leaseId: string,
+): boolean {
+  const candidate = coordinator as unknown as {
+    isLeaseUsable?: (candidateLeaseId: string) => boolean;
+  };
+  return candidate.isLeaseUsable?.(leaseId) === true;
 }

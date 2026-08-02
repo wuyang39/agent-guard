@@ -247,6 +247,50 @@ test("input params reject proxies without invoking their get traps", async () =>
   assert.equal(fixture.fetchCalls(), 0);
 });
 
+test("ACTIVE rejects low-risk proxies before counting prototype and key traps", async () => {
+  for (const trap of ["getPrototypeOf", "ownKeys"] as const) {
+    let trapCalls = 0;
+    const params = new Proxy({}, {
+      [trap]: () => {
+        trapCalls += 1;
+        return trap === "getPrototypeOf" ? Object.prototype : [];
+      },
+    });
+    const fixture = await activeFixture({ action: "allow" });
+
+    const result = await fixture.runtime.beforeToolCall(
+      { ...lowRiskEvent(), params },
+      lowRiskContext(),
+    );
+
+    assert.deepEqual(result, DENY_OUTAGE, trap);
+    assert.equal(trapCalls, 0, trap);
+    assert.equal(fixture.fetchCalls(), 0, trap);
+  }
+});
+
+test("ACTIVE rejects low-risk proxies before throwing prototype and key traps", async () => {
+  for (const trap of ["getPrototypeOf", "ownKeys"] as const) {
+    let trapCalls = 0;
+    const params = new Proxy({}, {
+      [trap]: () => {
+        trapCalls += 1;
+        throw new Error(`${trap} trap must not run`);
+      },
+    });
+    const fixture = await activeFixture({ action: "allow" });
+
+    const result = await fixture.runtime.beforeToolCall(
+      { ...lowRiskEvent(), params },
+      lowRiskContext(),
+    );
+
+    assert.deepEqual(result, DENY_OUTAGE, trap);
+    assert.equal(trapCalls, 0, trap);
+    assert.equal(fixture.fetchCalls(), 0, trap);
+  }
+});
+
 test("oversized input params fail before building a canonical string", async () => {
   const fixture = await activeFixture({ action: "allow" });
   const originalByteLength = Buffer.byteLength;

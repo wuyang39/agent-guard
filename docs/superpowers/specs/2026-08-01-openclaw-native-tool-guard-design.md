@@ -322,7 +322,7 @@ deny > ask > redact > warn > allow
 
 - 后端返回完整的最终参数对象，而不是不受约束的字符串替换。
 - 决策记录保存修改字段路径、修改前后摘要和策略 ID，不保存被移除的秘密正文。
-- 插件在 canonicalize、digest 和交给 OpenClaw 前使用迭代预扫描：最大深度 32、累计对象键 4,096、canonical UTF-8 最大 256 KiB，并拒绝危险原型键。输入参数和签名改写参数使用同一边界；client 和后端 decision route 另为请求信封预留 64 KiB，因此 HTTP 请求体上限为 320 KiB。
+- 插件在 canonicalize、digest 和交给 OpenClaw 前使用迭代预扫描：最大深度 32、累计对象键 4,096、canonical UTF-8 最大 256 KiB，字节超限时立即停止，并拒绝危险原型键、accessor、稀疏/定制数组、共享/循环引用、Proxy 和其他非 JSON 值。ACTIVE 输入参数的 trap-free 预扫描必须早于风险分类及任何反射/属性访问，拒绝 Proxy 时不得调用其 trap；OFF 和 RECOVERY 不新增该参数扫描。输入参数和签名改写参数使用同一边界；client 和后端 decision route 另为请求信封预留 64 KiB，因此 HTTP 请求体上限为 320 KiB。
 
 ### 9.4 `ask`
 

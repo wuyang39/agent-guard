@@ -350,7 +350,6 @@ export class AgentGuardRuntime {
     lookup: ActiveLeaseLookup,
     signal: AbortSignal,
   ): Promise<BeforeResult | void> {
-    const risk = classifyToolRisk(event);
     let request: NativeToolDecisionRequest;
     try {
       request = buildDecisionRequest(
@@ -361,8 +360,9 @@ export class AgentGuardRuntime {
         this.#now(),
       );
     } catch {
-      return this.#outageDecision(lookup, event, identity, risk, signal);
+      return this.#outageDecision(lookup, event, identity, "unknown", signal);
     }
+    const risk = classifyToolRisk(event);
 
     let response: NativeToolDecisionResponse;
     try {

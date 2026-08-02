@@ -154,9 +154,11 @@ Agent Guard 后端是策略决策点（PDP），OpenClaw 插件是执行点（PE
 
 OpenClaw 当前没有公开的“所有普通 Hook 之后再次运行 Trusted Policy”扩展点。因此，第一版的强保证以“其他已安装插件属于受信任基座”为前提，并要求 Agent Guard Hook 是最后一个参数修改者。若预检无法确认兼容 Hook 组合，guarded 模式拒绝启动或明确报告 `coverage=conditional`，不能显示为完整防护。后续应向 OpenClaw 上游提出 post-hook trusted finalizer 能力。
 
-固定基线 `3edbe19fbd84ba58fdbf8e83042da9efd1d06f81` 的 Hook、Trusted Policy、service 和 route registrar 均返回 `void`，因此“注册函数已返回”和 `plugins list --json` 都不能证明贡献已经提交并处于 live 状态。插件必须先注册一个可 lazy-start recovery 的最小 final Hook；该 Hook 对启动、查找、继承和超时异常均返回稳定 `block`，内部 4 秒截止时间短于宿主 5 秒预算。只有未来宿主对 final Hook、Trusted Policy、recovery service、生命周期 Hook 和控制 route 全部返回显式 `true` 时，插件才允许 activate/renew。固定基线只能返回 `coverage=unsupported`、`finalizerAssurance=unverified` 和 `TRUSTED_POLICY_UNATTESTED`，但仍保留 revoke 作为 marker 清理入口。
+参数输入也依赖同一受信任基座：工具参数内容可以不受信任，但承载对象必须具有宿主提供的、不可由普通 Hook 或调用方伪造的 JSON-only provenance；Agent Guard 之前的其他普通插件必须是 trusted base，不能向参数对象附加 non-enumerable key、symbol、accessor 或其他非 JSON 状态。ECMAScript 没有有界的 own-key 流式枚举接口，因此本地 validator 不能独立证明任意普通对象不存在超量 hidden/symbol fanout。若未来部署不再满足该前提，`ACTIVE` 必须保持 unsupported，直到宿主提供可信 live contract，保证原子执行 Agent Guard 已批准的 clean params snapshot（审批路径也执行同一 snapshot），或提供等价的 JSON-only params contract。
 
-插件内 quarantine 不能替代进程外启动门禁。只要存在 guarded marker，而 live registry query 不能同时证明 Agent Guard 插件、final `before_tool_call`、recovery service 和可信的 post-approval lease recheck capability 已提交，受管 launcher 必须拒绝正常 Gateway 启动，只开放不调度工具的 maintenance cleanup。审批能力不能来自 config、环境变量或调用方自报。该 launcher 门禁是 Task 14 的阻断验收项。
+固定基线 `3edbe19fbd84ba58fdbf8e83042da9efd1d06f81` 的 Hook、Trusted Policy、service 和 route registrar 均返回 `void`，也不提供上述参数 provenance 或原子 approved-snapshot execution contract。因此“注册函数已返回”和 `plugins list --json` 都不能证明贡献已经提交并处于 live 状态。插件必须先注册一个可 lazy-start recovery 的最小 final Hook；该 Hook 对启动、查找、继承和超时异常均返回稳定 `block`，内部 4 秒截止时间短于宿主 5 秒预算。只有未来宿主对 final Hook、Trusted Policy、recovery service、生命周期 Hook 和控制 route 全部返回显式 `true`，并满足参数契约时，插件才允许 activate/renew。固定基线只能返回 `coverage=unsupported`、`finalizerAssurance=unverified` 和 `TRUSTED_POLICY_UNATTESTED`，但仍保留 revoke 作为 marker 清理入口。
+
+插件内 quarantine 不能替代进程外启动门禁。只要存在 guarded marker，而 live registry query 不能同时证明 Agent Guard 插件、final `before_tool_call`、recovery service、可信的 post-approval lease recheck capability，以及 JSON-only provenance 或原子 approved-snapshot execution 参数契约，受管 launcher 必须拒绝正常 Gateway 启动，只开放不调度工具的 maintenance cleanup。参数契约是 post-approval lease recheck 之外的附加门禁，二者都不能来自 config、环境变量或调用方自报。该 launcher 门禁是 Task 14 的阻断验收项。
 
 ### 6.3 `after_tool_call`
 
@@ -323,6 +325,7 @@ deny > ask > redact > warn > allow
 - 后端返回完整的最终参数对象，而不是不受约束的字符串替换。
 - 决策记录保存修改字段路径、修改前后摘要和策略 ID，不保存被移除的秘密正文。
 - 插件和后端复用 protocol 层的迭代参数 validator：最大深度 32、累计对象键 4,096、canonical UTF-8 最大 256 KiB，字节超限时立即停止，并拒绝危险原型键、accessor、稀疏/定制数组、共享/循环引用、Proxy 和其他非 JSON 值。dense array 必须先根据最小 canonical 大小在 own-key 枚举前拒绝；object 使用剩余累计 key/byte budget 单次有界收集 key，budget 通过后才允许完整 own-key 一致性检查和逐项 descriptor 检查。ACTIVE 输入参数的 trap-free 预扫描必须早于风险分类及任何反射/属性访问，拒绝 Proxy 时不得调用其 trap；OFF 和 RECOVERY 不新增该参数扫描。后端在 request digest/policy 前验证输入，在 rewritten params digest/sign 前再次验证输出。
+- 上述本地 key/byte bound 只在宿主已证明 JSON-only provenance 的输入上构成资源边界；它是 supported host contract 内的 defense in depth，不是对任意 JavaScript 对象 hidden/symbol own-key fanout 的独立证明。
 - ACTIVE 对可选 `derivedPaths` 不使用 iterator，而是仅从非 Proxy、标准、稠密、无额外键的数组 numeric data descriptor 建立 snapshot；最多 256 项、每项非空且最长 4,096 字符，数组 canonical UTF-8 最多占 64 KiB envelope budget。accessor、自定义 iterator 和超限数组均在不调用用户代码的情况下拒绝。
 - `toolKind`/`toolInputKind` 先在 event/context 间规范化：单边存在则保留，双边冲突则阻断；PDP request 与风险分类必须使用同一份规范化 metadata。输入参数和签名改写参数使用同一边界；HTTP 请求体上限保持 320 KiB，即 256 KiB canonical params 加 64 KiB envelope allowance。
 
@@ -593,7 +596,7 @@ misconfigured
 12. Detection：合格时危险行为只影响临时容器环境。
 13. Trace reconciliation：任何 JSONL 原生调用缺少 before 事件都会使运行失败。
 14. 固定 `void` registrar 宿主：所有贡献即使被调用也不能新建或续租 guarded lease，状态保持 `unsupported/unverified`，revoke 仍可清理 marker。
-15. 启动恢复：存在 guarded marker 且 live registry 缺少插件、final Hook、recovery service 或可信 post-approval lease recheck capability 任一证明时，launcher 零工具调度并只开放 maintenance cleanup。
+15. 启动恢复：存在 guarded marker 且 live registry 缺少插件、final Hook、recovery service、可信 post-approval lease recheck capability，或 JSON-only provenance / 原子 approved-snapshot execution 参数契约任一必要证明时，launcher 零工具调度并只开放 maintenance cleanup。
 
 ## 17. 性能与容量指标
 

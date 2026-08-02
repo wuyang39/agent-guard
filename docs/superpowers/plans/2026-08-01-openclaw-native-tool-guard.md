@@ -1267,6 +1267,8 @@ Use a two-second AbortController linked to optional `ctx.abortSignal`, the runti
 
 Before canonicalization or digest, use the shared protocol validator to iteratively validate both input and rewritten parameters with maximum depth 32, maximum 4,096 cumulative object keys, maximum 256 KiB canonical UTF-8, early stop on byte overflow, and rejection of dangerous prototype keys, accessors, sparse/custom arrays, shared/cyclic references, Proxy objects and other non-JSON values. Dense arrays must fail from their minimum canonical size before own-key enumeration; object keys must be collected once with the remaining cumulative key/byte budget, and full own-key consistency or individual descriptors may be inspected only after that budget passes. For ACTIVE input params, this trap-free validation must run before risk classification or any reflective/property access and must reject a Proxy without invoking its traps. OFF and RECOVERY do not add this parameter scan. The backend applies the same validator before request digest/policy work and to rewritten params before digest/signing. Exact limits pass and limit plus one fails closed without recursive stack overflow.
 
+Treat tool parameter contents as untrusted, but require their carrier object to have trusted, non-forgeable JSON-only provenance from the host. Other pre-final plugins are part of the trusted base and must not attach non-enumerable keys, symbols, accessors or other non-JSON state. The local validator is defense in depth within that contract: JavaScript exposes no bounded streaming own-key enumeration, so it cannot independently bound hidden/symbol fanout on an arbitrary ordinary object. If a future deployment admits untrusted pre-final plugins or cannot attest JSON-only provenance, it must not enter ACTIVE unless a trusted live host contract guarantees atomic execution of the exact clean params snapshot approved by Agent Guard, including after approval, or an equivalent JSON-only params contract.
+
 Snapshot optional `derivedPaths` in ACTIVE without using its iterator: accept only a non-Proxy standard dense array with no extra keys, numeric enumerable data descriptors, at most 256 non-empty strings of at most 4,096 characters, and at most 64 KiB canonical UTF-8 for the array. Reject accessors, custom iterators and over-budget arrays without invoking them. Normalize `toolKind` and `toolInputKind` from event/context before building the request: retain metadata present on only one side, reject conflicting dual values, and use the same normalized values for request serialization and risk classification. The 320 KiB decision body remains 256 KiB canonical params plus a 64 KiB envelope allowance.
 
 - [ ] **Step 5: Implement the final `before_tool_call` Hook**
@@ -1282,7 +1284,7 @@ ask with future trusted live capability attestation -> requireApproval with allo
 redact -> params only after signature and digest validation
 ```
 
-The fixed `3edbe19f` host invokes `onResolution` fire-and-forget, does not await it and exposes no veto result. Its `ask` path is therefore never executable. The approval capability must come from a future trusted, read-only live host contract; never infer it from plugin config, environment variables, version strings or caller input. Without it, public coverage is `conditional`, so the coordinator does not acknowledge an active lease. Do not combine `params` and `requireApproval`. Do not keep name-prefix bypass lists. Never use `allow-always`.
+The fixed `3edbe19f` host invokes `onResolution` fire-and-forget, does not await it and exposes no veto result. Its `ask` path is therefore never executable, and it exposes neither trusted JSON-only parameter provenance nor atomic approved-snapshot execution. The approval and parameter capabilities must come from future trusted, read-only live host contracts; never infer them from plugin config, environment variables, version strings or caller input. Without them, the host remains unsupported/quarantined and the coordinator does not acknowledge an active lease. Do not combine `params` and `requireApproval`. Do not keep name-prefix bypass lists. Never use `allow-always`.
 
 - [ ] **Step 6: Run plugin behavioral tests**
 
@@ -1639,13 +1641,13 @@ The PowerShell installer must:
 3. refuse versions below 2026.7.2 without modifying OpenClaw
 4. install the local plugin directory only on compatible hosts
 5. run openclaw plugins doctor/status, reject Agent Guard error diagnostics, and query the authenticated plugin status route
-6. perform a live registry query that proves the Agent Guard plugin, final `before_tool_call`, recovery service and trusted post-approval lease recheck capability are committed
+6. perform a live registry query that proves the Agent Guard plugin, final `before_tool_call`, recovery service, trusted post-approval lease recheck capability, and trusted JSON-only params provenance or atomic approved-snapshot execution capability are committed
 7. leave the plugin installed but OFF, with zero leases
 ```
 
 Never modify the user tool allow/deny policy or enable Docker globally.
 
-**Blocking launcher acceptance condition:** if any guarded marker exists and the live registry query cannot prove the required plugin, final Hook, recovery service and post-approval lease recheck capability, every Agent Guard-managed launcher must refuse normal Gateway startup and expose only a no-tool-dispatch maintenance cleanup path. The approval capability must be a trusted, read-only host live contract and cannot come from config, env or caller self-report. The fixed `3edbe19f` host cannot create new guarded activations. Task 8 provides plugin quarantine and diagnostic preflight only; implementing and live-testing this external launcher gate remains required work in Task 14 and blocks release.
+**Blocking launcher acceptance condition:** if any guarded marker exists and the live registry query cannot prove the required plugin, final Hook, recovery service, post-approval lease recheck capability, and either trusted JSON-only params provenance or atomic approved-snapshot execution capability, every Agent Guard-managed launcher must refuse normal Gateway startup and expose only a no-tool-dispatch maintenance cleanup path. Both host capabilities must be trusted, read-only live contracts and cannot come from config, env or caller self-report. The parameter capability is additional to, and never replaces, the post-approval lease recheck gate. The fixed `3edbe19f` host attests neither capability and cannot create new guarded activations. Task 8 provides plugin quarantine and diagnostic preflight only; implementing and live-testing this external launcher gate remains required work in Task 14 and blocks release.
 
 - [ ] **Step 2: Add fake-host and backend verification**
 
@@ -1660,7 +1662,8 @@ Never modify the user tool allow/deny policy or enable Docker globally.
 - current incompatible OpenClaw reports `unsupported`, not `active`.
 - a second enabled `before_tool_call` plugin reports `conditional` and prevents activation;
 - top-level and registry diagnostics, plugin error status and guarded contribution conflicts force unsupported/unverified capability, while unrelated warnings do not;
-- a guarded marker plus missing live plugin/final-Hook/recovery-service proof refuses normal Gateway startup and offers maintenance cleanup only;
+- the absence of both trusted JSON-only params provenance and atomic approved-snapshot execution prevents ACTIVE; the fixed host remains unsupported/quarantined;
+- a guarded marker plus missing live plugin/final-Hook/recovery-service, post-approval lease recheck, or parameter-contract proof refuses normal Gateway startup and offers maintenance cleanup only;
 - 10,000 OFF Hook calls make zero network/filesystem calls and have p95 below 1 ms;
 - 500 local signed allow decisions have p95 below 100 ms, excluding approval waits.
 

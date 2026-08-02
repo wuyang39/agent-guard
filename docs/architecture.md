@@ -457,7 +457,7 @@ OpenClaw Native Guard 使用后端 lease/coordinator 作为控制面、OpenClaw 
 
 固定 OpenClaw `2026.7.2` / `3edbe19fbd84ba58fdbf8e83042da9efd1d06f81` 的 registrar 返回 `void`。因此插件必须把新建和续租隔离在显式 live attestation 之后；该固定宿主不能创建新的 guarded activation，只能通过 revoke 清理 recovery marker。`session_end(reason="compaction")`、Gateway shutdown 和 restart 均保留 marker，避免生命周期切换把保护意图错误降为 OFF。
 
-进程外 launcher 是最终启动边界：若 guarded marker 存在，而 live registry query 不能同时证明 Agent Guard plugin、final `before_tool_call` 和 recovery service 已提交，launcher 必须拒绝正常 Gateway 启动，并且只开放不调度工具的 maintenance cleanup。插件 quarantine 不是该门禁的替代品；外部门禁的实现与 live 验收仍是 Task 14 的阻断残余工作。
+进程外 launcher 是最终启动边界：若 guarded marker 存在，而 live registry query 不能同时证明 Agent Guard plugin、final `before_tool_call`、recovery service、可信的 post-approval lease recheck capability，以及 trusted JSON-only params provenance 或原子 approved-snapshot execution 参数契约，launcher 必须拒绝正常 Gateway 启动，并且只开放不调度工具的 maintenance cleanup。参数契约是审批后租约复查之外的附加门禁；固定 `3edbe19f` 宿主不提供这两项未来能力，继续处于 unsupported/quarantined。插件 quarantine 不是该门禁的替代品；外部门禁的实现与 live 验收仍是 Task 14 的阻断残余工作。
 
 ## 8. 输出文件约束
 

@@ -154,6 +154,10 @@ Agent Guard 后端是策略决策点（PDP），OpenClaw 插件是执行点（PE
 
 OpenClaw 当前没有公开的“所有普通 Hook 之后再次运行 Trusted Policy”扩展点。因此，第一版的强保证以“其他已安装插件属于受信任基座”为前提，并要求 Agent Guard Hook 是最后一个参数修改者。若预检无法确认兼容 Hook 组合，guarded 模式拒绝启动或明确报告 `coverage=conditional`，不能显示为完整防护。后续应向 OpenClaw 上游提出 post-hook trusted finalizer 能力。
 
+固定基线 `3edbe19fbd84ba58fdbf8e83042da9efd1d06f81` 的 Hook、Trusted Policy、service 和 route registrar 均返回 `void`，因此“注册函数已返回”和 `plugins list --json` 都不能证明贡献已经提交并处于 live 状态。插件必须先注册一个可 lazy-start recovery 的最小 final Hook；该 Hook 对启动、查找、继承和超时异常均返回稳定 `block`，内部 4 秒截止时间短于宿主 5 秒预算。只有未来宿主对 final Hook、Trusted Policy、recovery service、生命周期 Hook 和控制 route 全部返回显式 `true` 时，插件才允许 activate/renew。固定基线只能返回 `coverage=unsupported`、`finalizerAssurance=unverified` 和 `TRUSTED_POLICY_UNATTESTED`，但仍保留 revoke 作为 marker 清理入口。
+
+插件内 quarantine 不能替代进程外启动门禁。只要存在 guarded marker，而 live registry query 不能同时证明 Agent Guard 插件、final `before_tool_call` 和 recovery service 已提交，受管 launcher 必须拒绝正常 Gateway 启动，只开放不调度工具的 maintenance cleanup。该 launcher 门禁是 Task 14 的阻断验收项。
+
 ### 6.3 `after_tool_call`
 
 - 记录实际 result/error/duration 和最终参数摘要。
@@ -210,6 +214,7 @@ OFF --activate--> ACTIVE --renew--> ACTIVE
 - 检测和受管运行在无法续租时先取消 OpenClaw run，再让租约到期。
 - 显式 revoke、会话结束或到达 `expiresAt` 后删除 marker 并进入 `OFF`。
 - Gateway 重启后，如果存在尚未过期的 guarded marker 但没有内存凭据，则进入 `RECOVERY`。
+- `session_end(reason="compaction")` 只是 transcript 生命周期切换，不得删除根会话或子会话 marker；`shutdown` 和 `restart` 同样保留 marker。
 - `OFF` 只表示从未启用、已显式停用、会话结束或租约已经到期；这些状态不得调用 Agent Guard。
 
 该定义保留“租约到期后 OpenClaw 恢复正常”的要求，同时在尚未到期的异常重启窗口内避免静默失守。
@@ -486,6 +491,8 @@ guarded 模式要求 OpenClaw 提供：
 
 开发与验收固定在 OpenClaw `2026.7.2`，同时使用 capability preflight，而不是只根据版本字符串推断。
 
+capability preflight 必须校验 Agent Guard 插件状态，以及 `plugins list --json` 的顶层 `diagnostics` 和 `registry.diagnostics`。Agent Guard 自身的 error 状态，或涉及其 route、service、Trusted Policy、Hook 的 error diagnostic，均强制 `supportsNativeGuard=false` 和 `finalizerAssurance=unverified`；畸形或超限 diagnostic 输出按无能力处理。warning 和无关插件 error 不得误杀。该 CLI 输出是不加载插件 runtime 的 manifest/snapshot 证据，不是 live contribution attestation。
+
 ### 14.2 覆盖状态
 
 ```text
@@ -524,6 +531,8 @@ misconfigured
 | Docker daemon/image 不可用 | 检测拒绝启动 |
 | sandbox explain 与预期不符 | 立即取消检测并清理 |
 | OpenClaw Gateway 重启 | 未到期 guarded session 进入 recovery |
+| 固定基线 registrar 无 live attestation | activate/renew 返回稳定 503；只允许 revoke/maintenance cleanup |
+| marker 存在但 live registry 无法证明插件、final Hook、recovery service | launcher 拒绝正常 Gateway 启动，不调度任何工具 |
 
 ## 16. 测试策略
 
@@ -579,6 +588,8 @@ misconfigured
 11. Detection：Docker 不合格时零攻击样例执行。
 12. Detection：合格时危险行为只影响临时容器环境。
 13. Trace reconciliation：任何 JSONL 原生调用缺少 before 事件都会使运行失败。
+14. 固定 `void` registrar 宿主：所有贡献即使被调用也不能新建或续租 guarded lease，状态保持 `unsupported/unverified`，revoke 仍可清理 marker。
+15. 启动恢复：存在 guarded marker 且 live registry 缺少插件、final Hook 或 recovery service 任一证明时，launcher 零工具调度并只开放 maintenance cleanup。
 
 ## 17. 性能与容量指标
 

@@ -233,6 +233,141 @@ test("accepts the exact Agent Guard admission contract from a nested plugin mani
   assert.equal(capability.finalizerAssurance, "exclusive_before_hook");
 });
 
+test("fails closed on Agent Guard error status and equivalent failure metadata", async (t) => {
+  for (const failure of [
+    { status: "error" },
+    { status: "disabled" },
+    { status: "loaded", error: "registration failed" },
+    { status: "loaded", failurePhase: "register" },
+  ]) {
+    await t.test(JSON.stringify(failure), async () => {
+      const capability = await inspectInventory({
+        plugins: [{ ...agentGuardPlugin(), ...failure }],
+        diagnostics: [],
+        registry: { diagnostics: [] },
+      });
+
+      assert.equal(capability.supportsNativeGuard, false);
+      assert.equal(capability.finalizerAssurance, "unverified");
+    });
+  }
+});
+
+test("fails closed on Agent Guard contribution errors from either diagnostic surface", async (t) => {
+  const cases = [
+    {
+      location: "top" as const,
+      message: "plugin registration failed",
+      pluginId: "agent-guard-supervision",
+    },
+    {
+      location: "registry" as const,
+      message: "http route already registered: /agent-guard/native-guard/v1/status",
+      pluginId: "conflicting-route-plugin",
+    },
+    {
+      location: "top" as const,
+      message: "service already registered: agent-guard-runtime",
+      pluginId: "conflicting-service-plugin",
+    },
+    {
+      location: "registry" as const,
+      message: "trusted tool policy already registered: agent-guard-admission",
+      pluginId: "conflicting-policy-plugin",
+    },
+    {
+      location: "top" as const,
+      message: "hook already registered: before_tool_call (agent-guard-supervision)",
+      pluginId: "conflicting-hook-plugin",
+    },
+  ];
+
+  for (const entry of cases) {
+    await t.test(entry.message, async () => {
+      const diagnostic = {
+        level: "error",
+        pluginId: entry.pluginId,
+        message: entry.message,
+      };
+      const capability = await inspectInventory({
+        plugins: [agentGuardPlugin()],
+        diagnostics: entry.location === "top" ? [diagnostic] : [],
+        registry: { diagnostics: entry.location === "registry" ? [diagnostic] : [] },
+      });
+
+      assert.equal(capability.supportsNativeGuard, false);
+      assert.equal(capability.finalizerAssurance, "unverified");
+    });
+  }
+});
+
+test("does not treat warnings or unrelated plugin errors as Agent Guard failures", async () => {
+  const capability = await inspectInventory({
+    plugins: [agentGuardPlugin()],
+    diagnostics: [
+      {
+        level: "warn",
+        pluginId: "agent-guard-supervision",
+        message: "manifest used a deprecated field",
+      },
+      {
+        level: "error",
+        pluginId: "unrelated-plugin",
+        message: "unrelated provider registration failed",
+      },
+    ],
+    registry: { diagnostics: [] },
+  });
+
+  assert.equal(capability.supportsNativeGuard, true);
+  assert.equal(capability.finalizerAssurance, "exclusive_before_hook");
+});
+
+test("rejects malformed top-level and registry diagnostics", async () => {
+  for (const inventory of [
+    { plugins: [agentGuardPlugin()], diagnostics: {} },
+    { plugins: [agentGuardPlugin()], registry: [] },
+    { plugins: [agentGuardPlugin()], registry: { diagnostics: "invalid" } },
+    {
+      plugins: [agentGuardPlugin()],
+      diagnostics: [{ level: "fatal", message: "invalid level" }],
+    },
+    {
+      plugins: [agentGuardPlugin()],
+      diagnostics: [{ level: "error", pluginId: "agent-guard-supervision" }],
+    },
+    {
+      plugins: [agentGuardPlugin()],
+      diagnostics: [{ level: "error", message: "invalid owner", pluginId: 1 }],
+    },
+  ]) {
+    await assert.rejects(
+      () => inspectInventory(inventory),
+      hasCode("OPENCLAW_CLI_INVALID_OUTPUT"),
+    );
+  }
+});
+
+test("rejects an oversized diagnostic payload before capability inspection", async () => {
+  const inventory = JSON.stringify({
+    plugins: [agentGuardPlugin()],
+    diagnostics: [{
+      level: "error",
+      pluginId: "agent-guard-supervision",
+      message: "x".repeat(65_536),
+    }],
+  });
+  const client = createOpenClawControlClient({
+    gatewayToken: TOKEN,
+    commandRunner: commandRunner([result("2026.7.2"), result(inventory)]),
+  });
+
+  await assert.rejects(
+    () => client.inspectCapabilities({ isolatedProfile: false }),
+    hasCode("OPENCLAW_CLI_OUTPUT_TOO_LARGE"),
+  );
+});
+
 test("rejects non-exact Trusted Tool Policy contract declarations", async () => {
   const invalidPlugins = [
     {
@@ -521,6 +656,17 @@ function agentGuardPlugin(): Record<string, unknown> {
     hookNames: ["before_tool_call"],
     contracts: { trustedToolPolicies: ["agent-guard-admission"] },
   };
+}
+
+async function inspectInventory(inventory: unknown) {
+  const client = createOpenClawControlClient({
+    gatewayToken: TOKEN,
+    commandRunner: commandRunner([
+      result("2026.7.2"),
+      result(JSON.stringify(inventory)),
+    ]),
+  });
+  return client.inspectCapabilities({ isolatedProfile: false });
 }
 
 function commandRunner(results: Array<{ exitCode: number; stdout: string; stderr: string }>): OpenClawCommandRunner {

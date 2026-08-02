@@ -18,6 +18,8 @@ const DEFAULT_TIMEOUT_MS = 2_000;
 const MAX_RESPONSE_BYTES = 64 * 1024;
 const AGENT_GUARD_PLUGIN_ID = "agent-guard-supervision";
 const TRUSTED_TOOL_POLICY_ID = "agent-guard-admission";
+const AGENT_GUARD_SERVICE_ID = "agent-guard-runtime";
+const AGENT_GUARD_ROUTE_PREFIX = "/agent-guard/native-guard/v1/";
 
 export type NativeGuardFinalizerAssurance = NativeGuardStatus["finalizerAssurance"];
 
@@ -178,15 +180,18 @@ export function createOpenClawControlClient(
         timeoutMs,
       );
       const openclawVersion = parseVersion(versionResult.stdout);
-      const plugins = parsePluginList(pluginResult.stdout);
+      const inventory = parsePluginList(pluginResult.stdout);
+      const plugins = inventory.plugins;
       const agentGuard = plugins.find((plugin) => plugin.id === AGENT_GUARD_PLUGIN_ID);
       const agentGuardHasBeforeHook = Boolean(
         agentGuard?.enabled && hasBeforeToolCallHook(agentGuard.raw),
       );
       const agentGuardReady = Boolean(
         agentGuard?.enabled &&
+        hasHealthyPluginStatus(agentGuard.raw) &&
         agentGuardHasBeforeHook &&
-        hasTrustedToolPolicyContract(agentGuard.raw),
+        hasTrustedToolPolicyContract(agentGuard.raw) &&
+        !inventory.diagnostics.some(isAgentGuardErrorDiagnostic),
       );
       const conflicts = plugins
         .filter((plugin) =>
@@ -429,8 +434,17 @@ function validActiveLease(value: unknown): boolean {
 }
 
 type ParsedPlugin = { id: string; enabled: boolean; raw: Record<string, unknown> };
+type ParsedPluginDiagnostic = {
+  level: "warn" | "error";
+  message: string;
+  pluginId?: string;
+};
+type ParsedPluginInventory = {
+  plugins: ParsedPlugin[];
+  diagnostics: ParsedPluginDiagnostic[];
+};
 
-function parsePluginList(stdout: string): ParsedPlugin[] {
+function parsePluginList(stdout: string): ParsedPluginInventory {
   assertOutputLimit(stdout);
   let value: unknown;
   try {
@@ -438,23 +452,96 @@ function parsePluginList(stdout: string): ParsedPlugin[] {
   } catch {
     throw controlError("OPENCLAW_CLI_INVALID_OUTPUT", "OpenClaw plugin inventory was invalid.");
   }
+  const inventory = isRecord(value) ? value : undefined;
   const entries = Array.isArray(value)
     ? value
-    : isRecord(value) && Array.isArray(value.plugins)
-      ? value.plugins
+    : inventory && Array.isArray(inventory.plugins)
+      ? inventory.plugins
       : undefined;
-  if (!entries || !entries.every((entry) => isRecord(entry) && nonEmptyString(entry.id))) {
+  if (
+    !entries ||
+    !entries.every((entry) =>
+      isRecord(entry) &&
+      nonEmptyString(entry.id) &&
+      validPluginFailureFields(entry))
+  ) {
     throw controlError("OPENCLAW_CLI_INVALID_OUTPUT", "OpenClaw plugin inventory was invalid.");
   }
   const ids = entries.map((entry) => entry.id as string);
   if (new Set(ids).size !== ids.length) {
     throw controlError("OPENCLAW_CLI_INVALID_OUTPUT", "OpenClaw plugin inventory was invalid.");
   }
-  return entries.map((entry) => ({
-    id: entry.id as string,
-    enabled: entry.enabled === true,
-    raw: entry,
+  const diagnostics: ParsedPluginDiagnostic[] = [];
+  if (inventory && Object.hasOwn(inventory, "diagnostics")) {
+    diagnostics.push(...parsePluginDiagnostics(inventory.diagnostics));
+  }
+  if (inventory && Object.hasOwn(inventory, "registry")) {
+    if (!isRecord(inventory.registry)) {
+      throw controlError("OPENCLAW_CLI_INVALID_OUTPUT", "OpenClaw plugin inventory was invalid.");
+    }
+    if (Object.hasOwn(inventory.registry, "diagnostics")) {
+      diagnostics.push(...parsePluginDiagnostics(inventory.registry.diagnostics));
+    }
+  }
+  return {
+    plugins: entries.map((entry) => ({
+      id: entry.id as string,
+      enabled: entry.enabled === true,
+      raw: entry,
+    })),
+    diagnostics,
+  };
+}
+
+function parsePluginDiagnostics(value: unknown): ParsedPluginDiagnostic[] {
+  if (!Array.isArray(value) || !value.every(validPluginDiagnostic)) {
+    throw controlError("OPENCLAW_CLI_INVALID_OUTPUT", "OpenClaw plugin inventory was invalid.");
+  }
+  return value.map((diagnostic) => ({
+    level: diagnostic.level as "warn" | "error",
+    message: diagnostic.message as string,
+    ...(typeof diagnostic.pluginId === "string" ? { pluginId: diagnostic.pluginId } : {}),
   }));
+}
+
+function validPluginDiagnostic(value: unknown): value is Record<string, unknown> {
+  return isRecord(value) &&
+    (value.level === "warn" || value.level === "error") &&
+    typeof value.message === "string" &&
+    optionalString(value.pluginId) &&
+    optionalString(value.source) &&
+    optionalString(value.code);
+}
+
+function validPluginFailureFields(plugin: Record<string, unknown>): boolean {
+  return (
+    (plugin.status === undefined ||
+      plugin.status === "loaded" ||
+      plugin.status === "disabled" ||
+      plugin.status === "error") &&
+    optionalString(plugin.error) &&
+    optionalString(plugin.failedAt) &&
+    (plugin.failurePhase === undefined ||
+      plugin.failurePhase === "validation" ||
+      plugin.failurePhase === "load" ||
+      plugin.failurePhase === "register")
+  );
+}
+
+function hasHealthyPluginStatus(plugin: Record<string, unknown>): boolean {
+  return (plugin.status === undefined || plugin.status === "loaded") &&
+    plugin.error === undefined &&
+    plugin.failedAt === undefined &&
+    plugin.failurePhase === undefined;
+}
+
+function isAgentGuardErrorDiagnostic(diagnostic: ParsedPluginDiagnostic): boolean {
+  if (diagnostic.level !== "error") return false;
+  return diagnostic.pluginId === AGENT_GUARD_PLUGIN_ID ||
+    diagnostic.message.includes(AGENT_GUARD_PLUGIN_ID) ||
+    diagnostic.message.includes(TRUSTED_TOOL_POLICY_ID) ||
+    diagnostic.message.includes(AGENT_GUARD_SERVICE_ID) ||
+    diagnostic.message.includes(AGENT_GUARD_ROUTE_PREFIX);
 }
 
 function parseVersion(stdout: string): string {

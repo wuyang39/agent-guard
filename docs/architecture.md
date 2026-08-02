@@ -451,6 +451,14 @@ P0 采用离线判定:
 
 P0 不要求实时阻断、流式风险判定或数据库事务。完整系统可以在不破坏 `InteractionTrace -> RiskEvaluationResult -> RiskReport` 主链路的前提下扩展实时提示、流式评估、持久化和历史回放。
 
+### 7.1 OpenClaw Native Guard 启动边界
+
+OpenClaw Native Guard 使用后端 lease/coordinator 作为控制面、OpenClaw 插件作为执行前 PEP，并用不含秘密的 guarded marker 保留异常重启后的保护意图。CLI `plugins list --json` 只提供 manifest/snapshot preflight：Agent Guard plugin error 状态，或顶层及 `registry.diagnostics` 中涉及 Agent Guard plugin、route、service、Trusted Policy、final Hook 的 error，必须将能力降为 `unsupported/unverified`；畸形和超限 diagnostics fail closed，无关 warning 不影响能力。该快照不能证明 runtime contribution 已 live。
+
+固定 OpenClaw `2026.7.2` / `3edbe19fbd84ba58fdbf8e83042da9efd1d06f81` 的 registrar 返回 `void`。因此插件必须把新建和续租隔离在显式 live attestation 之后；该固定宿主不能创建新的 guarded activation，只能通过 revoke 清理 recovery marker。`session_end(reason="compaction")`、Gateway shutdown 和 restart 均保留 marker，避免生命周期切换把保护意图错误降为 OFF。
+
+进程外 launcher 是最终启动边界：若 guarded marker 存在，而 live registry query 不能同时证明 Agent Guard plugin、final `before_tool_call` 和 recovery service 已提交，launcher 必须拒绝正常 Gateway 启动，并且只开放不调度工具的 maintenance cleanup。插件 quarantine 不是该门禁的替代品；外部门禁的实现与 live 验收仍是 Task 14 的阻断残余工作。
+
 ## 8. 输出文件约束
 
 每次测试运行至少生成:

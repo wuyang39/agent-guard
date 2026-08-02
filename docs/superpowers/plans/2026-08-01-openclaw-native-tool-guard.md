@@ -1158,12 +1158,17 @@ api.on("subagent_spawned", async (event, ctx) => {
 });
 api.on("subagent_ended", async (event) => registry.endSession(event.targetSessionKey));
 api.on("session_end", async (event, ctx) => {
+  if (["shutdown", "restart", "compaction"].includes(event.reason ?? "")) return;
   const sessionKey = event.sessionKey ?? ctx.sessionKey;
   if (sessionKey) await registry.endSession(sessionKey);
 });
 ```
 
-Gateway stop must flush marker writes and abort pending network operations within five seconds.
+Gateway stop must flush marker writes and abort pending network operations within five seconds. `session_end(reason="compaction")` is non-terminal and must preserve the complete root/child marker tree for restart recovery.
+
+Register the minimal final `before_tool_call` first. It must lazy-start recovery, contain every error as a stable fail-closed block, and use a four-second internal deadline beneath the five-second host timeout. Track explicit live commitment for the final Hook, Trusted Policy, recovery service, lifecycle Hooks and all four routes. Registrar `void`, `false`, omission or any registration failure quarantines activate/renew with `503 TRUSTED_POLICY_UNATTESTED`; revoke remains available for recovery cleanup. The pinned `3edbe19f` host returns `void`, so it cannot create a new guarded activation.
+
+Capability inspection must validate the Agent Guard plugin `status`/failure fields plus top-level and `registry.diagnostics`. Relevant error diagnostics for the plugin, route prefix, `agent-guard-runtime`, `agent-guard-admission` or final Hook force `supportsNativeGuard=false` and `finalizerAssurance=unverified`. Malformed or oversized diagnostics fail closed; unrelated warnings remain non-blocking. Treat this CLI snapshot only as preflight evidence, never as live registration attestation.
 
 - [ ] **Step 5: Run plugin tests and build**
 
@@ -1624,11 +1629,14 @@ The PowerShell installer must:
 2. read openclaw --version
 3. refuse versions below 2026.7.2 without modifying OpenClaw
 4. install the local plugin directory only on compatible hosts
-5. run openclaw plugins doctor/status and query the authenticated plugin status route
-6. leave the plugin installed but OFF, with zero leases
+5. run openclaw plugins doctor/status, reject Agent Guard error diagnostics, and query the authenticated plugin status route
+6. perform a live registry query that proves the Agent Guard plugin, final `before_tool_call` and recovery service are committed
+7. leave the plugin installed but OFF, with zero leases
 ```
 
 Never modify the user tool allow/deny policy or enable Docker globally.
+
+**Blocking launcher acceptance condition:** if any guarded marker exists and the live registry query cannot prove all three required live contributions, every Agent Guard-managed launcher must refuse normal Gateway startup and expose only a no-tool-dispatch maintenance cleanup path. The fixed `3edbe19f` host cannot create new guarded activations. Task 8 provides plugin quarantine and diagnostic preflight only; implementing and live-testing this external launcher gate remains required work in Task 14 and blocks release.
 
 - [ ] **Step 2: Add fake-host and backend verification**
 
@@ -1642,6 +1650,8 @@ Never modify the user tool allow/deny policy or enable Docker globally.
 - backend auth, replay defense and event idempotency;
 - current incompatible OpenClaw reports `unsupported`, not `active`.
 - a second enabled `before_tool_call` plugin reports `conditional` and prevents activation;
+- top-level and registry diagnostics, plugin error status and guarded contribution conflicts force unsupported/unverified capability, while unrelated warnings do not;
+- a guarded marker plus missing live plugin/final-Hook/recovery-service proof refuses normal Gateway startup and offers maintenance cleanup only;
 - 10,000 OFF Hook calls make zero network/filesystem calls and have p95 below 1 ms;
 - 500 local signed allow decisions have p95 below 100 ms, excluding approval waits.
 

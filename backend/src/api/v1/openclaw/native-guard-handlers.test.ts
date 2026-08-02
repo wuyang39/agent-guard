@@ -1456,6 +1456,55 @@ test("desktop ownership probe cancels an undeclared oversized JSON response", as
   assert.ok(pulls < 6);
 });
 
+test("desktop ownership probe cancels a non-JSON response body", async () => {
+  const security = require("../../../../../desktop/control-plane-security.cjs");
+  let cancellations = 0;
+  const response = new Response(new ReadableStream({
+    cancel() {
+      cancellations += 1;
+    },
+  }), {
+    status: 200,
+    headers: { "content-type": "text/plain" },
+  });
+
+  const ownership = await security.probeApiOwnership({
+    apiBase: "http://127.0.0.1:3100",
+    controlToken: CONTROL_TOKEN,
+    fetchImpl: async () => response,
+  });
+
+  assert.equal(ownership.kind, "wrong_service");
+  assert.equal(cancellations, 1);
+});
+
+test("desktop ownership probe cancels invalid declared response lengths", async () => {
+  const security = require("../../../../../desktop/control-plane-security.cjs");
+  for (const contentLength of ["invalid", "-1", "65537"]) {
+    let cancellations = 0;
+    const response = new Response(new ReadableStream({
+      cancel() {
+        cancellations += 1;
+      },
+    }), {
+      status: 200,
+      headers: {
+        "content-type": "application/json",
+        "content-length": contentLength,
+      },
+    });
+
+    const ownership = await security.probeApiOwnership({
+      apiBase: "http://127.0.0.1:3100",
+      controlToken: CONTROL_TOKEN,
+      fetchImpl: async () => response,
+    });
+
+    assert.equal(ownership.kind, "wrong_service");
+    assert.equal(cancellations, 1, contentLength);
+  }
+});
+
 test("lazy native runtime refreshes an idle identity and rejects changes with an active lease", async () => {
   const handlers = await import("./native-guard-handlers");
   const first = nativeAgent(
@@ -1536,6 +1585,183 @@ test("lazy native runtime refreshes an idle identity and rejects changes with an
   assert.equal(changedStatus.json().error.code, "NATIVE_GUARD_INTERNAL_ERROR");
   assert.equal(activeFactoryCalls, 1);
   await activeApp.close();
+});
+
+test("lazy native runtime reserves its identity while management is in flight", async () => {
+  const handlers = await import("./native-guard-handlers");
+  const first = nativeAgent(
+    "agent.first",
+    "C:\\first\\openclaw.cmd",
+    "http://127.0.0.1:18790",
+  );
+  const second = nativeAgent(
+    "agent.second",
+    "C:\\second\\openclaw.cmd",
+    "http://127.0.0.1:18791",
+  );
+  const agents = [first, second];
+  const activateStarted = deferred<void>();
+  const releaseActivate = deferred<void>();
+  let factoryCalls = 0;
+  let lastStatus: NativeGuardStatus = {
+    coverage: "off",
+    finalizerAssurance: "unverified",
+    activeLeaseCount: 0,
+  };
+  const dependencies = handlers.createNativeGuardRouteDependencies({
+    env: { AGENT_GUARD_CONTROL_TOKEN: CONTROL_TOKEN },
+    loadActiveAgentConfig: async () => agents.shift() ?? second,
+    createCoordinator() {
+      factoryCalls += 1;
+      return {
+        ...(coordinatorStub(lastStatus) as object),
+        async activate() {
+          activateStarted.resolve();
+          await releaseActivate.promise;
+          lastStatus = {
+            coverage: "active",
+            finalizerAssurance: "exclusive_before_hook",
+            activeLeaseCount: 1,
+          };
+          return structuredClone(lastStatus);
+        },
+        getLastStatus() {
+          return structuredClone(lastStatus);
+        },
+      } as never;
+    },
+    createDecisionService() {
+      return { async decide() { throw new Error("not called"); } };
+    },
+  });
+
+  const activation = dependencies.coordinator.activate({} as never);
+  await activateStarted.promise;
+  await assert.rejects(
+    () => dependencies.coordinator.status(),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "NATIVE_GUARD_ACTIVE_AGENT_CHANGED",
+  );
+  assert.equal(factoryCalls, 1);
+
+  releaseActivate.resolve();
+  const activated = await activation;
+  assert.equal(activated.coverage, "active");
+  assert.equal(dependencies.coordinator.getLastStatus().coverage, "active");
+  assert.equal(factoryCalls, 1);
+});
+
+test("lazy native runtime releases its identity reservation after failure", async () => {
+  const handlers = await import("./native-guard-handlers");
+  const first = nativeAgent(
+    "agent.first",
+    "C:\\first\\openclaw.cmd",
+    "http://127.0.0.1:18790",
+  );
+  const second = nativeAgent(
+    "agent.second",
+    "C:\\second\\openclaw.cmd",
+    "http://127.0.0.1:18791",
+  );
+  const agents = [first, second, second];
+  const activateStarted = deferred<void>();
+  const releaseActivate = deferred<void>();
+  let factoryCalls = 0;
+  const dependencies = handlers.createNativeGuardRouteDependencies({
+    env: { AGENT_GUARD_CONTROL_TOKEN: CONTROL_TOKEN },
+    loadActiveAgentConfig: async () => agents.shift() ?? second,
+    createCoordinator() {
+      factoryCalls += 1;
+      if (factoryCalls > 1) return coordinatorStub();
+      return {
+        ...(coordinatorStub({
+          coverage: "off",
+          finalizerAssurance: "unverified",
+          activeLeaseCount: 0,
+        }) as object),
+        async activate() {
+          activateStarted.resolve();
+          await releaseActivate.promise;
+          throw new Error("activation failed");
+        },
+      } as never;
+    },
+    createDecisionService() {
+      return { async decide() { throw new Error("not called"); } };
+    },
+  });
+
+  const activation = dependencies.coordinator.activate({} as never);
+  await activateStarted.promise;
+  await assert.rejects(
+    () => dependencies.coordinator.status(),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "NATIVE_GUARD_ACTIVE_AGENT_CHANGED",
+  );
+  assert.equal(factoryCalls, 1);
+
+  releaseActivate.resolve();
+  await assert.rejects(() => activation, /activation failed/);
+  const refreshed = await dependencies.coordinator.status();
+  assert.equal(refreshed.coverage, "ready");
+  assert.equal(factoryCalls, 2);
+});
+
+test("lazy native runtime delegates same-identity revoke during a pending renew", async () => {
+  const handlers = await import("./native-guard-handlers");
+  const activeAgent = nativeAgent(
+    "agent.active",
+    "C:\\active\\openclaw.cmd",
+    "http://127.0.0.1:18790",
+  );
+  const renewStarted = deferred<void>();
+  const releaseRenew = deferred<void>();
+  const revokeStarted = deferred<void>();
+  let factoryCalls = 0;
+  const status: NativeGuardStatus = {
+    coverage: "active",
+    finalizerAssurance: "exclusive_before_hook",
+    activeLeaseCount: 1,
+  };
+  const dependencies = handlers.createNativeGuardRouteDependencies({
+    env: { AGENT_GUARD_CONTROL_TOKEN: CONTROL_TOKEN },
+    loadActiveAgentConfig: async () => activeAgent,
+    createCoordinator() {
+      factoryCalls += 1;
+      return {
+        ...(coordinatorStub(status) as object),
+        async renew() {
+          renewStarted.resolve();
+          await releaseRenew.promise;
+          return structuredClone(status);
+        },
+        async revoke() {
+          revokeStarted.resolve();
+          return structuredClone(status);
+        },
+      } as never;
+    },
+    createDecisionService() {
+      return { async decide() { throw new Error("not called"); } };
+    },
+  });
+
+  const renewal = dependencies.coordinator.renew("lease-1");
+  await renewStarted.promise;
+  const revocation = dependencies.coordinator.revoke("lease-1");
+  const revokeDelegated = await Promise.race([
+    revokeStarted.promise.then(() => true),
+    new Promise<false>((resolve) => setTimeout(() => resolve(false), 100)),
+  ]);
+  assert.equal(revokeDelegated, true);
+  assert.equal(factoryCalls, 1);
+
+  releaseRenew.resolve();
+  await Promise.all([renewal, revocation]);
 });
 
 async function createApp(dependencies: NativeGuardRouteDependencies) {

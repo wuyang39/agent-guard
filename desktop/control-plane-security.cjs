@@ -144,11 +144,15 @@ function matchesAgentGuardIdentity(response, body) {
 
 async function readLimitedJson(response) {
   const contentType = response.headers.get("content-type") || "";
-  if (!contentType.toLowerCase().includes("application/json")) return undefined;
+  if (!contentType.toLowerCase().includes("application/json")) {
+    await cancelResponseBody(response);
+    return undefined;
+  }
   const contentLength = response.headers.get("content-length");
   if (contentLength !== null) {
     const length = Number(contentLength);
     if (!Number.isSafeInteger(length) || length < 0 || length > MAX_PROBE_RESPONSE_BYTES) {
+      await cancelResponseBody(response);
       return undefined;
     }
   }
@@ -180,6 +184,10 @@ async function readLimitedJson(response) {
   } catch {
     return undefined;
   }
+}
+
+async function cancelResponseBody(response) {
+  await response.body?.cancel().catch(() => undefined);
 }
 
 module.exports = {

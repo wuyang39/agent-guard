@@ -151,14 +151,46 @@ function createLazyNativeGuardCoordinator(
 ): NativeGuardCoordinator {
   let current: NativeGuardCoordinator | undefined;
   let currentIdentity: string | undefined;
-  let resolving: Promise<NativeGuardCoordinator> | undefined;
+  let resolutionTail = Promise.resolve();
+  const inFlightByCoordinator = new Map<NativeGuardCoordinator, number>();
 
-  async function resolveCoordinator(): Promise<NativeGuardCoordinator> {
-    if (resolving) return resolving;
-    resolving = resolveFreshCoordinator().finally(() => {
-      resolving = undefined;
+  async function reserveCoordinator(): Promise<NativeGuardCoordinator> {
+    const previousResolution = resolutionTail;
+    let releaseResolution!: () => void;
+    resolutionTail = new Promise<void>((resolve) => {
+      releaseResolution = resolve;
     });
-    return resolving;
+    await previousResolution;
+    try {
+      const coordinator = await resolveFreshCoordinator();
+      inFlightByCoordinator.set(
+        coordinator,
+        (inFlightByCoordinator.get(coordinator) ?? 0) + 1,
+      );
+      return coordinator;
+    } finally {
+      releaseResolution();
+    }
+  }
+
+  function releaseCoordinator(coordinator: NativeGuardCoordinator): void {
+    const remaining = (inFlightByCoordinator.get(coordinator) ?? 1) - 1;
+    if (remaining > 0) {
+      inFlightByCoordinator.set(coordinator, remaining);
+      return;
+    }
+    inFlightByCoordinator.delete(coordinator);
+  }
+
+  async function delegate<T>(
+    operation: (coordinator: NativeGuardCoordinator) => Promise<T>,
+  ): Promise<T> {
+    const coordinator = await reserveCoordinator();
+    try {
+      return await operation(coordinator);
+    } finally {
+      releaseCoordinator(coordinator);
+    }
   }
 
   async function resolveFreshCoordinator(): Promise<NativeGuardCoordinator> {
@@ -173,6 +205,12 @@ function createLazyNativeGuardCoordinator(
     }
     const identity = resolveNativeRuntimeIdentity(options.env, activeAgent);
     if (current && currentIdentity === identity.key) return current;
+    if (current && (inFlightByCoordinator.get(current) ?? 0) > 0) {
+      throw runtimeConfigError(
+        "NATIVE_GUARD_ACTIVE_AGENT_CHANGED",
+        "Native guard active agent changed during a management operation.",
+      );
+    }
     if (current && current.getLastStatus().activeLeaseCount > 0) {
       throw runtimeConfigError(
         "NATIVE_GUARD_ACTIVE_AGENT_CHANGED",
@@ -193,16 +231,16 @@ function createLazyNativeGuardCoordinator(
 
   return {
     async activate(input) {
-      return (await resolveCoordinator()).activate(input);
+      return delegate((coordinator) => coordinator.activate(input));
     },
     async renew(leaseId, ttlMs) {
-      return (await resolveCoordinator()).renew(leaseId, ttlMs);
+      return delegate((coordinator) => coordinator.renew(leaseId, ttlMs));
     },
     async revoke(leaseId) {
-      return (await resolveCoordinator()).revoke(leaseId);
+      return delegate((coordinator) => coordinator.revoke(leaseId));
     },
     async status() {
-      return (await resolveCoordinator()).status();
+      return delegate((coordinator) => coordinator.status());
     },
     isLeaseUsable(leaseId) {
       try {

@@ -881,11 +881,21 @@ async function assertSecureDirectory(directory: string): Promise<void> {
 
 function assertTrustedPosixAncestor(metadata: Stats): void {
   if (process.platform === "win32") return;
-  const writableByOthers = (metadata.mode & 0o022) !== 0;
-  const hasStickyBit = (metadata.mode & 0o1000) !== 0;
-  if (writableByOthers && !hasStickyBit) {
+  const currentUid = typeof process.getuid === "function" ? process.getuid() : metadata.uid;
+  if (!isTrustedPosixAncestorMetadata(metadata.mode, metadata.uid, currentUid)) {
     throw new Error("Native guard marker ancestor permissions are invalid");
   }
+}
+
+export function isTrustedPosixAncestorMetadata(
+  mode: number,
+  ownerUid: number,
+  currentUid: number,
+): boolean {
+  const writableByOthers = (mode & 0o022) !== 0;
+  const hasStickyBit = (mode & 0o1000) !== 0;
+  const hasTrustedOwner = ownerUid === currentUid || ownerUid === 0;
+  return !writableByOthers || (hasStickyBit && hasTrustedOwner);
 }
 
 async function createMarkerDirectory(directory: string): Promise<void> {

@@ -19,6 +19,7 @@ import type { NativeGuardLeaseActivation } from "@agent-guard/contracts";
 import {
   LeaseRegistry,
   FileMarkerStore,
+  isTrustedPosixAncestorMetadata,
   type GuardedMarker,
   type MarkerStore,
 } from "./leaseRegistry";
@@ -945,6 +946,17 @@ test("filesystem store rejects non-sticky writable POSIX ancestors but allows tr
   const secureParent = await mkdtemp(join(tmpdir(), "agent-guard-parent-"));
   await chmod(secureParent, 0o755);
   await new FileMarkerStore(join(secureParent, "markers")).write(marker());
+});
+
+test("POSIX ancestor policy rejects sticky directories owned by an untrusted user", () => {
+  const currentUid = 1000;
+  const attackerUid = 1001;
+
+  assert.equal(isTrustedPosixAncestorMetadata(0o1777, attackerUid, currentUid), false);
+  assert.equal(isTrustedPosixAncestorMetadata(0o1777, currentUid, currentUid), true);
+  assert.equal(isTrustedPosixAncestorMetadata(0o1777, 0, currentUid), true);
+  assert.equal(isTrustedPosixAncestorMetadata(0o0755, attackerUid, currentUid), true);
+  assert.equal(isTrustedPosixAncestorMetadata(0o0777, currentUid, currentUid), false);
 });
 
 test("Windows marker paths are anchored to OS-provided user roots", (t) => {

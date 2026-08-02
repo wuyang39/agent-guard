@@ -1,5 +1,14 @@
 import { createPublicKey, randomUUID } from "node:crypto";
-import { chmod, lstat, mkdir, open, readdir, rename, unlink } from "node:fs/promises";
+import type { Stats } from "node:fs";
+import {
+  chmod,
+  lstat,
+  mkdir,
+  open,
+  readdir,
+  rename as fsRename,
+  unlink as fsUnlink,
+} from "node:fs/promises";
 import { join, parse, resolve, sep } from "node:path";
 import type {
   NativeGuardLeaseActivation,
@@ -21,6 +30,13 @@ export interface MarkerStore {
   write(marker: GuardedMarker): Promise<void>;
   remove(leaseId: string): Promise<void>;
 }
+
+export type FileMarkerStoreHooks = {
+  readMarker?: (path: string, size: number) => Promise<string>;
+  rename?: (source: string, destination: string) => Promise<void>;
+  unlink?: (path: string) => Promise<void>;
+  syncDirectory?: (directory: string) => Promise<void>;
+};
 
 export type OffLookup = { state: "off" };
 
@@ -49,12 +65,17 @@ const MAX_MARKER_BYTES = 64 * 1024;
 type ActiveRecord = {
   lease: ActiveLeaseLookup;
   parentByChild: Map<string, string>;
+  flatRecoveryBindings: boolean;
 };
 
 export class FileMarkerStore implements MarkerStore {
   readonly #directory: string;
+  readonly #readMarker: NonNullable<FileMarkerStoreHooks["readMarker"]>;
+  readonly #rename: NonNullable<FileMarkerStoreHooks["rename"]>;
+  readonly #unlink: NonNullable<FileMarkerStoreHooks["unlink"]>;
+  readonly #syncDirectory: NonNullable<FileMarkerStoreHooks["syncDirectory"]>;
 
-  constructor(directory: string) {
+  constructor(directory: string, hooks: FileMarkerStoreHooks = {}) {
     if (
       typeof directory !== "string" ||
       directory.length === 0 ||
@@ -64,6 +85,10 @@ export class FileMarkerStore implements MarkerStore {
       throw new TypeError("Native guard marker directory is invalid");
     }
     this.#directory = resolve(directory);
+    this.#readMarker = hooks.readMarker ?? readMarkerFile;
+    this.#rename = hooks.rename ?? fsRename;
+    this.#unlink = hooks.unlink ?? fsUnlink;
+    this.#syncDirectory = hooks.syncDirectory ?? syncDirectoryDurably;
   }
 
   async load(): Promise<unknown[]> {
@@ -71,27 +96,25 @@ export class FileMarkerStore implements MarkerStore {
     await assertSecureDirectory(this.#directory);
     const markers: GuardedMarker[] = [];
     for (const entry of await readdir(this.#directory, { withFileTypes: true })) {
-      if (!entry.isFile() || entry.isSymbolicLink() || !entry.name.endsWith(MARKER_SUFFIX)) continue;
+      if (!entry.name.endsWith(MARKER_SUFFIX)) continue;
       const leaseId = entry.name.slice(0, -MARKER_SUFFIX.length);
       if (!safeId(leaseId) || entry.name !== markerFileName(leaseId)) continue;
+      if (entry.isSymbolicLink() || !entry.isFile()) {
+        throw markerCandidateError(entry.name);
+      }
       const path = join(this.#directory, entry.name);
       try {
         const metadata = await lstat(path);
-        if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > MAX_MARKER_BYTES) continue;
-        const handle = await open(path, "r");
-        let text: string;
-        try {
-          const buffer = Buffer.alloc(metadata.size);
-          const result = await handle.read(buffer, 0, metadata.size, 0);
-          if (result.bytesRead !== metadata.size) continue;
-          text = new TextDecoder("utf-8", { fatal: true }).decode(buffer);
-        } finally {
-          await handle.close();
-        }
+        if (!metadata.isFile() || metadata.isSymbolicLink()) throw markerCandidateError(entry.name);
+        assertSecurePosixMetadata(metadata, "marker");
+        if (metadata.size > MAX_MARKER_BYTES) throw markerCandidateError(entry.name);
+        const text = await this.#readMarker(path, metadata.size);
         const marker = parseMarker(JSON.parse(text) as unknown);
-        if (marker !== undefined && marker.leaseId === leaseId) markers.push(marker);
-      } catch {
-        // A bad entry cannot suppress recovery from other valid marker files.
+        if (marker === undefined || marker.leaseId !== leaseId) throw markerCandidateError(entry.name);
+        markers.push(marker);
+      } catch (error) {
+        if (error instanceof Error && error.message.startsWith("Native guard marker")) throw error;
+        throw markerCandidateError(entry.name);
       }
     }
     return markers;
@@ -119,11 +142,12 @@ export class FileMarkerStore implements MarkerStore {
       await handle.sync();
       await handle.close();
       handle = undefined;
-      await rename(temporary, destination);
+      await this.#rename(temporary, destination);
       await chmod(destination, 0o600);
+      await this.#syncDirectory(this.#directory);
     } catch (error) {
       await handle?.close().catch(() => undefined);
-      await unlink(temporary).catch(() => undefined);
+      await this.#unlink(temporary).catch(() => undefined);
       throw error;
     }
   }
@@ -134,9 +158,10 @@ export class FileMarkerStore implements MarkerStore {
     await assertSecureDirectory(this.#directory);
     const path = join(this.#directory, markerFileName(leaseId));
     await rejectSymlinkIfPresent(path);
-    await unlink(path).catch((error: unknown) => {
+    await this.#unlink(path).catch((error: unknown) => {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     });
+    await this.#syncDirectory(this.#directory);
   }
 }
 
@@ -145,8 +170,10 @@ export class LeaseRegistry {
   readonly #now: () => Date;
   readonly #recoveringBySession = new Map<string, GuardedMarker>();
   readonly #recoveringByLease = new Map<string, GuardedMarker>();
+  readonly #recoveryConflictByLease = new Map<string, ReadonlySet<string>>();
   readonly #activeByLease = new Map<string, ActiveRecord>();
   readonly #activeBySession = new Map<string, ActiveRecord>();
+  readonly #pendingDeletionLeaseIds = new Set<string>();
   #tail: Promise<void> = Promise.resolve();
   #started = false;
 
@@ -158,21 +185,31 @@ export class LeaseRegistry {
   async start(): Promise<void> {
     await this.#serialized(async () => {
       if (this.#started) return;
-      const nowMs = this.#now().getTime();
+      const now = this.#readNow();
+      const nowMs = now.getTime();
+      const loadedMarkers: GuardedMarker[] = [];
       for (const rawMarker of await this.#markerStore.load()) {
         const marker = parseMarker(rawMarker);
-        if (marker === undefined) continue;
-        if (Date.parse(marker.expiresAt) <= nowMs) {
-          await this.#markerStore.remove(marker.leaseId).catch(() => undefined);
-          continue;
+        if (marker === undefined) {
+          throw new Error("Native guard marker store returned an invalid marker");
         }
-        if (this.#markerCollides(marker)) continue;
-        this.#recoveringByLease.set(marker.leaseId, marker);
-        this.#recoveringBySession.set(marker.rootSessionKey, marker);
-        for (const childSessionKey of marker.childSessionKeys) {
-          this.#recoveringBySession.set(childSessionKey, marker);
+        loadedMarkers.push(marker);
+      }
+      loadedMarkers.sort(compareMarkers);
+      for (let index = 1; index < loadedMarkers.length; index += 1) {
+        if (loadedMarkers[index - 1].leaseId === loadedMarkers[index].leaseId) {
+          throw new Error("Native guard marker set contains a duplicate lease ID");
         }
       }
+      for (const marker of loadedMarkers) {
+        if (Date.parse(marker.expiresAt) <= nowMs) {
+          this.#pendingDeletionLeaseIds.add(marker.leaseId);
+          continue;
+        }
+        this.#recoveringByLease.set(marker.leaseId, marker);
+      }
+      this.#rebuildRecoveryIndexes();
+      await this.#retryPendingDeletions();
       this.#started = true;
     });
   }
@@ -193,7 +230,10 @@ export class LeaseRegistry {
     return this.#serialized(async () => {
       this.#assertStarted();
       await this.#purgeExpired();
-      const lease = parseActivation(input, this.#now());
+      const lease = parseActivation(input, this.#readNow());
+      if (this.#pendingDeletionLeaseIds.has(lease.leaseId)) {
+        throw new Error("Native guard lease marker deletion is pending");
+      }
       if (this.#activeByLease.has(lease.leaseId)) {
         throw new Error("Native guard lease ID is already registered");
       }
@@ -203,6 +243,9 @@ export class LeaseRegistry {
 
       const recovering = this.#recoveringBySession.get(lease.rootSessionKey);
       if (recovering !== undefined && recovering.rootSessionKey === lease.rootSessionKey) {
+        if (this.#recoveryConflictByLease.has(recovering.leaseId)) {
+          throw new Error("Native guard recovery markers conflict");
+        }
         if (
           recovering.mode !== lease.mode ||
           recovering.policyPackId !== lease.policyPackId ||
@@ -222,7 +265,7 @@ export class LeaseRegistry {
           }
         }
         this.#removeRecovering(recovering);
-        this.#addActive(recoveredLease, recovering.childSessionKeys);
+        this.#addActive(recoveredLease, recovering.childSessionKeys, recovering.childSessionKeys.length > 0);
         return this.#statusWithoutExpiry();
       }
 
@@ -243,7 +286,7 @@ export class LeaseRegistry {
     return this.#serialized(async () => {
       this.#assertStarted();
       await this.#purgeExpired();
-      const candidate = parseActivation(input, this.#now());
+      const candidate = parseActivation(input, this.#readNow());
       const record = this.#activeByLease.get(candidate.leaseId);
       if (record === undefined) throw new Error("Native guard lease is not active");
       const current = record.lease;
@@ -268,13 +311,7 @@ export class LeaseRegistry {
     return this.#serialized(async () => {
       this.#assertStarted();
       await this.#purgeExpired();
-      const active = this.#activeByLease.get(leaseId);
-      const recovering = this.#recoveringByLease.get(leaseId);
-      if (active === undefined && recovering === undefined) return false;
-      await this.#markerStore.remove(leaseId);
-      if (active !== undefined) this.#removeActive(active);
-      if (recovering !== undefined) this.#removeRecovering(recovering);
-      return true;
+      return this.#revokeWithoutPurge(leaseId);
     });
   }
 
@@ -325,7 +362,9 @@ export class LeaseRegistry {
           return true;
         }
 
-        const subtree = collectSubtree(active.parentByChild, sessionKey);
+        const subtree = active.flatRecoveryBindings
+          ? new Set(active.lease.childSessionKeys)
+          : collectSubtree(active.parentByChild, sessionKey);
         const retainedChildren = active.lease.childSessionKeys.filter((key) => !subtree.has(key));
         const lease = withChildSessionKeys(active.lease, retainedChildren);
         await this.#markerStore.write(markerFromLease(lease));
@@ -334,27 +373,25 @@ export class LeaseRegistry {
           active.parentByChild.delete(key);
           this.#activeBySession.delete(key);
         }
+        if (active.lease.childSessionKeys.length === 0) active.flatRecoveryBindings = false;
         return true;
       }
 
       const recovering = this.#recoveringBySession.get(sessionKey);
       if (recovering === undefined) return false;
+      if (this.#recoveryConflictByLease.has(recovering.leaseId)) {
+        return this.#revokeWithoutPurge(recovering.leaseId);
+      }
       if (sessionKey === recovering.rootSessionKey) {
-        await this.#markerStore.remove(recovering.leaseId);
-        this.#removeRecovering(recovering);
-        return true;
+        return this.#revokeWithoutPurge(recovering.leaseId);
       }
       const marker = {
         ...recovering,
-        childSessionKeys: recovering.childSessionKeys.filter((key) => key !== sessionKey),
+        childSessionKeys: [],
       };
       await this.#markerStore.write(marker);
-      this.#removeRecovering(recovering);
       this.#recoveringByLease.set(marker.leaseId, marker);
-      this.#recoveringBySession.set(marker.rootSessionKey, marker);
-      for (const childSessionKey of marker.childSessionKeys) {
-        this.#recoveringBySession.set(childSessionKey, marker);
-      }
+      this.#rebuildRecoveryIndexes();
       return true;
     });
   }
@@ -401,30 +438,22 @@ export class LeaseRegistry {
     return this.#recoveringByLease.has(leaseId);
   }
 
-  #markerCollides(marker: GuardedMarker): boolean {
-    if (this.#recoveringByLease.has(marker.leaseId)) return true;
-    return [marker.rootSessionKey, ...marker.childSessionKeys]
-      .some((sessionKey) => this.#recoveringBySession.has(sessionKey));
-  }
-
   async #purgeExpired(): Promise<void> {
-    const nowMs = this.#now().getTime();
-    const expiredLeaseIds = new Set<string>();
+    const nowMs = this.#readNow().getTime();
+    await this.#retryPendingDeletions();
     for (const record of this.#activeByLease.values()) {
       if (Date.parse(record.lease.expiresAt) <= nowMs) {
-        expiredLeaseIds.add(record.lease.leaseId);
+        this.#pendingDeletionLeaseIds.add(record.lease.leaseId);
         this.#removeActive(record);
       }
     }
     for (const marker of this.#recoveringByLease.values()) {
       if (Date.parse(marker.expiresAt) <= nowMs) {
-        expiredLeaseIds.add(marker.leaseId);
+        this.#pendingDeletionLeaseIds.add(marker.leaseId);
         this.#removeRecovering(marker);
       }
     }
-    for (const leaseId of expiredLeaseIds) {
-      await this.#markerStore.remove(leaseId).catch(() => undefined);
-    }
+    await this.#retryPendingDeletions();
   }
 
   #removeActive(record: ActiveRecord): void {
@@ -435,12 +464,16 @@ export class LeaseRegistry {
     }
   }
 
-  #addActive(lease: ActiveLeaseLookup, childSessionKeys: readonly string[] = []): void {
+  #addActive(
+    lease: ActiveLeaseLookup,
+    childSessionKeys: readonly string[] = [],
+    flatRecoveryBindings = false,
+  ): void {
     const parentByChild = new Map<string, string>();
     for (const childSessionKey of childSessionKeys) {
       parentByChild.set(childSessionKey, lease.rootSessionKey);
     }
-    const record = { lease, parentByChild };
+    const record = { lease, parentByChild, flatRecoveryBindings };
     this.#activeByLease.set(lease.leaseId, record);
     this.#activeBySession.set(lease.rootSessionKey, record);
     for (const childSessionKey of lease.childSessionKeys) {
@@ -450,14 +483,106 @@ export class LeaseRegistry {
 
   #removeRecovering(marker: GuardedMarker): void {
     this.#recoveringByLease.delete(marker.leaseId);
-    this.#recoveringBySession.delete(marker.rootSessionKey);
-    for (const childSessionKey of marker.childSessionKeys) {
-      this.#recoveringBySession.delete(childSessionKey);
+    this.#rebuildRecoveryIndexes();
+  }
+
+  async #revokeWithoutPurge(leaseId: string): Promise<boolean> {
+    const active = this.#activeByLease.get(leaseId);
+    const conflict = this.#recoveryConflictByLease.get(leaseId);
+    const recoveryLeaseIds = conflict === undefined
+      ? (this.#recoveringByLease.has(leaseId) ? [leaseId] : [])
+      : [...conflict].sort();
+    if (active === undefined && recoveryLeaseIds.length === 0) {
+      if (!this.#pendingDeletionLeaseIds.has(leaseId)) return false;
+      await this.#markerStore.remove(leaseId);
+      this.#pendingDeletionLeaseIds.delete(leaseId);
+      return true;
+    }
+    const leaseIds = active === undefined ? recoveryLeaseIds : [leaseId];
+    for (const markerLeaseId of leaseIds) {
+      await this.#markerStore.remove(markerLeaseId);
+    }
+    if (active !== undefined) this.#removeActive(active);
+    for (const markerLeaseId of recoveryLeaseIds) {
+      this.#recoveringByLease.delete(markerLeaseId);
+    }
+    if (recoveryLeaseIds.length > 0) this.#rebuildRecoveryIndexes();
+    return true;
+  }
+
+  async #retryPendingDeletions(): Promise<void> {
+    for (const leaseId of [...this.#pendingDeletionLeaseIds].sort()) {
+      try {
+        await this.#markerStore.remove(leaseId);
+        this.#pendingDeletionLeaseIds.delete(leaseId);
+      } catch {
+        // The lease remains unavailable; a later serialized boundary retries cleanup.
+      }
+    }
+  }
+
+  #rebuildRecoveryIndexes(): void {
+    this.#recoveringBySession.clear();
+    this.#recoveryConflictByLease.clear();
+    const markers = [...this.#recoveringByLease.values()].sort(compareMarkers);
+    const parent = new Map(markers.map((marker) => [marker.leaseId, marker.leaseId]));
+    const markersBySession = new Map<string, GuardedMarker[]>();
+    for (const marker of markers) {
+      for (const sessionKey of [marker.rootSessionKey, ...marker.childSessionKeys]) {
+        const candidates = markersBySession.get(sessionKey) ?? [];
+        candidates.push(marker);
+        markersBySession.set(sessionKey, candidates);
+      }
+    }
+    const find = (leaseId: string): string => {
+      let root = leaseId;
+      while (parent.get(root) !== root) root = parent.get(root) ?? root;
+      let current = leaseId;
+      while (current !== root) {
+        const next = parent.get(current) ?? root;
+        parent.set(current, root);
+        current = next;
+      }
+      return root;
+    };
+    const union = (left: string, right: string): void => {
+      const leftRoot = find(left);
+      const rightRoot = find(right);
+      if (leftRoot === rightRoot) return;
+      const [first, second] = [leftRoot, rightRoot].sort();
+      parent.set(second, first);
+    };
+    for (const [sessionKey, candidates] of markersBySession) {
+      candidates.sort(compareMarkers);
+      this.#recoveringBySession.set(sessionKey, candidates[0]);
+      for (let index = 1; index < candidates.length; index += 1) {
+        union(candidates[0].leaseId, candidates[index].leaseId);
+      }
+    }
+    const groups = new Map<string, string[]>();
+    for (const marker of markers) {
+      const root = find(marker.leaseId);
+      const group = groups.get(root) ?? [];
+      group.push(marker.leaseId);
+      groups.set(root, group);
+    }
+    for (const leaseIds of groups.values()) {
+      if (leaseIds.length < 2) continue;
+      const conflict = new Set(leaseIds.sort());
+      for (const leaseId of conflict) this.#recoveryConflictByLease.set(leaseId, conflict);
     }
   }
 
   #assertStarted(): void {
     if (!this.#started) throw new Error("Native guard lease registry has not started");
+  }
+
+  #readNow(): Date {
+    const now = this.#now();
+    if (!(now instanceof Date) || !Number.isFinite(now.getTime())) {
+      throw new Error("Native guard lease registry clock is invalid");
+    }
+    return new Date(now.getTime());
   }
 
   async #serialized<T>(operation: () => Promise<T>): Promise<T> {
@@ -485,6 +610,14 @@ function recoveryLookup(marker: GuardedMarker): RecoveryLookup {
     policyPackDigest: marker.policyPackDigest,
     expiresAt: marker.expiresAt,
   };
+}
+
+function compareMarkers(left: GuardedMarker, right: GuardedMarker): number {
+  if (left.leaseId < right.leaseId) return -1;
+  if (left.leaseId > right.leaseId) return 1;
+  if (left.rootSessionKey < right.rootSessionKey) return -1;
+  if (left.rootSessionKey > right.rootSessionKey) return 1;
+  return 0;
 }
 
 function parseActivation(
@@ -664,10 +797,16 @@ async function pathExists(path: string): Promise<boolean> {
 
 async function ensureSecureDirectory(directory: string): Promise<void> {
   await assertSecureExistingAncestors(directory);
+  let created = false;
   if (!(await pathExists(directory))) {
     await mkdir(directory, { recursive: true, mode: 0o700 });
+    created = true;
   }
   await assertSecureDirectory(directory);
+  if (created) {
+    await chmod(directory, 0o700);
+    await assertSecureDirectory(directory);
+  }
 }
 
 async function assertSecureExistingAncestors(directory: string): Promise<void> {
@@ -703,6 +842,7 @@ async function assertSecureDirectory(directory: string): Promise<void> {
   }
   const metadata = await lstat(directory);
   if (!metadata.isDirectory()) throw new Error("Native guard marker path is not a directory");
+  assertSecurePosixMetadata(metadata, "marker directory");
 }
 
 async function rejectSymlinkIfPresent(path: string): Promise<void> {
@@ -712,10 +852,59 @@ async function rejectSymlinkIfPresent(path: string): Promise<void> {
       throw new Error("Native guard marker path contains a symbolic link");
     }
     if (!metadata.isFile()) throw new Error("Native guard marker path is not a file");
+    assertSecurePosixMetadata(metadata, "marker");
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
     throw error;
   }
+}
+
+function assertSecurePosixMetadata(metadata: Stats, kind: string): void {
+  // Node mode/uid fields do not represent Windows ACL ownership semantics.
+  if (process.platform === "win32" || typeof process.getuid !== "function") return;
+  if (metadata.uid !== process.getuid()) {
+    throw new Error(`Native guard ${kind} owner is invalid`);
+  }
+  if ((metadata.mode & 0o022) !== 0) {
+    throw new Error(`Native guard ${kind} permissions are invalid`);
+  }
+}
+
+async function readMarkerFile(path: string, size: number): Promise<string> {
+  const handle = await open(path, "r");
+  try {
+    const buffer = Buffer.alloc(size);
+    const result = await handle.read(buffer, 0, size, 0);
+    if (result.bytesRead !== size) throw new Error("Native guard marker read was truncated");
+    return new TextDecoder("utf-8", { fatal: true }).decode(buffer);
+  } finally {
+    await handle.close();
+  }
+}
+
+async function syncDirectoryDurably(directory: string): Promise<void> {
+  const handle = await open(directory, "r");
+  try {
+    try {
+      await handle.sync();
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (
+        process.platform === "win32" &&
+        (code === "EPERM" || code === "EINVAL" || code === "ENOTSUP" || code === "EBADF")
+      ) {
+        // Windows Node cannot fsync directory handles; file fsync still precedes rename.
+        return;
+      }
+      throw error;
+    }
+  } finally {
+    await handle.close();
+  }
+}
+
+function markerCandidateError(fileName: string): Error {
+  return new Error(`Native guard marker candidate is unsafe: ${fileName}`);
 }
 
 function parseMarker(value: unknown): GuardedMarker | undefined {

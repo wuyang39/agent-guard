@@ -322,7 +322,9 @@ deny > ask > redact > warn > allow
 
 - 后端返回完整的最终参数对象，而不是不受约束的字符串替换。
 - 决策记录保存修改字段路径、修改前后摘要和策略 ID，不保存被移除的秘密正文。
-- 插件在 canonicalize、digest 和交给 OpenClaw 前使用迭代预扫描：最大深度 32、累计对象键 4,096、canonical UTF-8 最大 256 KiB，字节超限时立即停止，并拒绝危险原型键、accessor、稀疏/定制数组、共享/循环引用、Proxy 和其他非 JSON 值。ACTIVE 输入参数的 trap-free 预扫描必须早于风险分类及任何反射/属性访问，拒绝 Proxy 时不得调用其 trap；OFF 和 RECOVERY 不新增该参数扫描。输入参数和签名改写参数使用同一边界；client 和后端 decision route 另为请求信封预留 64 KiB，因此 HTTP 请求体上限为 320 KiB。
+- 插件和后端复用 protocol 层的迭代参数 validator：最大深度 32、累计对象键 4,096、canonical UTF-8 最大 256 KiB，字节超限时立即停止，并拒绝危险原型键、accessor、稀疏/定制数组、共享/循环引用、Proxy 和其他非 JSON 值。dense array 必须先根据最小 canonical 大小在 own-key 枚举前拒绝；object 使用剩余累计 key/byte budget 单次有界收集 key，budget 通过后才允许完整 own-key 一致性检查和逐项 descriptor 检查。ACTIVE 输入参数的 trap-free 预扫描必须早于风险分类及任何反射/属性访问，拒绝 Proxy 时不得调用其 trap；OFF 和 RECOVERY 不新增该参数扫描。后端在 request digest/policy 前验证输入，在 rewritten params digest/sign 前再次验证输出。
+- ACTIVE 对可选 `derivedPaths` 不使用 iterator，而是仅从非 Proxy、标准、稠密、无额外键的数组 numeric data descriptor 建立 snapshot；最多 256 项、每项非空且最长 4,096 字符，数组 canonical UTF-8 最多占 64 KiB envelope budget。accessor、自定义 iterator 和超限数组均在不调用用户代码的情况下拒绝。
+- `toolKind`/`toolInputKind` 先在 event/context 间规范化：单边存在则保留，双边冲突则阻断；PDP request 与风险分类必须使用同一份规范化 metadata。输入参数和签名改写参数使用同一边界；HTTP 请求体上限保持 320 KiB，即 256 KiB canonical params 加 64 KiB envelope allowance。
 
 ### 9.4 `ask`
 

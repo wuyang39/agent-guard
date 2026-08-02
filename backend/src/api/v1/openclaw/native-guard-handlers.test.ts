@@ -5,7 +5,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import Fastify from "fastify";
-import type { NativeGuardStatus } from "@agent-guard/contracts";
+import type { NativeGuardStatus, SupervisionPolicyPack } from "@agent-guard/contracts";
+import { digestJson } from "@agent-guard/native-guard-protocol";
+import { createNativeGuardLeaseService } from "../../../modules/openclaw/nativeGuardLeaseService";
+import { createNativeToolDecisionService } from "../../../modules/openclaw/nativeToolDecisionService";
 import {
   systemRoutes,
   type SystemRouteDependencies,
@@ -297,6 +300,45 @@ test("decision accepts params at the exact canonical byte and key limits", async
   assert.equal(response.statusCode, 200);
   assert.equal(fixture.calls.decide, 1);
   await app.close();
+});
+
+test("real Fastify decision path enforces the complete parameter contract", async (t) => {
+  const fixture = createRealDecisionFixture();
+  const app = await createApp(fixture.dependencies);
+  t.after(() => app.close());
+  const exactParams = paramsAtCanonicalBounds(256 * 1024, 4_096);
+  const exact = await app.inject({
+    method: "POST",
+    url: "/api/v1/openclaw/native-guard/decision",
+    headers: { authorization: `Bearer ${fixture.activation.credential}` },
+    payload: fixture.request(exactParams, "exact"),
+  });
+  assert.equal(exact.statusCode, 200);
+  assert.equal(fixture.appended.length, 1);
+
+  for (const [name, params] of [
+    ["bytes", paramsAtCanonicalBounds(256 * 1024 + 1, 1)],
+    ["depth", paramsAtDepth(33)],
+    ["keys", { nested: paramsWithKeys(4_096) }],
+    ["prototype", JSON.parse('{"safe":true,"__proto__":{"polluted":true}}')],
+  ] as const) {
+    await t.test(name, async () => {
+      const appendedBefore = fixture.appended.length;
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/v1/openclaw/native-guard/decision",
+        headers: { authorization: `Bearer ${fixture.activation.credential}` },
+        payload: fixture.request(params, name),
+      });
+      const rejectedBySchema = name === "prototype";
+      assert.equal(response.statusCode, rejectedBySchema ? 400 : 503);
+      assert.equal(
+        response.json().error.code,
+        rejectedBySchema ? "NATIVE_GUARD_INVALID_REQUEST" : "NATIVE_GUARD_DECISION_FAILED",
+      );
+      assert.equal(fixture.appended.length, appendedBefore);
+    });
+  }
 });
 
 test("decision fails closed before work when the authenticated lease is not usable", async () => {
@@ -1940,6 +1982,65 @@ function decisionRequest() {
   };
 }
 
+function createRealDecisionFixture() {
+  const policyPack: SupervisionPolicyPack = {
+    schemaVersion: "mvp-1",
+    policyPackId: "policy.fastify.bounds",
+    agentId: "agent.fastify",
+    sourceDetectionReportId: "detection.fastify",
+    sourceRiskProfileId: "risk.fastify",
+    policies: [],
+    defaultAction: "allow",
+    createdAt: "2026-08-02T09:00:00.000Z",
+    expiresAt: "2026-08-02T11:00:00.000Z",
+  };
+  const leaseService = createNativeGuardLeaseService({
+    now: () => Date.parse("2026-08-02T10:00:00.000Z"),
+  });
+  const activation = leaseService.create({
+    rootSessionKey: "session.fastify",
+    mode: "supervision",
+    policyPack,
+    policyPackDigest: digestJson(policyPack),
+    backendUrl: "http://127.0.0.1:3100/api/v1/openclaw/native-guard/decision",
+  }).activation;
+  const appended: unknown[] = [];
+  const fixture = createFixture();
+  fixture.dependencies.leaseService = leaseService;
+  fixture.dependencies.decisionService = createNativeToolDecisionService({
+    leaseService,
+    eventStore: {
+      async append(event) {
+        appended.push(event);
+        return true;
+      },
+    },
+    now: () => "2026-08-02T10:00:00.000Z",
+    createId: (() => {
+      let id = 0;
+      return (prefix: string) => `${prefix}.${++id}`;
+    })(),
+  });
+  return {
+    activation,
+    appended,
+    dependencies: fixture.dependencies,
+    request(params: Record<string, unknown>, suffix: string) {
+      return {
+        ...decisionRequest(),
+        requestId: `request.${suffix}`,
+        leaseId: activation.leaseId,
+        leaseEpoch: activation.leaseEpoch,
+        sessionKey: activation.rootSessionKey,
+        toolCallId: `call.${suffix}`,
+        params,
+        paramsDigest: digestJson(params),
+        requestedAt: "2026-08-02T10:00:00.000Z",
+      };
+    },
+  };
+}
+
 function paramsAtCanonicalBounds(bytes: number, keys: number): Record<string, unknown> {
   const params = Object.fromEntries(
     Array.from({ length: keys }, (_value, index) => [`key${index}`, ""]),
@@ -1949,6 +2050,16 @@ function paramsAtCanonicalBounds(bytes: number, keys: number): Record<string, un
   params.key0 = "x".repeat(bytes - baseBytes);
   assert.equal(Buffer.byteLength(JSON.stringify(params), "utf8"), bytes);
   return params;
+}
+
+function paramsWithKeys(count: number): Record<string, unknown> {
+  return Object.fromEntries(Array.from({ length: count }, (_value, index) => [`key${index}`, index]));
+}
+
+function paramsAtDepth(depth: number): Record<string, unknown> {
+  let value: Record<string, unknown> = {};
+  for (let index = 0; index < depth; index += 1) value = { nested: value };
+  return value;
 }
 
 function decisionResponse() {

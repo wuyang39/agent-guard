@@ -352,6 +352,182 @@ test("deep redact responses are bounded before response canonicalization", async
   assert.ok(deepPrototypeChecks <= MAX_PARAM_DEPTH + 4, String(deepPrototypeChecks));
 });
 
+test("oversized dense arrays stop before own-key and descriptor enumeration", async () => {
+  const dense = Array.from({ length: 140_000 }, () => null);
+  const originalOwnKeys = Reflect.ownKeys;
+  const originalDescriptors = Object.getOwnPropertyDescriptors;
+  let ownKeyCalls = 0;
+  let descriptorCalls = 0;
+  Reflect.ownKeys = ((value: object) => {
+    if (value === dense) ownKeyCalls += 1;
+    return originalOwnKeys(value);
+  }) as typeof Reflect.ownKeys;
+  Object.getOwnPropertyDescriptors = ((value: object) => {
+    if (value === dense) descriptorCalls += 1;
+    return originalDescriptors(value);
+  }) as typeof Object.getOwnPropertyDescriptors;
+  const fixture = await activeFixture({ action: "allow" });
+
+  let result: BeforeResult | void;
+  try {
+    result = await fixture.runtime.beforeToolCall(
+      { ...execEvent(), params: { dense } },
+      execContext(),
+    );
+  } finally {
+    Reflect.ownKeys = originalOwnKeys;
+    Object.getOwnPropertyDescriptors = originalDescriptors;
+  }
+
+  assert.deepEqual(result, DENY_OUTAGE);
+  assert.equal(ownKeyCalls, 0);
+  assert.equal(descriptorCalls, 0);
+  assert.equal(fixture.fetchCalls(), 0);
+});
+
+test("excess object keys stop before full own-key and descriptor collection", async () => {
+  const excessive = paramsWithKeys(MAX_PARAM_KEYS + 1);
+  const originalOwnKeys = Reflect.ownKeys;
+  const originalDescriptors = Object.getOwnPropertyDescriptors;
+  let ownKeyCalls = 0;
+  let descriptorCalls = 0;
+  Reflect.ownKeys = ((value: object) => {
+    if (value === excessive) ownKeyCalls += 1;
+    return originalOwnKeys(value);
+  }) as typeof Reflect.ownKeys;
+  Object.getOwnPropertyDescriptors = ((value: object) => {
+    if (value === excessive) descriptorCalls += 1;
+    return originalDescriptors(value);
+  }) as typeof Object.getOwnPropertyDescriptors;
+  const fixture = await activeFixture({ action: "allow" });
+
+  let result: BeforeResult | void;
+  try {
+    result = await fixture.runtime.beforeToolCall(
+      { ...execEvent(), params: excessive },
+      execContext(),
+    );
+  } finally {
+    Reflect.ownKeys = originalOwnKeys;
+    Object.getOwnPropertyDescriptors = originalDescriptors;
+  }
+
+  assert.deepEqual(result, DENY_OUTAGE);
+  assert.equal(ownKeyCalls, 0);
+  assert.equal(descriptorCalls, 0);
+  assert.equal(fixture.fetchCalls(), 0);
+});
+
+test("derived paths reject custom iterators and index accessors without invoking them", async () => {
+  for (const kind of ["iterator", "index"] as const) {
+    let calls = 0;
+    const derivedPaths = ["C:\\safe.txt"];
+    if (kind === "iterator") {
+      Object.defineProperty(derivedPaths, Symbol.iterator, {
+        configurable: true,
+        value: () => {
+          calls += 1;
+          throw new Error("custom iterator must not run");
+        },
+      });
+    } else {
+      Object.defineProperty(derivedPaths, 0, {
+        configurable: true,
+        enumerable: true,
+        get() {
+          calls += 1;
+          return "C:\\secret.txt";
+        },
+      });
+    }
+    const fixture = await activeFixture({ action: "allow" });
+
+    const result = await fixture.runtime.beforeToolCall(
+      { ...execEvent(), derivedPaths },
+      execContext(),
+    );
+
+    assert.deepEqual(result, DENY_OUTAGE, kind);
+    assert.equal(calls, 0, kind);
+    assert.equal(fixture.fetchCalls(), 0, kind);
+  }
+});
+
+test("derived paths enforce item, string, envelope, and custom-array bounds before fetch", async () => {
+  const extraKey = ["C:\\safe.txt"] as string[] & { extra?: boolean };
+  extraKey.extra = true;
+  for (const [name, derivedPaths] of [
+    ["items", Array.from({ length: 257 }, (_value, index) => `C:\\${index}.txt`)],
+    ["string", ["x".repeat(4_097)]],
+    ["envelope", Array.from({ length: 17 }, () => "x".repeat(4_096))],
+    ["extra-key", extraKey],
+  ] as const) {
+    const fixture = await activeFixture({ action: "allow" });
+
+    const result = await fixture.runtime.beforeToolCall(
+      { ...execEvent(), derivedPaths },
+      execContext(),
+    );
+
+    assert.deepEqual(result, DENY_OUTAGE, name);
+    assert.equal(fixture.fetchCalls(), 0, name);
+  }
+});
+
+test("context-only execution metadata drives both the request and outage risk", async () => {
+  for (const scenario of [
+    { context: { toolKind: "code_mode_exec" as const }, failurePolicyLowRisk: "allow" as const },
+    { context: { toolInputKind: "typescript" as const }, failurePolicyLowRisk: "warn" as const },
+  ]) {
+    let request: NativeToolDecisionRequest | undefined;
+    const fixture = await activeFixture({
+      action: "allow",
+      failurePolicyLowRisk: scenario.failurePolicyLowRisk,
+      fetch: async (_input, init) => {
+        request = JSON.parse(String(init?.body)) as NativeToolDecisionRequest;
+        throw new Error("PDP unavailable");
+      },
+    });
+
+    const result = await fixture.runtime.beforeToolCall(
+      lowRiskEvent(),
+      { ...lowRiskContext(), ...scenario.context },
+    );
+
+    assert.deepEqual(result, DENY_OUTAGE);
+    assert.equal(request?.toolKind, scenario.context.toolKind);
+    assert.equal(request?.toolInputKind, scenario.context.toolInputKind);
+  }
+});
+
+test("event-only execution metadata stays high-risk and conflicting metadata blocks", async () => {
+  let request: NativeToolDecisionRequest | undefined;
+  const eventOnly = await activeFixture({
+    action: "allow",
+    failurePolicyLowRisk: "allow",
+    fetch: async (_input, init) => {
+      request = JSON.parse(String(init?.body)) as NativeToolDecisionRequest;
+      throw new Error("PDP unavailable");
+    },
+  });
+
+  assert.deepEqual(await eventOnly.runtime.beforeToolCall(
+    { ...lowRiskEvent(), toolInputKind: "javascript" },
+    lowRiskContext(),
+  ), DENY_OUTAGE);
+  assert.equal(request?.toolInputKind, "javascript");
+
+  const conflict = await activeFixture({ action: "allow" });
+  assert.deepEqual(await conflict.runtime.beforeToolCall(
+    { ...lowRiskEvent(), toolInputKind: "javascript" },
+    { ...lowRiskContext(), toolInputKind: "typescript" },
+  ), {
+    block: true,
+    blockReason: "[Agent Guard:NATIVE_GUARD_CONTEXT_INVALID] Native guard tool context is incomplete.",
+  });
+  assert.equal(conflict.fetchCalls(), 0);
+});
+
 test("ACTIVE ask is denied while the host lacks awaited approval veto and lease recheck", async () => {
   const fixture = await activeFixture({ action: "ask", approvalLeaseRecheckAttested: false });
 
@@ -779,6 +955,31 @@ test("a signed allow released after host cancellation cannot pass or emit", asyn
   assert.deepEqual(fixture.events, []);
 });
 
+test("host cancellation during a local parameter outage is not reported as runtime stop", async () => {
+  const host = observedAbortSignal();
+  const emitStarted = deferred<void>();
+  const releaseEmit = deferred<void>();
+  const fixture = await activeFixture({
+    action: "allow",
+    emitEvent: async () => {
+      emitStarted.resolve();
+      await releaseEmit.promise;
+    },
+  });
+  const pending = fixture.runtime.beforeToolCall(
+    { ...execEvent(), params: paramsAtDepth(MAX_PARAM_DEPTH + 1) },
+    { ...execContext(), abortSignal: host.signal },
+  );
+  await emitStarted.promise;
+
+  host.abort();
+  releaseEmit.resolve();
+
+  assert.deepEqual(await pending, HOST_CANCELLED);
+  assert.deepEqual(host.listenerCounts(), { added: 1, removed: 1 });
+  assert.equal(fixture.fetchCalls(), 0);
+});
+
 test("OFF does not subscribe to a host tool cancellation signal", async () => {
   const host = observedAbortSignal();
   const runtime = new AgentGuardRuntime({
@@ -979,6 +1180,7 @@ type FixtureOptions = {
     response: Response,
     init: RequestInit | undefined,
   ) => Promise<Response>;
+  emitEvent?: (event: NativeGuardEvent) => Promise<void> | void;
 };
 
 async function activeFixture(options: FixtureOptions) {
@@ -1028,7 +1230,7 @@ async function activeFixture(options: FixtureOptions) {
     decisionTimeoutMs: options.decisionTimeoutMs,
     maxDecisionIdsPerLease: options.maxDecisionIdsPerLease,
     approvalLeaseRecheckAttested: options.approvalLeaseRecheckAttested ?? true,
-    emitEvent: async (event) => { events.push(structuredClone(event)); },
+    emitEvent: options.emitEvent ?? (async (event) => { events.push(structuredClone(event)); }),
     createId: (() => {
       let id = 0;
       return (prefix: string) => `${prefix}.${++id}`;
@@ -1250,6 +1452,16 @@ async function waitFor(predicate: () => boolean): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 1));
   }
   throw new Error("condition was not reached");
+}
+
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }
 
 function observedAbortSignal(): {

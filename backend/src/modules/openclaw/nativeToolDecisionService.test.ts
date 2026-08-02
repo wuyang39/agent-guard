@@ -113,6 +113,64 @@ test("uses the default action when no policy matches", async () => {
   assert.equal(result.record.policyId, "policy_pack.native.default");
 });
 
+test("rejects bounded parameter violations before policy persistence or signing", async (t) => {
+  for (const [name, params] of [
+    ["bytes", paramsAtCanonicalBytes(256 * 1024 + 1)],
+    ["depth", paramsAtDepth(33)],
+    ["keys", { nested: paramsWithKeys(4_096) }],
+    ["prototype", JSON.parse('{"safe":true,"__proto__":{"polluted":true}}')],
+  ] as const) {
+    await t.test(name, async () => {
+      let beforeSignCalls = 0;
+      const fixture = createFixture({
+        beforeSign: async () => { beforeSignCalls += 1; },
+      });
+
+      await assert.rejects(
+        () => fixture.service.decide(fixture.request({ params }), fixture.credential),
+        hasCode("NATIVE_GUARD_INVALID_REQUEST"),
+      );
+      assert.equal(beforeSignCalls, 0);
+      assert.equal(fixture.appended.length, 0);
+    });
+  }
+});
+
+test("accepts exact parameter bounds in the real decision service", async () => {
+  for (const params of [
+    paramsAtCanonicalBytes(256 * 1024),
+    paramsWithKeys(4_096),
+    paramsAtDepth(32),
+  ]) {
+    const fixture = createFixture({ defaultAction: "allow", policies: [] });
+    const result = await fixture.service.decide(
+      fixture.request({ params }),
+      fixture.credential,
+    );
+    assert.equal(result.response.action, "allow");
+  }
+});
+
+test("rejects an oversized rewritten parameter object before signing", async () => {
+  let beforeSignCalls = 0;
+  const fixture = createFixture({
+    policies: [buildPolicy("redact", "payload.parameters.body", "secret")],
+    beforeSign: async () => { beforeSignCalls += 1; },
+  });
+  const params = paramsAtCanonicalBytesWithFields(
+    { body: "secret", padding: "" },
+    "padding",
+    256 * 1024,
+  );
+
+  await assert.rejects(
+    () => fixture.service.decide(fixture.request({ params }), fixture.credential),
+    hasCode("NATIVE_GUARD_INVALID_REQUEST"),
+  );
+  assert.equal(beforeSignCalls, 0);
+  assert.equal(fixture.appended.length, 0);
+});
+
 test("normalizes trusted metadata without reserved-name bypasses or LLM use", () => {
   for (const toolName of [
     "exec",
@@ -598,14 +656,17 @@ test("merges multiple nested redactions and fails closed for unsafe or ineffecti
     {
       fieldPath: "payload.parameters.__proto__.value",
       params: JSON.parse('{"__proto__":{"value":"unsafe"}}') as Record<string, unknown>,
+      expectedCode: "NATIVE_GUARD_INVALID_REQUEST",
     },
     {
       fieldPath: "payload.parameters.request",
       params: { request: { body: "not-a-string-target" } },
+      expectedCode: "NATIVE_GUARD_REDACTION_FAILED",
     },
     {
       fieldPath: "payload.parameters.request.body",
       params: { request: { body: "[REDACTED]" } },
+      expectedCode: "NATIVE_GUARD_REDACTION_FAILED",
     },
   ]) {
     const unsafe = createFixture({
@@ -616,7 +677,7 @@ test("merges multiple nested redactions and fails closed for unsafe or ineffecti
         unsafe.request({ params: scenario.params }),
         unsafe.credential,
       ),
-      hasCode("NATIVE_GUARD_REDACTION_FAILED"),
+      hasCode(scenario.expectedCode),
     );
   }
 });
@@ -1055,4 +1116,30 @@ function buildPolicy(
 function hasCode(code: string): (error: unknown) => boolean {
   return (error: unknown) =>
     error instanceof NativeToolDecisionError && error.code === code;
+}
+
+function paramsAtCanonicalBytes(bytes: number): Record<string, unknown> {
+  return paramsAtCanonicalBytesWithFields({ body: "" }, "body", bytes);
+}
+
+function paramsAtCanonicalBytesWithFields<T extends Record<string, unknown>>(
+  params: T,
+  paddingKey: keyof T,
+  bytes: number,
+): T {
+  const baseBytes = Buffer.byteLength(JSON.stringify(params), "utf8");
+  assert.ok(bytes >= baseBytes);
+  params[paddingKey] = "x".repeat(bytes - baseBytes) as T[keyof T];
+  assert.equal(Buffer.byteLength(JSON.stringify(params), "utf8"), bytes);
+  return params;
+}
+
+function paramsWithKeys(count: number): Record<string, unknown> {
+  return Object.fromEntries(Array.from({ length: count }, (_value, index) => [`key${index}`, index]));
+}
+
+function paramsAtDepth(depth: number): Record<string, unknown> {
+  let value: Record<string, unknown> = {};
+  for (let index = 0; index < depth; index += 1) value = { nested: value };
+  return value;
 }

@@ -1,4 +1,16 @@
 import { createHash, sign, verify, type KeyObject } from "node:crypto";
+import { types as utilTypes } from "node:util";
+
+export const MAX_NATIVE_TOOL_PARAM_BYTES = 256 * 1024;
+export const MAX_NATIVE_TOOL_PARAM_DEPTH = 32;
+export const MAX_NATIVE_TOOL_PARAM_KEYS = 4_096;
+
+const DANGEROUS_PARAM_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
+export type BoundedParams = {
+  canonical: string;
+  digest: string;
+};
 
 function assertWellFormedUnicode(value: string): void {
   for (let index = 0; index < value.length; index += 1) {
@@ -76,6 +88,171 @@ export function canonicalJson(value: unknown): string {
 
 export function digestJson(value: unknown): string {
   return createHash("sha256").update(canonicalJson(value), "utf8").digest("hex");
+}
+
+export function inspectBoundedParams(value: unknown): BoundedParams {
+  assertBoundedParamStructure(value);
+  const canonical = canonicalJson(value);
+  const digest = createHash("sha256").update(canonical, "utf8").digest("hex");
+  return { canonical, digest };
+}
+
+function assertBoundedParamStructure(value: unknown): asserts value is Record<string, unknown> {
+  if (!isPlainParamObject(value)) throw invalidParams();
+  const stack: Array<{ value: unknown; depth: number }> = [{ value, depth: 0 }];
+  const seen = new Set<object>();
+  let keyCount = 0;
+  let canonicalBytes = 0;
+  let reservedValueBytes = 1;
+  const ensureBudget = (): void => {
+    if (canonicalBytes > MAX_NATIVE_TOOL_PARAM_BYTES - reservedValueBytes) {
+      throw invalidParams();
+    }
+  };
+  const addBytes = (count: number): void => {
+    if (count > MAX_NATIVE_TOOL_PARAM_BYTES - canonicalBytes - reservedValueBytes) {
+      throw invalidParams();
+    }
+    canonicalBytes += count;
+  };
+  const reserveValues = (count: number): void => {
+    if (count > MAX_NATIVE_TOOL_PARAM_BYTES - canonicalBytes - reservedValueBytes) {
+      throw invalidParams();
+    }
+    reservedValueBytes += count;
+  };
+
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    reservedValueBytes -= 1;
+    if (current.depth > MAX_NATIVE_TOOL_PARAM_DEPTH) throw invalidParams();
+    if (current.value === null) {
+      addBytes(4);
+      continue;
+    }
+    if (typeof current.value === "string") {
+      addCanonicalStringBytes(current.value, addBytes);
+      continue;
+    }
+    if (typeof current.value === "boolean") {
+      addBytes(current.value ? 4 : 5);
+      continue;
+    }
+    if (typeof current.value === "number") {
+      if (!Number.isFinite(current.value)) throw invalidParams();
+      addBytes(JSON.stringify(current.value).length);
+      continue;
+    }
+    if (
+      typeof current.value !== "object" ||
+      utilTypes.isProxy(current.value) ||
+      seen.has(current.value)
+    ) {
+      throw invalidParams();
+    }
+    seen.add(current.value);
+
+    if (Array.isArray(current.value)) {
+      if (Object.getPrototypeOf(current.value) !== Array.prototype) throw invalidParams();
+      const length = current.value.length;
+      addBytes(2);
+      if (length > 1) addBytes(length - 1);
+      reserveValues(length);
+      const ownKeys = Reflect.ownKeys(current.value);
+      if (ownKeys.length !== length + 1 || !ownKeys.includes("length")) {
+        throw invalidParams();
+      }
+      for (let index = 0; index < length; index += 1) {
+        const descriptor = Object.getOwnPropertyDescriptor(current.value, index);
+        if (
+          descriptor === undefined ||
+          !("value" in descriptor) ||
+          descriptor.enumerable !== true
+        ) {
+          throw invalidParams();
+        }
+        stack.push({ value: descriptor.value, depth: current.depth + 1 });
+      }
+      continue;
+    }
+
+    if (!isPlainParamObject(current.value)) throw invalidParams();
+    addBytes(2);
+    const keys: string[] = [];
+    for (const key in current.value) {
+      if (!Object.hasOwn(current.value, key) || DANGEROUS_PARAM_KEYS.has(key)) {
+        throw invalidParams();
+      }
+      keyCount += 1;
+      if (keyCount > MAX_NATIVE_TOOL_PARAM_KEYS) throw invalidParams();
+      if (keys.length > 0) addBytes(1);
+      addCanonicalStringBytes(key, addBytes);
+      addBytes(1);
+      reserveValues(1);
+      keys.push(key);
+    }
+    const ownKeys = Reflect.ownKeys(current.value);
+    const keySet = new Set(keys);
+    if (
+      ownKeys.length !== keys.length ||
+      ownKeys.some((key) => typeof key !== "string" || !keySet.has(key))
+    ) {
+      throw invalidParams();
+    }
+    for (const key of keys) {
+      const descriptor = Object.getOwnPropertyDescriptor(current.value, key);
+      if (
+        descriptor === undefined ||
+        !("value" in descriptor) ||
+        descriptor.enumerable !== true
+      ) {
+        throw invalidParams();
+      }
+      stack.push({ value: descriptor.value, depth: current.depth + 1 });
+    }
+  }
+  ensureBudget();
+}
+
+function addCanonicalStringBytes(value: string, addBytes: (count: number) => void): void {
+  addBytes(2);
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit === 0x22 || codeUnit === 0x5c) {
+      addBytes(2);
+    } else if (codeUnit === 0x08 || codeUnit === 0x09 || codeUnit === 0x0a ||
+      codeUnit === 0x0c || codeUnit === 0x0d) {
+      addBytes(2);
+    } else if (codeUnit < 0x20) {
+      addBytes(6);
+    } else if (codeUnit <= 0x7f) {
+      addBytes(1);
+    } else if (codeUnit <= 0x7ff) {
+      addBytes(2);
+    } else if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const nextCodeUnit = value.charCodeAt(index + 1);
+      if (index + 1 >= value.length || nextCodeUnit < 0xdc00 || nextCodeUnit > 0xdfff) {
+        throw invalidParams();
+      }
+      addBytes(4);
+      index += 1;
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      throw invalidParams();
+    } else {
+      addBytes(3);
+    }
+  }
+}
+
+function isPlainParamObject(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  if (utilTypes.isProxy(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function invalidParams(): TypeError {
+  return new TypeError("Native guard tool parameters are invalid");
 }
 
 export function signNativeGuardPayload(payload: unknown, privateKey: KeyObject): string {

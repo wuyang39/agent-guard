@@ -15,7 +15,10 @@ import type {
   ToolProviderType,
   ToolSideEffect,
 } from "@agent-guard/contracts";
-import { digestJson } from "@agent-guard/native-guard-protocol";
+import {
+  digestJson,
+  inspectBoundedParams,
+} from "@agent-guard/native-guard-protocol";
 import { createId as defaultCreateId } from "../../shared/ids";
 import { findMatchingPolicies } from "../supervisor/policyEngine";
 import { recordSupervisionDecision } from "../supervisor/supervisionRecorder";
@@ -438,7 +441,11 @@ export function createNativeToolDecisionService(
             lease.policyPack,
             runtimeAction,
           );
-          rewrittenParamsDigest = digestJson(rewrittenParams);
+          try {
+            rewrittenParamsDigest = inspectBoundedParams(rewrittenParams).digest;
+          } catch {
+            throw invalidRequest("Native guard rewritten parameters exceed the allowed bounds");
+          }
         }
 
         const unsigned: Omit<NativeToolDecisionResponse, "signature"> = {
@@ -637,14 +644,11 @@ function validateRequest(request: NativeToolDecisionRequest): number {
   if (!Number.isSafeInteger(request.leaseEpoch) || request.leaseEpoch <= 0) {
     throw invalidRequest("Native guard lease epoch is invalid");
   }
-  if (!isPlainObject(request.params)) {
-    throw invalidRequest("Native guard parameters must be a JSON object");
-  }
   let actualDigest: string;
   try {
-    actualDigest = digestJson(request.params);
+    actualDigest = inspectBoundedParams(request.params).digest;
   } catch {
-    throw invalidRequest("Native guard parameters are not canonical JSON");
+    throw invalidRequest("Native guard parameters exceed the allowed bounds");
   }
   if (actualDigest !== request.paramsDigest) {
     throw decisionError(

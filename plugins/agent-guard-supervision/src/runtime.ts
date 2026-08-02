@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { types as utilTypes } from "node:util";
 import type {
   NativeGuardEvent,
   NativeGuardLeaseActivation,
@@ -8,6 +9,7 @@ import type {
   NativeToolDecisionRequest,
   NativeToolDecisionResponse,
 } from "@agent-guard/contracts";
+import { canonicalJson } from "@agent-guard/native-guard-protocol";
 import type {
   BeforeResult,
   PluginApi,
@@ -28,6 +30,10 @@ import {
 } from "./leaseRegistry";
 import { inspectBoundedParams } from "./jsonBounds";
 import { classifyToolRisk, type NativeToolRisk } from "./toolRisk";
+
+const MAX_DERIVED_PATHS = 256;
+const MAX_DERIVED_PATH_LENGTH = 4_096;
+const MAX_DERIVED_PATH_BYTES = 64 * 1024;
 
 export type AgentGuardRuntimeOptions = {
   markerStore?: MarkerStore;
@@ -327,7 +333,7 @@ export class AgentGuardRuntime {
     if (lookup.state === "off") return;
     const identity = guardedIdentity(event, context);
     if (identity === undefined) return contextBlock();
-    if (lookup.state === "recovery") return recoveryDecision(event);
+    if (lookup.state === "recovery") return recoveryDecision(event, identity);
     const unlinkHostAbort = linkAbortSignal(context.abortSignal, operationController);
     try {
       if (context.abortSignal?.aborted) return cancelledBlock();
@@ -360,9 +366,22 @@ export class AgentGuardRuntime {
         this.#now(),
       );
     } catch {
-      return this.#outageDecision(lookup, event, identity, "unknown", signal);
+      return this.#outageDecision(
+        lookup,
+        event,
+        identity,
+        "unknown",
+        signal,
+        context.abortSignal,
+      );
     }
-    const risk = classifyToolRisk(event);
+    const risk = classifyToolRisk({
+      toolName: event.toolName,
+      toolKind: identity.toolKind,
+      toolInputKind: identity.toolInputKind,
+      params: event.params,
+      derivedPaths: request.derivedPaths,
+    });
 
     let response: NativeToolDecisionResponse;
     try {
@@ -375,7 +394,14 @@ export class AgentGuardRuntime {
       if (context.abortSignal?.aborted) return cancelledBlock();
       if (signal.aborted || this.abortSignal.aborted) return stoppedBlock();
       if (!(await this.#leaseIsCurrent(identity.sessionKey, lookup))) return leaseChangedBlock();
-      return this.#outageDecision(lookup, event, identity, risk, signal);
+      return this.#outageDecision(
+        lookup,
+        event,
+        identity,
+        risk,
+        signal,
+        context.abortSignal,
+      );
     }
     if (context.abortSignal?.aborted) return cancelledBlock();
     if (signal.aborted || this.abortSignal.aborted) return stoppedBlock();
@@ -412,7 +438,9 @@ export class AgentGuardRuntime {
     identity: GuardedIdentity,
     risk: NativeToolRisk,
     signal: AbortSignal,
+    hostSignal: AbortSignal | undefined,
   ): Promise<BeforeResult | void> {
+    if (hostSignal?.aborted) return cancelledBlock();
     if (risk === "low" && lease.failurePolicy.lowRisk === "allow") return;
     const action = risk === "low" ? "warn" : "deny";
     await this.#emit(outageEvent(
@@ -423,6 +451,7 @@ export class AgentGuardRuntime {
       action,
       this.#now(),
     ));
+    if (hostSignal?.aborted) return cancelledBlock();
     if (signal.aborted || this.abortSignal.aborted) return stoppedBlock();
     if (!(await this.#leaseIsCurrent(identity.sessionKey, lease))) return leaseChangedBlock();
     return action === "warn" ? undefined : outageBlock();
@@ -622,6 +651,8 @@ type GuardedIdentity = {
   sessionKey: string;
   toolCallId: string;
   runId?: string;
+  toolKind?: ToolEvent["toolKind"];
+  toolInputKind?: ToolEvent["toolInputKind"];
 };
 
 function guardedAdmission(
@@ -629,8 +660,9 @@ function guardedAdmission(
   event: ToolEvent,
   context: ToolContext,
 ): BeforeResult | void {
-  if (guardedIdentity(event, context) === undefined) return contextBlock();
-  if (lookup.state === "recovery") return recoveryDecision(event);
+  const identity = guardedIdentity(event, context);
+  if (identity === undefined) return contextBlock();
+  if (lookup.state === "recovery") return recoveryDecision(event, identity);
 }
 
 function guardedIdentity(event: ToolEvent, context: ToolContext): GuardedIdentity | undefined {
@@ -657,11 +689,23 @@ function guardedIdentity(event: ToolEvent, context: ToolContext): GuardedIdentit
     ...((event.runId ?? context.runId) === undefined
       ? {}
       : { runId: event.runId ?? context.runId }),
+    ...((event.toolKind ?? context.toolKind) === undefined
+      ? {}
+      : { toolKind: event.toolKind ?? context.toolKind }),
+    ...((event.toolInputKind ?? context.toolInputKind) === undefined
+      ? {}
+      : { toolInputKind: event.toolInputKind ?? context.toolInputKind }),
   };
 }
 
-function recoveryDecision(event: ToolEvent): BeforeResult | void {
-  return classifyToolRisk(event) === "low" ? undefined : recoveryBlock();
+function recoveryDecision(event: ToolEvent, identity: GuardedIdentity): BeforeResult | void {
+  return classifyToolRisk({
+    toolName: event.toolName,
+    toolKind: identity.toolKind,
+    toolInputKind: identity.toolInputKind,
+    params: event.params,
+    derivedPaths: event.derivedPaths,
+  }) === "low" ? undefined : recoveryBlock();
 }
 
 function buildDecisionRequest(
@@ -673,6 +717,7 @@ function buildDecisionRequest(
 ): NativeToolDecisionRequest {
   if (!safeWireString(requestId, 256)) throw new TypeError("Native guard request identity is invalid");
   const inspectedParams = inspectBoundedParams(event.params);
+  const derivedPaths = snapshotDerivedPaths(event.derivedPaths);
   return {
     schemaVersion: "native-guard-1",
     requestId,
@@ -682,13 +727,50 @@ function buildDecisionRequest(
     ...(identity.runId === undefined ? {} : { runId: identity.runId }),
     toolCallId: identity.toolCallId,
     toolName: event.toolName,
-    ...(event.toolKind === undefined ? {} : { toolKind: event.toolKind }),
-    ...(event.toolInputKind === undefined ? {} : { toolInputKind: event.toolInputKind }),
+    ...(identity.toolKind === undefined ? {} : { toolKind: identity.toolKind }),
+    ...(identity.toolInputKind === undefined ? {} : { toolInputKind: identity.toolInputKind }),
     params: event.params,
     paramsDigest: inspectedParams.digest,
-    ...(event.derivedPaths === undefined ? {} : { derivedPaths: [...event.derivedPaths] }),
+    ...(derivedPaths === undefined ? {} : { derivedPaths }),
     requestedAt: requestedAt.toISOString(),
   };
+}
+
+function snapshotDerivedPaths(value: readonly string[] | undefined): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (
+    utilTypes.isProxy(value) ||
+    !Array.isArray(value) ||
+    Object.getPrototypeOf(value) !== Array.prototype ||
+    value.length > MAX_DERIVED_PATHS
+  ) {
+    throw new TypeError("Native guard derived paths are invalid");
+  }
+  const ownKeys = Reflect.ownKeys(value);
+  if (ownKeys.length !== value.length + 1 || !ownKeys.includes("length")) {
+    throw new TypeError("Native guard derived paths are invalid");
+  }
+  const snapshot: string[] = [];
+  let canonicalBytes = 2;
+  for (let index = 0; index < value.length; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, index);
+    if (
+      descriptor === undefined ||
+      !("value" in descriptor) ||
+      descriptor.enumerable !== true ||
+      !safeWireString(descriptor.value, MAX_DERIVED_PATH_LENGTH)
+    ) {
+      throw new TypeError("Native guard derived paths are invalid");
+    }
+    const pathBytes = Buffer.byteLength(canonicalJson(descriptor.value), "utf8");
+    const separatorBytes = index === 0 ? 0 : 1;
+    if (pathBytes + separatorBytes > MAX_DERIVED_PATH_BYTES - canonicalBytes) {
+      throw new TypeError("Native guard derived paths are invalid");
+    }
+    canonicalBytes += pathBytes + separatorBytes;
+    snapshot.push(descriptor.value);
+  }
+  return snapshot;
 }
 
 function decisionEvent(

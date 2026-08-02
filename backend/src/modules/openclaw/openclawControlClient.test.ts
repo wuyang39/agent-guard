@@ -254,31 +254,31 @@ test("fails closed on Agent Guard error status and equivalent failure metadata",
 });
 
 test("fails closed on Agent Guard contribution errors from either diagnostic surface", async (t) => {
-  const cases = [
+  const cases: Array<{
+    location: "top" | "registry";
+    message: string;
+    pluginId?: string;
+  }> = [
     {
-      location: "top" as const,
+      location: "top",
       message: "plugin registration failed",
       pluginId: "agent-guard-supervision",
     },
     {
-      location: "registry" as const,
-      message: "http route already registered: /agent-guard/native-guard/v1/status",
-      pluginId: "conflicting-route-plugin",
+      location: "registry",
+      message: "http route already registered: /agent-guard/native-guard/v1/status (exact) by existing-plugin (C:\\plugins\\existing-plugin)",
     },
     {
-      location: "top" as const,
-      message: "service already registered: agent-guard-runtime",
-      pluginId: "conflicting-service-plugin",
+      location: "top",
+      message: "service already registered: agent-guard-runtime (existing-plugin)",
     },
     {
-      location: "registry" as const,
-      message: "trusted tool policy already registered: agent-guard-admission",
-      pluginId: "conflicting-policy-plugin",
+      location: "registry",
+      message: "trusted tool policy already registered: agent-guard-admission (existing-plugin)",
     },
     {
-      location: "top" as const,
+      location: "top",
       message: "hook already registered: before_tool_call (agent-guard-supervision)",
-      pluginId: "conflicting-hook-plugin",
     },
   ];
 
@@ -286,8 +286,8 @@ test("fails closed on Agent Guard contribution errors from either diagnostic sur
     await t.test(entry.message, async () => {
       const diagnostic = {
         level: "error",
-        pluginId: entry.pluginId,
         message: entry.message,
+        ...(entry.pluginId === undefined ? {} : { pluginId: entry.pluginId }),
       };
       const capability = await inspectInventory({
         plugins: [agentGuardPlugin()],
@@ -321,6 +321,85 @@ test("does not treat warnings or unrelated plugin errors as Agent Guard failures
 
   assert.equal(capability.supportsNativeGuard, true);
   assert.equal(capability.finalizerAssurance, "exclusive_before_hook");
+});
+
+test("structured diagnostic ownership overrides embedded Agent Guard text", async (t) => {
+  for (const message of [
+    "agent-guard-supervision",
+    "http route already registered: /agent-guard/native-guard/v1/status (exact) by existing-plugin (C:\\plugins\\existing-plugin)",
+    "service already registered: agent-guard-runtime (existing-plugin)",
+    "trusted tool policy already registered: agent-guard-admission (existing-plugin)",
+    "hook already registered: before_tool_call (agent-guard-supervision)",
+  ]) {
+    await t.test(message, async () => {
+      const capability = await inspectInventory({
+        plugins: [agentGuardPlugin()],
+        diagnostics: [{ level: "error", pluginId: "unrelated-plugin", message }],
+        registry: { diagnostics: [] },
+      });
+
+      assert.equal(capability.supportsNativeGuard, true);
+      assert.equal(capability.finalizerAssurance, "exclusive_before_hook");
+    });
+  }
+});
+
+test("ownerless legacy diagnostics accept every exact guarded conflict template", async (t) => {
+  const routePaths = [
+    "/agent-guard/native-guard/v1/leases/activate",
+    "/agent-guard/native-guard/v1/leases/renew",
+    "/agent-guard/native-guard/v1/leases/revoke",
+    "/agent-guard/native-guard/v1/status",
+  ];
+  const messages = [
+    ...routePaths.map((route) =>
+      `http route already registered: ${route} (exact) by existing-plugin (C:\\plugins\\existing-plugin)`),
+    "service already registered: agent-guard-runtime (existing-plugin)",
+    "trusted tool policy already registered: agent-guard-admission (existing-plugin)",
+    "hook already registered: before_tool_call (agent-guard-supervision)",
+    "SeRvIcE AlReAdY ReGiStErEd: agent-guard-runtime (existing-plugin)",
+  ];
+
+  for (const message of messages) {
+    await t.test(message, async () => {
+      const capability = await inspectInventory({
+        plugins: [agentGuardPlugin()],
+        diagnostics: [{ level: "error", message }],
+        registry: { diagnostics: [] },
+      });
+
+      assert.equal(capability.supportsNativeGuard, false);
+      assert.equal(capability.finalizerAssurance, "unverified");
+    });
+  }
+});
+
+test("ownerless legacy diagnostic fallback rejects wrapped and lookalike templates", async (t) => {
+  for (const message of [
+    "prefix service already registered: agent-guard-runtime (existing-plugin)",
+    "service already registered: agent-guard-runtime (existing-plugin) suffix",
+    "unrelated error quotes 'service already registered: agent-guard-runtime (existing-plugin)'",
+    "service already registered: agent-guard-runtime-extra (existing-plugin)",
+    "service already registered: Agent-Guard-Runtime (existing-plugin)",
+    "service already registered: agent\u2010guard-runtime (existing-plugin)",
+    "trusted tool policy already registered: agent-guard-admission-extra (existing-plugin)",
+    "hook already registered: before_tool_call_extra (agent-guard-supervision)",
+    "hook already registered: before_tool_call (agent-guard-supervision-extra)",
+    "http route already registered: /agent-guard/native-guard/v1/status/extra (exact) by existing-plugin (C:\\plugins\\existing-plugin)",
+    "http route already registered: /Agent-guard/native-guard/v1/status (exact) by existing-plugin (C:\\plugins\\existing-plugin)",
+    "prefix http route already registered: /agent-guard/native-guard/v1/status (exact) by existing-plugin (C:\\plugins\\existing-plugin)",
+  ]) {
+    await t.test(message, async () => {
+      const capability = await inspectInventory({
+        plugins: [agentGuardPlugin()],
+        diagnostics: [],
+        registry: { diagnostics: [{ level: "error", message }] },
+      });
+
+      assert.equal(capability.supportsNativeGuard, true);
+      assert.equal(capability.finalizerAssurance, "exclusive_before_hook");
+    });
+  }
 });
 
 test("rejects malformed top-level and registry diagnostics", async () => {

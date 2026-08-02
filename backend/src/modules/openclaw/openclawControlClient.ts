@@ -19,7 +19,20 @@ const MAX_RESPONSE_BYTES = 64 * 1024;
 const AGENT_GUARD_PLUGIN_ID = "agent-guard-supervision";
 const TRUSTED_TOOL_POLICY_ID = "agent-guard-admission";
 const AGENT_GUARD_SERVICE_ID = "agent-guard-runtime";
-const AGENT_GUARD_ROUTE_PREFIX = "/agent-guard/native-guard/v1/";
+const AGENT_GUARD_ROUTE_PATHS = new Set([
+  ACTIVATE_PATH,
+  RENEW_PATH,
+  REVOKE_PATH,
+  STATUS_PATH,
+]);
+const LEGACY_ROUTE_CONFLICT =
+  /^http route already registered: ([^\s()]+) \((?:exact|prefix)\) by [^\s()]+ \([^()\r\n]+\)$/i;
+const LEGACY_SERVICE_CONFLICT =
+  /^service already registered: ([^\s()]+) \([^\s()]+\)$/i;
+const LEGACY_POLICY_CONFLICT =
+  /^trusted tool policy already registered: ([^\s()]+) \([^\s()]+\)$/i;
+const LEGACY_HOOK_CONFLICT =
+  /^hook already registered: ([^\s()]+) \(([^\s()]+)\)$/i;
 
 export type NativeGuardFinalizerAssurance = NativeGuardStatus["finalizerAssurance"];
 
@@ -537,11 +550,25 @@ function hasHealthyPluginStatus(plugin: Record<string, unknown>): boolean {
 
 function isAgentGuardErrorDiagnostic(diagnostic: ParsedPluginDiagnostic): boolean {
   if (diagnostic.level !== "error") return false;
-  return diagnostic.pluginId === AGENT_GUARD_PLUGIN_ID ||
-    diagnostic.message.includes(AGENT_GUARD_PLUGIN_ID) ||
-    diagnostic.message.includes(TRUSTED_TOOL_POLICY_ID) ||
-    diagnostic.message.includes(AGENT_GUARD_SERVICE_ID) ||
-    diagnostic.message.includes(AGENT_GUARD_ROUTE_PREFIX);
+  if (diagnostic.pluginId !== undefined && diagnostic.pluginId.length > 0) {
+    return diagnostic.pluginId === AGENT_GUARD_PLUGIN_ID;
+  }
+  return isLegacyAgentGuardConflict(diagnostic.message);
+}
+
+function isLegacyAgentGuardConflict(message: string): boolean {
+  const routeConflict = message.match(LEGACY_ROUTE_CONFLICT);
+  if (routeConflict) return AGENT_GUARD_ROUTE_PATHS.has(routeConflict[1]);
+
+  const serviceConflict = message.match(LEGACY_SERVICE_CONFLICT);
+  if (serviceConflict) return serviceConflict[1] === AGENT_GUARD_SERVICE_ID;
+
+  const policyConflict = message.match(LEGACY_POLICY_CONFLICT);
+  if (policyConflict) return policyConflict[1] === TRUSTED_TOOL_POLICY_ID;
+
+  const hookConflict = message.match(LEGACY_HOOK_CONFLICT);
+  return hookConflict?.[1] === "before_tool_call" &&
+    hookConflict[2] === AGENT_GUARD_PLUGIN_ID;
 }
 
 function parseVersion(stdout: string): string {

@@ -156,7 +156,7 @@ OpenClaw 当前没有公开的“所有普通 Hook 之后再次运行 Trusted Po
 
 固定基线 `3edbe19fbd84ba58fdbf8e83042da9efd1d06f81` 的 Hook、Trusted Policy、service 和 route registrar 均返回 `void`，因此“注册函数已返回”和 `plugins list --json` 都不能证明贡献已经提交并处于 live 状态。插件必须先注册一个可 lazy-start recovery 的最小 final Hook；该 Hook 对启动、查找、继承和超时异常均返回稳定 `block`，内部 4 秒截止时间短于宿主 5 秒预算。只有未来宿主对 final Hook、Trusted Policy、recovery service、生命周期 Hook 和控制 route 全部返回显式 `true` 时，插件才允许 activate/renew。固定基线只能返回 `coverage=unsupported`、`finalizerAssurance=unverified` 和 `TRUSTED_POLICY_UNATTESTED`，但仍保留 revoke 作为 marker 清理入口。
 
-插件内 quarantine 不能替代进程外启动门禁。只要存在 guarded marker，而 live registry query 不能同时证明 Agent Guard 插件、final `before_tool_call` 和 recovery service 已提交，受管 launcher 必须拒绝正常 Gateway 启动，只开放不调度工具的 maintenance cleanup。该 launcher 门禁是 Task 14 的阻断验收项。
+插件内 quarantine 不能替代进程外启动门禁。只要存在 guarded marker，而 live registry query 不能同时证明 Agent Guard 插件、final `before_tool_call`、recovery service 和可信的 post-approval lease recheck capability 已提交，受管 launcher 必须拒绝正常 Gateway 启动，只开放不调度工具的 maintenance cleanup。审批能力不能来自 config、环境变量或调用方自报。该 launcher 门禁是 Task 14 的阻断验收项。
 
 ### 6.3 `after_tool_call`
 
@@ -322,7 +322,7 @@ deny > ask > redact > warn > allow
 
 - 后端返回完整的最终参数对象，而不是不受约束的字符串替换。
 - 决策记录保存修改字段路径、修改前后摘要和策略 ID，不保存被移除的秘密正文。
-- 插件限制对象深度、键数量和序列化大小，随后交给 OpenClaw schema 校验。
+- 插件在 canonicalize、digest 和交给 OpenClaw 前使用迭代预扫描：最大深度 32、累计对象键 4,096、canonical UTF-8 最大 256 KiB，并拒绝危险原型键。输入参数和签名改写参数使用同一边界；client 和后端 decision route 另为请求信封预留 64 KiB，因此 HTTP 请求体上限为 320 KiB。
 
 ### 9.4 `ask`
 
@@ -591,14 +591,14 @@ misconfigured
 12. Detection：合格时危险行为只影响临时容器环境。
 13. Trace reconciliation：任何 JSONL 原生调用缺少 before 事件都会使运行失败。
 14. 固定 `void` registrar 宿主：所有贡献即使被调用也不能新建或续租 guarded lease，状态保持 `unsupported/unverified`，revoke 仍可清理 marker。
-15. 启动恢复：存在 guarded marker 且 live registry 缺少插件、final Hook 或 recovery service 任一证明时，launcher 零工具调度并只开放 maintenance cleanup。
+15. 启动恢复：存在 guarded marker 且 live registry 缺少插件、final Hook、recovery service 或可信 post-approval lease recheck capability 任一证明时，launcher 零工具调度并只开放 maintenance cleanup。
 
 ## 17. 性能与容量指标
 
 - OFF 状态不产生网络请求，Hook 本地判断 p95 小于 1 ms。
 - ACTIVE 非审批决策的本机端到端 p95 小于 100 ms。
 - Agent Guard fetch 超时 2 秒，OpenClaw Hook 总预算保持不低于 5 秒且低于其 15 秒默认上限。
-- 单个参数请求默认上限 256 KiB，工具结果预览默认上限 8 KiB。
+- 单个 canonical 参数对象默认上限 256 KiB，decision HTTP 信封另预留 64 KiB，工具结果预览默认上限 8 KiB。
 - spool 默认上限 10,000 个事件或 50 MiB，先到者生效。
 - 同一租约的 decision endpoint 必须限制并发和速率，但不能让低风险洪泛饿死高风险裁决。
 

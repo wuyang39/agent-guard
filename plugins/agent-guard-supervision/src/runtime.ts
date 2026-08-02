@@ -8,7 +8,6 @@ import type {
   NativeToolDecisionRequest,
   NativeToolDecisionResponse,
 } from "@agent-guard/contracts";
-import { digestJson } from "@agent-guard/native-guard-protocol";
 import type {
   BeforeResult,
   PluginApi,
@@ -27,6 +26,7 @@ import {
   type LeaseLookup,
   type MarkerStore,
 } from "./leaseRegistry";
+import { inspectBoundedParams } from "./jsonBounds";
 import { classifyToolRisk, type NativeToolRisk } from "./toolRisk";
 
 export type AgentGuardRuntimeOptions = {
@@ -222,7 +222,7 @@ export class AgentGuardRuntime {
           const trusted = await this.trustedAdmission(event, context);
           if (trusted !== undefined) return trusted;
           if (operationController.signal.aborted) return stoppedBlock();
-          return await this.#finalDecision(event, context, operationController.signal);
+          return await this.#finalDecision(event, context, operationController);
         } catch {
           return failClosedBlock();
         }
@@ -317,7 +317,7 @@ export class AgentGuardRuntime {
   async #finalDecision(
     event: ToolEvent,
     context: ToolContext,
-    signal: AbortSignal,
+    operationController: AbortController,
   ): Promise<BeforeResult | void> {
     if (!safeSessionKey(context.sessionKey)) {
       const status = await this.#internalStatus();
@@ -328,14 +328,41 @@ export class AgentGuardRuntime {
     const identity = guardedIdentity(event, context);
     if (identity === undefined) return contextBlock();
     if (lookup.state === "recovery") return recoveryDecision(event);
+    const unlinkHostAbort = linkAbortSignal(context.abortSignal, operationController);
+    try {
+      if (context.abortSignal?.aborted) return cancelledBlock();
+      return await this.#activeDecision(
+        event,
+        context,
+        identity,
+        lookup,
+        operationController.signal,
+      );
+    } finally {
+      unlinkHostAbort();
+    }
+  }
+
+  async #activeDecision(
+    event: ToolEvent,
+    context: ToolContext,
+    identity: GuardedIdentity,
+    lookup: ActiveLeaseLookup,
+    signal: AbortSignal,
+  ): Promise<BeforeResult | void> {
     const risk = classifyToolRisk(event);
-    const request = buildDecisionRequest(
-      lookup,
-      event,
-      identity,
-      this.#createId("native_guard_request"),
-      this.#now(),
-    );
+    let request: NativeToolDecisionRequest;
+    try {
+      request = buildDecisionRequest(
+        lookup,
+        event,
+        identity,
+        this.#createId("native_guard_request"),
+        this.#now(),
+      );
+    } catch {
+      return this.#outageDecision(lookup, event, identity, risk, signal);
+    }
 
     let response: NativeToolDecisionResponse;
     try {
@@ -345,10 +372,12 @@ export class AgentGuardRuntime {
         signal,
       }));
     } catch {
+      if (context.abortSignal?.aborted) return cancelledBlock();
       if (signal.aborted || this.abortSignal.aborted) return stoppedBlock();
       if (!(await this.#leaseIsCurrent(identity.sessionKey, lookup))) return leaseChangedBlock();
       return this.#outageDecision(lookup, event, identity, risk, signal);
     }
+    if (context.abortSignal?.aborted) return cancelledBlock();
     if (signal.aborted || this.abortSignal.aborted) return stoppedBlock();
     if (!(await this.#leaseIsCurrent(identity.sessionKey, lookup))) return leaseChangedBlock();
 
@@ -359,6 +388,7 @@ export class AgentGuardRuntime {
       response,
       this.#now(),
     ));
+    if (context.abortSignal?.aborted) return cancelledBlock();
     if (signal.aborted || this.abortSignal.aborted) return stoppedBlock();
     if (!(await this.#leaseIsCurrent(identity.sessionKey, lookup))) return leaseChangedBlock();
 
@@ -372,7 +402,7 @@ export class AgentGuardRuntime {
         return { params: response.rewrittenParams! };
       case "ask":
         if (!this.#approvalLeaseRecheckAttested) return approvalUnattestedBlock();
-        return this.#approvalResult(lookup, request, response, signal);
+        return this.#approvalResult(lookup, request, response, signal, context.abortSignal);
     }
   }
 
@@ -403,6 +433,7 @@ export class AgentGuardRuntime {
     request: NativeToolDecisionRequest,
     response: NativeToolDecisionResponse,
     signal: AbortSignal,
+    hostSignal: AbortSignal | undefined,
   ): Promise<BeforeResult> {
     await this.#emit(approvalRequestedEvent(
       this.#createId("native_guard_event"),
@@ -411,6 +442,7 @@ export class AgentGuardRuntime {
       response,
       this.#now(),
     ));
+    if (hostSignal?.aborted) return cancelledBlock();
     if (signal.aborted || !(await this.#leaseIsCurrent(request.sessionKey, lease))) {
       return leaseChangedBlock();
     }
@@ -640,6 +672,7 @@ function buildDecisionRequest(
   requestedAt: Date,
 ): NativeToolDecisionRequest {
   if (!safeWireString(requestId, 256)) throw new TypeError("Native guard request identity is invalid");
+  const inspectedParams = inspectBoundedParams(event.params);
   return {
     schemaVersion: "native-guard-1",
     requestId,
@@ -652,7 +685,7 @@ function buildDecisionRequest(
     ...(event.toolKind === undefined ? {} : { toolKind: event.toolKind }),
     ...(event.toolInputKind === undefined ? {} : { toolInputKind: event.toolInputKind }),
     params: event.params,
-    paramsDigest: digestJson(event.params),
+    paramsDigest: inspectedParams.digest,
     ...(event.derivedPaths === undefined ? {} : { derivedPaths: [...event.derivedPaths] }),
     requestedAt: requestedAt.toISOString(),
   };
@@ -801,6 +834,24 @@ function stoppedBlock(): BeforeResult {
   };
 }
 
+function cancelledBlock(): BeforeResult {
+  return {
+    block: true,
+    blockReason: "[Agent Guard:NATIVE_GUARD_CANCELLED] Native guard tool call was cancelled.",
+  };
+}
+
+function linkAbortSignal(
+  source: AbortSignal | undefined,
+  destination: AbortController,
+): () => void {
+  if (source === undefined) return () => undefined;
+  const abort = (): void => destination.abort();
+  source.addEventListener("abort", abort, { once: true });
+  if (source.aborted) abort();
+  return () => source.removeEventListener("abort", abort);
+}
+
 function approvalUnattestedBlock(): BeforeResult {
   return {
     block: true,
@@ -813,13 +864,12 @@ function policyBlock(
   lease: ActiveLeaseLookup,
   params: Record<string, unknown>,
 ): BeforeResult {
-  const reasonCode = safeReasonCode(response.reasonCode, lease, params);
   const reason = safePolicyReason(response.reason, lease, params)
     ? response.reason
     : "Denied by Agent Guard policy.";
   return {
     block: true,
-    blockReason: `[Agent Guard:${reasonCode}] ${reason}`,
+    blockReason: `[Agent Guard:NATIVE_POLICY_DENY] ${reason}`,
   };
 }
 
@@ -829,7 +879,7 @@ function safeReasonCode(
   params: Record<string, unknown>,
 ): string {
   return containsSensitiveText(reasonCode, lease, params)
-    ? "NATIVE_POLICY_DENY"
+    ? "policy_deny"
     : reasonCode;
 }
 

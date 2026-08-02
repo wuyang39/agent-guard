@@ -16,6 +16,8 @@ declare module "openclaw/plugin-sdk/plugin-entry" {
     sessionKey?: string;
     sessionId?: string;
     runId?: string;
+    /** Aborts when the owning tool call is cancelled. Hook timeout does not abort it. */
+    abortSignal?: AbortSignal;
     toolName: string;
     toolKind?: "code_mode_exec";
     toolInputKind?: "javascript" | "typescript";

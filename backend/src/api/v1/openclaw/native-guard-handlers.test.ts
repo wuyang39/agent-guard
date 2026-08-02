@@ -267,7 +267,7 @@ test("decision rejects malformed and oversized JSON with stable secret-free erro
     headers: { authorization },
     payload: {
       ...decisionRequest(),
-      params: { value: "x".repeat(256 * 1024) },
+      params: { value: "x".repeat(320 * 1024) },
     },
   });
   assert.equal(oversized.statusCode, 413);
@@ -279,6 +279,23 @@ test("decision rejects malformed and oversized JSON with stable secret-free erro
   assert.equal(fixture.calls.usable, 0);
   assert.equal(fixture.calls.decide, 0);
   assert.equal(fixture.calls.append, 0);
+  await app.close();
+});
+
+test("decision accepts params at the exact canonical byte and key limits", async () => {
+  const fixture = createFixture();
+  const app = await createApp(fixture.dependencies);
+  const params = paramsAtCanonicalBounds(256 * 1024, 4_096);
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/v1/openclaw/native-guard/decision",
+    headers: { authorization: `Bearer ${LEASE_CREDENTIAL}` },
+    payload: { ...decisionRequest(), params },
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(fixture.calls.decide, 1);
   await app.close();
 });
 
@@ -1921,6 +1938,17 @@ function decisionRequest() {
     paramsDigest: "a".repeat(64),
     requestedAt: "2026-08-02T10:00:00.000Z",
   };
+}
+
+function paramsAtCanonicalBounds(bytes: number, keys: number): Record<string, unknown> {
+  const params = Object.fromEntries(
+    Array.from({ length: keys }, (_value, index) => [`key${index}`, ""]),
+  );
+  const baseBytes = Buffer.byteLength(JSON.stringify(params), "utf8");
+  assert.ok(bytes >= baseBytes);
+  params.key0 = "x".repeat(bytes - baseBytes);
+  assert.equal(Buffer.byteLength(JSON.stringify(params), "utf8"), bytes);
+  return params;
 }
 
 function decisionResponse() {

@@ -864,7 +864,7 @@ test("decision endpoint rejects operator token and accepts only lease bearer", a
 });
 ```
 
-Add tests for unapproved Origin, body larger than 256 KiB, malformed decision payload and credential redaction in errors.
+Add tests for unapproved Origin, a body larger than 320 KiB, exact 256 KiB canonical params with 4,096 keys, malformed decision payload and credential redaction in errors.
 
 - [ ] **Step 2: Run tests and verify failure**
 
@@ -885,7 +885,7 @@ POST   /api/v1/openclaw/native-guard/decision
 POST   /api/v1/openclaw/native-guard/events/batch
 ```
 
-Management routes require `X-Agent-Guard-Control-Token`. Decision and event routes require the exact lease bearer. Apply JSON schema validation, 256 KiB decision body limit, 1 MiB event batch limit, maximum 100 events per batch and exact allowed Origins from `AGENT_GUARD_ALLOWED_ORIGINS` plus the local Electron/Vite defaults.
+Management routes require `X-Agent-Guard-Control-Token`. Decision and event routes require the exact lease bearer. Apply JSON schema validation, a 320 KiB decision body limit (256 KiB canonical params plus a 64 KiB envelope), 1 MiB event batch limit, maximum 100 events per batch and exact allowed Origins from `AGENT_GUARD_ALLOWED_ORIGINS` plus the local Electron/Vite defaults.
 
 - [ ] **Step 4: Generate and inject the desktop token**
 
@@ -1232,7 +1232,11 @@ assert.deepEqual(denyResult, {
   blockReason: "[Agent Guard:NATIVE_POLICY_DENY] denied",
 });
 assert.deepEqual(redactResult, { params: { body: "[REDACTED]" } });
-assert.deepEqual(askResult?.requireApproval?.allowedDecisions, ["allow-once", "deny"]);
+assert.deepEqual(unattestedAskResult, {
+  block: true,
+  blockReason: "[Agent Guard:NATIVE_APPROVAL_UNATTESTED] Native tool approval cannot be enforced by this host.",
+});
+assert.deepEqual(attestedFutureAskResult?.requireApproval?.allowedDecisions, ["allow-once", "deny"]);
 ```
 
 Also test bad signature, mismatched digest, malformed response, timeout, cancellation, recovery, low-risk outage, high-risk outage and missing `toolCallId`.
@@ -1259,7 +1263,9 @@ OFF returns `undefined`. ACTIVE continues to final Hook. RECOVERY blocks high-ri
 
 - [ ] **Step 4: Implement the signed PDP client**
 
-Use a two-second AbortController linked to `ctx.abortSignal`. Validate response schema, Ed25519 signature, request ID, lease ID, lease epoch, policy digest and both parameter digests. Do not follow redirects. Treat all validation failures as PDP outage and apply the immutable `failurePolicy` carried by the active lease.
+Use a two-second AbortController linked to optional `ctx.abortSignal`, the runtime stop signal and the internal Hook deadline. Validate response schema, Ed25519 signature, request ID, lease ID, lease epoch, policy digest and both parameter digests. Signed PDP `reasonCode` uses strict lower snake case matching the real `NativeToolDecisionService`; uppercase Agent Guard block codes are local projection codes, not wire values. Do not follow redirects. Treat all validation failures as PDP outage and apply the immutable `failurePolicy` carried by the active lease.
+
+Before canonicalization or digest, iteratively validate both input and rewritten parameters with maximum depth 32, maximum 4,096 cumulative object keys, maximum 256 KiB canonical UTF-8, and rejection of dangerous prototype keys. The client and backend decision route allow a separate 64 KiB request envelope. Exact limits pass and limit plus one fails closed without recursive stack overflow.
 
 - [ ] **Step 5: Implement the final `before_tool_call` Hook**
 
@@ -1269,11 +1275,12 @@ Register with priority `-1_000_000` and timeout `5_000`. Under ACTIVE, every too
 allow -> undefined
 warn -> undefined plus decision event
 deny -> block + stable reason code
-ask -> requireApproval with allow-once/deny and onResolution event
+ask without trusted host post-approval recheck attestation -> stable NATIVE_APPROVAL_UNATTESTED deny
+ask with future trusted live capability attestation -> requireApproval with allow-once/deny and onResolution event
 redact -> params only after signature and digest validation
 ```
 
-Do not combine `params` and `requireApproval`. Do not keep name-prefix bypass lists. Never use `allow-always`.
+The fixed `3edbe19f` host invokes `onResolution` fire-and-forget, does not await it and exposes no veto result. Its `ask` path is therefore never executable. The approval capability must come from a future trusted, read-only live host contract; never infer it from plugin config, environment variables, version strings or caller input. Without it, public coverage is `conditional`, so the coordinator does not acknowledge an active lease. Do not combine `params` and `requireApproval`. Do not keep name-prefix bypass lists. Never use `allow-always`.
 
 - [ ] **Step 6: Run plugin behavioral tests**
 
@@ -1281,7 +1288,7 @@ Update `test:native-guard:plugin` to append `runtime.test.ts`.
 
 Run: `npm run test:native-guard:plugin && npm run typecheck:openclaw-plugin && npm run build:openclaw-plugin`
 
-Expected: OFF, deny, redact, ask, timeout and signature tests PASS.
+Expected: OFF, deny, redact, unattested-ask deny, future-attested ask, host cancellation, parameter bounds, timeout and signature tests PASS.
 
 - [ ] **Step 7: Commit**
 
@@ -1630,13 +1637,13 @@ The PowerShell installer must:
 3. refuse versions below 2026.7.2 without modifying OpenClaw
 4. install the local plugin directory only on compatible hosts
 5. run openclaw plugins doctor/status, reject Agent Guard error diagnostics, and query the authenticated plugin status route
-6. perform a live registry query that proves the Agent Guard plugin, final `before_tool_call` and recovery service are committed
+6. perform a live registry query that proves the Agent Guard plugin, final `before_tool_call`, recovery service and trusted post-approval lease recheck capability are committed
 7. leave the plugin installed but OFF, with zero leases
 ```
 
 Never modify the user tool allow/deny policy or enable Docker globally.
 
-**Blocking launcher acceptance condition:** if any guarded marker exists and the live registry query cannot prove all three required live contributions, every Agent Guard-managed launcher must refuse normal Gateway startup and expose only a no-tool-dispatch maintenance cleanup path. The fixed `3edbe19f` host cannot create new guarded activations. Task 8 provides plugin quarantine and diagnostic preflight only; implementing and live-testing this external launcher gate remains required work in Task 14 and blocks release.
+**Blocking launcher acceptance condition:** if any guarded marker exists and the live registry query cannot prove the required plugin, final Hook, recovery service and post-approval lease recheck capability, every Agent Guard-managed launcher must refuse normal Gateway startup and expose only a no-tool-dispatch maintenance cleanup path. The approval capability must be a trusted, read-only host live contract and cannot come from config, env or caller self-report. The fixed `3edbe19f` host cannot create new guarded activations. Task 8 provides plugin quarantine and diagnostic preflight only; implementing and live-testing this external launcher gate remains required work in Task 14 and blocks release.
 
 - [ ] **Step 2: Add fake-host and backend verification**
 
@@ -1644,7 +1651,7 @@ Never modify the user tool allow/deny policy or enable Docker globally.
 
 - manifest declares trusted policy contract;
 - OFF returns without fetch or audit;
-- active allow, deny, redact and ask mappings;
+- active allow, deny and redact mappings, unattested ask deny, and future live-attested ask allow-once/deny mapping;
 - invalid signature and timeout fail closed for high-risk tools;
 - subagent inheritance and restart recovery;
 - backend auth, replay defense and event idempotency;

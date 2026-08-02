@@ -36,6 +36,10 @@ import { failure, success } from "../../response";
 
 const BASE_PATH = "/api/v1/openclaw/native-guard";
 const DECISION_PATH = "/api/v1/openclaw/native-guard/decision";
+const MAX_DECISION_PARAMETER_BYTES = 256 * 1024;
+const MAX_DECISION_ENVELOPE_BYTES = 64 * 1024;
+const MAX_DECISION_BODY_BYTES = MAX_DECISION_PARAMETER_BYTES + MAX_DECISION_ENVELOPE_BYTES;
+const MAX_DECISION_PARAMETER_KEYS = 4_096;
 
 export type NativeGuardRouteDependencies = {
   controlToken?: string;
@@ -507,7 +511,7 @@ export async function openClawNativeGuardRoutes(
   });
 
   app.post(`${BASE_PATH}/decision`, {
-    bodyLimit: 256 * 1024,
+    bodyLimit: MAX_DECISION_BODY_BYTES,
     schema: { body: DECISION_REQUEST_SCHEMA },
     onRequest: async (request, reply) => {
       const credential = parseLeaseBearer(request.headers.authorization);
@@ -765,7 +769,7 @@ const DECISION_REQUEST_SCHEMA = {
     toolKind: { type: "string", minLength: 1, maxLength: 128 },
     toolInputKind: { type: "string", minLength: 1, maxLength: 128 },
     providerId: { type: "string", minLength: 1, maxLength: 256 },
-    params: { type: "object", maxProperties: 1_000 },
+    params: { type: "object", maxProperties: MAX_DECISION_PARAMETER_KEYS },
     paramsDigest: { type: "string", pattern: "^[a-fA-F0-9]{64}$" },
     derivedPaths: {
       type: "array",

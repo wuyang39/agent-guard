@@ -3,20 +3,34 @@ import { generateKeyPairSync, type KeyObject } from "node:crypto";
 import { createServer } from "node:http";
 import test from "node:test";
 import type {
+  NativeGuardAction,
   NativeGuardEvent,
   NativeGuardLeaseActivation,
   NativeToolDecisionRequest,
   NativeToolDecisionResponse,
+  SupervisionAction,
+  SupervisionPolicy,
+  SupervisionPolicyPack,
 } from "@agent-guard/contracts";
-import { digestJson, signNativeGuardPayload } from "@agent-guard/native-guard-protocol";
-import type { BeforeResult, ToolEvent } from "openclaw/plugin-sdk/plugin-entry";
+import { canonicalJson, digestJson, signNativeGuardPayload } from "@agent-guard/native-guard-protocol";
+import type { BeforeResult, ToolContext, ToolEvent } from "openclaw/plugin-sdk/plugin-entry";
+import { createNativeGuardLeaseService } from "../../../backend/src/modules/openclaw/nativeGuardLeaseService";
+import { createNativeToolDecisionService } from "../../../backend/src/modules/openclaw/nativeToolDecisionService";
+import { createDecisionClient } from "./decisionClient";
 import type { GuardedMarker, MarkerStore } from "./leaseRegistry";
 import { AgentGuardRuntime } from "./runtime";
 
 const NOW = "2026-08-02T10:00:00.000Z";
+const MAX_PARAM_BYTES = 256 * 1024;
+const MAX_PARAM_DEPTH = 32;
+const MAX_PARAM_KEYS = 4_096;
 const DENY_OUTAGE: BeforeResult = {
   block: true,
   blockReason: "[Agent Guard:NATIVE_GUARD_PDP_UNAVAILABLE] Native guard policy decision unavailable.",
+};
+const HOST_CANCELLED: BeforeResult = {
+  block: true,
+  blockReason: "[Agent Guard:NATIVE_GUARD_CANCELLED] Native guard tool call was cancelled.",
 };
 
 test("OFF returns without fetch, events, writes, approvals, blocks, or parameter changes", async () => {
@@ -42,7 +56,7 @@ test("OFF returns without fetch, events, writes, approvals, blocks, or parameter
 });
 
 test("ACTIVE maps a valid signed deny to the stable policy block", async () => {
-  const fixture = await activeFixture({ action: "deny", reasonCode: "NATIVE_POLICY_DENY", reason: "denied" });
+  const fixture = await activeFixture({ action: "deny", reasonCode: "policy_deny", reason: "denied" });
 
   const result = await fixture.runtime.beforeToolCall(execEvent(), execContext());
 
@@ -56,9 +70,9 @@ test("ACTIVE maps a valid signed deny to the stable policy block", async () => {
 test("signed deny reason fields cannot echo even a short lease credential", async () => {
   const fixture = await activeFixture({
     action: "deny",
-    credential: "SECRET",
-    reasonCode: "SECRET",
-    reason: "SECRET",
+    credential: "secret",
+    reasonCode: "policy_deny",
+    reason: "secret",
   });
 
   const result = await fixture.runtime.beforeToolCall(execEvent(), execContext());
@@ -67,13 +81,13 @@ test("signed deny reason fields cannot echo even a short lease credential", asyn
     block: true,
     blockReason: "[Agent Guard:NATIVE_POLICY_DENY] Denied by Agent Guard policy.",
   });
-  assert.equal(JSON.stringify(fixture.events).includes("SECRET"), false);
+  assert.equal(JSON.stringify(fixture.events).includes("secret"), false);
 });
 
 test("signed deny reason cannot echo a parameter beyond the event projection scan prefix", async () => {
   const fixture = await activeFixture({
     action: "deny",
-    reasonCode: "NATIVE_POLICY_DENY",
+    reasonCode: "policy_deny",
     reason: "TAILSECRET",
   });
   const params = {
@@ -106,6 +120,192 @@ test("ACTIVE applies only signed redact parameters with a matching digest", asyn
 
   assert.deepEqual(result, { params: { body: "[REDACTED]" } });
   assert.equal("requireApproval" in (result ?? {}), false);
+});
+
+test("signed rewritten params accept exactly 256 KiB and reject one byte more", async () => {
+  const exactParams = paramsAtCanonicalBytes(MAX_PARAM_BYTES);
+  const exact = await activeFixture({ action: "redact", rewrittenParams: exactParams });
+  const oversized = await activeFixture({
+    action: "redact",
+    rewrittenParams: paramsAtCanonicalBytes(MAX_PARAM_BYTES + 1),
+  });
+
+  const exactResult = await exact.runtime.beforeToolCall(execEvent(), execContext());
+
+  assert.equal((exactResult?.params?.body as string).length, exactParams.body.length);
+  assert.deepEqual(
+    await oversized.runtime.beforeToolCall(execEvent(), execContext()),
+    DENY_OUTAGE,
+  );
+});
+
+test("signed rewritten params accept exactly 4096 keys and reject one more", async () => {
+  const exact = await activeFixture({ action: "redact", rewrittenParams: paramsWithKeys(MAX_PARAM_KEYS) });
+  const excessive = await activeFixture({
+    action: "redact",
+    rewrittenParams: paramsWithKeys(MAX_PARAM_KEYS + 1),
+  });
+
+  const exactResult = await exact.runtime.beforeToolCall(execEvent(), execContext());
+
+  assert.equal(Object.keys(exactResult?.params ?? {}).length, MAX_PARAM_KEYS);
+  assert.deepEqual(
+    await excessive.runtime.beforeToolCall(execEvent(), execContext()),
+    DENY_OUTAGE,
+  );
+});
+
+test("signed rewritten params accept depth 32 and reject depth 33 without recursion failure", async () => {
+  const exact = await activeFixture({ action: "redact", rewrittenParams: paramsAtDepth(MAX_PARAM_DEPTH) });
+  const tooDeep = await activeFixture({
+    action: "redact",
+    rewrittenParams: paramsAtDepth(MAX_PARAM_DEPTH + 1),
+  });
+
+  assert.ok((await exact.runtime.beforeToolCall(execEvent(), execContext()))?.params);
+  assert.deepEqual(
+    await tooDeep.runtime.beforeToolCall(execEvent(), execContext()),
+    DENY_OUTAGE,
+  );
+});
+
+test("signed rewritten params reject dangerous prototype keys despite a matching digest", async () => {
+  const fixture = await activeFixture({
+    action: "redact",
+    rewrittenParams: JSON.parse('{"safe":true,"__proto__":{"polluted":true}}') as Record<string, unknown>,
+  });
+
+  assert.deepEqual(await fixture.runtime.beforeToolCall(execEvent(), execContext()), DENY_OUTAGE);
+  assert.equal(({} as { polluted?: boolean }).polluted, undefined);
+});
+
+test("input params enforce the same byte, key, depth, and dangerous-key boundaries before fetch", async () => {
+  const exactBytes = await activeFixture({ action: "allow" });
+  assert.equal(await exactBytes.runtime.beforeToolCall(
+    { ...execEvent(), params: paramsAtCanonicalBytes(MAX_PARAM_BYTES) },
+    execContext(),
+  ), undefined);
+  assert.equal(exactBytes.fetchCalls(), 1);
+
+  for (const [name, params] of [
+    ["bytes", paramsAtCanonicalBytes(MAX_PARAM_BYTES + 1)],
+    ["keys", paramsWithKeys(MAX_PARAM_KEYS + 1)],
+    ["depth", paramsAtDepth(MAX_PARAM_DEPTH + 1)],
+    ["prototype", JSON.parse('{"constructor":{"prototype":{"polluted":true}}}')],
+  ] as const) {
+    const fixture = await activeFixture({ action: "allow" });
+    const result = await fixture.runtime.beforeToolCall(
+      { ...execEvent(), params },
+      execContext(),
+    );
+    assert.deepEqual(result, DENY_OUTAGE, name);
+    assert.equal(fixture.fetchCalls(), 0, name);
+  }
+});
+
+test("input params reject array accessors without invoking them", async () => {
+  let getterCalls = 0;
+  const values: unknown[] = [undefined];
+  Object.defineProperty(values, 0, {
+    enumerable: true,
+    configurable: true,
+    get() {
+      getterCalls += 1;
+      return "secret";
+    },
+  });
+  const fixture = await activeFixture({ action: "allow" });
+
+  const result = await fixture.runtime.beforeToolCall(
+    { ...execEvent(), params: { values } },
+    execContext(),
+  );
+
+  assert.deepEqual(result, DENY_OUTAGE);
+  assert.equal(getterCalls, 0);
+  assert.equal(fixture.fetchCalls(), 0);
+});
+
+test("input params reject proxies without invoking their get traps", async () => {
+  let getCalls = 0;
+  const params = new Proxy({ body: "safe" }, {
+    get(target, property, receiver) {
+      getCalls += 1;
+      if (property === "body") return "x".repeat(MAX_PARAM_BYTES + 1);
+      return Reflect.get(target, property, receiver);
+    },
+  });
+  const fixture = await activeFixture({ action: "allow" });
+
+  const result = await fixture.runtime.beforeToolCall(
+    { ...execEvent(), params },
+    execContext(),
+  );
+
+  assert.deepEqual(result, DENY_OUTAGE);
+  assert.equal(getCalls, 0);
+  assert.equal(fixture.fetchCalls(), 0);
+});
+
+test("oversized input params fail before building a canonical string", async () => {
+  const fixture = await activeFixture({ action: "allow" });
+  const originalByteLength = Buffer.byteLength;
+  let largestMeasuredString = 0;
+  Buffer.byteLength = ((value: string | NodeJS.ArrayBufferView, encoding?: BufferEncoding) => {
+    if (typeof value === "string") largestMeasuredString = Math.max(largestMeasuredString, value.length);
+    return originalByteLength(value, encoding);
+  }) as typeof Buffer.byteLength;
+
+  let result: BeforeResult | void;
+  try {
+    result = await fixture.runtime.beforeToolCall(
+      { ...execEvent(), params: { body: "x".repeat(MAX_PARAM_BYTES + 1) } },
+      execContext(),
+    );
+  } finally {
+    Buffer.byteLength = originalByteLength;
+  }
+
+  assert.deepEqual(result, DENY_OUTAGE);
+  assert.ok(largestMeasuredString < MAX_PARAM_BYTES);
+  assert.equal(fixture.fetchCalls(), 0);
+});
+
+test("deep redact responses are bounded before response canonicalization", async () => {
+  const deepRewrite = paramsAtDepth(128);
+  const fixture = await activeFixture({
+    action: "redact",
+    transformEnvelope: (envelope) => ({
+      ...envelope,
+      data: {
+        ...(envelope.data as Record<string, unknown>),
+        rewrittenParams: deepRewrite,
+        rewrittenParamsDigest: "a".repeat(64),
+      },
+    }),
+  });
+  const originalGetPrototypeOf = Object.getPrototypeOf;
+  let deepPrototypeChecks = 0;
+  Object.getPrototypeOf = ((value: unknown) => {
+    if (
+      typeof value === "object" &&
+      value !== null &&
+      Object.hasOwn(value, "nested")
+    ) {
+      deepPrototypeChecks += 1;
+    }
+    return originalGetPrototypeOf(value);
+  }) as typeof Object.getPrototypeOf;
+
+  let result: BeforeResult | void;
+  try {
+    result = await fixture.runtime.beforeToolCall(execEvent(), execContext());
+  } finally {
+    Object.getPrototypeOf = originalGetPrototypeOf;
+  }
+
+  assert.deepEqual(result, DENY_OUTAGE);
+  assert.ok(deepPrototypeChecks <= MAX_PARAM_DEPTH + 4, String(deepPrototypeChecks));
 });
 
 test("ACTIVE ask is denied while the host lacks awaited approval veto and lease recheck", async () => {
@@ -189,6 +389,82 @@ test("ACTIVE warn emits a decision event and passes through", async () => {
   assert.equal(fixture.events[0]?.detail.action, "warn");
 });
 
+test("the plugin client accepts every lowercase reason code signed by NativeToolDecisionService", async () => {
+  const scenarios: Array<{
+    defaultAction: SupervisionAction;
+    policyAction?: SupervisionAction;
+    expectedAction: NativeGuardAction;
+    expectedReasonCode: string;
+  }> = [
+    { defaultAction: "allow", expectedAction: "allow", expectedReasonCode: "default_allow" },
+    { defaultAction: "warn", expectedAction: "warn", expectedReasonCode: "default_warn" },
+    { defaultAction: "deny", expectedAction: "deny", expectedReasonCode: "default_deny" },
+    { defaultAction: "ask", expectedAction: "ask", expectedReasonCode: "default_ask" },
+    { defaultAction: "isolate", expectedAction: "deny", expectedReasonCode: "default_isolate_deny" },
+    ...(["allow", "warn", "deny", "ask", "redact", "isolate"] as const).map((policyAction) => ({
+      defaultAction: "deny" as const,
+      policyAction,
+      expectedAction: policyAction === "isolate" ? "deny" as const : policyAction,
+      expectedReasonCode: policyAction === "isolate" ? "policy_isolate_deny" : `policy_${policyAction}`,
+    })),
+  ];
+  for (const scenario of scenarios) {
+    const policyPack = servicePolicyPack(scenario.defaultAction, scenario.policyAction);
+    const leaseService = createNativeGuardLeaseService({ now: () => Date.parse(NOW) });
+    const activation = leaseService.create({
+      rootSessionKey: "agent:main",
+      mode: "supervision",
+      policyPack,
+      policyPackDigest: digestJson(policyPack),
+      backendUrl: "http://127.0.0.1:3100/api/v1/openclaw/native-guard/decision",
+    }).activation;
+    let id = 0;
+    const service = createNativeToolDecisionService({
+      leaseService,
+      eventStore: { async append() { return true; } },
+      now: () => NOW,
+      createId: (prefix) => `${prefix}.${++id}`,
+    });
+    const params = { body: "public" };
+    const request: NativeToolDecisionRequest = {
+      schemaVersion: "native-guard-1",
+      requestId: `request.${scenario.expectedReasonCode}`,
+      leaseId: activation.leaseId,
+      leaseEpoch: activation.leaseEpoch,
+      sessionKey: activation.rootSessionKey,
+      toolCallId: `call.${scenario.expectedReasonCode}`,
+      toolName: "web_fetch",
+      params,
+      paramsDigest: digestJson(params),
+      requestedAt: NOW,
+    };
+    const signed = (await service.decide(request, activation.credential)).response;
+    const client = createDecisionClient({
+      now: () => new Date(NOW),
+      fetch: async () => jsonResponse(JSON.stringify({
+        ok: true,
+        data: signed,
+        requestId: `api.${scenario.expectedReasonCode}`,
+      })),
+    });
+
+    const accepted = await client.decide({
+      lease: { ...activation, state: "active", childSessionKeys: [] },
+      request,
+      signal: new AbortController().signal,
+    });
+
+    assert.equal(accepted.action, scenario.expectedAction);
+    assert.equal(accepted.reasonCode, scenario.expectedReasonCode);
+  }
+});
+
+test("the plugin client rejects uppercase signed PDP reason codes", async () => {
+  const fixture = await activeFixture({ action: "allow", reasonCode: "POLICY_ALLOW" });
+
+  assert.deepEqual(await fixture.runtime.beforeToolCall(execEvent(), execContext()), DENY_OUTAGE);
+});
+
 test("a bad Ed25519 signature is treated as a high-risk PDP outage", async () => {
   const fixture = await activeFixture({ action: "allow", signature: "bad-signature" });
 
@@ -226,7 +502,7 @@ test("signed decision data rejects extra fields and non-string reason codes", as
   });
   const wrongType = await activeFixture({
     action: "allow",
-    transformDecision: (decision) => ({ ...decision, reasonCode: ["NATIVE_POLICY_ALLOW"] }),
+    transformDecision: (decision) => ({ ...decision, reasonCode: ["policy_allow"] }),
   });
 
   assert.deepEqual(await extra.runtime.beforeToolCall(execEvent(), execContext()), DENY_OUTAGE);
@@ -356,6 +632,121 @@ test("runtime stop cancels an in-flight decision and a late response cannot allo
   await stopping;
   assert.equal(observedAbort, true);
   assert.deepEqual(fixture.events, []);
+});
+
+test("host tool cancellation immediately aborts a pending PDP fetch and cleans its listener", async () => {
+  const host = observedAbortSignal();
+  let fetchStarted = false;
+  let fetchAborted = false;
+  const fixture = await activeFixture({
+    action: "allow",
+    admissionTimeoutMs: 500,
+    decisionTimeoutMs: 200,
+    fetch: async (_input, init) => await new Promise<Response>((_resolve, reject) => {
+      fetchStarted = true;
+      init?.signal?.addEventListener("abort", () => {
+        fetchAborted = true;
+        reject(new Error("aborted"));
+      }, { once: true });
+    }),
+  });
+  const pending = fixture.runtime.beforeToolCall(
+    execEvent(),
+    { ...execContext(), abortSignal: host.signal },
+  );
+  await waitFor(() => fetchStarted);
+
+  host.abort();
+
+  assert.deepEqual(await pending, HOST_CANCELLED);
+  assert.equal(fetchAborted, true);
+  assert.deepEqual(host.listenerCounts(), { added: 1, removed: 1 });
+  assert.deepEqual(fixture.events, []);
+});
+
+test("an already-aborted host tool call never starts a PDP fetch", async () => {
+  const host = observedAbortSignal();
+  host.abort();
+  const fixture = await activeFixture({ action: "allow" });
+
+  const result = await fixture.runtime.beforeToolCall(
+    execEvent(),
+    { ...execContext(), abortSignal: host.signal },
+  );
+
+  assert.deepEqual(result, HOST_CANCELLED);
+  assert.equal(fixture.fetchCalls(), 0);
+  assert.deepEqual(host.listenerCounts(), { added: 1, removed: 1 });
+  assert.deepEqual(fixture.events, []);
+});
+
+test("host tool cancellation aborts a pending response body read", async () => {
+  const host = observedAbortSignal();
+  let bodyStarted = false;
+  let bodyCancelled = false;
+  const fixture = await activeFixture({
+    action: "allow",
+    admissionTimeoutMs: 500,
+    decisionTimeoutMs: 200,
+    fetch: async () => new Response(new ReadableStream<Uint8Array>({
+      start() { bodyStarted = true; },
+      cancel() { bodyCancelled = true; },
+    }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }),
+  });
+  const pending = fixture.runtime.beforeToolCall(
+    execEvent(),
+    { ...execContext(), abortSignal: host.signal },
+  );
+  await waitFor(() => bodyStarted);
+
+  host.abort();
+
+  assert.deepEqual(await pending, HOST_CANCELLED);
+  assert.equal(bodyCancelled, true);
+  assert.deepEqual(host.listenerCounts(), { added: 1, removed: 1 });
+  assert.deepEqual(fixture.events, []);
+});
+
+test("a signed allow released after host cancellation cannot pass or emit", async () => {
+  const host = observedAbortSignal();
+  let release: (() => void) | undefined;
+  const fixture = await activeFixture({
+    action: "allow",
+    admissionTimeoutMs: 500,
+    decisionTimeoutMs: 200,
+    decisionTransport: async (_request, response) => await new Promise<Response>((resolve) => {
+      release = () => resolve(response);
+    }),
+  });
+  const pending = fixture.runtime.beforeToolCall(
+    execEvent(),
+    { ...execContext(), abortSignal: host.signal },
+  );
+  await waitFor(() => release !== undefined);
+
+  host.abort();
+  release?.();
+
+  assert.deepEqual(await pending, HOST_CANCELLED);
+  assert.deepEqual(host.listenerCounts(), { added: 1, removed: 1 });
+  assert.deepEqual(fixture.events, []);
+});
+
+test("OFF does not subscribe to a host tool cancellation signal", async () => {
+  const host = observedAbortSignal();
+  const runtime = new AgentGuardRuntime({
+    markerStore: memoryMarkerStore(),
+    now: () => new Date(NOW),
+  });
+
+  assert.equal(await runtime.beforeToolCall(
+    execEvent(),
+    { ...execContext(), sessionKey: "agent:ordinary", abortSignal: host.signal },
+  ), undefined);
+  assert.deepEqual(host.listenerCounts(), { added: 0, removed: 0 });
 });
 
 test("RECOVERY blocks high-risk and unknown tools with the stable recovery code", async () => {
@@ -539,6 +930,11 @@ type FixtureOptions = {
   approvalLeaseRecheckAttested?: boolean;
   admissionTimeoutMs?: number;
   credential?: string;
+  decisionTransport?: (
+    request: NativeToolDecisionRequest,
+    response: Response,
+    init: RequestInit | undefined,
+  ) => Promise<Response>;
 };
 
 async function activeFixture(options: FixtureOptions) {
@@ -577,7 +973,8 @@ async function activeFixture(options: FixtureOptions) {
   const configuredFetch = options.fetch ?? (async (_input: string | URL | Request, init?: RequestInit) => {
     calls += 1;
     const request = JSON.parse(String(init?.body)) as NativeToolDecisionRequest;
-    return signedResponse(request);
+    const response = signedResponse(request);
+    return options.decisionTransport?.(request, response, init) ?? response;
   });
   const runtime = new AgentGuardRuntime({
     markerStore: store,
@@ -649,7 +1046,7 @@ function decisionResponse(
     policyPackId: "pack.1",
     policyPackDigest: "b".repeat(64),
     action: options.action,
-    reasonCode: options.reasonCode ?? `NATIVE_POLICY_${options.action.toUpperCase()}`,
+    reasonCode: options.reasonCode ?? `policy_${options.action}`,
     reason: options.reason ?? `${options.action} by policy`,
     evaluatedParamsDigest: options.evaluatedParamsDigest ?? request.paramsDigest,
     ...(rewrittenParams === undefined && options.forceRewrittenParams === undefined
@@ -680,6 +1077,44 @@ function activation(overrides: Partial<NativeGuardLeaseActivation> = {}): Native
     expiresAt: "2026-08-02T10:05:00.000Z",
     credential: "credential-secret",
     ...overrides,
+  };
+}
+
+function servicePolicyPack(
+  defaultAction: SupervisionAction,
+  policyAction?: SupervisionAction,
+): SupervisionPolicyPack {
+  return {
+    schemaVersion: "mvp-1",
+    policyPackId: `policy_pack.${defaultAction}`,
+    agentId: "agent.native",
+    sourceDetectionReportId: "detection.native",
+    sourceRiskProfileId: "risk.native",
+    policies: policyAction === undefined ? [] : [servicePolicy(policyAction)],
+    defaultAction,
+    createdAt: "2026-08-02T09:00:00.000Z",
+    expiresAt: "2026-08-02T11:00:00.000Z",
+  };
+}
+
+function servicePolicy(action: SupervisionAction): SupervisionPolicy {
+  return {
+    policyId: `policy.${action}`,
+    sourceWeaknessIds: ["weakness.native"],
+    name: `${action} policy`,
+    description: "Native decision contract fixture.",
+    targetType: "api_call",
+    action,
+    riskLevel: "high",
+    match: {
+      relation: "all",
+      matchers: [{
+        fieldPath: action === "redact" ? "payload.parameters.body" : "payload.toolName",
+        operator: "contains",
+        value: action === "redact" ? "public" : "web_fetch",
+      }],
+    },
+    reason: `${action} by policy.`,
   };
 }
 
@@ -730,8 +1165,13 @@ function execEvent(): ToolEvent {
   return { toolName: "exec", params: { command: "echo secret" }, toolCallId: "call.1" };
 }
 
-function execContext() {
-  return { toolName: "exec", sessionKey: "agent:main", toolCallId: "call.1" };
+function execContext(overrides: Partial<ToolContext> = {}): ToolContext {
+  return {
+    toolName: "exec",
+    sessionKey: "agent:main",
+    toolCallId: "call.1",
+    ...overrides,
+  };
 }
 
 function lowRiskEvent(): ToolEvent {
@@ -742,10 +1182,56 @@ function lowRiskContext() {
   return { toolName: "session_status", sessionKey: "agent:main", toolCallId: "call.low" };
 }
 
+function paramsAtCanonicalBytes(bytes: number): { body: string } {
+  const overhead = Buffer.byteLength(canonicalJson({ body: "" }), "utf8");
+  assert.ok(bytes >= overhead);
+  const params = { body: "x".repeat(bytes - overhead) };
+  assert.equal(Buffer.byteLength(canonicalJson(params), "utf8"), bytes);
+  return params;
+}
+
+function paramsWithKeys(count: number): Record<string, unknown> {
+  return Object.fromEntries(Array.from({ length: count }, (_value, index) => [`key${index}`, index]));
+}
+
+function paramsAtDepth(depth: number): Record<string, unknown> {
+  let value: Record<string, unknown> = {};
+  for (let index = 0; index < depth; index += 1) value = { nested: value };
+  return value;
+}
+
 async function waitFor(predicate: () => boolean): Promise<void> {
   for (let count = 0; count < 100; count += 1) {
     if (predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 1));
   }
   throw new Error("condition was not reached");
+}
+
+function observedAbortSignal(): {
+  signal: AbortSignal;
+  abort(): void;
+  listenerCounts(): { added: number; removed: number };
+} {
+  const controller = new AbortController();
+  let added = 0;
+  let removed = 0;
+  const signal = {
+    get aborted() { return controller.signal.aborted; },
+    get reason() { return controller.signal.reason; },
+    addEventListener(...args: Parameters<AbortSignal["addEventListener"]>) {
+      added += 1;
+      controller.signal.addEventListener(...args);
+    },
+    removeEventListener(...args: Parameters<AbortSignal["removeEventListener"]>) {
+      removed += 1;
+      controller.signal.removeEventListener(...args);
+    },
+    throwIfAborted() { controller.signal.throwIfAborted(); },
+  } as AbortSignal;
+  return {
+    signal,
+    abort: () => controller.abort(),
+    listenerCounts: () => ({ added, removed }),
+  };
 }

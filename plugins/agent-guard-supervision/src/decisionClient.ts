@@ -5,18 +5,21 @@ import type {
 } from "@agent-guard/contracts";
 import {
   canonicalJson,
-  digestJson,
   verifyNativeGuardPayload,
 } from "@agent-guard/native-guard-protocol";
+import {
+  inspectBoundedParams,
+  MAX_NATIVE_TOOL_PARAM_BYTES,
+} from "./jsonBounds";
 import type { ActiveLeaseLookup } from "./leaseRegistry";
 
 const DEFAULT_TIMEOUT_MS = 2_000;
-const DEFAULT_MAX_REQUEST_BYTES = 256 * 1024;
+const DEFAULT_MAX_REQUEST_BYTES = MAX_NATIVE_TOOL_PARAM_BYTES + 64 * 1024;
 const DEFAULT_MAX_RESPONSE_BYTES = 384 * 1024;
 const DEFAULT_MAX_DECISION_IDS_PER_LEASE = 1_000;
 const DEFAULT_MAX_DECISION_SKEW_MS = 30_000;
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
-const REASON_CODE = /^[A-Z][A-Z0-9_]{0,127}$/;
+const REASON_CODE = /^[a-z][a-z0-9_]{0,127}$/;
 const DIGEST = /^[a-f0-9]{64}$/;
 const CANONICAL_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const ACTIONS = new Set(["allow", "warn", "deny", "ask", "redact"]);
@@ -74,6 +77,8 @@ export function createDecisionClient(options: DecisionClientOptions = {}): Decis
     async decide(input) {
       try {
         if (typeof fetchImplementation !== "function") throw unavailable();
+        const inspectedParams = inspectBoundedParams(input.request.params);
+        if (inspectedParams.digest !== input.request.paramsDigest) throw unavailable();
         const requestBody = canonicalJson(input.request);
         if (Buffer.byteLength(requestBody, "utf8") > maxRequestBytes) throw unavailable();
         const envelope = await withDeadline(input.signal, timeoutMs, async (signal) => {
@@ -204,11 +209,9 @@ function parseDecision(
   if (!isRecord(envelopeValue) || !hasExactKeys(envelopeValue, ["data", "ok", "requestId"])) {
     throw unavailable();
   }
-  canonicalJson(envelopeValue);
   if (envelopeValue.ok !== true || !safeString(envelopeValue.requestId, 256)) throw unavailable();
   const value = envelopeValue.data;
   if (!isRecord(value)) throw unavailable();
-  canonicalJson(value);
   const required = [
     "action",
     "decidedAt",
@@ -260,11 +263,14 @@ function parseDecision(
 
   if (value.action === "redact") {
     if (!isRecord(value.rewrittenParams) || !isDigest(value.rewrittenParamsDigest)) throw unavailable();
-    if (digestJson(value.rewrittenParams) !== value.rewrittenParamsDigest) throw unavailable();
+    if (inspectBoundedParams(value.rewrittenParams).digest !== value.rewrittenParamsDigest) {
+      throw unavailable();
+    }
   } else if (value.rewrittenParams !== undefined || value.rewrittenParamsDigest !== undefined) {
     throw unavailable();
   }
 
+  canonicalJson(envelopeValue);
   const { signature, ...unsigned } = value;
   const publicKey = createPublicKey(input.lease.decisionPublicKey);
   if (!verifyNativeGuardPayload(unsigned, signature as string, publicKey)) throw unavailable();

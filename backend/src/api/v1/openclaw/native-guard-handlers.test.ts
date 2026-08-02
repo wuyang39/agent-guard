@@ -1,8 +1,14 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 import Fastify from "fastify";
 import type { NativeGuardStatus } from "@agent-guard/contracts";
+import {
+  systemRoutes,
+  type SystemRouteDependencies,
+} from "../system/handlers";
 import {
   openClawNativeGuardRoutes,
   type NativeGuardRouteDependencies,
@@ -787,10 +793,136 @@ test("native status projection allowlists fields instead of forwarding dependenc
   await app.close();
 });
 
+test("system status uses the real adapter check result regardless of CLI path presence", async () => {
+  const configuredCalls: Array<string | undefined> = [];
+  const configured = systemAgent("C:\\missing\\openclaw.cmd");
+  const configuredApp = await createSystemApp({
+    getActiveAgentConfig: async () => configured,
+    listAgentConfigs: async () => [configured],
+    listRunGroups: async () => [],
+    checkOpenClawAvailable: async (cliPath) => {
+      configuredCalls.push(cliPath);
+      return { available: false };
+    },
+    now: () => 1_000,
+  });
+
+  const unavailable = await configuredApp.inject({
+    method: "GET",
+    url: "/api/v1/system/status",
+  });
+  assert.equal(unavailable.json().data.health.openclawCli, false);
+  assert.equal(unavailable.json().data.features.openclawAdapter, false);
+  assert.deepEqual(configuredCalls, ["C:\\missing\\openclaw.cmd"]);
+  await configuredApp.close();
+
+  const unconfiguredCalls: Array<string | undefined> = [];
+  const unconfigured = systemAgent();
+  const unconfiguredApp = await createSystemApp({
+    getActiveAgentConfig: async () => unconfigured,
+    listAgentConfigs: async () => [unconfigured],
+    listRunGroups: async () => [],
+    checkOpenClawAvailable: async (cliPath) => {
+      unconfiguredCalls.push(cliPath);
+      return { available: true, version: "2026.6.1" };
+    },
+    now: () => 1_000,
+  });
+
+  const available = await unconfiguredApp.inject({
+    method: "GET",
+    url: "/api/v1/system/status",
+  });
+  assert.equal(available.json().data.health.openclawCli, true);
+  assert.equal(available.json().data.features.openclawAdapter, true);
+  assert.deepEqual(unconfiguredCalls, [undefined]);
+  await unconfiguredApp.close();
+});
+
+test("system adapter availability cache honors TTL and bypasses it on CLI path change", async () => {
+  const paths = [
+    "C:\\openclaw-a.cmd",
+    "C:\\openclaw-a.cmd",
+    "C:\\openclaw-b.cmd",
+    "C:\\openclaw-b.cmd",
+  ];
+  const times = [1_000, 2_000, 3_000, 33_001];
+  const checkCalls: Array<string | undefined> = [];
+  const app = await createSystemApp({
+    getActiveAgentConfig: async () => systemAgent(paths.shift()),
+    listAgentConfigs: async () => [systemAgent()],
+    listRunGroups: async () => [],
+    checkOpenClawAvailable: async (cliPath) => {
+      checkCalls.push(cliPath);
+      return { available: true };
+    },
+    now: () => times.shift() ?? 33_001,
+  });
+
+  for (let index = 0; index < 4; index += 1) {
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/v1/system/status",
+    });
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.json().data.health.openclawCli, true);
+  }
+
+  assert.deepEqual(checkCalls, [
+    "C:\\openclaw-a.cmd",
+    "C:\\openclaw-b.cmd",
+    "C:\\openclaw-b.cmd",
+  ]);
+  await app.close();
+});
+
+test("system status creates a missing output directory before marking it available", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "agent-guard-system-status-"));
+  const outputDir = path.join(rootDir, "nested", "outputs");
+  const agent = systemAgent();
+  const app = await createSystemApp({
+    getActiveAgentConfig: async () => agent,
+    listAgentConfigs: async () => [agent],
+    listRunGroups: async () => [],
+    checkOpenClawAvailable: async () => ({ available: false }),
+    outputDir,
+  });
+
+  try {
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/v1/system/status",
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.json().data.outputDir, outputDir);
+    assert.equal(response.json().data.health.outputStore, true);
+    assert.equal((await stat(outputDir)).isDirectory(), true);
+  } finally {
+    await app.close();
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
 async function createApp(dependencies: NativeGuardRouteDependencies) {
   const app = Fastify({ logger: false, bodyLimit: 2 * 1024 * 1024 });
   await app.register(openClawNativeGuardRoutes, dependencies);
   return app;
+}
+
+async function createSystemApp(dependencies: SystemRouteDependencies) {
+  const app = Fastify({ logger: false });
+  await app.register(systemRoutes, dependencies);
+  return app;
+}
+
+function systemAgent(openclawCliPath?: string) {
+  return {
+    adapterKind: "openclaw" as const,
+    agentId: "agent.system-test",
+    name: "System Test Agent",
+    openclawCliPath,
+  };
 }
 
 function createFixture() {

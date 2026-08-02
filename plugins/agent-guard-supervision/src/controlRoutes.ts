@@ -1,10 +1,11 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { createHash } from "node:crypto";
 import type {
   NativeGuardLeaseActivation,
   NativeGuardStatus,
 } from "@agent-guard/contracts";
 import type { PluginApi } from "openclaw/plugin-sdk/plugin-entry";
-import type { AgentGuardRuntime } from "./runtime";
+import { AgentGuardRuntime } from "./runtime";
 
 const ACTIVATE_PATH = "/agent-guard/native-guard/v1/leases/activate";
 const RENEW_PATH = "/agent-guard/native-guard/v1/leases/renew";
@@ -12,15 +13,25 @@ const REVOKE_PATH = "/agent-guard/native-guard/v1/leases/revoke";
 const STATUS_PATH = "/agent-guard/native-guard/v1/status";
 const MAX_BODY_BYTES = 64 * 1024;
 const SAFE_LEASE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const IDEMPOTENCY_KEY = /^[A-Za-z0-9_-]{43}$/;
+const DEFAULT_IDEMPOTENCY_CAPACITY = 256;
+const DEFAULT_BODY_TIMEOUT_MS = 2_000;
+const SERVICE_STOP_TIMEOUT_MS = 4_000;
 
 type ErrorCode =
   | "INVALID_ACTIVATION"
+  | "INVALID_IDEMPOTENCY_KEY"
   | "INVALID_REQUEST"
+  | "IDEMPOTENCY_CAPACITY"
+  | "IDEMPOTENCY_CONFLICT"
   | "LEASE_CONFLICT"
   | "METHOD_NOT_ALLOWED"
   | "NATIVE_GUARD_INTERNAL"
   | "REQUEST_ABORTED"
+  | "REQUEST_INCOMPLETE"
+  | "REQUEST_TIMEOUT"
   | "REQUEST_TOO_LARGE"
+  | "UNSUPPORTED_CONTENT_ENCODING"
   | "UNSUPPORTED_MEDIA_TYPE";
 
 class ControlRouteError extends Error {
@@ -35,15 +46,40 @@ class ControlRouteError extends Error {
 }
 
 export type ControlRouteApi = Pick<PluginApi, "registerHttpRoute">;
-export type LifecycleApi = Pick<PluginApi, "on" | "registerService">;
-export type AgentGuardPluginApi = ControlRouteApi & LifecycleApi;
+export type ControlRouteOptions = {
+  bodyTimeoutMs?: number;
+  scheduleTimeout?: (callback: () => void, delayMs: number) => unknown;
+  cancelTimeout?: (handle: unknown) => void;
+  idempotencyCapacity?: number;
+};
+export type LifecycleApi = Pick<
+  PluginApi,
+  "on" | "registerService" | "registerTrustedToolPolicy" | "runtime"
+>;
+export type AgentGuardPluginApi = ControlRouteApi & LifecycleApi & Pick<PluginApi, "pluginConfig">;
 
 export function registerAgentGuardPlugin(
   api: AgentGuardPluginApi,
-  runtime: AgentGuardRuntime,
-): void {
+): AgentGuardRuntime {
+  const markerDir = parseMarkerDir(api.pluginConfig);
+  const runtime = new AgentGuardRuntime(markerDir === undefined ? {} : { markerDir });
   registerControlRoutes(api, runtime);
   registerAgentGuardLifecycle(api, runtime);
+  return runtime;
+}
+
+function parseMarkerDir(config: Record<string, unknown> | undefined): string | undefined {
+  if (config === undefined || !Object.hasOwn(config, "markerDir")) return undefined;
+  const markerDir = config.markerDir;
+  if (
+    typeof markerDir !== "string" ||
+    markerDir.trim().length === 0 ||
+    markerDir.length > 4_096 ||
+    markerDir.includes("\0")
+  ) {
+    throw new TypeError("Native guard markerDir config is invalid");
+  }
+  return markerDir;
 }
 
 export function registerAgentGuardLifecycle(
@@ -55,9 +91,20 @@ export function registerAgentGuardLifecycle(
     start: async () => runtime.start(),
     stop: async () => runtime.stop(),
   });
+  api.registerTrustedToolPolicy({
+    id: "agent-guard-admission",
+    description: "Inherit active Agent Guard leases before native tool admission.",
+    evaluate: async (_event, context) => evaluateAdmission(api, runtime, context),
+  });
   api.on("subagent_spawned", async (event, context) => {
     const parentSessionKey = context.requesterSessionKey;
-    if (parentSessionKey === undefined) return;
+    if (
+      parentSessionKey === undefined ||
+      context.childSessionKey === undefined ||
+      event.childSessionKey !== context.childSessionKey
+    ) {
+      return;
+    }
     const parent = await runtime.lookup(parentSessionKey);
     if (parent.state !== "active") return;
     await runtime.bindChild(parent.leaseId, parentSessionKey, event.childSessionKey);
@@ -66,21 +113,100 @@ export function registerAgentGuardLifecycle(
     await runtime.endSession(event.targetSessionKey);
   });
   api.on("session_end", async (event, context) => {
+    if (event.reason === "shutdown" || event.reason === "restart") return;
     const sessionKey = event.sessionKey ?? context.sessionKey;
     if (sessionKey !== undefined) await runtime.endSession(sessionKey);
   });
 }
 
-export function registerControlRoutes(api: ControlRouteApi, runtime: AgentGuardRuntime): void {
+async function evaluateAdmission(
+  api: LifecycleApi,
+  runtime: AgentGuardRuntime,
+  context: { agentId?: string; sessionKey?: string },
+): Promise<{ block: true; blockReason: string } | void> {
+  const sessionKey = context.sessionKey;
+  if (sessionKey !== undefined) {
+    const current = await runtime.lookup(sessionKey);
+    if (current.state === "active") return;
+    if (current.state === "recovery") return recoveryBlock();
+  }
+
+  const status = await runtime.status();
+  if (status.coverage === "off") return;
+  if (status.coverage === "misconfigured") throw new Error("Native guard marker recovery failed");
+  if (status.activeLeaseCount === 0 || !safeSessionKey(sessionKey)) return inheritanceBlock();
+
+  const entry = api.runtime.agent.session.getSessionEntry({
+    ...(context.agentId === undefined ? {} : { agentId: context.agentId }),
+    sessionKey,
+    readConsistency: "latest",
+  });
+  if (
+    !safeSessionKey(entry?.spawnedBy) ||
+    !safeSessionKey(entry.parentSessionKey) ||
+    entry.spawnedBy !== entry.parentSessionKey
+  ) {
+    return inheritanceBlock();
+  }
+
+  const parentSessionKey = entry.parentSessionKey;
+  const parent = await runtime.lookup(parentSessionKey);
+  if (parent.state !== "active") return inheritanceBlock();
+  if (await runtime.bindChild(parent.leaseId, parentSessionKey, sessionKey)) return;
+  const concurrent = await runtime.lookup(sessionKey);
+  if (concurrent.state === "active" && concurrent.leaseId === parent.leaseId) return;
+  return inheritanceBlock();
+}
+
+function safeSessionKey(value: unknown): value is string {
+  return typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= 512 &&
+    !/[\\/\x00-\x1f\x7f]/.test(value) &&
+    !value.includes("..");
+}
+
+function recoveryBlock(): { block: true; blockReason: string } {
+  return { block: true, blockReason: "Native guard recovery requires reactivation." };
+}
+
+function inheritanceBlock(): { block: true; blockReason: string } {
+  return {
+    block: true,
+    blockReason: "Native guard session inheritance could not be proven.",
+  };
+}
+
+export function registerControlRoutes(
+  api: ControlRouteApi,
+  runtime: AgentGuardRuntime,
+  options: ControlRouteOptions = {},
+): void {
+  const idempotency = new IdempotencyCache(
+    options.idempotencyCapacity ?? DEFAULT_IDEMPOTENCY_CAPACITY,
+  );
+  const bodyReader: BodyReaderOptions = {
+    bodyTimeoutMs: parseBodyTimeout(options.bodyTimeoutMs),
+    scheduleTimeout: options.scheduleTimeout ?? ((callback, delayMs) =>
+      setTimeout(callback, delayMs)),
+    cancelTimeout: options.cancelTimeout ?? ((handle) =>
+      clearTimeout(handle as ReturnType<typeof setTimeout>)),
+    getAbortSignal: () => runtime.abortSignal,
+  };
   api.registerHttpRoute({
     path: ACTIVATE_PATH,
     auth: "gateway",
     match: "exact",
     handler: async (request, response) => {
-      await handleRoute(request, response, "POST", "activation", async () => {
-        const body = await readJson(request) as NativeGuardLeaseActivation;
-        sendStatus(response, await runtime.activate(body));
-      });
+      await handleMutationRoute(
+        request,
+        response,
+        "activate",
+        "activation",
+        idempotency,
+        bodyReader,
+        async (body) => runtime.activate(body as NativeGuardLeaseActivation),
+      );
     },
   });
   api.registerHttpRoute({
@@ -88,10 +214,15 @@ export function registerControlRoutes(api: ControlRouteApi, runtime: AgentGuardR
     auth: "gateway",
     match: "exact",
     handler: async (request, response) => {
-      await handleRoute(request, response, "POST", "activation", async () => {
-        const body = await readJson(request) as NativeGuardLeaseActivation;
-        sendStatus(response, await runtime.renew(body));
-      });
+      await handleMutationRoute(
+        request,
+        response,
+        "renew",
+        "activation",
+        idempotency,
+        bodyReader,
+        async (body) => runtime.renew(body as NativeGuardLeaseActivation),
+      );
     },
   });
   api.registerHttpRoute({
@@ -99,11 +230,19 @@ export function registerControlRoutes(api: ControlRouteApi, runtime: AgentGuardR
     auth: "gateway",
     match: "exact",
     handler: async (request, response) => {
-      await handleRoute(request, response, "POST", "request", async () => {
-        const body = parseRevoke(await readJson(request));
-        await runtime.revoke(body.leaseId);
-        sendStatus(response, await runtime.status());
-      });
+      await handleMutationRoute(
+        request,
+        response,
+        "revoke",
+        "request",
+        idempotency,
+        bodyReader,
+        async (value) => {
+          const body = parseRevoke(value);
+          await runtime.revoke(body.leaseId);
+          return runtime.status();
+        },
+      );
     },
   });
   api.registerHttpRoute({
@@ -118,7 +257,49 @@ export function registerControlRoutes(api: ControlRouteApi, runtime: AgentGuardR
   });
 }
 
-async function readJson(request: IncomingMessage): Promise<unknown> {
+type RouteResponse = {
+  statusCode: number;
+  body: unknown;
+  closeConnection?: boolean;
+};
+
+async function handleMutationRoute(
+  request: IncomingMessage,
+  response: ServerResponse,
+  operationName: "activate" | "renew" | "revoke",
+  invalidKind: "activation" | "request",
+  idempotency: IdempotencyCache,
+  bodyReader: BodyReaderOptions,
+  operation: (body: unknown) => Promise<NativeGuardStatus>,
+): Promise<void> {
+  await handleRoute(request, response, "POST", invalidKind, async () => {
+    assertNoContentEncoding(request);
+    const key = parseIdempotencyKey(request.headers["x-idempotency-key"]);
+    const parsed = await readJson(request, bodyReader, operationName);
+    const result = await idempotency.execute(key, parsed.digest, async () => {
+      try {
+        return {
+          statusCode: 200,
+          body: projectStatus(await operation(parsed.value)),
+        };
+      } catch (error) {
+        const mapped = mapRouteError(error, invalidKind);
+        return {
+          statusCode: mapped.statusCode,
+          body: { error: { code: mapped.code, message: mapped.message } },
+          closeConnection: mapped.closeConnection,
+        };
+      }
+    });
+    sendRouteResponse(request, response, result);
+  });
+}
+
+async function readJson(
+  request: IncomingMessage,
+  bodyReader: BodyReaderOptions,
+  operationName = "request",
+): Promise<{ value: unknown; digest: string }> {
   assertJsonContentType(request);
   const declaredLength = parseContentLength(request.headers["content-length"]);
   if (declaredLength !== undefined && declaredLength > MAX_BODY_BYTES) {
@@ -129,16 +310,35 @@ async function readJson(request: IncomingMessage): Promise<unknown> {
       true,
     );
   }
-  const contents = await readBoundedBody(request, declaredLength);
+  const contents = await readBoundedBody(request, declaredLength, bodyReader);
   if (contents.length === 0) {
     throw routeError(400, "INVALID_REQUEST", "Native guard control request is invalid.");
   }
   try {
     const text = new TextDecoder("utf-8", { fatal: true }).decode(contents);
-    return JSON.parse(text) as unknown;
+    return {
+      value: JSON.parse(text) as unknown,
+      digest: createHash("sha256")
+        .update(operationName)
+        .update("\0")
+        .update(contents)
+        .digest("hex"),
+    };
   } catch {
     throw routeError(400, "INVALID_REQUEST", "Native guard control request is invalid.");
   }
+}
+
+function parseBodyTimeout(value: number | undefined): number {
+  const timeoutMs = value ?? DEFAULT_BODY_TIMEOUT_MS;
+  if (
+    !Number.isSafeInteger(timeoutMs) ||
+    timeoutMs <= 0 ||
+    timeoutMs >= SERVICE_STOP_TIMEOUT_MS
+  ) {
+    throw new RangeError("Native guard body timeout is invalid");
+  }
+  return timeoutMs;
 }
 
 async function handleRoute(
@@ -187,6 +387,16 @@ function assertJsonContentType(request: IncomingMessage): void {
   }
 }
 
+function assertNoContentEncoding(request: IncomingMessage): void {
+  if (request.headers["content-encoding"] === undefined) return;
+  throw routeError(
+    415,
+    "UNSUPPORTED_CONTENT_ENCODING",
+    "Native guard control request encoding is unsupported.",
+    true,
+  );
+}
+
 function parseContentLength(value: string | string[] | undefined): number | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "string" || !/^(?:0|[1-9][0-9]*)$/.test(value)) {
@@ -199,20 +409,48 @@ function parseContentLength(value: string | string[] | undefined): number | unde
   return length;
 }
 
+function parseIdempotencyKey(value: string | string[] | undefined): string {
+  if (typeof value !== "string" || !IDEMPOTENCY_KEY.test(value)) {
+    throw routeError(
+      400,
+      "INVALID_IDEMPOTENCY_KEY",
+      "Native guard idempotency key is invalid.",
+      true,
+    );
+  }
+  return value;
+}
+
+type BodyReaderOptions = {
+  bodyTimeoutMs: number;
+  scheduleTimeout: (callback: () => void, delayMs: number) => unknown;
+  cancelTimeout: (handle: unknown) => void;
+  getAbortSignal: () => AbortSignal;
+};
+
 function readBoundedBody(
   request: IncomingMessage,
   declaredLength: number | undefined,
+  options: BodyReaderOptions,
 ): Promise<Buffer> {
   return new Promise((resolve, reject) => {
+    const abortSignal = options.getAbortSignal();
     const chunks: Buffer[] = [];
     let size = 0;
     let settled = false;
+    let timer: unknown;
 
     const cleanup = (): void => {
       request.off("data", onData);
       request.off("end", onEnd);
+      request.off("close", onClose);
       request.off("aborted", onAborted);
       request.off("error", onError);
+      abortSignal.removeEventListener("abort", onRuntimeAbort);
+      if (timer !== undefined) {
+        options.cancelTimeout(timer);
+        timer = undefined;
+      }
     };
     const fail = (error: ControlRouteError): void => {
       if (settled) return;
@@ -263,11 +501,38 @@ function readBoundedBody(
     const onError = (): void => {
       fail(routeError(400, "REQUEST_ABORTED", "Native guard control request was aborted."));
     };
+    const onClose = (): void => {
+      fail(routeError(400, "REQUEST_INCOMPLETE", "Native guard control request is incomplete."));
+    };
+    const onRuntimeAbort = (): void => {
+      fail(routeError(400, "REQUEST_ABORTED", "Native guard control request was aborted."));
+    };
+    const onTimeout = (): void => {
+      fail(
+        routeError(
+          408,
+          "REQUEST_TIMEOUT",
+          "Native guard control request timed out.",
+          true,
+        ),
+      );
+    };
 
     request.on("data", onData);
     request.once("end", onEnd);
+    request.once("close", onClose);
     request.once("aborted", onAborted);
     request.once("error", onError);
+    abortSignal.addEventListener("abort", onRuntimeAbort, { once: true });
+    if (abortSignal.aborted) {
+      onRuntimeAbort();
+      return;
+    }
+    timer = options.scheduleTimeout(onTimeout, options.bodyTimeoutMs);
+    if (settled && timer !== undefined) {
+      options.cancelTimeout(timer);
+      timer = undefined;
+    }
   });
 }
 
@@ -295,6 +560,18 @@ function validLeaseId(value: unknown): value is string {
 
 function sendStatus(response: ServerResponse, status: NativeGuardStatus): void {
   sendJson(response, 200, projectStatus(status));
+}
+
+function sendRouteResponse(
+  request: IncomingMessage,
+  response: ServerResponse,
+  result: RouteResponse,
+): void {
+  if (result.closeConnection) {
+    response.setHeader("Connection", "close");
+    if (!request.destroyed) request.resume();
+  }
+  sendJson(response, result.statusCode, result.body);
 }
 
 function sendJson(response: ServerResponse, statusCode: number, body: unknown): void {
@@ -372,4 +649,77 @@ function routeError(
   closeConnection = false,
 ): ControlRouteError {
   return new ControlRouteError(statusCode, code, message, closeConnection);
+}
+
+type IdempotencyEntry = {
+  requestDigest: string;
+  promise: Promise<RouteResponse>;
+  settled: boolean;
+};
+
+class IdempotencyCache {
+  readonly #capacity: number;
+  readonly #entries = new Map<string, IdempotencyEntry>();
+
+  constructor(capacity: number) {
+    if (!Number.isSafeInteger(capacity) || capacity <= 0) {
+      throw new RangeError("Native guard idempotency capacity is invalid");
+    }
+    this.#capacity = capacity;
+  }
+
+  async execute(
+    key: string,
+    requestDigest: string,
+    operation: () => Promise<RouteResponse>,
+  ): Promise<RouteResponse> {
+    const keyDigest = createHash("sha256").update(key).digest("hex");
+    const existing = this.#entries.get(keyDigest);
+    if (existing !== undefined) {
+      if (existing.requestDigest !== requestDigest) {
+        throw routeError(
+          409,
+          "IDEMPOTENCY_CONFLICT",
+          "Native guard idempotency key conflicts with another request.",
+        );
+      }
+      this.#entries.delete(keyDigest);
+      this.#entries.set(keyDigest, existing);
+      return structuredClone(await existing.promise);
+    }
+
+    this.#makeRoom();
+    const entry: IdempotencyEntry = {
+      requestDigest,
+      settled: false,
+      promise: Promise.resolve().then(operation),
+    };
+    this.#entries.set(keyDigest, entry);
+    entry.promise = entry.promise.then(
+      (result) => {
+        entry.settled = true;
+        if (result.statusCode >= 500) this.#entries.delete(keyDigest);
+        return result;
+      },
+      (error: unknown) => {
+        this.#entries.delete(keyDigest);
+        throw error;
+      },
+    );
+    return structuredClone(await entry.promise);
+  }
+
+  #makeRoom(): void {
+    if (this.#entries.size < this.#capacity) return;
+    for (const [key, entry] of this.#entries) {
+      if (!entry.settled) continue;
+      this.#entries.delete(key);
+      return;
+    }
+    throw routeError(
+      429,
+      "IDEMPOTENCY_CAPACITY",
+      "Native guard idempotency capacity is exhausted.",
+    );
+  }
 }

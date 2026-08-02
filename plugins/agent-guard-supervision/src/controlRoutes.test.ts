@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
-import { generateKeyPairSync } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { createHash, generateKeyPairSync } from "node:crypto";
+import { getEventListeners } from "node:events";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Readable } from "node:stream";
 import test from "node:test";
 import {
@@ -10,10 +13,15 @@ import {
 } from "node:http";
 import type { NativeGuardLeaseActivation } from "@agent-guard/contracts";
 import {
+  registerAgentGuardPlugin,
   registerAgentGuardLifecycle,
   registerControlRoutes,
 } from "./controlRoutes";
-import { type GuardedMarker, type MarkerStore } from "./leaseRegistry";
+import {
+  FileMarkerStore,
+  type GuardedMarker,
+  type MarkerStore,
+} from "./leaseRegistry";
 import { AgentGuardRuntime } from "./runtime";
 
 const NOW = "2026-08-02T00:00:00.000Z";
@@ -66,6 +74,15 @@ type Service = {
   stop?: (context: Record<string, unknown>) => Promise<void> | void;
 };
 
+type TrustedPolicy = {
+  id: string;
+  description: string;
+  evaluate: (
+    event: Record<string, unknown>,
+    context: Record<string, unknown>,
+  ) => Promise<unknown> | unknown;
+};
+
 function activation(
   overrides: Partial<NativeGuardLeaseActivation> = {},
 ): NativeGuardLeaseActivation {
@@ -92,23 +109,56 @@ function activation(
   };
 }
 
-function createHost(): {
+function createHost(options: {
+  pluginConfig?: Record<string, unknown>;
+  getSessionEntry?: (params: {
+    agentId?: string;
+    sessionKey: string;
+    readConsistency?: "latest";
+  }) => { spawnedBy?: string; parentSessionKey?: string } | undefined;
+} = {}): {
   routes: Route[];
   hooks: Array<{ name: string; handler: HookHandler }>;
   services: Service[];
+  policies: TrustedPolicy[];
+  sessionReads: Array<{ agentId?: string; sessionKey: string; readConsistency?: "latest" }>;
   api: Parameters<typeof registerControlRoutes>[0] & Parameters<typeof registerAgentGuardLifecycle>[0];
 } {
   const routes: Route[] = [];
   const hooks: Array<{ name: string; handler: HookHandler }> = [];
   const services: Service[] = [];
+  const policies: TrustedPolicy[] = [];
+  const sessionReads: Array<{
+    agentId?: string;
+    sessionKey: string;
+    readConsistency?: "latest";
+  }> = [];
   return {
     routes,
     hooks,
     services,
+    policies,
+    sessionReads,
     api: {
+      pluginConfig: options.pluginConfig,
       registerHttpRoute: (route: Route) => routes.push(route),
       on: (name: string, handler: HookHandler) => hooks.push({ name, handler }),
       registerService: (service: Service) => services.push(service),
+      registerTrustedToolPolicy: (policy: TrustedPolicy) => policies.push(policy),
+      runtime: {
+        agent: {
+          session: {
+            getSessionEntry(params: {
+              agentId?: string;
+              sessionKey: string;
+              readConsistency?: "latest";
+            }) {
+              sessionReads.push({ ...params });
+              return options.getSessionEntry?.(params);
+            },
+          },
+        },
+      },
     } as Parameters<typeof registerControlRoutes>[0] & Parameters<typeof registerAgentGuardLifecycle>[0],
   };
 }
@@ -129,6 +179,7 @@ async function invoke(
     chunks?: Buffer[];
     headers?: Record<string, string>;
     request?: IncomingMessage;
+    idempotencyKey?: string | null;
   } = {},
 ): Promise<CapturedResponse> {
   const hasBody = Object.hasOwn(options, "body");
@@ -136,8 +187,18 @@ async function invoke(
   const chunks = options.chunks ?? (rawBody === "" ? [] : [Buffer.from(rawBody)]);
   const request = options.request ?? Readable.from(chunks) as IncomingMessage;
   request.method = options.method ?? (hasBody ? "POST" : "GET");
+  const defaultIdempotencyKey = createHash("sha256")
+    .update(`${route.path}\0`)
+    .update(rawBody)
+    .digest("base64url");
+  const idempotencyKey = options.idempotencyKey === undefined
+    ? defaultIdempotencyKey
+    : options.idempotencyKey;
   request.headers = {
     ...(hasBody ? { "content-type": "application/json" } : {}),
+    ...((hasBody || request.method === "POST") && idempotencyKey !== null
+      ? { "x-idempotency-key": idempotencyKey }
+      : {}),
     ...options.headers,
   };
   const headers: Record<string, string> = {};
@@ -423,6 +484,156 @@ test("client abort settles the handler without activating or echoing the request
   assert.equal(store.writes.length, 0);
 });
 
+test("control mutations reject every Content-Encoding without registry work", async (t) => {
+  for (const contentEncoding of ["identity", "gzip", "br"]) {
+    await t.test(contentEncoding, async () => {
+      const { route, store } = await routeFixture(
+        "/agent-guard/native-guard/v1/leases/activate",
+      );
+      const response = await invoke(route, {
+        body: activation(),
+        headers: { "content-encoding": contentEncoding },
+      });
+      assert.equal(response.statusCode, 415);
+      assert.deepEqual(response.body, {
+        error: {
+          code: "UNSUPPORTED_CONTENT_ENCODING",
+          message: "Native guard control request encoding is unsupported.",
+        },
+      });
+      assert.equal(store.writes.length, 0);
+    });
+  }
+});
+
+test("Content-Encoding rejection precedes idempotency key validation", async (t) => {
+  for (const idempotencyKey of [null, "short"]) {
+    await t.test(idempotencyKey ?? "missing", async () => {
+      const { route, store } = await routeFixture(
+        "/agent-guard/native-guard/v1/leases/activate",
+      );
+      const response = await invoke(route, {
+        body: activation(),
+        headers: { "content-encoding": "identity" },
+        idempotencyKey,
+      });
+      assert.equal(response.statusCode, 415);
+      assert.deepEqual(response.body, {
+        error: {
+          code: "UNSUPPORTED_CONTENT_ENCODING",
+          message: "Native guard control request encoding is unsupported.",
+        },
+      });
+      assert.equal(store.writes.length, 0);
+    });
+  }
+});
+
+test("slow partial body times out at two seconds and cleans all reader resources", async () => {
+  const store = new MemoryMarkerStore();
+  const runtime = new AgentGuardRuntime({ markerStore: store, now: () => new Date(NOW) });
+  await runtime.start();
+  const timers = fakeTimers();
+  const host = createHost();
+  registerControlRoutes(host.api, runtime, {
+    scheduleTimeout: timers.schedule,
+    cancelTimeout: timers.cancel,
+  });
+  const route = host.routes.find((candidate) => candidate.path.endsWith("/activate"))!;
+  const request = new Readable({ read() {} }) as IncomingMessage;
+  const pending = invoke(route, {
+    method: "POST",
+    request,
+    headers: { "content-type": "application/json" },
+  });
+  request.push(Buffer.from("{\"schemaVersion\":"));
+  await Promise.resolve();
+
+  assert.deepEqual(timers.delays(), [2_000]);
+  timers.fireDelay(2_000);
+  const response = await pending;
+
+  assert.equal(response.statusCode, 408);
+  assert.equal((response.body as { error: { code: string } }).error.code, "REQUEST_TIMEOUT");
+  assert.equal(response.headers.connection, "close");
+  assert.equal(store.writes.length, 0);
+  assert.equal(timers.activeCount(), 0);
+  assertReaderClean(request, runtime.abortSignal);
+});
+
+test("close before end settles as an incomplete request without activation", async () => {
+  const { route, runtime, store } = await routeFixture(
+    "/agent-guard/native-guard/v1/leases/activate",
+  );
+  const request = new Readable({ read() {} }) as IncomingMessage;
+  queueMicrotask(() => request.emit("close"));
+
+  const response = await Promise.race([
+    invoke(route, {
+      method: "POST",
+      request,
+      headers: { "content-type": "application/json" },
+    }),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("closed request handler remained pending")), 50);
+    }),
+  ]);
+
+  assert.equal(response.statusCode, 400);
+  assert.equal((response.body as { error: { code: string } }).error.code, "REQUEST_INCOMPLETE");
+  assert.equal(store.writes.length, 0);
+  assertReaderClean(request, runtime.abortSignal);
+});
+
+test("runtime stop aborts a pending body read and clears its timeout", async () => {
+  const store = new MemoryMarkerStore();
+  const runtime = new AgentGuardRuntime({ markerStore: store, now: () => new Date(NOW) });
+  await runtime.start();
+  const timers = fakeTimers();
+  const host = createHost();
+  registerControlRoutes(host.api, runtime, {
+    scheduleTimeout: timers.schedule,
+    cancelTimeout: timers.cancel,
+  });
+  const route = host.routes.find((candidate) => candidate.path.endsWith("/activate"))!;
+  const request = new Readable({ read() {} }) as IncomingMessage;
+  const pending = invoke(route, {
+    method: "POST",
+    request,
+    headers: { "content-type": "application/json" },
+  });
+  await Promise.resolve();
+
+  await runtime.stop();
+  const response = await Promise.race([
+    pending,
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("stopped body reader remained pending")), 50);
+    }),
+  ]);
+
+  assert.equal(response.statusCode, 400);
+  assert.equal((response.body as { error: { code: string } }).error.code, "REQUEST_ABORTED");
+  assert.equal(store.writes.length, 0);
+  assert.equal(timers.activeCount(), 0);
+  assertReaderClean(request, runtime.abortSignal);
+});
+
+test("body reader timeout configuration stays below the service stop budget", () => {
+  for (const bodyTimeoutMs of [0, -1, 4_000, 5_000, 1.5]) {
+    const runtime = new AgentGuardRuntime({
+      markerStore: new MemoryMarkerStore(),
+      now: () => new Date(NOW),
+    });
+    const host = createHost();
+    assert.throws(
+      () => registerControlRoutes(host.api, runtime, { bodyTimeoutMs }),
+      /body timeout/i,
+    );
+    assert.equal(host.routes.length, 0);
+  }
+});
+
 test("streamed oversize returns stable JSON over a real HTTP connection", async (t) => {
   const runtime = new AgentGuardRuntime({
     markerStore: new MemoryMarkerStore(),
@@ -446,7 +657,10 @@ test("streamed oversize returns stable JSON over a real HTTP connection", async 
     `http://127.0.0.1:${String(address.port)}/agent-guard/native-guard/v1/leases/activate`,
     {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        "x-idempotency-key": "o".repeat(43),
+      },
       body: " ".repeat(65_537),
     },
   );
@@ -492,6 +706,7 @@ test("registers one service and one handler for each session-tree lifecycle even
     host.hooks.map((hook) => hook.name),
     ["subagent_spawned", "subagent_ended", "session_end"],
   );
+  assert.deepEqual(host.policies.map((policy) => policy.id), ["agent-guard-admission"]);
 });
 
 test("service start keeps clean OFF free of marker writes and recovers an existing marker", async () => {
@@ -532,23 +747,232 @@ test("service start keeps clean OFF free of marker writes and recovers an existi
   assert.equal(recoveryStore.writes.length, 0);
 });
 
-test("service startup failure propagates and leaves runtime OFF", async () => {
+test("service startup failure remains misconfigured after host cleanup and retries safely", async () => {
   const store = new MemoryMarkerStore();
   store.load = async () => {
     store.loadCalls += 1;
-    throw new Error("marker startup failed");
+    throw new Error("marker startup failed with credential-secret");
   };
   const runtime = new AgentGuardRuntime({ markerStore: store, now: () => new Date(NOW) });
   const host = createHost();
   registerAgentGuardLifecycle(host.api, runtime);
 
-  await assert.rejects(
-    () => Promise.resolve(host.services[0].start({})),
-    /marker startup failed/,
-  );
+  await assert.rejects(() => Promise.resolve(host.services[0].start({})), (error: unknown) =>
+    error instanceof Error &&
+    /marker recovery failed/.test(error.message) &&
+    !error.message.includes("credential-secret"));
+  await host.services[0].stop?.({});
 
-  assert.deepEqual(await runtime.lookup("agent:guard:run.1"), { state: "off" });
+  assert.deepEqual(await runtime.status(), {
+    coverage: "misconfigured",
+    finalizerAssurance: "unverified",
+    activeLeaseCount: 0,
+    reasonCode: "MARKER_RECOVERY_FAILED",
+  });
+  await assert.rejects(runtime.lookup("agent:guard:run.1"), /marker recovery failed/);
+  await assert.rejects(runtime.activate(activation()), /marker recovery failed/);
   assert.equal(store.writes.length, 0);
+
+  store.load = async () => {
+    store.loadCalls += 1;
+    return [];
+  };
+  await runtime.start();
+  assert.deepEqual(await runtime.status(), {
+    coverage: "off",
+    finalizerAssurance: "unverified",
+    activeLeaseCount: 0,
+  });
+});
+
+test("admission is zero-effect OFF globally, passes active sessions, and blocks recovery", async () => {
+  const cleanRuntime = new AgentGuardRuntime({
+    markerStore: new MemoryMarkerStore(),
+    now: () => new Date(NOW),
+  });
+  const cleanHost = createHost({
+    getSessionEntry: () => {
+      throw new Error("OFF admission must not read host sessions");
+    },
+  });
+  registerAgentGuardLifecycle(cleanHost.api, cleanRuntime);
+  await cleanHost.services[0].start({});
+  assert.equal(await evaluatePolicy(cleanHost, "agent:guard:off"), undefined);
+  assert.equal(cleanHost.sessionReads.length, 0);
+
+  await cleanRuntime.activate(activation());
+  assert.equal(await evaluatePolicy(cleanHost, "agent:guard:run.1"), undefined);
+  assert.equal(cleanHost.sessionReads.length, 0);
+
+  const recoveryRuntime = new AgentGuardRuntime({
+    markerStore: new MemoryMarkerStore([marker()]),
+    now: () => new Date(NOW),
+  });
+  const recoveryHost = createHost();
+  registerAgentGuardLifecycle(recoveryHost.api, recoveryRuntime);
+  await recoveryHost.services[0].start({});
+  assert.deepEqual(await evaluatePolicy(recoveryHost, "agent:guard:run.1"), {
+    block: true,
+    blockReason: "Native guard recovery requires reactivation.",
+  });
+  assert.deepEqual(await evaluatePolicy(recoveryHost, "agent:guard:other"), {
+    block: true,
+    blockReason: "Native guard session inheritance could not be proven.",
+  });
+});
+
+test("first child admission waits for its durable lazy binding before passing", async () => {
+  const parent = "agent:guard:run.1";
+  const child = "agent:guard:child.1";
+  const store = new BlockingMarkerStore();
+  const runtime = new AgentGuardRuntime({ markerStore: store, now: () => new Date(NOW) });
+  const host = createHost({
+    getSessionEntry: ({ sessionKey }) => sessionKey === child
+      ? { spawnedBy: parent, parentSessionKey: parent }
+      : undefined,
+  });
+  registerAgentGuardLifecycle(host.api, runtime);
+  await host.services[0].start({});
+  await runtime.activate(activation());
+  store.blockWrites();
+  let settled = false;
+
+  const admission = Promise.resolve(evaluatePolicy(host, child)).then((result) => {
+    settled = true;
+    return result;
+  });
+  await store.writeStarted;
+
+  assert.equal(settled, false);
+  assert.deepEqual(host.sessionReads, [{
+    agentId: "main",
+    sessionKey: child,
+    readConsistency: "latest",
+  }]);
+  store.releaseWrites();
+  assert.equal(await admission, undefined);
+  assert.equal((await runtime.lookup(child)).state, "active");
+});
+
+test("concurrent first-child admissions pass only after one binding wins and the loser rechecks", async () => {
+  const parent = "agent:guard:run.1";
+  const child = "agent:guard:child.1";
+  const store = new BlockingMarkerStore();
+  const runtime = new AgentGuardRuntime({ markerStore: store, now: () => new Date(NOW) });
+  const host = createHost({
+    getSessionEntry: () => ({ spawnedBy: parent, parentSessionKey: parent }),
+  });
+  registerAgentGuardLifecycle(host.api, runtime);
+  await host.services[0].start({});
+  await runtime.activate(activation());
+  store.blockWrites();
+
+  const admissions = [evaluatePolicy(host, child), evaluatePolicy(host, child)];
+  await store.writeStarted;
+  store.releaseWrites();
+
+  assert.deepEqual(await Promise.all(admissions), [undefined, undefined]);
+  assert.deepEqual(store.writes.at(-1)?.childSessionKeys, [child]);
+  assert.equal(store.writes.filter((entry) => entry.childSessionKeys.includes(child)).length, 1);
+});
+
+test("admission blocks invalid or contradictory host lineage without inheriting", async (t) => {
+  const parent = "agent:guard:run.1";
+  for (const [name, entry] of [
+    ["missing entry", undefined],
+    ["missing spawnedBy", { parentSessionKey: parent }],
+    ["missing parentSessionKey", { spawnedBy: parent }],
+    ["conflict", { spawnedBy: parent, parentSessionKey: "agent:guard:other" }],
+    ["invalid", { spawnedBy: "../unsafe", parentSessionKey: "../unsafe" }],
+  ] as const) {
+    await t.test(name, async () => {
+      const store = new MemoryMarkerStore();
+      const runtime = new AgentGuardRuntime({ markerStore: store, now: () => new Date(NOW) });
+      const host = createHost({ getSessionEntry: () => entry });
+      registerAgentGuardLifecycle(host.api, runtime);
+      await host.services[0].start({});
+      await runtime.activate(activation());
+      const writes = store.writes.length;
+
+      assert.deepEqual(await evaluatePolicy(host, "agent:guard:child.1"), {
+        block: true,
+        blockReason: "Native guard session inheritance could not be proven.",
+      });
+      assert.equal(store.writes.length, writes);
+    });
+  }
+});
+
+test("admission propagates host session read and marker binding failures", async () => {
+  const runtime = new AgentGuardRuntime({
+    markerStore: new MemoryMarkerStore(),
+    now: () => new Date(NOW),
+  });
+  const readFailureHost = createHost({
+    getSessionEntry: () => {
+      throw new Error("host session read failed");
+    },
+  });
+  registerAgentGuardLifecycle(readFailureHost.api, runtime);
+  await readFailureHost.services[0].start({});
+  await runtime.activate(activation());
+  await assert.rejects(evaluatePolicy(readFailureHost, "agent:guard:child.1"), /host session read failed/);
+
+  const failingStore = new MemoryMarkerStore();
+  const failingRuntime = new AgentGuardRuntime({
+    markerStore: failingStore,
+    now: () => new Date(NOW),
+  });
+  const bindingFailureHost = createHost({
+    getSessionEntry: () => ({
+      spawnedBy: "agent:guard:run.1",
+      parentSessionKey: "agent:guard:run.1",
+    }),
+  });
+  registerAgentGuardLifecycle(bindingFailureHost.api, failingRuntime);
+  await bindingFailureHost.services[0].start({});
+  await failingRuntime.activate(activation());
+  failingStore.write = async () => {
+    throw new Error("marker binding failed");
+  };
+  await assert.rejects(evaluatePolicy(bindingFailureHost, "agent:guard:child.1"), /marker binding failed/);
+});
+
+test("spawn hook rejects contradictory child identities before binding", async () => {
+  const store = new MemoryMarkerStore();
+  const runtime = new AgentGuardRuntime({ markerStore: store, now: () => new Date(NOW) });
+  const host = createHost();
+  registerAgentGuardLifecycle(host.api, runtime);
+  await host.services[0].start({});
+  await runtime.activate(activation());
+  const writes = store.writes.length;
+
+  await hook(host, "subagent_spawned")(spawnedEvent("agent:guard:child.1"), {
+    requesterSessionKey: "agent:guard:run.1",
+    childSessionKey: "agent:guard:other-child",
+  });
+
+  assert.equal(store.writes.length, writes);
+  assert.deepEqual(await runtime.lookup("agent:guard:child.1"), { state: "off" });
+});
+
+test("shutdown and restart session drains preserve markers for recovery", async () => {
+  for (const reason of ["shutdown", "restart"] as const) {
+    const store = new MemoryMarkerStore();
+    const runtime = new AgentGuardRuntime({ markerStore: store, now: () => new Date(NOW) });
+    const host = createHost();
+    registerAgentGuardLifecycle(host.api, runtime);
+    await host.services[0].start({});
+    await runtime.activate(activation());
+
+    await hook(host, "session_end")({ sessionKey: "agent:guard:run.1", reason }, {});
+    await host.services[0].stop?.({});
+
+    assert.equal(store.removes.length, 0, reason);
+    const restarted = new AgentGuardRuntime({ markerStore: store, now: () => new Date(NOW) });
+    await restarted.start();
+    assert.equal((await restarted.lookup("agent:guard:run.1")).state, "recovery", reason);
+  }
 });
 
 test("spawn binds only a child whose requester proves an active parent lease", async () => {
@@ -562,6 +986,7 @@ test("spawn binds only a child whose requester proves an active parent lease", a
 
   await spawned(spawnedEvent("agent:guard:child.1"), {
     requesterSessionKey: "agent:guard:run.1",
+    childSessionKey: "agent:guard:child.1",
   });
 
   assert.equal((await runtime.lookup("agent:guard:child.1")).state, "active");
@@ -570,10 +995,12 @@ test("spawn binds only a child whose requester proves an active parent lease", a
 
   await spawned(spawnedEvent("agent:guard:unknown-child"), {
     requesterSessionKey: "agent:guard:unknown-parent",
+    childSessionKey: "agent:guard:unknown-child",
   });
   await spawned(spawnedEvent("agent:guard:no-requester"), {});
   await spawned(spawnedEvent("agent:guard:child.1"), {
     requesterSessionKey: "agent:guard:run.1",
+    childSessionKey: "agent:guard:child.1",
   });
 
   assert.equal(store.writes.length, writesAfterBinding);
@@ -590,6 +1017,7 @@ test("spawn never binds from a recovery marker", async () => {
 
   await hook(host, "subagent_spawned")(spawnedEvent("agent:guard:child.1"), {
     requesterSessionKey: "agent:guard:run.1",
+    childSessionKey: "agent:guard:child.1",
   });
 
   assert.equal((await runtime.lookup("agent:guard:run.1")).state, "recovery");
@@ -606,6 +1034,7 @@ test("subagent and session end hooks remove trees idempotently with event identi
   await runtime.activate(activation());
   await hook(host, "subagent_spawned")(spawnedEvent("agent:guard:child.1"), {
     requesterSessionKey: "agent:guard:run.1",
+    childSessionKey: "agent:guard:child.1",
   });
 
   const ended = hook(host, "subagent_ended");
@@ -650,7 +1079,7 @@ test("service stop aborts immediately, flushes marker writes, and rejects later 
   const stopping = host.services[0].stop!({});
 
   assert.equal(runtime.abortSignal.aborted, true);
-  assert.deepEqual(timers.delays(), [5_000]);
+  assert.deepEqual(timers.delays(), [4_000]);
   assert.equal(store.writes.length, 0);
   store.releaseWrites();
   await activating;
@@ -664,7 +1093,7 @@ test("service stop aborts immediately, flushes marker writes, and rejects later 
   assert.equal(timers.activeCount(), 0);
 });
 
-test("five-second stop timeout prevents queued marker operations from writing later", async () => {
+test("four-second stop timeout prevents queued marker operations from writing later", async () => {
   const store = new BlockingMarkerStore();
   const timers = fakeTimers();
   const runtime = new AgentGuardRuntime({
@@ -684,7 +1113,7 @@ test("five-second stop timeout prevents queued marker operations from writing la
   }));
 
   const stopping = runtime.stop();
-  assert.deepEqual(timers.delays(), [5_000]);
+  assert.deepEqual(timers.delays(), [4_000]);
   timers.fireAll();
   await stopping;
   assert.equal(runtime.abortSignal.aborted, true);
@@ -711,7 +1140,7 @@ test("stop during startup waits for marker recovery and cannot return to running
   const stopping = runtime.stop();
 
   assert.equal(runtime.abortSignal.aborted, true);
-  assert.deepEqual(timers.delays(), [5_000]);
+  assert.deepEqual(timers.delays(), [4_000]);
   store.releaseLoad();
   await starting;
   await stopping;
@@ -722,6 +1151,36 @@ test("stop during startup waits for marker recovery and cannot return to running
   });
   await assert.rejects(runtime.activate(activation()), /stopped/i);
   assert.equal(timers.activeCount(), 0);
+});
+
+test("internal stop deadline completes before the host five-second deadline", async () => {
+  const store = new BlockingMarkerStore();
+  const timers = fakeTimers();
+  const runtime = new AgentGuardRuntime({
+    markerStore: store,
+    now: () => new Date(NOW),
+    scheduleTimeout: timers.schedule,
+    cancelTimeout: timers.cancel,
+  });
+  await runtime.start();
+  store.blockWrites();
+  const activating = runtime.activate(activation());
+  await store.writeStarted;
+  let hostTimedOut = false;
+
+  const stopping = runtime.stop();
+  timers.schedule(() => {
+    hostTimedOut = true;
+  }, 5_000);
+
+  assert.deepEqual(timers.delays(), [4_000, 5_000]);
+  timers.fireDelay(4_000);
+  await stopping;
+  assert.equal(hostTimedOut, false);
+  timers.fireDelay(5_000);
+  assert.equal(hostTimedOut, true);
+  store.releaseWrites();
+  await activating;
 });
 
 test("spawn hook does not resolve before the child marker write completes", async () => {
@@ -736,7 +1195,10 @@ test("spawn hook does not resolve before the child marker write completes", asyn
 
   const binding = Promise.resolve(hook(host, "subagent_spawned")(
     spawnedEvent("agent:guard:child.1"),
-    { requesterSessionKey: "agent:guard:run.1" },
+    {
+      requesterSessionKey: "agent:guard:run.1",
+      childSessionKey: "agent:guard:child.1",
+    },
   )).then(() => {
     settled = true;
   });
@@ -847,10 +1309,164 @@ test("revoke rejects schema mismatches and invalid lease identities", async (t) 
   }
 });
 
+test("mutations require a strict base64url idempotency key before registry work", async (t) => {
+  for (const key of [null, "", "short", "+".repeat(43), "A".repeat(44)]) {
+    await t.test(String(key), async () => {
+      const { route, store } = await routeFixture(
+        "/agent-guard/native-guard/v1/leases/activate",
+      );
+      const response = await invoke(route, { body: activation(), idempotencyKey: key });
+      assert.equal(response.statusCode, 400);
+      assert.deepEqual(response.body, {
+        error: {
+          code: "INVALID_IDEMPOTENCY_KEY",
+          message: "Native guard idempotency key is invalid.",
+        },
+      });
+      assert.equal(store.writes.length, 0);
+    });
+  }
+});
+
+test("successful mutation replay returns the first projected response without executing again", async () => {
+  const { route, runtime, store } = await routeFixture(
+    "/agent-guard/native-guard/v1/leases/activate",
+  );
+  const key = "R".repeat(43);
+  const first = await invoke(route, { body: activation(), idempotencyKey: key });
+  await runtime.revoke("lease.1");
+
+  const replay = await invoke(route, { body: activation(), idempotencyKey: key });
+
+  assert.equal(first.statusCode, 200);
+  assert.deepEqual(replay, first);
+  assert.equal(store.writes.length, 1);
+  assert.deepEqual(await runtime.lookup("agent:guard:run.1"), { state: "off" });
+});
+
+test("one idempotency key cannot cross request digests or route operations", async () => {
+  const store = new MemoryMarkerStore();
+  const runtime = new AgentGuardRuntime({ markerStore: store, now: () => new Date(NOW) });
+  await runtime.start();
+  const host = createHost();
+  registerControlRoutes(host.api, runtime);
+  const routes = new Map(host.routes.map((route) => [route.path, route]));
+  const key = "C".repeat(43);
+  await invoke(routes.get("/agent-guard/native-guard/v1/leases/activate")!, {
+    body: activation(),
+    idempotencyKey: key,
+  });
+
+  for (const [route, body] of [
+    [
+      routes.get("/agent-guard/native-guard/v1/leases/activate")!,
+      activation({ leaseId: "lease.2", rootSessionKey: "agent:guard:run.2" }),
+    ],
+    [
+      routes.get("/agent-guard/native-guard/v1/leases/renew")!,
+      activation({ leaseEpoch: 2, credential: "rotated.2" }),
+    ],
+  ] as const) {
+    const response = await invoke(route, { body, idempotencyKey: key });
+    assert.equal(response.statusCode, 409);
+    assert.equal(
+      (response.body as { error: { code: string } }).error.code,
+      "IDEMPOTENCY_CONFLICT",
+    );
+  }
+  assert.equal(store.writes.length, 1);
+});
+
+test("concurrent identical mutation requests singleflight one marker transaction", async () => {
+  const store = new BlockingMarkerStore();
+  const runtime = new AgentGuardRuntime({ markerStore: store, now: () => new Date(NOW) });
+  await runtime.start();
+  const host = createHost();
+  registerControlRoutes(host.api, runtime);
+  const route = host.routes.find((candidate) => candidate.path.endsWith("/activate"))!;
+  const key = "S".repeat(43);
+  store.blockWrites();
+
+  const requests = [
+    invoke(route, { body: activation(), idempotencyKey: key }),
+    invoke(route, { body: activation(), idempotencyKey: key }),
+  ];
+  await store.writeStarted;
+  store.releaseWrites();
+  const responses = await Promise.all(requests);
+
+  assert.deepEqual(responses[1].body, responses[0].body);
+  assert.deepEqual(store.writes.map((entry) => entry.leaseId), ["lease.1"]);
+});
+
+test("concurrent 5xx shares one failed transaction then permits a safe retry", async () => {
+  const store = new MemoryMarkerStore();
+  const write = store.write.bind(store);
+  let writeCalls = 0;
+  store.write = async (value) => {
+    writeCalls += 1;
+    if (writeCalls === 1) throw new Error("transient marker failure");
+    await write(value);
+  };
+  const runtime = new AgentGuardRuntime({ markerStore: store, now: () => new Date(NOW) });
+  await runtime.start();
+  const host = createHost();
+  registerControlRoutes(host.api, runtime);
+  const route = host.routes.find((candidate) => candidate.path.endsWith("/activate"))!;
+  const key = "F".repeat(43);
+
+  const failed = await Promise.all([
+    invoke(route, { body: activation(), idempotencyKey: key }),
+    invoke(route, { body: activation(), idempotencyKey: key }),
+  ]);
+
+  assert.deepEqual(failed.map((response) => response.statusCode), [500, 500]);
+  assert.equal(writeCalls, 1);
+  const retry = await invoke(route, { body: activation(), idempotencyKey: key });
+  assert.equal(retry.statusCode, 200);
+  assert.equal(writeCalls, 2);
+});
+
+test("idempotency cache evicts the oldest settled entry at its configured bound", async () => {
+  const runtime = new AgentGuardRuntime({
+    markerStore: new MemoryMarkerStore(),
+    now: () => new Date(NOW),
+  });
+  let calls = 0;
+  Object.defineProperty(runtime, "activate", {
+    value: async () => {
+      calls += 1;
+      return {
+        coverage: "off",
+        finalizerAssurance: "unverified",
+        activeLeaseCount: 0,
+      };
+    },
+  });
+  const host = createHost();
+  registerControlRoutes(host.api, runtime, { idempotencyCapacity: 2 });
+  const route = host.routes.find((candidate) => candidate.path.endsWith("/activate"))!;
+  const bodies = ["lease.1", "lease.2", "lease.3"].map((leaseId, index) => activation({
+    leaseId,
+    rootSessionKey: `agent:guard:run.${String(index + 1)}`,
+  }));
+  const keys = ["1".repeat(43), "2".repeat(43), "3".repeat(43)];
+  for (let index = 0; index < bodies.length; index += 1) {
+    await invoke(route, { body: bodies[index], idempotencyKey: keys[index] });
+  }
+  assert.equal(calls, 3);
+
+  await invoke(route, { body: bodies[1], idempotencyKey: keys[1] });
+  assert.equal(calls, 3);
+  await invoke(route, { body: bodies[0], idempotencyKey: keys[0] });
+  assert.equal(calls, 4);
+});
+
 test("plugin entry wires controls and lifecycle, and root script runs both plugin suites in order", async () => {
   const indexSource = await readFile(new URL("./index.ts", import.meta.url), "utf8");
-  assert.match(indexSource, /register:\s*\(api\)\s*=>\s*registerAgentGuardPlugin\(api,\s*runtime\)/);
+  assert.match(indexSource, /register:\s*\(api\)\s*=>\s*registerAgentGuardPlugin\(api\)/);
   assert.doesNotMatch(indexSource, /register:\s*\(\)\s*=>\s*undefined/);
+  assert.doesNotMatch(indexSource, /export const runtime|new AgentGuardRuntime/);
 
   const rootPackage = JSON.parse(
     await readFile(new URL("../../../package.json", import.meta.url), "utf8"),
@@ -860,6 +1476,44 @@ test("plugin entry wires controls and lifecycle, and root script runs both plugi
   const routesIndex = command.indexOf("controlRoutes.test.ts");
   assert.ok(registryIndex >= 0);
   assert.ok(routesIndex > registryIndex);
+});
+
+test("plugin registration consumes markerDir and creates a fresh runtime per host", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "agent-guard-control-registration-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const markerDir = join(parent, "custom-markers");
+  await new FileMarkerStore(markerDir).write(marker({ expiresAt: "2099-01-01T00:00:00.000Z" }));
+  const customHost = createHost({ pluginConfig: { markerDir } });
+
+  const customRuntime = registerAgentGuardPlugin(customHost.api);
+  await customHost.services[0].start({});
+
+  assert.equal((await customRuntime.lookup("agent:guard:run.1")).state, "recovery");
+  const otherHost = createHost();
+  const otherRuntime = registerAgentGuardPlugin(otherHost.api);
+  assert.notEqual(otherRuntime, customRuntime);
+  assert.equal(otherHost.services.length, 1);
+  assert.equal(otherHost.policies.length, 1);
+});
+
+test("invalid markerDir fails registration before any host capability is installed", () => {
+  for (const markerDir of ["", "   ", "x".repeat(4_097), 42, "bad\0path"]) {
+    const host = createHost({ pluginConfig: { markerDir } });
+    assert.throws(() => registerAgentGuardPlugin(host.api), /markerDir/);
+    assert.equal(host.routes.length, 0);
+    assert.equal(host.services.length, 0);
+    assert.equal(host.hooks.length, 0);
+    assert.equal(host.policies.length, 0);
+  }
+});
+
+test("trusted policy registration failures propagate instead of silently degrading", () => {
+  const host = createHost();
+  host.api.registerTrustedToolPolicy = () => {
+    throw new Error("duplicate trusted policy");
+  };
+
+  assert.throws(() => registerAgentGuardPlugin(host.api), /duplicate trusted policy/);
 });
 
 class BlockingMarkerStore extends MemoryMarkerStore {
@@ -944,12 +1598,31 @@ function hook(host: ReturnType<typeof createHost>, name: string): HookHandler {
   return registration.handler;
 }
 
+async function evaluatePolicy(
+  host: ReturnType<typeof createHost>,
+  sessionKey?: string,
+): Promise<unknown> {
+  assert.equal(host.policies.length, 1);
+  return host.policies[0].evaluate(
+    { toolName: "exec", params: { command: "echo guarded" } },
+    { agentId: "main", sessionKey, toolName: "exec" },
+  );
+}
+
+function assertReaderClean(request: IncomingMessage, signal: AbortSignal): void {
+  for (const event of ["data", "end", "close", "aborted", "error"]) {
+    assert.equal(getEventListeners(request, event).length, 0, event);
+  }
+  assert.equal(getEventListeners(signal, "abort").length, 0, "abort signal");
+}
+
 function fakeTimers(): {
   schedule: (callback: () => void, delay: number) => object;
   cancel: (handle: unknown) => void;
   delays: () => number[];
   activeCount: () => number;
   fireAll: () => void;
+  fireDelay: (delay: number) => void;
 } {
   const entries = new Map<object, { callback: () => void; delay: number }>();
   const seenDelays: number[] = [];
@@ -967,6 +1640,13 @@ function fakeTimers(): {
     activeCount: () => entries.size,
     fireAll() {
       for (const [handle, entry] of [...entries]) {
+        entries.delete(handle);
+        entry.callback();
+      }
+    },
+    fireDelay(delay) {
+      for (const [handle, entry] of [...entries]) {
+        if (entry.delay !== delay) continue;
         entries.delete(handle);
         entry.callback();
       }

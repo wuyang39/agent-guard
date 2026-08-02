@@ -25,6 +25,13 @@ const OFF_STATUS: Readonly<NativeGuardStatus> = Object.freeze({
   activeLeaseCount: 0,
 });
 
+const FAILED_STATUS: Readonly<NativeGuardStatus> = Object.freeze({
+  coverage: "misconfigured",
+  finalizerAssurance: "unverified",
+  activeLeaseCount: 0,
+  reasonCode: "MARKER_RECOVERY_FAILED",
+});
+
 export class AgentGuardRuntime {
   readonly registry: LeaseRegistry;
   readonly #markerStore: LifecycleMarkerStore;
@@ -35,6 +42,7 @@ export class AgentGuardRuntime {
   #startPromise: Promise<void> | undefined;
   #stopPromise: Promise<void> | undefined;
   #registryStarted = false;
+  #failed = false;
   #state: "idle" | "starting" | "running" | "stopping" | "stopped" = "idle";
 
   constructor(options: AgentGuardRuntimeOptions = {}) {
@@ -74,11 +82,13 @@ export class AgentGuardRuntime {
     if (this.#startPromise === undefined) {
       const starting = this.registry.start().then(() => {
         this.#registryStarted = true;
+        this.#failed = false;
         if (this.#state === "starting") this.#state = "running";
-      }).catch((error: unknown) => {
+      }).catch(() => {
         this.#startPromise = undefined;
+        this.#failed = true;
         if (this.#state === "starting") this.#state = "idle";
-        throw error;
+        throw markerRecoveryError();
       });
       this.#startPromise = this.#track(starting);
     }
@@ -86,11 +96,13 @@ export class AgentGuardRuntime {
   }
 
   async lookup(sessionKey: string): Promise<LeaseLookup> {
+    if (this.#failed) throw markerRecoveryError();
     if (this.#state !== "running") return { state: "off" };
     return this.#track(this.registry.lookup(sessionKey));
   }
 
   async status(): Promise<NativeGuardStatus> {
+    if (this.#failed) return { ...FAILED_STATUS };
     if (this.#state !== "running") return { ...OFF_STATUS };
     return this.#track(this.registry.status());
   }
@@ -151,7 +163,7 @@ export class AgentGuardRuntime {
       let timer: unknown;
       const flushed = Promise.allSettled(pending).then(() => "flushed" as const);
       const timedOut = new Promise<"timed-out">((resolve) => {
-        timer = this.#scheduleTimeout(() => resolve("timed-out"), 5_000);
+        timer = this.#scheduleTimeout(() => resolve("timed-out"), 4_000);
       });
       const result = await Promise.race([flushed, timedOut]);
       if (result === "flushed" && timer !== undefined) this.#cancelTimeout(timer);
@@ -170,12 +182,17 @@ export class AgentGuardRuntime {
   }
 
   #assertRunning(): void {
+    if (this.#failed) throw markerRecoveryError();
     if (this.#state === "running") return;
     if (this.#state === "stopping" || this.#state === "stopped") {
       throw new Error("Native guard runtime has stopped");
     }
     throw new Error("Native guard runtime has not started");
   }
+}
+
+function markerRecoveryError(): Error {
+  return new Error("Native guard marker recovery failed");
 }
 
 class LifecycleMarkerStore implements MarkerStore {

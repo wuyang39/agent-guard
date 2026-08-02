@@ -106,6 +106,25 @@ declare module "openclaw/plugin-sdk/plugin-entry" {
     evaluate: HookMap["before_tool_call"];
   };
 
+  export type SessionEntry = {
+    spawnedBy?: string;
+    parentSessionKey?: string;
+  };
+
+  export type SessionStoreReadParams = {
+    agentId?: string;
+    sessionKey: string;
+    readConsistency?: "latest";
+  };
+
+  export type PluginRuntime = {
+    agent: {
+      session: {
+        getSessionEntry(params: SessionStoreReadParams): SessionEntry | undefined;
+      };
+    };
+  };
+
   export type HttpRoute = {
     path: string;
     auth: "gateway" | "plugin";
@@ -128,6 +147,7 @@ declare module "openclaw/plugin-sdk/plugin-entry" {
 
   export type PluginApi = {
     pluginConfig?: Record<string, unknown>;
+    runtime: PluginRuntime;
     logger: PluginLogger;
     on<K extends keyof HookMap>(name: K, handler: HookMap[K], options?: {
       priority?: number;

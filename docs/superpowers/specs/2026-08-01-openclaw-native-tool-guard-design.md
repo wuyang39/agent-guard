@@ -162,11 +162,13 @@ OpenClaw 当前没有公开的“所有普通 Hook 之后再次运行 Trusted Po
 
 ### 6.3 `after_tool_call`
 
-- 记录实际 result/error/duration 和最终参数摘要。
+- 记录实际 result/error/duration 和最终参数摘要。失败诊断保留 UTF-8 安全的 4 KiB 脱敏文本，而不是固定占位符；过滤通用 token/cookie/bearer/private-key 模式以及当前和原 epoch 的 decision/evidence credential。
+- `durationSource="host"` 表示 OpenClaw SDK 明确提供的 `durationMs`。SDK 缺失该值时，插件使用从 Agent Guard 为调用建立 outcome correlation 到 `after_tool_call` 的有界非负单调经过时间并标记 `guard_elapsed`；该值在 `ask` 路径包含人工审批等待，不得解释为纯工具执行耗时。若旧调用没有 correlation，则标记 `unavailable` 并省略 `durationMs`，不能填 0；旧持久化事件迁移为 `legacy_unspecified`。
 - 结果正文默认只保留脱敏后的有界预览；完整正文不进入普通审计事件。
 - 上报失败写入有界 spool，按事件 ID 幂等重试。
 - 新事件必须把 `leaseEpoch` 放在事件顶层。仅对已有持久化数据兼容 `detail.leaseEpoch`：校验通过后迁移到顶层并原子重写；缺失或非安全整数的旧值不能被推断或补造。
 - 续租后使用当前 evidence credential 重试同一租约的旧 epoch 事件，不改写事件身份。已结束子会话的绑定只保留为该租约生命周期内的历史证据授权，不能继续用于决策。
+- 所有 ACTIVE 可执行返回（签名 allow/warn/redact/可执行 ask，以及低风险 PDP 故障 allow/warn）都先建立包含原 lease/epoch/session/参数摘要和单调基准的 outcome correlation。after 一开始原子取出一次；随后发生 renew 或 child end 仍按原身份入 spool。容量满时保留已有长工具 correlation 并阻断新的可执行返回，不淘汰旧项。
 - spool 达到上限时丢弃最旧的低价值 outcome 事件，但保留 deny、ask、错误和状态转换事件。
 - Hook 不因审计服务短暂不可用改变已经完成的工具结果。
 
@@ -558,6 +560,8 @@ misconfigured
 - OpenClaw 工具身份归一化和 unknown 风险分类。
 - 策略优先级、嵌套 redact、安全正则和默认动作。
 - outcome 限长、秘密过滤、spool 上限及幂等出队。
+- renew/child-end 与 fire-and-forget after 的竞态保持原 epoch outcome；revoke 后 lazy spool 不启动上传或重试。
+- host/guard-elapsed/unavailable/legacy duration source 合同，以及错误诊断的 4 KiB UTF-8 边界和秘密过滤。
 - 双凭据隔离、续租轮换、旧 epoch evidence 重试和历史子会话 evidence-only binding。
 - lifecycle intent 的写入、后端确认、本地提交、失败阻断及重启重放。
 - 顶层 `leaseEpoch` 强制校验和可验证 legacy epoch 的原子迁移。

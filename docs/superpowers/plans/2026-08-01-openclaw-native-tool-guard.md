@@ -1343,6 +1343,11 @@ Tests must verify:
 - ended child bindings remain evidence-only for the lease lifetime and cannot authorize decisions;
 - child bind/end failures durably block the whole lease and replay after restart;
 - new events require top-level `leaseEpoch`, while valid legacy detail epochs migrate atomically.
+- a signed old-epoch outcome survives renewal or child end while `after_tool_call` is in flight;
+- all ACTIVE executable paths, including low-risk PDP outage allow/warn, establish bounded outcome correlation before returning;
+- missing host duration uses a bounded monotonic `guard_elapsed` value, while missing correlation is explicitly `unavailable` without an invented duration;
+- failure diagnostics retain useful text within 4 KiB while removing generic and exact lease secrets;
+- revoke before lazy spool creation produces no upload or retry.
 
 - [ ] **Step 2: Run tests and verify failure**
 
@@ -1365,6 +1370,10 @@ Persist a lease-wide lifecycle intent before backend bind/end synchronization an
 - [ ] **Step 5: Register `after_tool_call`**
 
 Build `tool_outcome` with `toolCallId`, run/session/lease IDs, final params digest, error, duration, result digest and sanitized preview. Upload asynchronously through the spool without changing the completed tool result.
+
+Take the outcome correlation exactly once at the start of `after_tool_call`. Build a correlated event from the original lease ID, epoch, session and tool call even if renewal or child end completes while reporting is in flight; the uploader resolves the current evidence identity for that same lease. Preserve existing correlations at the capacity bound and block a new executable admission instead of evicting a long-running call.
+
+Mark SDK-provided duration as `host`. Otherwise use a non-negative bounded monotonic elapsed value from outcome-correlation creation to the after callback and mark it `guard_elapsed`; for `ask`, this includes approval wait and is not pure tool duration. If correlation is unavailable, emit `durationSource="unavailable"` without `durationMs`. Migrate stored legacy outcomes to `legacy_unspecified`. Preserve a UTF-8-safe, generically and exactly scrubbed failure diagnostic of at most 4 KiB with a stable error code.
 
 Every new event carries a required top-level `leaseEpoch`. The backend store and plugin spool may migrate a safe legacy `detail.leaseEpoch` to the top level with an atomic rewrite, but must reject missing or unsafe legacy epochs.
 

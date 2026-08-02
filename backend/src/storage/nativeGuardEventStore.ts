@@ -130,6 +130,7 @@ const DETAIL_FIELDS: Record<NativeGuardEvent["type"], readonly string[]> = {
     "outcome",
     "success",
     "durationMs",
+    "durationSource",
     "finalParamsDigest",
     "resultDigest",
     "resultPreview",
@@ -421,7 +422,7 @@ async function loadExisting(
         break;
       }
       try {
-        parsed = migrateLegacyLeaseEpoch(parsed);
+        parsed = migrateLegacyOutcome(migrateLegacyLeaseEpoch(parsed));
         assertValidStoredEnvelope(parsed, leaseId);
       } catch {
         corruption = { line: index + 1, reasonCode: "invalid_schema" };
@@ -469,6 +470,26 @@ function migrateLegacyLeaseEpoch(value: unknown): unknown {
       ...value.event,
       leaseEpoch: legacyEpoch,
       detail,
+    },
+  };
+}
+
+function migrateLegacyOutcome(value: unknown): unknown {
+  if (
+    !isPlainObject(value) ||
+    !isPlainObject(value.event) ||
+    value.event.type !== "tool_outcome" ||
+    !isPlainObject(value.event.detail) ||
+    value.event.detail.durationSource !== undefined
+  ) return value;
+  return {
+    ...value,
+    event: {
+      ...value.event,
+      detail: {
+        ...value.event.detail,
+        durationSource: "legacy_unspecified",
+      },
     },
   };
 }
@@ -883,7 +904,15 @@ function assertTypedEvent(
       requireEventId(event.toolCallId, "tool outcome toolCallId");
       requireDigest(detail.finalParamsDigest, "tool outcome finalParamsDigest");
       requireDigest(detail.resultDigest, "tool outcome resultDigest");
-      if (
+      const durationSource = String(detail.durationSource);
+      if (!new Set(["host", "guard_elapsed", "legacy_unspecified", "unavailable"]).has(durationSource)) {
+        throw new Error("Native guard tool outcome durationSource is invalid");
+      }
+      if (durationSource === "unavailable") {
+        if (detail.durationMs !== undefined) {
+          throw new Error("Native guard unavailable tool outcome durationMs must be omitted");
+        }
+      } else if (
         typeof detail.durationMs !== "number" ||
         !Number.isFinite(detail.durationMs) ||
         detail.durationMs < 0

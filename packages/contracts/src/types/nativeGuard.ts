@@ -93,6 +93,12 @@ export type NativeGuardEvent = {
   detail: Record<string, unknown>;
 };
 
+export type NativeGuardDurationSource =
+  | "host"
+  | "guard_elapsed"
+  | "legacy_unspecified"
+  | "unavailable";
+
 export type NativeGuardStatus = {
   coverage: NativeGuardCoverageStatus;
   finalizerAssurance: "isolated_profile" | "exclusive_before_hook" | "unverified";

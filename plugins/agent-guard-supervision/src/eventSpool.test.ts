@@ -166,6 +166,30 @@ test("failed upload is durably persisted and retried", async (t) => {
   assert.equal(await readFile(join(directory, "events.jsonl"), "utf8"), "");
 });
 
+test("duration availability contract permits omission only when explicitly unavailable", async (t) => {
+  const directory = await temporaryDirectory(t);
+  const spool = createEventSpool({
+    directory,
+    upload: async () => undefined,
+    autoFlush: false,
+  });
+  stopBeforeRemove(directory, () => spool.stop());
+  const unavailable = outcomeEvent({
+    eventId: "duration-unavailable",
+    detail: {
+      ...outcomeEvent().detail,
+      durationSource: "unavailable",
+    },
+  });
+  delete unavailable.detail.durationMs;
+
+  assert.equal(await spool.enqueue(unavailable), true);
+  await assert.rejects(spool.enqueue(outcomeEvent({
+    eventId: "duration-unavailable-with-value",
+    detail: { ...outcomeEvent().detail, durationSource: "unavailable" },
+  })), /typed event/i);
+});
+
 test("default spool limits are 10,000 events and 50 MiB", () => {
   assert.equal(MAX_EVENT_SPOOL_EVENTS, 10_000);
   assert.equal(MAX_EVENT_SPOOL_BYTES, 50 * 1024 * 1024);
@@ -326,6 +350,7 @@ test("legacy detail lease epoch migrates to top-level before retry and rewrites 
     detail: { ...current.detail, leaseEpoch: 4 },
   } as Record<string, unknown>;
   delete legacy.leaseEpoch;
+  delete (legacy.detail as Record<string, unknown>).durationSource;
   await writeFile(join(directory, "events.jsonl"), `${JSON.stringify(legacy)}\n`);
   const spool = createEventSpool({
     directory,
@@ -341,6 +366,7 @@ test("legacy detail lease epoch migrates to top-level before retry and rewrites 
   ) as NativeGuardEvent;
   assert.equal(rewritten.leaseEpoch, 4);
   assert.equal(Object.hasOwn(rewritten.detail, "leaseEpoch"), false);
+  assert.equal(rewritten.detail.durationSource, "legacy_unspecified");
 });
 
 test("upload batches contain at most 100 events from one lease", async (t) => {
@@ -468,9 +494,29 @@ test("ACTIVE after hook emits bounded outcome asynchronously without changing th
   assert.equal(events[0]?.leaseEpoch, 1);
   assert.equal(events[0]?.detail.finalParamsDigest, digestJson(params));
   assert.equal(events[0]?.detail.durationMs, 7);
+  assert.equal(events[0]?.detail.durationSource, "host");
   assert.equal(JSON.stringify(events).includes("result-secret"), false);
   assert.equal(JSON.stringify(events).includes("credential-secret"), false);
   assert.equal(JSON.stringify(events).includes("separate-evidence-bearer"), false);
+});
+
+test("missing outcome correlation reports duration unavailable without inventing milliseconds", async (t) => {
+  const directory = await temporaryDirectory(t);
+  const events: NativeGuardEvent[] = [];
+  const runtime = await activeRuntime({
+    spoolDir: directory,
+    emitEvent: async (event) => { events.push(event); },
+  });
+  stopBeforeRemove(directory, () => runtime.stop());
+
+  runtime.afterToolCall(
+    { toolName: "read", params: {}, toolCallId: "call-uncorrelated", result: "ok" },
+    { toolName: "read", sessionKey: "agent:main", toolCallId: "call-uncorrelated" },
+  );
+  await waitFor(() => events.length === 1);
+
+  assert.equal(events[0].detail.durationSource, "unavailable");
+  assert.equal(Object.hasOwn(events[0].detail, "durationMs"), false);
 });
 
 test("after hook swallows asynchronous sink failure and stop prevents delayed reporting", async (t) => {
@@ -622,6 +668,58 @@ test("ended child evidence retries through the still-active lease without rewrit
   assert.equal(uploads[1].event.leaseEpoch, 1);
 });
 
+test("revoke before lazy spool creation leaves no upload or retry", async (t) => {
+  const directory = await temporaryDirectory(t);
+  const { publicKey } = generateKeyPairSync("ed25519");
+  let fetchCalls = 0;
+  const scheduled: Array<() => void> = [];
+  const runtime = new AgentGuardRuntime({
+    markerStore: memoryMarkerStore(),
+    now: () => new Date(NOW),
+    spoolDir: directory,
+    fetch: async () => {
+      fetchCalls += 1;
+      throw new Error("revoked evidence must not upload");
+    },
+    scheduleTimeout: (callback) => {
+      scheduled.push(callback);
+      return callback;
+    },
+    cancelTimeout: () => undefined,
+  });
+  runtime.finalizeRegistrationAttestation(true);
+  await runtime.start();
+  await runtime.activate(activation(publicKey.export({ type: "spki", format: "pem" }).toString()));
+  stopBeforeRemove(directory, () => runtime.stop());
+  const stale = await runtime.lookup("agent:main");
+  assert.equal(stale.state, "active");
+  const entered = deferred();
+  const release = deferred();
+  let pauseNextLookup = true;
+  runtime.lookup = async () => {
+    if (pauseNextLookup) {
+      pauseNextLookup = false;
+      entered.resolve();
+      await release.promise;
+    }
+    return stale;
+  };
+
+  runtime.afterToolCall(
+    { toolName: "read", params: {}, toolCallId: "call-revoke", result: "ok", durationMs: 1 },
+    { toolName: "read", sessionKey: "agent:main", toolCallId: "call-revoke" },
+  );
+  await entered.promise;
+  assert.equal(await runtime.revoke("lease-1"), true);
+  release.resolve();
+  await waitFor(async () => (
+    await readFile(join(directory, "events.jsonl"), "utf8").catch(() => "")
+  ).includes("call-revoke"));
+
+  assert.equal(fetchCalls, 0);
+  assert.equal(scheduled.length, 0);
+});
+
 async function temporaryDirectory(t: test.TestContext): Promise<string> {
   const directory = join(
     tmpdir(),
@@ -647,6 +745,16 @@ function stopBeforeRemove(directory: string, stop: () => void | Promise<void>): 
   const stops = temporaryDirectoryStops.get(directory);
   assert.ok(stops, "temporary directory cleanup must be registered");
   stops.push(stop);
+}
+
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }
 
 async function persistedEventIds(directory: string): Promise<string[]> {
@@ -681,6 +789,7 @@ function outcomeEvent(overrides: Partial<NativeGuardEvent> = {}): NativeGuardEve
       resultDigest: "b".repeat(64),
       resultPreview: "ok",
       durationMs: 1,
+      durationSource: "host",
     },
     ...overrides,
   });

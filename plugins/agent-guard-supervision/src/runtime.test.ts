@@ -19,7 +19,7 @@ import { createNativeToolDecisionService } from "../../../backend/src/modules/op
 import { createDecisionClient } from "./decisionClient";
 import type { ActiveLeaseLookup, GuardedMarker, MarkerStore } from "./leaseRegistry";
 import { AgentGuardRuntime } from "./runtime";
-import { createLifecycleClient } from "./lifecycleClient";
+import { createLifecycleClient, type LifecycleClient } from "./lifecycleClient";
 
 const NOW = "2026-08-02T10:00:00.000Z";
 const MAX_PARAM_BYTES = 256 * 1024;
@@ -734,6 +734,195 @@ test("ACTIVE warn emits a decision event and passes through", async () => {
   assert.equal(fixture.events[0]?.detail.action, "warn");
 });
 
+test("signed epoch-one outcome survives an after lookup paused across renewal", async () => {
+  const fixture = await activeFixture({ action: "allow" });
+  assert.equal(await fixture.runtime.beforeToolCall(execEvent(), execContext()), undefined);
+  const originalLookup = fixture.runtime.registry.lookupActiveLease.bind(fixture.runtime.registry);
+  const entered = deferred();
+  const release = deferred();
+  let pauseNextLookup = true;
+  fixture.runtime.registry.lookupActiveLease = async (leaseId) => {
+    if (pauseNextLookup) {
+      pauseNextLookup = false;
+      entered.resolve();
+      await release.promise;
+    }
+    return originalLookup(leaseId);
+  };
+
+  fixture.runtime.afterToolCall(
+    { ...execEvent(), result: "epoch-one-result", durationMs: 4 },
+    execContext(),
+  );
+  await entered.promise;
+  await fixture.runtime.renew(fixture.activation({
+    leaseEpoch: 2,
+    credential: "rotated-credential",
+    evidenceCredential: "rotated-evidence-credential",
+  }));
+  release.resolve();
+  await waitFor(() => fixture.events.some(({ type }) => type === "tool_outcome"));
+
+  const outcome = fixture.events.find(({ type }) => type === "tool_outcome")!;
+  assert.equal(outcome.leaseId, "lease.1");
+  assert.equal(outcome.leaseEpoch, 1);
+  assert.equal(outcome.sessionKey, "agent:main");
+  assert.equal(outcome.toolCallId, "call.1");
+  assert.equal(outcome.decisionId, "decision.1");
+});
+
+test("signed child outcome survives an after lookup paused across child end", async () => {
+  const fixture = await activeFixture({
+    action: "allow",
+    lifecycleClient: successfulLifecycleClient(),
+  });
+  assert.equal(await fixture.runtime.bindChild("lease.1", "agent:main", "agent:child"), true);
+  const childEvent = { ...execEvent(), toolCallId: "call.child" };
+  const childContext = execContext({ sessionKey: "agent:child", toolCallId: "call.child" });
+  assert.equal(await fixture.runtime.beforeToolCall(childEvent, childContext), undefined);
+  const originalLookup = fixture.runtime.registry.lookupActiveLease.bind(fixture.runtime.registry);
+  const entered = deferred();
+  const release = deferred();
+  let pauseNextLookup = true;
+  fixture.runtime.registry.lookupActiveLease = async (leaseId) => {
+    if (pauseNextLookup) {
+      pauseNextLookup = false;
+      entered.resolve();
+      await release.promise;
+    }
+    return originalLookup(leaseId);
+  };
+
+  fixture.runtime.afterToolCall(
+    { ...childEvent, result: "child-result", durationMs: 6 },
+    childContext,
+  );
+  await entered.promise;
+  assert.equal(await fixture.runtime.endSession("agent:child"), true);
+  release.resolve();
+  await waitFor(() => fixture.events.some(({ type }) => type === "tool_outcome"));
+
+  const outcome = fixture.events.find(({ type }) => type === "tool_outcome")!;
+  assert.equal(outcome.leaseId, "lease.1");
+  assert.equal(outcome.leaseEpoch, 1);
+  assert.equal(outcome.sessionKey, "agent:child");
+  assert.equal(outcome.toolCallId, "call.child");
+  assert.equal(outcome.decisionId, "decision.1");
+});
+
+test("missing host duration emits a guard-elapsed outcome instead of dropping it", async () => {
+  let monotonicMs = 100;
+  const fixture = await activeFixture({ action: "allow", monotonicNow: () => monotonicMs });
+  assert.equal(await fixture.runtime.beforeToolCall(execEvent(), execContext()), undefined);
+  monotonicMs = 137.5;
+
+  fixture.runtime.afterToolCall(
+    { ...execEvent(), result: "duration-fallback" },
+    execContext(),
+  );
+  await waitFor(() => fixture.events.some(({ type }) => type === "tool_outcome"));
+
+  const outcome = fixture.events.find(({ type }) => type === "tool_outcome")!;
+  assert.equal(outcome.detail.durationSource, "guard_elapsed");
+  assert.equal(outcome.detail.durationMs, 37.5);
+});
+
+test("low-risk PDP outage allow and warn retain guard-elapsed outcome correlation", async (t) => {
+  for (const lowRiskPolicy of ["allow", "warn"] as const) {
+    await t.test(lowRiskPolicy, async () => {
+      let monotonicMs = 200;
+      const fixture = await activeFixture({
+        action: "allow",
+        failurePolicyLowRisk: lowRiskPolicy,
+        fetch: async () => { throw new Error("PDP offline"); },
+        monotonicNow: () => monotonicMs,
+      });
+      assert.equal(
+        await fixture.runtime.beforeToolCall(lowRiskEvent(), lowRiskContext()),
+        undefined,
+      );
+      monotonicMs = 225;
+      fixture.runtime.afterToolCall(
+        { ...lowRiskEvent(), result: "outage-result" },
+        lowRiskContext(),
+      );
+      await waitFor(() => fixture.events.some(({ type }) => type === "tool_outcome"));
+      const outcome = fixture.events.find(({ type }) => type === "tool_outcome")!;
+      assert.equal(outcome.leaseEpoch, 1);
+      assert.equal(outcome.detail.durationSource, "guard_elapsed");
+      assert.equal(outcome.detail.durationMs, 25);
+    });
+  }
+});
+
+test("outcome correlation capacity preserves the oldest executable call and blocks a new one", async () => {
+  let monotonicMs = 300;
+  let decisionNumber = 0;
+  const fixture = await activeFixture({
+    action: "allow",
+    decisionId: () => `decision.capacity.${++decisionNumber}`,
+    monotonicNow: () => monotonicMs,
+    maxOutcomeCorrelations: 1,
+  });
+  assert.equal(await fixture.runtime.beforeToolCall(execEvent(), execContext()), undefined);
+  const secondEvent = { ...execEvent(), toolCallId: "call.2" };
+  const secondContext = execContext({ toolCallId: "call.2" });
+
+  assert.deepEqual(await fixture.runtime.beforeToolCall(secondEvent, secondContext), {
+    block: true,
+    blockReason: "[Agent Guard:NATIVE_GUARD_EVIDENCE_CAPACITY] Native guard outcome correlation capacity is exhausted.",
+  });
+  monotonicMs = 340;
+  fixture.runtime.afterToolCall(
+    { ...execEvent(), result: "oldest-call" },
+    execContext(),
+  );
+  await waitFor(() => fixture.events.some(({ type }) => type === "tool_outcome"));
+
+  const outcome = fixture.events.find(({ type }) => type === "tool_outcome")!;
+  assert.equal(outcome.toolCallId, "call.1");
+  assert.equal(outcome.decisionId, "decision.capacity.1");
+  assert.equal(outcome.detail.durationSource, "guard_elapsed");
+  assert.equal(outcome.detail.durationMs, 40);
+});
+
+test("failure outcome preserves bounded diagnostics without persisting secrets", async () => {
+  const fixture = await activeFixture({ action: "allow" });
+  assert.equal(await fixture.runtime.beforeToolCall(execEvent(), execContext()), undefined);
+  const privateKey = "-----BEGIN PRIVATE KEY-----\nprivate-material\n-----END PRIVATE KEY-----";
+  const diagnostic = [
+    "ordinary execution failure at step 7",
+    "token=token-value",
+    "Cookie: cookie-value",
+    "Bearer bearer-value",
+    privateKey,
+    "credential-secret",
+    "evidence-credential-secret",
+    "界".repeat(8_000),
+  ].join(" ");
+
+  fixture.runtime.afterToolCall(
+    { ...execEvent(), error: diagnostic, durationMs: 9 },
+    execContext(),
+  );
+  await waitFor(() => fixture.events.some(({ type }) => type === "tool_outcome"));
+
+  const outcome = fixture.events.find(({ type }) => type === "tool_outcome")!;
+  const error = String(outcome.detail.error);
+  assert.match(error, /ordinary execution failure at step 7/);
+  for (const secret of [
+    "token-value",
+    "cookie-value",
+    "bearer-value",
+    "private-material",
+    "credential-secret",
+    "evidence-credential-secret",
+  ]) assert.equal(error.includes(secret), false);
+  assert.ok(Buffer.byteLength(error, "utf8") <= 4 * 1024);
+  assert.equal(error.includes("\uFFFD"), false);
+  assert.equal(outcome.detail.errorCode, "TOOL_EXECUTION_FAILED");
+});
+
 test("the plugin client accepts every lowercase reason code signed by NativeToolDecisionService", async () => {
   const scenarios: Array<{
     defaultAction: SupervisionAction;
@@ -1410,6 +1599,9 @@ type FixtureOptions = {
     init: RequestInit | undefined,
   ) => Promise<Response>;
   emitEvent?: (event: NativeGuardEvent) => Promise<void> | void;
+  lifecycleClient?: LifecycleClient;
+  monotonicNow?: () => number;
+  maxOutcomeCorrelations?: number;
 };
 
 async function activeFixture(options: FixtureOptions) {
@@ -1460,6 +1652,9 @@ async function activeFixture(options: FixtureOptions) {
     maxDecisionIdsPerLease: options.maxDecisionIdsPerLease,
     approvalLeaseRecheckAttested: options.approvalLeaseRecheckAttested ?? true,
     emitEvent: options.emitEvent ?? (async (event) => { events.push(structuredClone(event)); }),
+    lifecycleClient: options.lifecycleClient,
+    monotonicNow: options.monotonicNow,
+    maxOutcomeCorrelations: options.maxOutcomeCorrelations,
     createId: (() => {
       let id = 0;
       return (prefix: string) => `${prefix}.${++id}`;
@@ -1492,6 +1687,13 @@ async function activeFixture(options: FixtureOptions) {
       derivedPaths: event.derivedPaths ? [...event.derivedPaths] : undefined,
       requestedAt: NOW,
     } as NativeToolDecisionRequest) ?? jsonResponse("{}"),
+  };
+}
+
+function successfulLifecycleClient(): LifecycleClient {
+  return {
+    async bindChild() { return; },
+    async endSession() { return; },
   };
 }
 

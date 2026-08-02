@@ -69,6 +69,32 @@ test("migrates a legacy detail lease epoch to the top level and atomically rewri
   }
 });
 
+test("marks a legacy tool outcome duration source as unspecified and rewrites JSONL", async () => {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "native-events-legacy-duration-"));
+  try {
+    const event = buildEvent({
+      eventId: "event.legacy-duration",
+      type: "tool_outcome",
+      decisionId: undefined,
+      detail: {
+        finalParamsDigest: "a".repeat(64),
+        durationMs: 12,
+        resultDigest: "b".repeat(64),
+        resultPreview: "legacy",
+      },
+    });
+    const filePath = path.join(rootDir, `${event.leaseId}.jsonl`);
+    await fs.writeFile(filePath, `${JSON.stringify({ sequence: 1, event })}\n`);
+
+    const store = createNativeGuardEventStore({ rootDir });
+    const [saved] = await store.listByRun(event.runId!);
+    assert.equal(saved.detail.durationSource, "legacy_unspecified");
+    assert.match(await fs.readFile(filePath, "utf8"), /"durationSource":"legacy_unspecified"/);
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
 test("syncs active appends and hardens existing file permissions", async () => {
   const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "native-events-"));
   try {
@@ -494,6 +520,7 @@ test("preserves and scrubs the typed Task10 tool-outcome shape", async () => {
         finalParamsDigest: "a".repeat(64),
         error: "Authorization: Bearer outcome-error-secret",
         durationMs: 12.5,
+        durationSource: "host",
         resultDigest: "b".repeat(64),
         resultPreview: "token=outcome-preview-secret",
         unexpected: "drop-outcome-extra",
@@ -507,6 +534,7 @@ test("preserves and scrubs the typed Task10 tool-outcome shape", async () => {
       finalParamsDigest: "a".repeat(64),
       error: "Authorization=[REDACTED]",
       durationMs: 12.5,
+      durationSource: "host",
       resultDigest: "b".repeat(64),
       resultPreview: "token=[REDACTED]",
     });
@@ -520,6 +548,43 @@ test("preserves and scrubs the typed Task10 tool-outcome shape", async () => {
   });
 });
 
+test("tool-outcome duration availability contract rejects invented unavailable values", async () => {
+  await withStore(async ({ store }) => {
+    const unavailable = buildEvent({
+      eventId: "event.duration-unavailable",
+      type: "tool_outcome",
+      detail: {
+        finalParamsDigest: "a".repeat(64),
+        durationSource: "unavailable",
+        resultDigest: "b".repeat(64),
+      },
+    });
+    delete unavailable.decisionId;
+    assert.equal(await store.append(unavailable), true);
+
+    const invented = buildEvent({
+      eventId: "event.duration-invented",
+      type: "tool_outcome",
+      detail: {
+        ...unavailable.detail,
+        durationMs: 0,
+      },
+    });
+    delete invented.decisionId;
+    await assert.rejects(store.append(invented), /must be omitted/i);
+    const hostMissing = buildEvent({
+      eventId: "event.duration-host-missing",
+      type: "tool_outcome",
+      detail: {
+        ...unavailable.detail,
+        durationSource: "host",
+      },
+    });
+    delete hostMissing.decisionId;
+    await assert.rejects(store.append(hostMissing), /durationMs/i);
+  });
+});
+
 test("defensively truncates oversized tool-outcome previews to 8 KiB", async () => {
   await withStore(async ({ store }) => {
     const event = buildEvent({
@@ -528,6 +593,7 @@ test("defensively truncates oversized tool-outcome previews to 8 KiB", async () 
       detail: {
         finalParamsDigest: "a".repeat(64),
         durationMs: 1,
+        durationSource: "host",
         resultDigest: "b".repeat(64),
         resultPreview: `token=preview-secret ${"界".repeat(4_000)}`,
       },
@@ -558,6 +624,7 @@ test("truncates UTF-8 previews only at Unicode code-point boundaries", async () 
         detail: {
           finalParamsDigest: "a".repeat(64),
           durationMs: 1,
+          durationSource: "host",
           resultDigest: "b".repeat(64),
           resultPreview: `${"a".repeat(asciiLength)}😀`,
         },

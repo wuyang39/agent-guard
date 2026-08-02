@@ -120,6 +120,7 @@ const DETAIL_FIELDS: Record<NativeGuardEvent["type"], readonly string[]> = {
     "outcome",
     "success",
     "durationMs",
+    "durationSource",
     "finalParamsDigest",
     "resultDigest",
     "resultPreview",
@@ -212,6 +213,17 @@ export function sanitizeOutcomeResult(
     resultPreview: truncateUtf8(canonical, MAX_RESULT_PREVIEW_BYTES),
     resultDigest: createHash("sha256").update(canonical, "utf8").digest("hex"),
   };
+}
+
+export function sanitizeOutcomeDiagnostic(
+  value: string,
+  exactSecrets: readonly string[] = [],
+): string {
+  let scrubbed = scrubGenericSecrets(normalizeUnicode(value));
+  for (const secret of exactSecrets) {
+    if (secret.length > 0) scrubbed = scrubbed.split(secret).join("[REDACTED]");
+  }
+  return truncateUtf8(scrubbed, 4 * 1024);
 }
 
 export function createEventSpool(options: EventSpoolOptions): EventSpool {
@@ -672,6 +684,11 @@ function sanitizeEvent(value: unknown, allowLegacyEpoch: boolean): NativeGuardEv
     throw new TypeError("Native guard event schema is invalid");
   }
   const detail = projectDetail(type as NativeGuardEvent["type"], rawDetail);
+  if (
+    allowLegacyEpoch &&
+    type === "tool_outcome" &&
+    detail.durationSource === undefined
+  ) detail.durationSource = "legacy_unspecified";
   validateTypedDetail(type as NativeGuardEvent["type"], value, detail);
   const runId = optionalString(value, "runId", 256);
   const toolCallId = optionalString(value, "toolCallId", 256);
@@ -780,7 +797,15 @@ function validateTypedDetail(
     if (!safeString(dataProperty(event, "toolCallId"), 256)) throw invalidTypedEvent();
     if (!HEX_DIGEST.test(String(detail.finalParamsDigest))) throw invalidTypedEvent();
     if (!HEX_DIGEST.test(String(detail.resultDigest))) throw invalidTypedEvent();
-    if (typeof detail.durationMs !== "number" || detail.durationMs < 0) throw invalidTypedEvent();
+    const durationSource = String(detail.durationSource);
+    if (!new Set(["host", "guard_elapsed", "legacy_unspecified", "unavailable"]).has(durationSource)) {
+      throw invalidTypedEvent();
+    }
+    if (durationSource === "unavailable") {
+      if (detail.durationMs !== undefined) throw invalidTypedEvent();
+    } else if (typeof detail.durationMs !== "number" || detail.durationMs < 0) {
+      throw invalidTypedEvent();
+    }
     if (detail.resultPreview !== undefined && typeof detail.resultPreview !== "string") throw invalidTypedEvent();
     if (detail.error !== undefined && typeof detail.error !== "string") throw invalidTypedEvent();
   } else if (type === "decision") {

@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { performance } from "node:perf_hooks";
 import { types as utilTypes } from "node:util";
 import type {
+  NativeGuardAction,
   NativeGuardEvent,
   NativeGuardLeaseActivation,
   NativeGuardStatus,
@@ -20,6 +22,7 @@ import type {
 } from "openclaw/plugin-sdk/plugin-entry";
 import {
   createEventSpool as defaultCreateEventSpool,
+  sanitizeOutcomeDiagnostic,
   sanitizeOutcomeResult,
   type EventSpool,
   type EventSpoolOptions,
@@ -64,6 +67,8 @@ export type AgentGuardRuntimeOptions = {
   lifecycleClient?: LifecycleClient;
   createId?: (prefix: string) => string;
   decisionClient?: DecisionClient;
+  monotonicNow?: () => number;
+  maxOutcomeCorrelations?: number;
   /** Unit/compat seam for a future trusted host capability. Production does not self-attest it. */
   approvalLeaseRecheckAttested?: boolean;
 };
@@ -75,6 +80,7 @@ const EVENT_UPLOAD_PATH = "/api/v1/openclaw/native-guard/events/batch";
 const EVENT_UPLOAD_TIMEOUT_MS = 5_000;
 const MAX_EVENT_RESPONSE_BYTES = 64 * 1024;
 const MAX_OUTCOME_CORRELATIONS = 10_000;
+const MAX_GUARD_ELAPSED_MS = 24 * 60 * 60 * 1_000;
 
 const OFF_STATUS: Readonly<NativeGuardStatus> = Object.freeze({
   coverage: "off",
@@ -118,6 +124,8 @@ export class AgentGuardRuntime {
   readonly #lifecycleClient: LifecycleClient;
   readonly #createId: NonNullable<AgentGuardRuntimeOptions["createId"]>;
   readonly #approvalLeaseRecheckAttested: boolean;
+  readonly #monotonicNow: NonNullable<AgentGuardRuntimeOptions["monotonicNow"]>;
+  readonly #maxOutcomeCorrelations: number;
   readonly #pendingOperations = new Set<Promise<unknown>>();
   readonly #outcomeCorrelations = new Map<string, OutcomeCorrelation>();
   #eventSpool: EventSpool | undefined;
@@ -156,6 +164,15 @@ export class AgentGuardRuntime {
       timeoutMs: decisionTimeoutMs,
       maxDecisionIdsPerLease: options.maxDecisionIdsPerLease,
     });
+    if (options.monotonicNow !== undefined && typeof options.monotonicNow !== "function") {
+      throw new TypeError("Native guard monotonic clock is invalid");
+    }
+    this.#monotonicNow = options.monotonicNow ?? (() => performance.now());
+    this.#maxOutcomeCorrelations = positiveBoundedInteger(
+      options.maxOutcomeCorrelations ?? MAX_OUTCOME_CORRELATIONS,
+      MAX_OUTCOME_CORRELATIONS,
+      "outcome correlation limit",
+    );
     this.#emitEvent = options.emitEvent;
     this.#spoolDir = options.spoolDir ?? join(
       homedir(),
@@ -456,17 +473,37 @@ export class AgentGuardRuntime {
     if (signal.aborted || this.abortSignal.aborted) return stoppedBlock();
     if (!(await this.#leaseIsCurrent(identity.sessionKey, lookup))) return leaseChangedBlock();
 
-    this.#rememberOutcomeCorrelation(identity, lookup, request, response);
     switch (response.action) {
       case "allow":
       case "warn":
+        if (!this.#rememberOutcomeCorrelation(identity, lookup, {
+          requestId: request.requestId,
+          decisionId: response.decisionId,
+          action: response.action,
+          runId: request.runId,
+          admittedParamsDigest: request.paramsDigest,
+        })) return evidenceCapacityBlock();
         return;
       case "deny":
         return policyBlock(response, lookup, event.params);
       case "redact":
+        if (!this.#rememberOutcomeCorrelation(identity, lookup, {
+          requestId: request.requestId,
+          decisionId: response.decisionId,
+          action: response.action,
+          runId: request.runId,
+          admittedParamsDigest: response.rewrittenParamsDigest,
+        })) return evidenceCapacityBlock();
         return { params: response.rewrittenParams! };
       case "ask":
         if (!this.#approvalLeaseRecheckAttested) return approvalUnattestedBlock();
+        if (!this.#rememberOutcomeCorrelation(identity, lookup, {
+          requestId: request.requestId,
+          decisionId: response.decisionId,
+          action: response.action,
+          runId: request.runId,
+          admittedParamsDigest: request.paramsDigest,
+        })) return evidenceCapacityBlock();
         return this.#approvalResult(lookup, request, response, signal, context.abortSignal);
     }
   }
@@ -480,10 +517,11 @@ export class AgentGuardRuntime {
     hostSignal: AbortSignal | undefined,
   ): Promise<BeforeResult | void> {
     if (hostSignal?.aborted) return cancelledBlock();
-    if (risk === "low" && lease.failurePolicy.lowRisk === "allow") return;
-    const action = risk === "low" ? "warn" : "deny";
+    const action = risk === "low"
+      ? lease.failurePolicy.lowRisk === "allow" ? "allow" : "warn"
+      : "deny";
     const paramsDigest = safeFinalParamsDigest(event.params);
-    if (paramsDigest !== undefined) {
+    if (paramsDigest !== undefined && action !== "allow") {
       await this.#emit(outageEvent(
         this.#createId("native_guard_event"),
         lease,
@@ -497,7 +535,16 @@ export class AgentGuardRuntime {
     if (hostSignal?.aborted) return cancelledBlock();
     if (signal.aborted || this.abortSignal.aborted) return stoppedBlock();
     if (!(await this.#leaseIsCurrent(identity.sessionKey, lease))) return leaseChangedBlock();
-    return action === "warn" ? undefined : outageBlock();
+    if (action === "deny") return outageBlock();
+    if (
+      paramsDigest === undefined ||
+      !this.#rememberOutcomeCorrelation(identity, lease, {
+        action,
+        runId: identity.runId,
+        admittedParamsDigest: paramsDigest,
+      })
+    ) return evidenceCapacityBlock();
+    return;
   }
 
   async #approvalResult(
@@ -507,15 +554,30 @@ export class AgentGuardRuntime {
     signal: AbortSignal,
     hostSignal: AbortSignal | undefined,
   ): Promise<BeforeResult> {
-    await this.#emit(approvalRequestedEvent(
-      this.#createId("native_guard_event"),
-      lease,
-      request,
-      response,
-      this.#now(),
-    ));
-    if (hostSignal?.aborted) return cancelledBlock();
+    const forgetCorrelation = (): void => {
+      this.#outcomeCorrelations.delete(outcomeCorrelationKey(
+        request.sessionKey,
+        request.toolCallId,
+      ));
+    };
+    try {
+      await this.#emit(approvalRequestedEvent(
+        this.#createId("native_guard_event"),
+        lease,
+        request,
+        response,
+        this.#now(),
+      ));
+    } catch (error) {
+      forgetCorrelation();
+      throw error;
+    }
+    if (hostSignal?.aborted) {
+      forgetCorrelation();
+      return cancelledBlock();
+    }
     if (signal.aborted || !(await this.#leaseIsCurrent(request.sessionKey, lease))) {
+      forgetCorrelation();
       return leaseChangedBlock();
     }
     return {
@@ -545,6 +607,12 @@ export class AgentGuardRuntime {
       const current = await this.#leaseIsCurrent(request.sessionKey, lease);
       const permitted = hostResolution === "allow-once" || hostResolution === "deny";
       const resolution = current && permitted ? hostResolution : "deny";
+      if (resolution !== "allow-once") {
+        this.#outcomeCorrelations.delete(outcomeCorrelationKey(
+          request.sessionKey,
+          request.toolCallId,
+        ));
+      }
       await this.#emit(approvalResolvedEvent(
         this.#createId("native_guard_event"),
         lease,
@@ -593,15 +661,33 @@ export class AgentGuardRuntime {
 
   async #reportOutcome(event: AfterToolEvent, context: ToolContext): Promise<void> {
     if (this.abortSignal.aborted || !safeSessionKey(context.sessionKey)) return;
-    const lookup = await this.lookup(context.sessionKey);
-    if (lookup.state !== "active" || this.abortSignal.aborted) return;
     const identity = guardedIdentity(event, context);
     if (identity === undefined) return;
-    if (
-      typeof event.durationMs !== "number" ||
-      !Number.isFinite(event.durationMs) ||
-      event.durationMs < 0
-    ) return;
+    const correlationKey = outcomeCorrelationKey(identity.sessionKey, identity.toolCallId);
+    const correlation = this.#outcomeCorrelations.get(correlationKey);
+    this.#outcomeCorrelations.delete(correlationKey);
+
+    let lookup: ActiveLeaseLookup | undefined;
+    let currentLease: ActiveLeaseLookup | undefined;
+    if (correlation === undefined) {
+      const current = await this.lookup(context.sessionKey);
+      if (current.state !== "active" || this.abortSignal.aborted) return;
+      lookup = current;
+      currentLease = current;
+    } else {
+      try {
+        currentLease = await this.#track(this.registry.lookupActiveLease(correlation.leaseId));
+      } catch {
+        currentLease = undefined;
+      }
+    }
+
+    const duration = outcomeDuration(
+      event.durationMs,
+      correlation?.startedAtMonotonicMs,
+      this.#monotonicNow,
+    );
+    if (duration === undefined) return;
 
     let finalParamsDigest: string;
     try {
@@ -609,25 +695,28 @@ export class AgentGuardRuntime {
     } catch {
       return;
     }
-    const evidence = sanitizeOutcomeResult(event.result, [
-      lookup.credential,
-      lookup.evidenceCredential,
-    ]);
-    const correlationKey = outcomeCorrelationKey(identity.sessionKey, identity.toolCallId);
-    const correlation = this.#outcomeCorrelations.get(correlationKey);
-    this.#outcomeCorrelations.delete(correlationKey);
-    if (
-      correlation !== undefined &&
-      (correlation.leaseId !== lookup.leaseId || correlation.leaseEpoch !== lookup.leaseEpoch)
-    ) return;
+    const exactSecrets = correlation === undefined
+      ? [lookup!.credential, lookup!.evidenceCredential]
+      : [
+          correlation.credential,
+          correlation.evidenceCredential,
+          ...(currentLease === undefined
+            ? []
+            : [currentLease.credential, currentLease.evidenceCredential]),
+        ];
+    const evidence = sanitizeOutcomeResult(event.result, exactSecrets);
+    const leaseId = correlation?.leaseId ?? lookup!.leaseId;
+    const leaseEpoch = correlation?.leaseEpoch ?? lookup!.leaseEpoch;
+    const sessionKey = correlation?.sessionKey ?? identity.sessionKey;
+    const runId = correlation?.runId ?? identity.runId;
     const outcome: NativeGuardEvent = {
       schemaVersion: "native-guard-1",
       eventId: this.#createId("native_guard_event"),
       type: "tool_outcome",
-      leaseId: lookup.leaseId,
-      leaseEpoch: lookup.leaseEpoch,
-      sessionKey: identity.sessionKey,
-      ...(identity.runId === undefined ? {} : { runId: identity.runId }),
+      leaseId,
+      leaseEpoch,
+      sessionKey,
+      ...(runId === undefined ? {} : { runId }),
       toolCallId: identity.toolCallId,
       ...(correlation?.decisionId === undefined ? {} : { decisionId: correlation.decisionId }),
       timestamp: this.#now().toISOString(),
@@ -635,42 +724,56 @@ export class AgentGuardRuntime {
         ...(correlation?.requestId === undefined ? {} : { requestId: correlation.requestId }),
         ...(correlation?.action === undefined ? {} : { action: correlation.action }),
         success: event.error === undefined,
-        durationMs: event.durationMs,
+        ...(duration.durationMs === undefined ? {} : { durationMs: duration.durationMs }),
+        durationSource: duration.durationSource,
         finalParamsDigest,
         resultDigest: evidence.resultDigest,
         resultPreview: evidence.resultPreview,
         ...(event.error === undefined
           ? {}
           : {
-              error: "Tool execution failed.",
+              error: sanitizeOutcomeDiagnostic(event.error, exactSecrets),
               errorCode: "TOOL_EXECUTION_FAILED",
             }),
       },
     };
-    if (this.abortSignal.aborted || !(await this.#leaseIsCurrent(identity.sessionKey, lookup))) return;
+    if (
+      this.abortSignal.aborted ||
+      (correlation === undefined && !(await this.#leaseIsCurrent(identity.sessionKey, lookup!)))
+    ) return;
     await this.#emit(outcome);
   }
 
   #rememberOutcomeCorrelation(
     identity: GuardedIdentity,
     lease: ActiveLeaseLookup,
-    request: NativeToolDecisionRequest,
-    response: NativeToolDecisionResponse,
-  ): void {
+    detail: {
+      requestId?: string;
+      decisionId?: string;
+      action: NativeGuardAction;
+      runId?: string;
+      admittedParamsDigest: string | undefined;
+    },
+  ): boolean {
     const key = outcomeCorrelationKey(identity.sessionKey, identity.toolCallId);
-    this.#outcomeCorrelations.delete(key);
+    if (
+      this.#outcomeCorrelations.has(key) ||
+      this.#outcomeCorrelations.size >= this.#maxOutcomeCorrelations
+    ) return false;
     this.#outcomeCorrelations.set(key, {
       leaseId: lease.leaseId,
       leaseEpoch: lease.leaseEpoch,
-      requestId: request.requestId,
-      decisionId: response.decisionId,
-      action: response.action,
+      ...(detail.requestId === undefined ? {} : { requestId: detail.requestId }),
+      ...(detail.decisionId === undefined ? {} : { decisionId: detail.decisionId }),
+      action: detail.action,
+      sessionKey: identity.sessionKey,
+      ...(detail.runId === undefined ? {} : { runId: detail.runId }),
+      admittedParamsDigest: detail.admittedParamsDigest,
+      credential: lease.credential,
+      evidenceCredential: lease.evidenceCredential,
+      startedAtMonotonicMs: readMonotonic(this.#monotonicNow),
     });
-    while (this.#outcomeCorrelations.size > MAX_OUTCOME_CORRELATIONS) {
-      const oldest = this.#outcomeCorrelations.keys().next().value as string | undefined;
-      if (oldest === undefined) break;
-      this.#outcomeCorrelations.delete(oldest);
-    }
+    return true;
   }
 
   async #emit(event: NativeGuardEvent): Promise<void> {
@@ -886,6 +989,13 @@ function parseAdmissionTimeout(value: number | undefined): number {
   return timeoutMs;
 }
 
+function positiveBoundedInteger(value: number, maximum: number, label: string): number {
+  if (!Number.isSafeInteger(value) || value <= 0 || value > maximum) {
+    throw new RangeError(`Native guard ${label} is invalid`);
+  }
+  return value;
+}
+
 function markerRecoveryError(): Error {
   return new Error("Native guard marker recovery failed");
 }
@@ -909,10 +1019,49 @@ type GuardedIdentity = {
 type OutcomeCorrelation = {
   leaseId: string;
   leaseEpoch: number;
-  requestId: string;
-  decisionId: string;
-  action: NativeToolDecisionResponse["action"];
+  requestId?: string;
+  decisionId?: string;
+  action: NativeGuardAction;
+  sessionKey: string;
+  runId?: string;
+  credential: string;
+  evidenceCredential: string;
+  admittedParamsDigest?: string;
+  startedAtMonotonicMs?: number;
 };
+
+type OutcomeDuration = {
+  durationMs?: number;
+  durationSource: "host" | "guard_elapsed" | "unavailable";
+};
+
+function outcomeDuration(
+  hostDurationMs: number | undefined,
+  startedAtMonotonicMs: number | undefined,
+  monotonicNow: () => number,
+): OutcomeDuration | undefined {
+  if (hostDurationMs !== undefined) {
+    return Number.isFinite(hostDurationMs) && hostDurationMs >= 0
+      ? { durationMs: hostDurationMs, durationSource: "host" }
+      : undefined;
+  }
+  if (startedAtMonotonicMs === undefined) return { durationSource: "unavailable" };
+  const completedAt = readMonotonic(monotonicNow);
+  if (completedAt === undefined) return { durationSource: "unavailable" };
+  return {
+    durationMs: Math.min(MAX_GUARD_ELAPSED_MS, Math.max(0, completedAt - startedAtMonotonicMs)),
+    durationSource: "guard_elapsed",
+  };
+}
+
+function readMonotonic(monotonicNow: () => number): number | undefined {
+  try {
+    const value = monotonicNow();
+    return Number.isFinite(value) && value >= 0 ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 function outcomeCorrelationKey(sessionKey: string, toolCallId: string): string {
   return `${sessionKey}\0${toolCallId}`;
@@ -1193,6 +1342,13 @@ function outageBlock(): BeforeResult {
   return {
     block: true,
     blockReason: "[Agent Guard:NATIVE_GUARD_PDP_UNAVAILABLE] Native guard policy decision unavailable.",
+  };
+}
+
+function evidenceCapacityBlock(): BeforeResult {
+  return {
+    block: true,
+    blockReason: "[Agent Guard:NATIVE_GUARD_EVIDENCE_CAPACITY] Native guard outcome correlation capacity is exhausted.",
   };
 }
 

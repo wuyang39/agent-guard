@@ -688,7 +688,7 @@ test("ending a recovery root preserves recovery state when marker removal fails"
   assert.deepEqual(await registry.lookup("agent:guard:root.1"), { state: "off" });
 });
 
-test("restart conservatively clears all flat child bindings when any recovered child ends", async () => {
+test("restart removes only the explicitly ended flat child and keeps unknown relationships guarded", async () => {
   const buildStore = async (): Promise<MemoryMarkerStore> => {
     const store = new MemoryMarkerStore();
     const active = new LeaseRegistry({ markerStore: store, now: () => new Date(NOW) });
@@ -706,9 +706,12 @@ test("restart conservatively clears all flat child bindings when any recovered c
   assert.equal(await recovery.endSession("agent:guard:child"), true);
   assert.equal((await recovery.lookup("agent:guard:root.1")).state, "recovery");
   assert.deepEqual(await recovery.lookup("agent:guard:child"), { state: "off" });
-  assert.deepEqual(await recovery.lookup("agent:guard:grandchild"), { state: "off" });
-  assert.deepEqual(await recovery.lookup("agent:guard:sibling"), { state: "off" });
-  assert.deepEqual(recoveryStore.writes.at(-1)?.childSessionKeys, []);
+  assert.equal((await recovery.lookup("agent:guard:grandchild")).state, "recovery");
+  assert.equal((await recovery.lookup("agent:guard:sibling")).state, "recovery");
+  assert.deepEqual(recoveryStore.writes.at(-1)?.childSessionKeys, [
+    "agent:guard:grandchild",
+    "agent:guard:sibling",
+  ]);
 
   const reactivatedStore = await buildStore();
   const reactivated = new LeaseRegistry({ markerStore: reactivatedStore, now: () => new Date(NOW) });
@@ -717,9 +720,12 @@ test("restart conservatively clears all flat child bindings when any recovered c
   assert.equal(await reactivated.endSession("agent:guard:child"), true);
   assert.equal((await reactivated.lookup("agent:guard:root.1")).state, "active");
   assert.deepEqual(await reactivated.lookup("agent:guard:child"), { state: "off" });
-  assert.deepEqual(await reactivated.lookup("agent:guard:grandchild"), { state: "off" });
-  assert.deepEqual(await reactivated.lookup("agent:guard:sibling"), { state: "off" });
-  assert.deepEqual(reactivatedStore.writes.at(-1)?.childSessionKeys, []);
+  assert.equal((await reactivated.lookup("agent:guard:grandchild")).state, "active");
+  assert.equal((await reactivated.lookup("agent:guard:sibling")).state, "active");
+  assert.deepEqual(reactivatedStore.writes.at(-1)?.childSessionKeys, [
+    "agent:guard:grandchild",
+    "agent:guard:sibling",
+  ]);
 });
 
 test("multiple independent session trees report a truthful count without singular detail", async () => {

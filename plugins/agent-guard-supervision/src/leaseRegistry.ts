@@ -363,7 +363,7 @@ export class LeaseRegistry {
         }
 
         const subtree = active.flatRecoveryBindings
-          ? new Set(active.lease.childSessionKeys)
+          ? new Set([sessionKey])
           : collectSubtree(active.parentByChild, sessionKey);
         const retainedChildren = active.lease.childSessionKeys.filter((key) => !subtree.has(key));
         const lease = withChildSessionKeys(active.lease, retainedChildren);
@@ -379,15 +379,13 @@ export class LeaseRegistry {
 
       const recovering = this.#recoveringBySession.get(sessionKey);
       if (recovering === undefined) return false;
-      if (this.#recoveryConflictByLease.has(recovering.leaseId)) {
-        return this.#revokeWithoutPurge(recovering.leaseId);
-      }
       if (sessionKey === recovering.rootSessionKey) {
         return this.#revokeWithoutPurge(recovering.leaseId);
       }
+      if (this.#recoveryConflictByLease.has(recovering.leaseId)) return false;
       const marker = {
         ...recovering,
-        childSessionKeys: [],
+        childSessionKeys: recovering.childSessionKeys.filter((key) => key !== sessionKey),
       };
       await this.#markerStore.write(marker);
       this.#recoveringByLease.set(marker.leaseId, marker);

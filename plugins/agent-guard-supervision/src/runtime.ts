@@ -4,6 +4,12 @@ import type {
   NativeGuardLeaseActivation,
   NativeGuardStatus,
 } from "@agent-guard/contracts";
+import type {
+  BeforeResult,
+  PluginApi,
+  ToolContext,
+  ToolEvent,
+} from "openclaw/plugin-sdk/plugin-entry";
 import {
   FileMarkerStore,
   LeaseRegistry,
@@ -15,6 +21,7 @@ export type AgentGuardRuntimeOptions = {
   markerStore?: MarkerStore;
   markerDir?: string;
   now?: () => Date;
+  sessionResolver?: PluginApi["runtime"]["agent"]["session"]["getSessionEntry"];
   scheduleTimeout?: (callback: () => void, delayMs: number) => unknown;
   cancelTimeout?: (handle: unknown) => void;
 };
@@ -35,6 +42,7 @@ const FAILED_STATUS: Readonly<NativeGuardStatus> = Object.freeze({
 export class AgentGuardRuntime {
   readonly registry: LeaseRegistry;
   readonly #markerStore: LifecycleMarkerStore;
+  readonly #sessionResolver: AgentGuardRuntimeOptions["sessionResolver"];
   readonly #scheduleTimeout: NonNullable<AgentGuardRuntimeOptions["scheduleTimeout"]>;
   readonly #cancelTimeout: NonNullable<AgentGuardRuntimeOptions["cancelTimeout"]>;
   readonly #pendingOperations = new Set<Promise<unknown>>();
@@ -50,6 +58,7 @@ export class AgentGuardRuntime {
       options.markerDir ?? join(homedir(), ".agent-guard", "native-guard-markers"),
     );
     this.#markerStore = new LifecycleMarkerStore(markerStore);
+    this.#sessionResolver = options.sessionResolver;
     this.registry = new LeaseRegistry({ markerStore: this.#markerStore, now: options.now });
     this.#scheduleTimeout = options.scheduleTimeout ?? ((callback, delayMs) =>
       setTimeout(callback, delayMs));
@@ -105,6 +114,66 @@ export class AgentGuardRuntime {
     if (this.#failed) return { ...FAILED_STATUS };
     if (this.#state !== "running") return { ...OFF_STATUS };
     return this.#track(this.registry.status());
+  }
+
+  async trustedAdmission(
+    _event: ToolEvent,
+    context: ToolContext,
+  ): Promise<BeforeResult | void> {
+    const sessionKey = context.sessionKey;
+    if (sessionKey !== undefined) {
+      const current = await this.lookup(sessionKey);
+      if (current.state === "active") return;
+      if (current.state === "recovery") return recoveryBlock();
+    }
+
+    const status = await this.status();
+    if (status.coverage === "off") return;
+    if (status.coverage === "misconfigured") throw markerRecoveryError();
+    if (!safeSessionKey(sessionKey)) return inheritanceBlock();
+
+    const sessionResolver = this.#sessionResolver;
+    if (sessionResolver === undefined) return inheritanceBlock();
+    let entry: ReturnType<NonNullable<AgentGuardRuntimeOptions["sessionResolver"]>>;
+    try {
+      entry = sessionResolver({
+        ...(context.agentId === undefined ? {} : { agentId: context.agentId }),
+        sessionKey,
+        readConsistency: "latest",
+      });
+    } catch {
+      return inheritanceBlock();
+    }
+    if (entry?.spawnedBy === undefined && entry?.parentSessionKey === undefined) return;
+    if (
+      !safeSessionKey(entry?.spawnedBy) ||
+      !safeSessionKey(entry.parentSessionKey) ||
+      entry.spawnedBy !== entry.parentSessionKey
+    ) {
+      return inheritanceBlock();
+    }
+
+    const parentSessionKey = entry.parentSessionKey;
+    let parent: LeaseLookup;
+    try {
+      parent = await this.lookup(parentSessionKey);
+    } catch {
+      return inheritanceBlock();
+    }
+    if (parent.state === "off") return;
+    if (parent.state === "recovery") return recoveryBlock();
+    try {
+      if (await this.bindChild(parent.leaseId, parentSessionKey, sessionKey)) return;
+    } catch {
+      return inheritanceBlock();
+    }
+    try {
+      const concurrent = await this.lookup(sessionKey);
+      if (concurrent.state === "active" && concurrent.leaseId === parent.leaseId) return;
+    } catch {
+      return inheritanceBlock();
+    }
+    return inheritanceBlock();
   }
 
   async activate(input: NativeGuardLeaseActivation): Promise<NativeGuardStatus> {
@@ -193,6 +262,25 @@ export class AgentGuardRuntime {
 
 function markerRecoveryError(): Error {
   return new Error("Native guard marker recovery failed");
+}
+
+function safeSessionKey(value: unknown): value is string {
+  return typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= 512 &&
+    !/[\\/\x00-\x1f\x7f]/.test(value) &&
+    !value.includes("..");
+}
+
+function recoveryBlock(): BeforeResult {
+  return { block: true, blockReason: "Native guard recovery requires reactivation." };
+}
+
+function inheritanceBlock(): BeforeResult {
+  return {
+    block: true,
+    blockReason: "Native guard session inheritance could not be proven.",
+  };
 }
 
 class LifecycleMarkerStore implements MarkerStore {

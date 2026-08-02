@@ -83,6 +83,15 @@ type TrustedPolicy = {
   ) => Promise<unknown> | unknown;
 };
 
+type SessionReadParams = {
+  agentId?: string;
+  sessionKey: string;
+  readConsistency?: "latest";
+};
+
+type SessionEntry = { spawnedBy?: string; parentSessionKey?: string };
+type SessionResolver = (params: SessionReadParams) => SessionEntry | undefined;
+
 function activation(
   overrides: Partial<NativeGuardLeaseActivation> = {},
 ): NativeGuardLeaseActivation {
@@ -111,34 +120,34 @@ function activation(
 
 function createHost(options: {
   pluginConfig?: Record<string, unknown>;
-  getSessionEntry?: (params: {
-    agentId?: string;
-    sessionKey: string;
-    readConsistency?: "latest";
-  }) => { spawnedBy?: string; parentSessionKey?: string } | undefined;
+  getSessionEntry?: SessionResolver;
 } = {}): {
   routes: Route[];
   hooks: Array<{ name: string; handler: HookHandler }>;
   services: Service[];
   policies: TrustedPolicy[];
-  sessionReads: Array<{ agentId?: string; sessionKey: string; readConsistency?: "latest" }>;
-  api: Parameters<typeof registerControlRoutes>[0] & Parameters<typeof registerAgentGuardLifecycle>[0];
+  sessionReads: SessionReadParams[];
+  sessionResolver: SessionResolver;
+  api: Parameters<typeof registerControlRoutes>[0] &
+    Parameters<typeof registerAgentGuardLifecycle>[0] &
+    Parameters<typeof registerAgentGuardPlugin>[0];
 } {
   const routes: Route[] = [];
   const hooks: Array<{ name: string; handler: HookHandler }> = [];
   const services: Service[] = [];
   const policies: TrustedPolicy[] = [];
-  const sessionReads: Array<{
-    agentId?: string;
-    sessionKey: string;
-    readConsistency?: "latest";
-  }> = [];
+  const sessionReads: SessionReadParams[] = [];
+  const sessionResolver: SessionResolver = (params) => {
+    sessionReads.push({ ...params });
+    return options.getSessionEntry?.(params);
+  };
   return {
     routes,
     hooks,
     services,
     policies,
     sessionReads,
+    sessionResolver,
     api: {
       pluginConfig: options.pluginConfig,
       registerHttpRoute: (route: Route) => routes.push(route),
@@ -148,18 +157,13 @@ function createHost(options: {
       runtime: {
         agent: {
           session: {
-            getSessionEntry(params: {
-              agentId?: string;
-              sessionKey: string;
-              readConsistency?: "latest";
-            }) {
-              sessionReads.push({ ...params });
-              return options.getSessionEntry?.(params);
-            },
+            getSessionEntry: sessionResolver,
           },
         },
       },
-    } as Parameters<typeof registerControlRoutes>[0] & Parameters<typeof registerAgentGuardLifecycle>[0],
+    } as Parameters<typeof registerControlRoutes>[0] &
+      Parameters<typeof registerAgentGuardLifecycle>[0] &
+      Parameters<typeof registerAgentGuardPlugin>[0],
   };
 }
 
@@ -709,6 +713,53 @@ test("registers one service and one handler for each session-tree lifecycle even
   assert.deepEqual(host.policies.map((policy) => policy.id), ["agent-guard-admission"]);
 });
 
+test("trusted policy forwards the complete event and context to the extensible runtime entry point", async () => {
+  const runtime = new AgentGuardRuntime({
+    markerStore: new MemoryMarkerStore(),
+    now: () => new Date(NOW),
+  });
+  assert.equal(typeof runtime.trustedAdmission, "function");
+  const host = createHost();
+  const event = {
+    toolName: "exec",
+    params: { command: "echo guarded" },
+    runId: "run.forwarded",
+    toolCallId: "call.forwarded",
+    derivedPaths: ["C:\\guarded.txt"],
+  };
+  const context = {
+    agentId: "main",
+    sessionKey: "agent:guard:forwarded",
+    sessionId: "session.forwarded",
+    runId: "run.forwarded",
+    toolName: "exec",
+    toolCallId: "call.forwarded",
+    channelId: "channel.forwarded",
+  };
+  const delegated = {
+    block: true,
+    blockReason: "delegated admission",
+  };
+  let forwardedEvent: unknown;
+  let forwardedContext: unknown;
+  Object.defineProperty(runtime, "trustedAdmission", {
+    configurable: true,
+    value: async (receivedEvent: unknown, receivedContext: unknown) => {
+      forwardedEvent = receivedEvent;
+      forwardedContext = receivedContext;
+      return delegated;
+    },
+  });
+
+  registerAgentGuardLifecycle(host.api, runtime);
+
+  assert.equal(host.policies.length, 1);
+  assert.equal(host.policies[0].id, "agent-guard-admission");
+  assert.equal(await host.policies[0].evaluate(event, context), delegated);
+  assert.equal(forwardedEvent, event);
+  assert.equal(forwardedContext, context);
+});
+
 test("service start keeps clean OFF free of marker writes and recovers an existing marker", async () => {
   const cleanStore = new MemoryMarkerStore();
   const cleanRuntime = new AgentGuardRuntime({
@@ -785,15 +836,14 @@ test("service startup failure remains misconfigured after host cleanup and retri
   });
 });
 
-test("admission is zero-effect OFF globally, passes active sessions, and blocks recovery", async () => {
+test("admission stays zero-effect OFF and passes ordinary roots beside active or recovery guards", async () => {
+  const cleanHost = createHost({
+    getSessionEntry: ({ sessionKey }) => sessionKey.endsWith(".empty") ? {} : undefined,
+  });
   const cleanRuntime = new AgentGuardRuntime({
     markerStore: new MemoryMarkerStore(),
     now: () => new Date(NOW),
-  });
-  const cleanHost = createHost({
-    getSessionEntry: () => {
-      throw new Error("OFF admission must not read host sessions");
-    },
+    sessionResolver: cleanHost.sessionResolver,
   });
   registerAgentGuardLifecycle(cleanHost.api, cleanRuntime);
   await cleanHost.services[0].start({});
@@ -802,34 +852,48 @@ test("admission is zero-effect OFF globally, passes active sessions, and blocks 
 
   await cleanRuntime.activate(activation());
   assert.equal(await evaluatePolicy(cleanHost, "agent:guard:run.1"), undefined);
-  assert.equal(cleanHost.sessionReads.length, 0);
+  assert.equal(await evaluatePolicy(cleanHost, "agent:ordinary.undefined"), undefined);
+  assert.equal(await evaluatePolicy(cleanHost, "agent:ordinary.empty"), undefined);
+  assert.deepEqual(cleanHost.sessionReads.map((entry) => entry.sessionKey), [
+    "agent:ordinary.undefined",
+    "agent:ordinary.empty",
+  ]);
 
+  const recoveryHost = createHost({
+    getSessionEntry: ({ sessionKey }) => sessionKey.endsWith(".empty") ? {} : undefined,
+  });
   const recoveryRuntime = new AgentGuardRuntime({
     markerStore: new MemoryMarkerStore([marker()]),
     now: () => new Date(NOW),
+    sessionResolver: recoveryHost.sessionResolver,
   });
-  const recoveryHost = createHost();
   registerAgentGuardLifecycle(recoveryHost.api, recoveryRuntime);
   await recoveryHost.services[0].start({});
   assert.deepEqual(await evaluatePolicy(recoveryHost, "agent:guard:run.1"), {
     block: true,
     blockReason: "Native guard recovery requires reactivation.",
   });
-  assert.deepEqual(await evaluatePolicy(recoveryHost, "agent:guard:other"), {
-    block: true,
-    blockReason: "Native guard session inheritance could not be proven.",
-  });
+  assert.equal(await evaluatePolicy(recoveryHost, "agent:ordinary.undefined"), undefined);
+  assert.equal(await evaluatePolicy(recoveryHost, "agent:ordinary.empty"), undefined);
+  assert.deepEqual(recoveryHost.sessionReads.map((entry) => entry.sessionKey), [
+    "agent:ordinary.undefined",
+    "agent:ordinary.empty",
+  ]);
 });
 
 test("first child admission waits for its durable lazy binding before passing", async () => {
   const parent = "agent:guard:run.1";
   const child = "agent:guard:child.1";
   const store = new BlockingMarkerStore();
-  const runtime = new AgentGuardRuntime({ markerStore: store, now: () => new Date(NOW) });
   const host = createHost({
     getSessionEntry: ({ sessionKey }) => sessionKey === child
       ? { spawnedBy: parent, parentSessionKey: parent }
       : undefined,
+  });
+  const runtime = new AgentGuardRuntime({
+    markerStore: store,
+    now: () => new Date(NOW),
+    sessionResolver: host.sessionResolver,
   });
   registerAgentGuardLifecycle(host.api, runtime);
   await host.services[0].start({});
@@ -858,9 +922,13 @@ test("concurrent first-child admissions pass only after one binding wins and the
   const parent = "agent:guard:run.1";
   const child = "agent:guard:child.1";
   const store = new BlockingMarkerStore();
-  const runtime = new AgentGuardRuntime({ markerStore: store, now: () => new Date(NOW) });
   const host = createHost({
     getSessionEntry: () => ({ spawnedBy: parent, parentSessionKey: parent }),
+  });
+  const runtime = new AgentGuardRuntime({
+    markerStore: store,
+    now: () => new Date(NOW),
+    sessionResolver: host.sessionResolver,
   });
   registerAgentGuardLifecycle(host.api, runtime);
   await host.services[0].start({});
@@ -876,10 +944,54 @@ test("concurrent first-child admissions pass only after one binding wins and the
   assert.equal(store.writes.filter((entry) => entry.childSessionKeys.includes(child)).length, 1);
 });
 
-test("admission blocks invalid or contradictory host lineage without inheriting", async (t) => {
+test("admission passes a child from an unrelated OFF tree without marker writes", async () => {
+  const parent = "agent:unrelated:parent";
+  const child = "agent:unrelated:child";
+  const store = new MemoryMarkerStore();
+  const host = createHost({
+    getSessionEntry: () => ({ spawnedBy: parent, parentSessionKey: parent }),
+  });
+  const runtime = new AgentGuardRuntime({
+    markerStore: store,
+    now: () => new Date(NOW),
+    sessionResolver: host.sessionResolver,
+  });
+  registerAgentGuardLifecycle(host.api, runtime);
+  await host.services[0].start({});
+  await runtime.activate(activation());
+  const writes = store.writes.length;
+
+  assert.equal(await evaluatePolicy(host, child), undefined);
+  assert.equal(store.writes.length, writes);
+  assert.deepEqual(await runtime.lookup(child), { state: "off" });
+});
+
+test("admission blocks a child whose proven parent remains in recovery", async () => {
+  const parent = "agent:guard:run.1";
+  const child = "agent:guard:child.1";
+  const store = new MemoryMarkerStore([marker()]);
+  const host = createHost({
+    getSessionEntry: () => ({ spawnedBy: parent, parentSessionKey: parent }),
+  });
+  const runtime = new AgentGuardRuntime({
+    markerStore: store,
+    now: () => new Date(NOW),
+    sessionResolver: host.sessionResolver,
+  });
+  registerAgentGuardLifecycle(host.api, runtime);
+  await host.services[0].start({});
+  const writes = store.writes.length;
+
+  assert.deepEqual(await evaluatePolicy(host, child), {
+    block: true,
+    blockReason: "Native guard recovery requires reactivation.",
+  });
+  assert.equal(store.writes.length, writes);
+});
+
+test("admission blocks partial, invalid, or contradictory host lineage", async (t) => {
   const parent = "agent:guard:run.1";
   for (const [name, entry] of [
-    ["missing entry", undefined],
     ["missing spawnedBy", { parentSessionKey: parent }],
     ["missing parentSessionKey", { spawnedBy: parent }],
     ["conflict", { spawnedBy: parent, parentSessionKey: "agent:guard:other" }],
@@ -887,8 +999,12 @@ test("admission blocks invalid or contradictory host lineage without inheriting"
   ] as const) {
     await t.test(name, async () => {
       const store = new MemoryMarkerStore();
-      const runtime = new AgentGuardRuntime({ markerStore: store, now: () => new Date(NOW) });
       const host = createHost({ getSessionEntry: () => entry });
+      const runtime = new AgentGuardRuntime({
+        markerStore: store,
+        now: () => new Date(NOW),
+        sessionResolver: host.sessionResolver,
+      });
       registerAgentGuardLifecycle(host.api, runtime);
       await host.services[0].start({});
       await runtime.activate(activation());
@@ -903,31 +1019,49 @@ test("admission blocks invalid or contradictory host lineage without inheriting"
   }
 });
 
-test("admission propagates host session read and marker binding failures", async () => {
-  const runtime = new AgentGuardRuntime({
+test("admission contains resolver, parent lookup, and active binding failures", async () => {
+  const missingResolverRuntime = new AgentGuardRuntime({
     markerStore: new MemoryMarkerStore(),
     now: () => new Date(NOW),
   });
+  const missingResolverHost = createHost();
+  registerAgentGuardLifecycle(missingResolverHost.api, missingResolverRuntime);
+  await missingResolverHost.services[0].start({});
+  await missingResolverRuntime.activate(activation());
+  assert.deepEqual(await evaluatePolicy(missingResolverHost, "agent:guard:child.1"), {
+    block: true,
+    blockReason: "Native guard session inheritance could not be proven.",
+  });
+
   const readFailureHost = createHost({
     getSessionEntry: () => {
       throw new Error("host session read failed");
     },
   });
+  const runtime = new AgentGuardRuntime({
+    markerStore: new MemoryMarkerStore(),
+    now: () => new Date(NOW),
+    sessionResolver: readFailureHost.sessionResolver,
+  });
   registerAgentGuardLifecycle(readFailureHost.api, runtime);
   await readFailureHost.services[0].start({});
   await runtime.activate(activation());
-  await assert.rejects(evaluatePolicy(readFailureHost, "agent:guard:child.1"), /host session read failed/);
+  assert.deepEqual(await evaluatePolicy(readFailureHost, "agent:guard:child.1"), {
+    block: true,
+    blockReason: "Native guard session inheritance could not be proven.",
+  });
 
   const failingStore = new MemoryMarkerStore();
-  const failingRuntime = new AgentGuardRuntime({
-    markerStore: failingStore,
-    now: () => new Date(NOW),
-  });
   const bindingFailureHost = createHost({
     getSessionEntry: () => ({
       spawnedBy: "agent:guard:run.1",
       parentSessionKey: "agent:guard:run.1",
     }),
+  });
+  const failingRuntime = new AgentGuardRuntime({
+    markerStore: failingStore,
+    now: () => new Date(NOW),
+    sessionResolver: bindingFailureHost.sessionResolver,
   });
   registerAgentGuardLifecycle(bindingFailureHost.api, failingRuntime);
   await bindingFailureHost.services[0].start({});
@@ -935,7 +1069,55 @@ test("admission propagates host session read and marker binding failures", async
   failingStore.write = async () => {
     throw new Error("marker binding failed");
   };
-  await assert.rejects(evaluatePolicy(bindingFailureHost, "agent:guard:child.1"), /marker binding failed/);
+  assert.deepEqual(await evaluatePolicy(bindingFailureHost, "agent:guard:child.1"), {
+    block: true,
+    blockReason: "Native guard session inheritance could not be proven.",
+  });
+
+  const parentLookupHost = createHost({
+    getSessionEntry: () => ({
+      spawnedBy: "agent:guard:run.1",
+      parentSessionKey: "agent:guard:run.1",
+    }),
+  });
+  const parentLookupRuntime = new AgentGuardRuntime({
+    markerStore: new MemoryMarkerStore(),
+    now: () => new Date(NOW),
+    sessionResolver: parentLookupHost.sessionResolver,
+  });
+  registerAgentGuardLifecycle(parentLookupHost.api, parentLookupRuntime);
+  await parentLookupHost.services[0].start({});
+  await parentLookupRuntime.activate(activation());
+  const lookup = parentLookupRuntime.lookup.bind(parentLookupRuntime);
+  Object.defineProperty(parentLookupRuntime, "lookup", {
+    value: async (sessionKey: string) => sessionKey === "agent:guard:run.1"
+      ? Promise.reject(new Error("parent lookup leaked secret"))
+      : lookup(sessionKey),
+  });
+  assert.deepEqual(await evaluatePolicy(parentLookupHost, "agent:guard:child.1"), {
+    block: true,
+    blockReason: "Native guard session inheritance could not be proven.",
+  });
+
+  const inconsistentHost = createHost({
+    getSessionEntry: () => ({
+      spawnedBy: "agent:guard:run.1",
+      parentSessionKey: "agent:guard:run.1",
+    }),
+  });
+  const inconsistentRuntime = new AgentGuardRuntime({
+    markerStore: new MemoryMarkerStore(),
+    now: () => new Date(NOW),
+    sessionResolver: inconsistentHost.sessionResolver,
+  });
+  registerAgentGuardLifecycle(inconsistentHost.api, inconsistentRuntime);
+  await inconsistentHost.services[0].start({});
+  await inconsistentRuntime.activate(activation());
+  Object.defineProperty(inconsistentRuntime, "bindChild", { value: async () => false });
+  assert.deepEqual(await evaluatePolicy(inconsistentHost, "agent:guard:child.1"), {
+    block: true,
+    blockReason: "Native guard session inheritance could not be proven.",
+  });
 });
 
 test("spawn hook rejects contradictory child identities before binding", async () => {

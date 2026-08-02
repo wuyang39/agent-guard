@@ -54,15 +54,21 @@ export type ControlRouteOptions = {
 };
 export type LifecycleApi = Pick<
   PluginApi,
-  "on" | "registerService" | "registerTrustedToolPolicy" | "runtime"
+  "on" | "registerService" | "registerTrustedToolPolicy"
 >;
-export type AgentGuardPluginApi = ControlRouteApi & LifecycleApi & Pick<PluginApi, "pluginConfig">;
+export type AgentGuardPluginApi = ControlRouteApi & LifecycleApi & Pick<
+  PluginApi,
+  "pluginConfig" | "runtime"
+>;
 
 export function registerAgentGuardPlugin(
   api: AgentGuardPluginApi,
 ): AgentGuardRuntime {
   const markerDir = parseMarkerDir(api.pluginConfig);
-  const runtime = new AgentGuardRuntime(markerDir === undefined ? {} : { markerDir });
+  const runtime = new AgentGuardRuntime({
+    ...(markerDir === undefined ? {} : { markerDir }),
+    sessionResolver: (params) => api.runtime.agent.session.getSessionEntry(params),
+  });
   registerControlRoutes(api, runtime);
   registerAgentGuardLifecycle(api, runtime);
   return runtime;
@@ -94,7 +100,7 @@ export function registerAgentGuardLifecycle(
   api.registerTrustedToolPolicy({
     id: "agent-guard-admission",
     description: "Inherit active Agent Guard leases before native tool admission.",
-    evaluate: async (_event, context) => evaluateAdmission(api, runtime, context),
+    evaluate: (event, context) => runtime.trustedAdmission(event, context),
   });
   api.on("subagent_spawned", async (event, context) => {
     const parentSessionKey = context.requesterSessionKey;
@@ -117,64 +123,6 @@ export function registerAgentGuardLifecycle(
     const sessionKey = event.sessionKey ?? context.sessionKey;
     if (sessionKey !== undefined) await runtime.endSession(sessionKey);
   });
-}
-
-async function evaluateAdmission(
-  api: LifecycleApi,
-  runtime: AgentGuardRuntime,
-  context: { agentId?: string; sessionKey?: string },
-): Promise<{ block: true; blockReason: string } | void> {
-  const sessionKey = context.sessionKey;
-  if (sessionKey !== undefined) {
-    const current = await runtime.lookup(sessionKey);
-    if (current.state === "active") return;
-    if (current.state === "recovery") return recoveryBlock();
-  }
-
-  const status = await runtime.status();
-  if (status.coverage === "off") return;
-  if (status.coverage === "misconfigured") throw new Error("Native guard marker recovery failed");
-  if (status.activeLeaseCount === 0 || !safeSessionKey(sessionKey)) return inheritanceBlock();
-
-  const entry = api.runtime.agent.session.getSessionEntry({
-    ...(context.agentId === undefined ? {} : { agentId: context.agentId }),
-    sessionKey,
-    readConsistency: "latest",
-  });
-  if (
-    !safeSessionKey(entry?.spawnedBy) ||
-    !safeSessionKey(entry.parentSessionKey) ||
-    entry.spawnedBy !== entry.parentSessionKey
-  ) {
-    return inheritanceBlock();
-  }
-
-  const parentSessionKey = entry.parentSessionKey;
-  const parent = await runtime.lookup(parentSessionKey);
-  if (parent.state !== "active") return inheritanceBlock();
-  if (await runtime.bindChild(parent.leaseId, parentSessionKey, sessionKey)) return;
-  const concurrent = await runtime.lookup(sessionKey);
-  if (concurrent.state === "active" && concurrent.leaseId === parent.leaseId) return;
-  return inheritanceBlock();
-}
-
-function safeSessionKey(value: unknown): value is string {
-  return typeof value === "string" &&
-    value.length > 0 &&
-    value.length <= 512 &&
-    !/[\\/\x00-\x1f\x7f]/.test(value) &&
-    !value.includes("..");
-}
-
-function recoveryBlock(): { block: true; blockReason: string } {
-  return { block: true, blockReason: "Native guard recovery requires reactivation." };
-}
-
-function inheritanceBlock(): { block: true; blockReason: string } {
-  return {
-    block: true,
-    blockReason: "Native guard session inheritance could not be proven.",
-  };
 }
 
 export function registerControlRoutes(

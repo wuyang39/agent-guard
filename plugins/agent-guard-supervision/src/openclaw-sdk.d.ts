@@ -49,9 +49,39 @@ declare module "openclaw/plugin-sdk/plugin-entry" {
     message: unknown;
   };
 
-  export type SessionEvent = {
+  export type SessionContext = {
+    agentId?: string;
+    sessionId: string;
     sessionKey?: string;
-    reason?: string;
+  };
+
+  export type SessionStartEvent = {
+    sessionId: string;
+    sessionKey?: string;
+    resumedFrom?: string;
+  };
+
+  export type SessionEndReason =
+    | "new"
+    | "reset"
+    | "idle"
+    | "daily"
+    | "compaction"
+    | "deleted"
+    | "shutdown"
+    | "restart"
+    | "unknown";
+
+  export type SessionEndEvent = {
+    sessionId: string;
+    sessionKey?: string;
+    messageCount: number;
+    durationMs?: number;
+    reason?: SessionEndReason;
+    sessionFile?: string;
+    transcriptArchived?: boolean;
+    nextSessionId?: string;
+    nextSessionKey?: string;
   };
 
   export type SubagentSpawnedEvent = {
@@ -87,8 +117,8 @@ declare module "openclaw/plugin-sdk/plugin-entry" {
     before_tool_call: (event: ToolEvent, context: ToolContext) => BeforeResult | void | Promise<BeforeResult | void>;
     after_tool_call: (event: AfterToolEvent, context: ToolContext) => void | Promise<void>;
     tool_result_persist: (event: ToolResultPersistEvent, context: ToolContext) => void | Promise<void>;
-    session_start: (event: SessionEvent, context: { sessionKey?: string }) => void | Promise<void>;
-    session_end: (event: SessionEvent, context: { sessionKey?: string }) => void | Promise<void>;
+    session_start: (event: SessionStartEvent, context: SessionContext) => void | Promise<void>;
+    session_end: (event: SessionEndEvent, context: SessionContext) => void | Promise<void>;
     subagent_spawned: (event: SubagentSpawnedEvent, context: SubagentContext) => void | Promise<void>;
     subagent_ended: (event: SubagentEndedEvent, context: SubagentContext) => void | Promise<void>;
   };
@@ -152,10 +182,11 @@ declare module "openclaw/plugin-sdk/plugin-entry" {
     on<K extends keyof HookMap>(name: K, handler: HookMap[K], options?: {
       priority?: number;
       timeoutMs?: number;
-    }): void;
-    registerTrustedToolPolicy(policy: TrustedToolPolicy): void;
-    registerHttpRoute(route: HttpRoute): void;
-    registerService(service: PluginService): void;
+    }): void | true;
+    // `true` is reserved for a future host guarantee that the contribution is committed and live.
+    registerTrustedToolPolicy(policy: TrustedToolPolicy): void | true;
+    registerHttpRoute(route: HttpRoute): void | true;
+    registerService(service: PluginService): void | true;
   };
 
   export type PluginEntryOptions = {

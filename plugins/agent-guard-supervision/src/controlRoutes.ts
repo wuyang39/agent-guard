@@ -5,7 +5,7 @@ import type {
   NativeGuardStatus,
 } from "@agent-guard/contracts";
 import type { PluginApi } from "openclaw/plugin-sdk/plugin-entry";
-import { AgentGuardRuntime } from "./runtime";
+import { AgentGuardRegistrationError, AgentGuardRuntime } from "./runtime";
 
 const ACTIVATE_PATH = "/agent-guard/native-guard/v1/leases/activate";
 const RENEW_PATH = "/agent-guard/native-guard/v1/leases/renew";
@@ -31,6 +31,7 @@ type ErrorCode =
   | "REQUEST_INCOMPLETE"
   | "REQUEST_TIMEOUT"
   | "REQUEST_TOO_LARGE"
+  | "TRUSTED_POLICY_UNATTESTED"
   | "UNSUPPORTED_CONTENT_ENCODING"
   | "UNSUPPORTED_MEDIA_TYPE";
 
@@ -69,9 +70,22 @@ export function registerAgentGuardPlugin(
     ...(markerDir === undefined ? {} : { markerDir }),
     sessionResolver: (params) => api.runtime.agent.session.getSessionEntry(params),
   });
-  registerControlRoutes(api, runtime);
-  registerAgentGuardLifecycle(api, runtime);
+  // Only a future explicit `true` means the host guarantees this contribution is live.
+  const contributions = [
+    isLiveContribution(api.on(
+      "before_tool_call",
+      (event, context) => runtime.beforeToolCall(event, context),
+      { priority: -1_000_000, timeoutMs: 5_000 },
+    )),
+    ...registerAgentGuardLifecycle(api, runtime),
+    ...registerControlRoutes(api, runtime),
+  ];
+  runtime.finalizeRegistrationAttestation(contributions.every(Boolean));
   return runtime;
+}
+
+function isLiveContribution(result: void | true): boolean {
+  return result === true;
 }
 
 function parseMarkerDir(config: Record<string, unknown> | undefined): string | undefined {
@@ -91,18 +105,18 @@ function parseMarkerDir(config: Record<string, unknown> | undefined): string | u
 export function registerAgentGuardLifecycle(
   api: LifecycleApi,
   runtime: AgentGuardRuntime,
-): void {
-  api.registerService({
-    id: "agent-guard-runtime",
-    start: async () => runtime.start(),
-    stop: async () => runtime.stop(),
-  });
-  api.registerTrustedToolPolicy({
+): boolean[] {
+  const contributions = [isLiveContribution(api.registerTrustedToolPolicy({
     id: "agent-guard-admission",
     description: "Inherit active Agent Guard leases before native tool admission.",
     evaluate: (event, context) => runtime.trustedAdmission(event, context),
-  });
-  api.on("subagent_spawned", async (event, context) => {
+  }))];
+  contributions.push(isLiveContribution(api.registerService({
+    id: "agent-guard-runtime",
+    start: async () => runtime.start(),
+    stop: async () => runtime.stop(),
+  })));
+  contributions.push(isLiveContribution(api.on("subagent_spawned", async (event, context) => {
     const parentSessionKey = context.requesterSessionKey;
     if (
       parentSessionKey === undefined ||
@@ -114,22 +128,29 @@ export function registerAgentGuardLifecycle(
     const parent = await runtime.lookup(parentSessionKey);
     if (parent.state !== "active") return;
     await runtime.bindChild(parent.leaseId, parentSessionKey, event.childSessionKey);
-  });
-  api.on("subagent_ended", async (event) => {
+  })));
+  contributions.push(isLiveContribution(api.on("subagent_ended", async (event) => {
     await runtime.endSession(event.targetSessionKey);
-  });
-  api.on("session_end", async (event, context) => {
-    if (event.reason === "shutdown" || event.reason === "restart") return;
+  })));
+  contributions.push(isLiveContribution(api.on("session_end", async (event, context) => {
+    if (
+      event.reason === "shutdown" ||
+      event.reason === "restart" ||
+      event.reason === "compaction"
+    ) {
+      return;
+    }
     const sessionKey = event.sessionKey ?? context.sessionKey;
     if (sessionKey !== undefined) await runtime.endSession(sessionKey);
-  });
+  })));
+  return contributions;
 }
 
 export function registerControlRoutes(
   api: ControlRouteApi,
   runtime: AgentGuardRuntime,
   options: ControlRouteOptions = {},
-): void {
+): boolean[] {
   const idempotency = new IdempotencyCache(
     options.idempotencyCapacity ?? DEFAULT_IDEMPOTENCY_CAPACITY,
   );
@@ -141,11 +162,13 @@ export function registerControlRoutes(
       clearTimeout(handle as ReturnType<typeof setTimeout>)),
     getAbortSignal: () => runtime.abortSignal,
   };
-  api.registerHttpRoute({
+  const quarantinedSockets = new WeakSet<IncomingMessage["socket"]>();
+  const contributions = [isLiveContribution(api.registerHttpRoute({
     path: ACTIVATE_PATH,
     auth: "gateway",
     match: "exact",
     handler: async (request, response) => {
+      if (rejectQuarantinedSocket(request, quarantinedSockets)) return;
       await handleMutationRoute(
         request,
         response,
@@ -156,12 +179,13 @@ export function registerControlRoutes(
         async (body) => runtime.activate(body as NativeGuardLeaseActivation),
       );
     },
-  });
-  api.registerHttpRoute({
+  }))];
+  contributions.push(isLiveContribution(api.registerHttpRoute({
     path: RENEW_PATH,
     auth: "gateway",
     match: "exact",
     handler: async (request, response) => {
+      if (rejectQuarantinedSocket(request, quarantinedSockets)) return;
       await handleMutationRoute(
         request,
         response,
@@ -172,12 +196,13 @@ export function registerControlRoutes(
         async (body) => runtime.renew(body as NativeGuardLeaseActivation),
       );
     },
-  });
-  api.registerHttpRoute({
+  })));
+  contributions.push(isLiveContribution(api.registerHttpRoute({
     path: REVOKE_PATH,
     auth: "gateway",
     match: "exact",
     handler: async (request, response) => {
+      if (rejectQuarantinedSocket(request, quarantinedSockets)) return;
       await handleMutationRoute(
         request,
         response,
@@ -192,17 +217,20 @@ export function registerControlRoutes(
         },
       );
     },
-  });
-  api.registerHttpRoute({
+  })));
+  contributions.push(isLiveContribution(api.registerHttpRoute({
     path: STATUS_PATH,
     auth: "gateway",
     match: "exact",
     handler: async (request, response) => {
-      await handleRoute(request, response, "GET", "request", async () => {
-        sendStatus(response, await runtime.status());
+      if (rejectQuarantinedSocket(request, quarantinedSockets)) return;
+      await handleRoute(request, response, "GET", "request", () => {
+        assertUnframedGet(request, quarantinedSockets);
+        return runtime.status().then((status) => sendStatus(response, status));
       });
     },
-  });
+  })));
+  return contributions;
 }
 
 type RouteResponse = {
@@ -294,7 +322,7 @@ async function handleRoute(
   response: ServerResponse,
   method: "GET" | "POST",
   invalidKind: "activation" | "request",
-  operation: () => Promise<void>,
+  operation: () => Promise<void> | void,
 ): Promise<void> {
   try {
     if (request.method !== method) {
@@ -343,6 +371,37 @@ function assertNoContentEncoding(request: IncomingMessage): void {
     "Native guard control request encoding is unsupported.",
     true,
   );
+}
+
+function assertUnframedGet(
+  request: IncomingMessage,
+  quarantinedSockets: WeakSet<IncomingMessage["socket"]>,
+): void {
+  if (
+    request.headers["content-length"] === undefined &&
+    request.headers["transfer-encoding"] === undefined &&
+    request.headers["content-encoding"] === undefined
+  ) {
+    return;
+  }
+  const socket = request.socket as IncomingMessage["socket"] | undefined;
+  if (socket !== undefined) quarantinedSockets.add(socket);
+  throw routeError(
+    400,
+    "INVALID_REQUEST",
+    "Native guard control request is invalid.",
+    true,
+  );
+}
+
+function rejectQuarantinedSocket(
+  request: IncomingMessage,
+  quarantinedSockets: WeakSet<IncomingMessage["socket"]>,
+): boolean {
+  const socket = request.socket as IncomingMessage["socket"] | undefined;
+  if (socket === undefined || !quarantinedSockets.has(socket)) return false;
+  if (!socket.destroyed) socket.destroy();
+  return true;
 }
 
 function parseContentLength(value: string | string[] | undefined): number | undefined {
@@ -561,6 +620,13 @@ function mapRouteError(
   invalidKind: "activation" | "request",
 ): ControlRouteError {
   if (error instanceof ControlRouteError) return error;
+  if (error instanceof AgentGuardRegistrationError) {
+    return routeError(
+      503,
+      "TRUSTED_POLICY_UNATTESTED",
+      "Native guard trusted contributions are unattested.",
+    );
+  }
   if (error instanceof TypeError) {
     return invalidKind === "activation"
       ? routeError(400, "INVALID_ACTIVATION", "Native guard lease activation is invalid.")

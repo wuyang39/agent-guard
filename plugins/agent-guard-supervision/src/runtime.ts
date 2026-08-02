@@ -21,10 +21,14 @@ export type AgentGuardRuntimeOptions = {
   markerStore?: MarkerStore;
   markerDir?: string;
   now?: () => Date;
+  admissionTimeoutMs?: number;
   sessionResolver?: PluginApi["runtime"]["agent"]["session"]["getSessionEntry"];
   scheduleTimeout?: (callback: () => void, delayMs: number) => unknown;
   cancelTimeout?: (handle: unknown) => void;
 };
+
+const DEFAULT_ADMISSION_TIMEOUT_MS = 4_000;
+const HOST_HOOK_TIMEOUT_MS = 5_000;
 
 const OFF_STATUS: Readonly<NativeGuardStatus> = Object.freeze({
   coverage: "off",
@@ -39,10 +43,24 @@ const FAILED_STATUS: Readonly<NativeGuardStatus> = Object.freeze({
   reasonCode: "MARKER_RECOVERY_FAILED",
 });
 
+const UNATTESTED_STATUS: Readonly<NativeGuardStatus> = Object.freeze({
+  coverage: "unsupported",
+  finalizerAssurance: "unverified",
+  activeLeaseCount: 0,
+  reasonCode: "TRUSTED_POLICY_UNATTESTED",
+});
+
+export class AgentGuardRegistrationError extends Error {
+  constructor() {
+    super("Native guard trusted contributions are unattested");
+  }
+}
+
 export class AgentGuardRuntime {
   readonly registry: LeaseRegistry;
   readonly #markerStore: LifecycleMarkerStore;
   readonly #sessionResolver: AgentGuardRuntimeOptions["sessionResolver"];
+  readonly #admissionTimeoutMs: number;
   readonly #scheduleTimeout: NonNullable<AgentGuardRuntimeOptions["scheduleTimeout"]>;
   readonly #cancelTimeout: NonNullable<AgentGuardRuntimeOptions["cancelTimeout"]>;
   readonly #pendingOperations = new Set<Promise<unknown>>();
@@ -51,6 +69,7 @@ export class AgentGuardRuntime {
   #stopPromise: Promise<void> | undefined;
   #registryStarted = false;
   #failed = false;
+  #registrationAttestation: "pending" | "attested" | "unattested" = "pending";
   #state: "idle" | "starting" | "running" | "stopping" | "stopped" = "idle";
 
   constructor(options: AgentGuardRuntimeOptions = {}) {
@@ -59,6 +78,7 @@ export class AgentGuardRuntime {
     );
     this.#markerStore = new LifecycleMarkerStore(markerStore);
     this.#sessionResolver = options.sessionResolver;
+    this.#admissionTimeoutMs = parseAdmissionTimeout(options.admissionTimeoutMs);
     this.registry = new LeaseRegistry({ markerStore: this.#markerStore, now: options.now });
     this.#scheduleTimeout = options.scheduleTimeout ?? ((callback, delayMs) =>
       setTimeout(callback, delayMs));
@@ -68,6 +88,13 @@ export class AgentGuardRuntime {
 
   get abortSignal(): AbortSignal {
     return this.#abortController.signal;
+  }
+
+  finalizeRegistrationAttestation(attested: boolean): void {
+    if (this.#registrationAttestation !== "pending") {
+      throw new Error("Native guard registration attestation is already finalized");
+    }
+    this.#registrationAttestation = attested ? "attested" : "unattested";
   }
 
   async start(): Promise<void> {
@@ -111,9 +138,54 @@ export class AgentGuardRuntime {
   }
 
   async status(): Promise<NativeGuardStatus> {
+    const status = await this.#internalStatus();
+    if (
+      this.#registrationAttestation === "unattested" &&
+      status.coverage !== "misconfigured"
+    ) {
+      return { ...UNATTESTED_STATUS };
+    }
+    return status;
+  }
+
+  async #internalStatus(): Promise<NativeGuardStatus> {
     if (this.#failed) return { ...FAILED_STATUS };
     if (this.#state !== "running") return { ...OFF_STATUS };
     return this.#track(this.registry.status());
+  }
+
+  async beforeToolCall(
+    event: ToolEvent,
+    context: ToolContext,
+  ): Promise<BeforeResult | void> {
+    let timer: unknown;
+    try {
+      const admission = (async (): Promise<BeforeResult | void> => {
+        try {
+          await this.start();
+          return await this.trustedAdmission(event, context);
+        } catch {
+          return failClosedBlock();
+        }
+      })();
+      const timedOut = new Promise<BeforeResult>((resolve) => {
+        timer = this.#scheduleTimeout(
+          () => resolve(failClosedBlock()),
+          this.#admissionTimeoutMs,
+        );
+      });
+      return await Promise.race([admission, timedOut]);
+    } catch {
+      return failClosedBlock();
+    } finally {
+      if (timer !== undefined) {
+        try {
+          this.#cancelTimeout(timer);
+        } catch {
+          // Timer cleanup failure cannot escape a final fail-closed hook.
+        }
+      }
+    }
   }
 
   async trustedAdmission(
@@ -127,7 +199,7 @@ export class AgentGuardRuntime {
       if (current.state === "recovery") return recoveryBlock();
     }
 
-    const status = await this.status();
+    const status = await this.#internalStatus();
     if (status.coverage === "off") return;
     if (status.coverage === "misconfigured") throw markerRecoveryError();
     if (!safeSessionKey(sessionKey)) return inheritanceBlock();
@@ -177,11 +249,13 @@ export class AgentGuardRuntime {
   }
 
   async activate(input: NativeGuardLeaseActivation): Promise<NativeGuardStatus> {
+    this.#assertRegistrationAttested();
     this.#assertRunning();
     return this.#track(this.registry.activate(input));
   }
 
   async renew(input: NativeGuardLeaseActivation): Promise<NativeGuardStatus> {
+    this.#assertRegistrationAttested();
     this.#assertRunning();
     return this.#track(this.registry.renew(input));
   }
@@ -258,6 +332,20 @@ export class AgentGuardRuntime {
     }
     throw new Error("Native guard runtime has not started");
   }
+
+  #assertRegistrationAttested(): void {
+    if (this.#registrationAttestation !== "attested") {
+      throw new AgentGuardRegistrationError();
+    }
+  }
+}
+
+function parseAdmissionTimeout(value: number | undefined): number {
+  const timeoutMs = value ?? DEFAULT_ADMISSION_TIMEOUT_MS;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs >= HOST_HOOK_TIMEOUT_MS) {
+    throw new RangeError("Native guard admission timeout is invalid");
+  }
+  return timeoutMs;
 }
 
 function markerRecoveryError(): Error {
@@ -280,6 +368,13 @@ function inheritanceBlock(): BeforeResult {
   return {
     block: true,
     blockReason: "Native guard session inheritance could not be proven.",
+  };
+}
+
+function failClosedBlock(): BeforeResult {
+  return {
+    block: true,
+    blockReason: "Native guard admission failed closed.",
   };
 }
 

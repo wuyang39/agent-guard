@@ -55,8 +55,32 @@ declare module "openclaw/plugin-sdk/plugin-entry" {
   };
 
   export type SubagentSpawnedEvent = {
-    parentSessionKey?: string;
+    childSessionKey: string;
+    agentId: string;
+    label?: string;
+    mode: "run" | "session";
+    threadRequested: boolean;
+    runId: string;
+    resolvedModel?: string;
+    resolvedProvider?: string;
+  };
+
+  export type SubagentEndedEvent = {
+    targetSessionKey: string;
+    targetKind: "subagent" | "acp";
+    reason: string;
+    sendFarewell?: boolean;
+    accountId?: string;
+    runId?: string;
+    endedAt?: number;
+    outcome?: "ok" | "error" | "timeout" | "killed" | "reset" | "deleted";
+    error?: string;
+  };
+
+  export type SubagentContext = {
+    runId?: string;
     childSessionKey?: string;
+    requesterSessionKey?: string;
   };
 
   export type HookMap = {
@@ -65,7 +89,8 @@ declare module "openclaw/plugin-sdk/plugin-entry" {
     tool_result_persist: (event: ToolResultPersistEvent, context: ToolContext) => void | Promise<void>;
     session_start: (event: SessionEvent, context: { sessionKey?: string }) => void | Promise<void>;
     session_end: (event: SessionEvent, context: { sessionKey?: string }) => void | Promise<void>;
-    subagent_spawned: (event: SubagentSpawnedEvent, context: { sessionKey?: string }) => void | Promise<void>;
+    subagent_spawned: (event: SubagentSpawnedEvent, context: SubagentContext) => void | Promise<void>;
+    subagent_ended: (event: SubagentEndedEvent, context: SubagentContext) => void | Promise<void>;
   };
 
   export type PluginLogger = {
@@ -88,6 +113,19 @@ declare module "openclaw/plugin-sdk/plugin-entry" {
     handler: (request: IncomingMessage, response: ServerResponse) => boolean | void | Promise<boolean | void>;
   };
 
+  export type PluginServiceContext = {
+    config: Record<string, unknown>;
+    workspaceDir?: string;
+    stateDir: string;
+    logger: PluginLogger;
+  };
+
+  export type PluginService = {
+    id: string;
+    start: (context: PluginServiceContext) => void | Promise<void>;
+    stop?: (context: PluginServiceContext) => void | Promise<void>;
+  };
+
   export type PluginApi = {
     pluginConfig?: Record<string, unknown>;
     logger: PluginLogger;
@@ -97,6 +135,7 @@ declare module "openclaw/plugin-sdk/plugin-entry" {
     }): void;
     registerTrustedToolPolicy(policy: TrustedToolPolicy): void;
     registerHttpRoute(route: HttpRoute): void;
+    registerService(service: PluginService): void;
   };
 
   export type PluginEntryOptions = {

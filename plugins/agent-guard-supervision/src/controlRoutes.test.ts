@@ -52,7 +52,7 @@ class AgentGuardRuntime extends ProductionAgentGuardRuntime {
   constructor(
     options: ConstructorParameters<typeof ProductionAgentGuardRuntime>[0] = {},
   ) {
-    super(options);
+    super({ ...options, approvalLeaseRecheckAttested: true });
     this.finalizeRegistrationAttestation(true);
   }
 }
@@ -1150,7 +1150,7 @@ test("admission stays zero-effect OFF and passes ordinary roots beside active or
   await recoveryHost.services[0].start({});
   assert.deepEqual(await evaluatePolicy(recoveryHost, "agent:guard:run.1"), {
     block: true,
-    blockReason: "Native guard recovery requires reactivation.",
+    blockReason: "[Agent Guard:NATIVE_GUARD_RECOVERY] Native guard recovery blocks this tool.",
   });
   assert.equal(await evaluatePolicy(recoveryHost, "agent:ordinary.undefined"), undefined);
   assert.equal(await evaluatePolicy(recoveryHost, "agent:ordinary.empty"), undefined);
@@ -1263,7 +1263,7 @@ test("admission blocks a child whose proven parent remains in recovery", async (
 
   assert.deepEqual(await evaluatePolicy(host, child), {
     block: true,
-    blockReason: "Native guard recovery requires reactivation.",
+    blockReason: "[Agent Guard:NATIVE_GUARD_RECOVERY] Native guard recovery blocks this tool.",
   });
   assert.equal(store.writes.length, writes);
 });
@@ -1976,7 +1976,7 @@ test("idempotency cache evicts the oldest settled entry at its configured bound"
   assert.equal(calls, 4);
 });
 
-test("plugin entry wires controls and lifecycle, and root script runs both plugin suites in order", async () => {
+test("plugin entry wires controls and lifecycle, and root script runs all plugin suites in order", async () => {
   const indexSource = await readFile(new URL("./index.ts", import.meta.url), "utf8");
   assert.match(indexSource, /register:\s*\(api\)\s*=>\s*registerAgentGuardPlugin\(api\)/);
   assert.doesNotMatch(indexSource, /register:\s*\(\)\s*=>\s*undefined/);
@@ -1988,8 +1988,10 @@ test("plugin entry wires controls and lifecycle, and root script runs both plugi
   const command = rootPackage.scripts?.["test:native-guard:plugin"] ?? "";
   const registryIndex = command.indexOf("leaseRegistry.test.ts");
   const routesIndex = command.indexOf("controlRoutes.test.ts");
+  const runtimeIndex = command.indexOf("runtime.test.ts");
   assert.ok(registryIndex >= 0);
   assert.ok(routesIndex > registryIndex);
+  assert.ok(runtimeIndex > routesIndex);
 });
 
 test("pinned void registrars install handlers but quarantine every guarded mutation", async (t) => {
@@ -2019,10 +2021,13 @@ test("pinned void registrars install handlers but quarantine every guarded mutat
   });
   assert.deepEqual(
     await hook(host, "before_tool_call")(
-      { toolName: "exec", params: { command: "echo guarded" } },
-      { agentId: "main", sessionKey: "agent:guard:run.1", toolName: "exec" },
+      { toolName: "exec", params: { command: "echo guarded" }, toolCallId: "call.1" },
+      { agentId: "main", sessionKey: "agent:guard:run.1", toolName: "exec", toolCallId: "call.1" },
     ),
-    { block: true, blockReason: "Native guard recovery requires reactivation." },
+    {
+      block: true,
+      blockReason: "[Agent Guard:NATIVE_GUARD_RECOVERY] Native guard recovery blocks this tool.",
+    },
   );
   const routes = new Map(host.routes.map((route) => [route.path, route]));
   for (const [path, body] of [
@@ -2053,7 +2058,7 @@ test("pinned void registrars install handlers but quarantine every guarded mutat
   await assert.rejects(readFile(markerPath, "utf8"), { code: "ENOENT" });
 });
 
-test("future true registrars attest every live contribution and allow guarded activation", async (t) => {
+test("future true registrars remain conditional without trusted approval recheck attestation", async (t) => {
   const parent = await mkdtemp(join(tmpdir(), "agent-guard-future-registration-"));
   t.after(() => rm(parent, { recursive: true, force: true }));
   const host = createHost({
@@ -2070,7 +2075,11 @@ test("future true registrars attest every live contribution and allow guarded ac
 
   assert.deepEqual(host.registrations, EXPECTED_REGISTRATIONS);
   assert.equal(response.statusCode, 200);
-  assert.equal((response.body as { coverage: string }).coverage, "active");
+  assert.equal((response.body as { coverage: string }).coverage, "conditional");
+  assert.equal(
+    (response.body as { reasonCode?: string }).reasonCode,
+    "NATIVE_APPROVAL_UNATTESTED",
+  );
   assert.equal((await runtime.lookup("agent:guard:run.1")).state, "active");
 });
 
@@ -2237,8 +2246,8 @@ async function evaluatePolicy(
 ): Promise<unknown> {
   assert.equal(host.policies.length, 1);
   return host.policies[0].evaluate(
-    { toolName: "exec", params: { command: "echo guarded" } },
-    { agentId: "main", sessionKey, toolName: "exec" },
+    { toolName: "exec", params: { command: "echo guarded" }, toolCallId: "call.policy" },
+    { agentId: "main", sessionKey, toolName: "exec", toolCallId: "call.policy" },
   );
 }
 

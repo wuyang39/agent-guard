@@ -108,7 +108,7 @@ export function registerAgentGuardLifecycle(
 ): boolean[] {
   const contributions = [isLiveContribution(api.registerTrustedToolPolicy({
     id: "agent-guard-admission",
-    description: "Inherit active Agent Guard leases before native tool admission.",
+    description: "Enforces Agent Guard lease and recovery admission before tool execution.",
     evaluate: (event, context) => runtime.trustedAdmission(event, context),
   }))];
   contributions.push(isLiveContribution(api.registerService({

@@ -328,6 +328,8 @@ deny > ask > redact > warn > allow
 
 - 插件返回 OpenClaw 原生 `requireApproval`。
 - `allowedDecisions` 仅允许 `allow-once` 和 `deny`；第一版不允许 `allow-always`。
+- 固定基线 `3edbe19f` 的 `onResolution` 是 fire-and-forget，宿主不等待回调且回调不能 veto `allow-once`。因此该宿主及任何没有可信、只读 post-approval lease recheck capability attestation 的宿主必须把 `ask` 稳定降级为 `NATIVE_APPROVAL_UNATTESTED` deny，公开覆盖状态保持 `conditional`，不得从 plugin config、环境变量或调用方自报推断能力。
+- 未来宿主只有在公开 live capability contract 明确保证审批结束后、工具执行前复查 `leaseId + leaseEpoch + session binding` 时，插件才可返回可执行的 `requireApproval`。构造器 capability seam 仅用于 unit/compat contract；生产注册入口在宿主没有该字段时恒为 false。
 - 审批绑定 `leaseId + sessionKey + toolCallId + tool identity + paramsDigest`。
 - 缺失、畸形、超时、取消、重启或过期审批全部拒绝。
 - 原生工具审批不使用 `AGENT_GUARD_ASK_TIMEOUT=demo_approve`，也不在 Agent Guard `askChannel` 中再次阻塞同一调用。

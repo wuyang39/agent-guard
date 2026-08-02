@@ -33,9 +33,19 @@ declare module "openclaw/plugin-sdk/plugin-entry" {
       severity?: "info" | "warning" | "critical";
       timeoutMs?: number;
       timeoutBehavior?: "allow" | "deny";
+      timeoutReason?: string;
       allowedDecisions?: Array<"allow-once" | "allow-always" | "deny">;
+      pluginId?: string;
+      onResolution?: (decision: PluginApprovalResolution) => Promise<void> | void;
     };
   };
+
+  export type PluginApprovalResolution =
+    | "allow-once"
+    | "allow-always"
+    | "deny"
+    | "timeout"
+    | "cancelled";
 
   export type AfterToolEvent = ToolEvent & {
     result?: unknown;

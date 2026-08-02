@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -11,8 +12,11 @@ import {
 } from "../system/handlers";
 import {
   openClawNativeGuardRoutes,
+  scrubExactSecret,
   type NativeGuardRouteDependencies,
 } from "./native-guard-handlers";
+
+const require = createRequire(import.meta.url);
 
 const CONTROL_TOKEN = "operator-control-token";
 const LEASE_CREDENTIAL = "lease-credential";
@@ -440,7 +444,7 @@ test("event batch gates every append and recursively scrubs the exact bearer", a
   assert.equal(response.statusCode, 200);
   assert.deepEqual(response.json().data, { accepted: 2 });
   assert.equal(fixture.calls.append, 2);
-  assert.equal(fixture.calls.usable, 3);
+  assert.equal(fixture.calls.usable, 4);
   const persisted = JSON.stringify(fixture.calls.appendedEvents);
   assert.equal(persisted.includes(LEASE_CREDENTIAL), false);
   assert.equal(persisted.includes("[REDACTED]"), true);
@@ -550,6 +554,8 @@ test("production dependency factory wires guarded persistence and before-sign ch
 
   const dependencies = handlers.createNativeGuardRouteDependencies({
     env: {
+      NODE_ENV: "development",
+      AGENT_GUARD_BROWSER_DEV: "1",
       VITE_AGENT_GUARD_CONTROL_TOKEN: "explicit-browser-token",
       AGENT_GUARD_ALLOWED_ORIGINS: "https://console.example",
     },
@@ -677,6 +683,24 @@ test("desktop keeps its generated control token outside page JavaScript", async 
   assert.match(source, /AGENT_GUARD_CONTROL_TOKEN: CONTROL_TOKEN/);
   assert.match(source, /webRequest\.onBeforeSendHeaders/);
   assert.match(source, /urls: \[`\$\{API_BASE\}\/\*`\]/);
+  assert.doesNotMatch(source, /session\.defaultSession/);
+  assert.match(source, /session\.fromPartition\(UI_PARTITION/);
+  assert.match(source, /session: uiSession/);
+  assert.match(source, /withControlTokenHeaders/);
+  assert.match(
+    source,
+    /withControlTokenHeaders\(\s*normalizeElectronRequestDetails\(details\),/,
+  );
+  assert.match(source, /probeApiOwnership/);
+  assert.match(source, /"will-navigate"/);
+  assert.match(source, /"will-attach-webview"/);
+  assert.match(source, /"will-frame-navigate", \(details\) =>/);
+  assert.doesNotMatch(
+    source,
+    /"will-frame-navigate", \(event, details\) =>/,
+  );
+  assert.match(source, /delete inheritedEnv\.AGENT_GUARD_CONTROL_TOKEN/);
+  assert.match(source, /delete inheritedEnv\.VITE_AGENT_GUARD_CONTROL_TOKEN/);
   assert.doesNotMatch(
     source,
     /VITE_AGENT_GUARD_CONTROL_TOKEN\s*:\s*CONTROL_TOKEN/,
@@ -904,6 +928,616 @@ test("system status creates a missing output directory before marking it availab
   }
 });
 
+test("event batch rejects an authenticated lease whose event session is not bound", async () => {
+  const fixture = createFixture();
+  fixture.dependencies.leaseService.resolveBySession = () => {
+    fixture.calls.resolveSession += 1;
+    return undefined;
+  };
+  const app = await createApp(fixture.dependencies);
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/v1/openclaw/native-guard/events/batch",
+    headers: { authorization: `Bearer ${LEASE_CREDENTIAL}` },
+    payload: { events: [nativeEvent()] },
+  });
+
+  assert.equal(response.statusCode, 401);
+  assert.equal(response.json().error.code, "NATIVE_GUARD_UNAUTHORIZED");
+  assert.equal(fixture.calls.append, 0);
+  await app.close();
+});
+
+test("event batch stops after credential rotation while the first append is pending", async () => {
+  const fixture = createFixture();
+  const appendStarted = deferred<void>();
+  const releaseAppend = deferred<void>();
+  let credentialCurrent = true;
+  fixture.dependencies.leaseService.authenticate = (leaseId, credential) => {
+    fixture.calls.authenticate += 1;
+    return credentialCurrent && credential === LEASE_CREDENTIAL
+      ? leaseSnapshot(leaseId)
+      : undefined;
+  };
+  fixture.dependencies.eventStore.append = async (event) => {
+    fixture.calls.append += 1;
+    fixture.calls.appendedEvents.push(event);
+    if (fixture.calls.append === 1) {
+      appendStarted.resolve();
+      await releaseAppend.promise;
+    }
+    return true;
+  };
+  const app = await createApp(fixture.dependencies);
+
+  const responsePromise = app.inject({
+    method: "POST",
+    url: "/api/v1/openclaw/native-guard/events/batch",
+    headers: { authorization: `Bearer ${LEASE_CREDENTIAL}` },
+    payload: {
+      events: [
+        nativeEvent({ eventId: "event-1" }),
+        nativeEvent({ eventId: "event-2" }),
+      ],
+    },
+  });
+  await appendStarted.promise;
+  credentialCurrent = false;
+  releaseAppend.resolve();
+  const response = await responsePromise;
+
+  assert.equal(response.statusCode, 401);
+  assert.equal(fixture.calls.append, 1);
+  await app.close();
+});
+
+test("event batch stops when a later event session becomes unbound", async () => {
+  const fixture = createFixture();
+  let sessionBound = true;
+  fixture.dependencies.leaseService.resolveBySession = (sessionKey) => {
+    fixture.calls.resolveSession += 1;
+    return sessionBound ? leaseSnapshot("lease-1", 1, sessionKey) : undefined;
+  };
+  fixture.dependencies.eventStore.append = async (event) => {
+    fixture.calls.append += 1;
+    fixture.calls.appendedEvents.push(event);
+    sessionBound = false;
+    return true;
+  };
+  const app = await createApp(fixture.dependencies);
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/v1/openclaw/native-guard/events/batch",
+    headers: { authorization: `Bearer ${LEASE_CREDENTIAL}` },
+    payload: {
+      events: [
+        nativeEvent({ eventId: "event-1" }),
+        nativeEvent({ eventId: "event-2" }),
+      ],
+    },
+  });
+
+  assert.equal(response.statusCode, 401);
+  assert.equal(fixture.calls.append, 1);
+  await app.close();
+});
+
+test("exact secret scrubbing rejects replacement key collisions", () => {
+  assert.throws(
+    () => scrubExactSecret({
+      [LEASE_CREDENTIAL]: "first",
+      "[REDACTED]": "second",
+    }, LEASE_CREDENTIAL),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "NATIVE_GUARD_SECRET_SCRUB_CONFLICT" &&
+      !error.message.includes(LEASE_CREDENTIAL),
+  );
+});
+
+test("Vite control tokens are accepted only in explicit browser-only development", async () => {
+  const handlers = await import("./native-guard-handlers");
+  const viteToken = "vite-browser-token";
+  assert.equal(handlers.resolveNativeGuardControlToken({
+    NODE_ENV: "production",
+    AGENT_GUARD_BROWSER_DEV: "1",
+    VITE_AGENT_GUARD_CONTROL_TOKEN: viteToken,
+  }), undefined);
+  assert.equal(handlers.resolveNativeGuardControlToken({
+    NODE_ENV: "development",
+    VITE_AGENT_GUARD_CONTROL_TOKEN: viteToken,
+  }), undefined);
+  assert.equal(handlers.resolveNativeGuardControlToken({
+    NODE_ENV: "development",
+    AGENT_GUARD_BROWSER_DEV: "1",
+    AGENT_GUARD_DESKTOP: "1",
+    VITE_AGENT_GUARD_CONTROL_TOKEN: viteToken,
+  }), undefined);
+  assert.equal(handlers.resolveNativeGuardControlToken({
+    NODE_ENV: "development",
+    AGENT_GUARD_BROWSER_DEV: "1",
+    VITE_AGENT_GUARD_CONTROL_TOKEN: viteToken,
+  }), viteToken);
+  assert.equal(handlers.resolveNativeGuardControlToken({
+    NODE_ENV: "production",
+    AGENT_GUARD_DESKTOP: "1",
+    AGENT_GUARD_CONTROL_TOKEN: CONTROL_TOKEN,
+    VITE_AGENT_GUARD_CONTROL_TOKEN: viteToken,
+  }), CONTROL_TOKEN);
+
+  const productionFixture = createFixture();
+  productionFixture.dependencies.controlToken =
+    handlers.resolveNativeGuardControlToken({
+      NODE_ENV: "production",
+      AGENT_GUARD_BROWSER_DEV: "1",
+      VITE_AGENT_GUARD_CONTROL_TOKEN: viteToken,
+    });
+  const productionApp = await createApp(productionFixture.dependencies);
+  const rejected = await productionApp.inject({
+    method: "GET",
+    url: "/api/v1/openclaw/native-guard/status",
+    headers: { "x-agent-guard-control-token": viteToken },
+  });
+  assert.equal(rejected.statusCode, 401);
+  assert.equal(productionFixture.calls.status, 0);
+  await productionApp.close();
+
+  const browserFixture = createFixture();
+  browserFixture.dependencies.controlToken =
+    handlers.resolveNativeGuardControlToken({
+      NODE_ENV: "development",
+      AGENT_GUARD_BROWSER_DEV: "1",
+      VITE_AGENT_GUARD_CONTROL_TOKEN: viteToken,
+    });
+  const browserApp = await createApp(browserFixture.dependencies);
+  const accepted = await browserApp.inject({
+    method: "GET",
+    url: "/api/v1/openclaw/native-guard/status",
+    headers: { "x-agent-guard-control-token": viteToken },
+  });
+  assert.equal(accepted.statusCode, 200);
+  assert.equal(browserFixture.calls.status, 1);
+  await browserApp.close();
+});
+
+test("native decision backend URLs are restricted to the exact loopback PDP endpoint", async () => {
+  const handlers = await import("./native-guard-handlers");
+  const invalidUrls = [
+    "https://localhost:3100/api/v1/openclaw/native-guard/decision",
+    "http://example.test:3100/api/v1/openclaw/native-guard/decision",
+    "http://user@localhost:3100/api/v1/openclaw/native-guard/decision",
+    "http://localhost:3100/api/v1/openclaw/native-guard/decision?copy=1",
+    "http://localhost:3100/api/v1/openclaw/native-guard/decision#fragment",
+    "http://localhost:3100/api/v1/openclaw/native-guard/decision/",
+    "http://localhost:0/api/v1/openclaw/native-guard/decision",
+  ];
+  for (const configured of invalidUrls) {
+    assert.throws(
+      () => handlers.resolveNativeGuardDecisionUrl({
+        AGENT_GUARD_NATIVE_GUARD_BACKEND_URL: configured,
+      }),
+      (error: unknown) =>
+        error instanceof Error &&
+        "code" in error &&
+        error.code === "NATIVE_GUARD_BACKEND_URL_INVALID" &&
+        !error.message.includes(configured),
+    );
+  }
+  for (const invalidPort of ["0", "65536", "not-a-port"]) {
+    assert.throws(
+      () => handlers.resolveNativeGuardDecisionUrl({ API_PORT: invalidPort }),
+      (error: unknown) =>
+        error instanceof Error &&
+        "code" in error &&
+        error.code === "NATIVE_GUARD_BACKEND_URL_INVALID",
+    );
+  }
+  assert.equal(
+    handlers.resolveNativeGuardDecisionUrl({ API_PORT: "65535" }),
+    "http://127.0.0.1:65535/api/v1/openclaw/native-guard/decision",
+  );
+  assert.equal(
+    handlers.resolveNativeGuardDecisionUrl({
+      AGENT_GUARD_NATIVE_GUARD_BACKEND_URL:
+        "http://[::1]:3100/api/v1/openclaw/native-guard/decision",
+    }),
+    "http://[::1]:3100/api/v1/openclaw/native-guard/decision",
+  );
+});
+
+test("native runtime loads the active OpenClaw identity only for explicit management", async () => {
+  const handlers = await import("./native-guard-handlers");
+  const activeAgent = nativeAgent(
+    "agent.active",
+    "C:\\active\\openclaw.cmd",
+    "http://127.0.0.1:18790",
+  );
+  let loaderCalls = 0;
+  const coordinatorOptions: Array<Record<string, unknown>> = [];
+  const dependencies = handlers.createNativeGuardRouteDependencies({
+    env: { AGENT_GUARD_CONTROL_TOKEN: CONTROL_TOKEN },
+    loadActiveAgentConfig: async () => {
+      loaderCalls += 1;
+      return activeAgent;
+    },
+    createCoordinator(options: unknown) {
+      coordinatorOptions.push(options as Record<string, unknown>);
+      return coordinatorStub();
+    },
+    createDecisionService() {
+      return { async decide() { throw new Error("not called"); } };
+    },
+  });
+
+  assert.equal(loaderCalls, 0);
+  assert.equal(dependencies.coordinator.getLastStatus().coverage, "off");
+  assert.equal(dependencies.coordinator.isLeaseUsable("lease-1"), false);
+  assert.equal(loaderCalls, 0);
+
+  const app = await buildNativeApp(dependencies);
+  const ordinary = await app.inject({
+    method: "GET",
+    url: "/api/v1/system/status",
+  });
+  assert.equal(ordinary.statusCode, 200);
+  assert.equal(loaderCalls, 0);
+
+  const explicit = await app.inject({
+    method: "GET",
+    url: "/api/v1/openclaw/native-guard/status",
+    headers: { "x-agent-guard-control-token": CONTROL_TOKEN },
+  });
+  assert.equal(explicit.statusCode, 200);
+  assert.equal(loaderCalls, 1);
+  assert.equal(coordinatorOptions.length, 1);
+  assert.equal(coordinatorOptions[0].gatewayUrl, activeAgent.gatewayUrl);
+  assert.deepEqual(coordinatorOptions[0].capabilityInput, {
+    cliPath: activeAgent.openclawCliPath,
+    isolatedProfile: false,
+  });
+  await app.close();
+});
+
+test("native runtime rejects invalid active agents and backend config only when explicitly loaded", async () => {
+  const handlers = await import("./native-guard-handlers");
+  for (const scenario of [
+    {
+      agent: { ...nativeAgent("agent.mock", undefined, "http://127.0.0.1:18790"), adapterKind: "mock" as const },
+      env: { AGENT_GUARD_CONTROL_TOKEN: CONTROL_TOKEN },
+    },
+    {
+      agent: nativeAgent("agent.openclaw", undefined, "http://127.0.0.1:18790"),
+      env: {
+        AGENT_GUARD_CONTROL_TOKEN: CONTROL_TOKEN,
+        AGENT_GUARD_NATIVE_GUARD_BACKEND_URL:
+          "http://example.test/api/v1/openclaw/native-guard/decision",
+      },
+    },
+  ]) {
+    let loaderCalls = 0;
+    let factoryCalls = 0;
+    const dependencies = handlers.createNativeGuardRouteDependencies({
+      env: scenario.env,
+      loadActiveAgentConfig: async () => {
+        loaderCalls += 1;
+        return scenario.agent;
+      },
+      createCoordinator() {
+        factoryCalls += 1;
+        return coordinatorStub();
+      },
+      createDecisionService() {
+        return { async decide() { throw new Error("not called"); } };
+      },
+    });
+    assert.equal(loaderCalls, 0);
+    assert.equal(factoryCalls, 0);
+
+    const app = await createApp(dependencies);
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/v1/openclaw/native-guard/status",
+      headers: { "x-agent-guard-control-token": CONTROL_TOKEN },
+    });
+    assert.equal(response.statusCode, 500);
+    assert.equal(response.json().error.code, "NATIVE_GUARD_INTERNAL_ERROR");
+    assert.equal(response.body.includes("example.test"), false);
+    assert.equal(loaderCalls, 1);
+    assert.equal(factoryCalls, 0);
+    await app.close();
+  }
+});
+
+test("desktop control token injection requires the exact trusted renderer context", () => {
+  const security = require("../../../../../desktop/control-plane-security.cjs");
+  const context = {
+    apiBase: "http://127.0.0.1:3100",
+    mainWebContentsId: 7,
+    currentRendererUrl: "http://127.0.0.1:5173/dashboard",
+    trustedViteOrigin: "http://127.0.0.1:5173",
+    packagedIndexUrl: "file:///C:/AgentGuard/dist/frontend/index.html",
+  };
+  const trusted = {
+    url: "http://127.0.0.1:3100/api/v1/system/status",
+    webContentsId: 7,
+    frameId: 0,
+    initiator: "http://127.0.0.1:5173",
+    requestHeaders: {
+      "x-agent-guard-control-token": "attacker-value",
+      Accept: "application/json",
+    },
+  };
+  assert.equal(security.shouldInjectControlToken(trusted, context), true);
+  assert.deepEqual(
+    security.withControlTokenHeaders(trusted, context, CONTROL_TOKEN),
+    {
+      Accept: "application/json",
+      "X-Agent-Guard-Control-Token": CONTROL_TOKEN,
+    },
+  );
+
+  const untrusted = [
+    { ...trusted, webContentsId: 8 },
+    { ...trusted, frameId: 1 },
+    { ...trusted, initiator: "https://attacker.example" },
+    { ...trusted, url: "http://localhost:3100/api/v1/system/status" },
+  ];
+  for (const details of untrusted) {
+    assert.equal(security.shouldInjectControlToken(details, context), false);
+    assert.deepEqual(
+      security.withControlTokenHeaders(details, context, CONTROL_TOKEN),
+      details.requestHeaders,
+    );
+  }
+
+  const packagedContext = {
+    ...context,
+    currentRendererUrl: context.packagedIndexUrl,
+  };
+  assert.equal(security.shouldInjectControlToken({
+    ...trusted,
+    initiator: "null",
+  }, packagedContext), true);
+  assert.equal(security.shouldInjectControlToken({
+    ...trusted,
+    initiator: "file://",
+  }, packagedContext), true);
+  assert.equal(security.shouldInjectControlToken({
+    ...trusted,
+    initiator: "null",
+  }, {
+    ...packagedContext,
+    currentRendererUrl: `${context.packagedIndexUrl}#unexpected`,
+  }), false);
+});
+
+test("desktop normalizes Electron frame metadata before control token checks", () => {
+  const security = require("../../../../../desktop/control-plane-security.cjs");
+  assert.equal(typeof security.normalizeElectronRequestDetails, "function");
+
+  const mainFrame = {
+    url: "http://127.0.0.1:3100/api/v1/system/status",
+    webContentsId: 7,
+    frame: {
+      parent: null,
+      origin: "http://127.0.0.1:5173",
+    },
+    requestHeaders: { Accept: "application/json" },
+  };
+  assert.deepEqual(security.normalizeElectronRequestDetails(mainFrame), {
+    ...mainFrame,
+    frameId: 0,
+    initiator: "http://127.0.0.1:5173",
+  });
+
+  const childFrame = {
+    ...mainFrame,
+    frame: {
+      parent: {},
+      origin: "http://127.0.0.1:5173",
+    },
+  };
+  assert.equal(
+    security.normalizeElectronRequestDetails(childFrame).frameId,
+    -1,
+  );
+
+  const missingFrame = { ...mainFrame, frame: null };
+  assert.equal(
+    security.normalizeElectronRequestDetails(missingFrame).initiator,
+    undefined,
+  );
+  assert.equal(
+    security.normalizeElectronRequestDetails(missingFrame).frameId,
+    -1,
+  );
+});
+
+test("desktop API ownership probes identity before sending the control token", async () => {
+  const security = require("../../../../../desktop/control-plane-security.cjs");
+  const apiBase = "http://127.0.0.1:3100";
+  const identity = {
+    ok: true,
+    data: {
+      service: "agent-guard-api",
+      schemaVersion: "mvp-1",
+      apiVersion: "p2-api-freeze-2",
+    },
+  };
+
+  const wrongCalls: Array<{ url: string; init?: RequestInit }> = [];
+  const wrong = await security.probeApiOwnership({
+    apiBase,
+    controlToken: CONTROL_TOKEN,
+    fetchImpl: async (url: string, init?: RequestInit) => {
+      wrongCalls.push({ url, init });
+      return jsonResponse({
+        ...identity,
+        data: { ...identity.data, service: "not-agent-guard" },
+      });
+    },
+  });
+  assert.equal(wrong.kind, "wrong_service");
+  assert.equal(wrongCalls.length, 1);
+  assert.equal(JSON.stringify(wrongCalls).includes(CONTROL_TOKEN), false);
+
+  const mismatchCalls: Array<{ url: string; init?: RequestInit }> = [];
+  const mismatch = await security.probeApiOwnership({
+    apiBase,
+    controlToken: CONTROL_TOKEN,
+    fetchImpl: async (url: string, init?: RequestInit) => {
+      mismatchCalls.push({ url, init });
+      return mismatchCalls.length === 1
+        ? jsonResponse(identity)
+        : jsonResponse({
+            ok: false,
+            error: { code: "NATIVE_GUARD_UNAUTHORIZED" },
+          }, 401);
+    },
+  });
+  assert.equal(mismatch.kind, "token_mismatch");
+  assert.equal(mismatchCalls.length, 2);
+  assert.equal(JSON.stringify(mismatchCalls[0]).includes(CONTROL_TOKEN), false);
+  assert.equal(JSON.stringify(mismatchCalls[1]).includes(CONTROL_TOKEN), true);
+
+  const readyCalls: Array<{ url: string; init?: RequestInit }> = [];
+  const ready = await security.probeApiOwnership({
+    apiBase,
+    controlToken: CONTROL_TOKEN,
+    fetchImpl: async (url: string, init?: RequestInit) => {
+      readyCalls.push({ url, init });
+      return readyCalls.length === 1
+        ? jsonResponse(identity)
+        : jsonResponse({
+            ok: false,
+            error: { code: "NATIVE_GUARD_INVALID_REQUEST" },
+          }, 400);
+    },
+  });
+  assert.equal(ready.kind, "ready");
+  assert.equal(readyCalls.length, 2);
+  assert.match(readyCalls[1].url, /\/native-guard\/leases$/);
+  assert.equal(readyCalls[1].init?.body, "{}");
+});
+
+test("desktop ownership probe cancels an undeclared oversized JSON response", async () => {
+  const security = require("../../../../../desktop/control-plane-security.cjs");
+  const chunk = new Uint8Array(32 * 1024).fill(0x20);
+  let pulls = 0;
+  let cancellations = 0;
+  const response = new Response(new ReadableStream({
+    pull(controller) {
+      pulls += 1;
+      if (pulls <= 5) {
+        controller.enqueue(chunk);
+        return;
+      }
+      controller.close();
+    },
+    cancel() {
+      cancellations += 1;
+    },
+  }), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+
+  const ownership = await security.probeApiOwnership({
+    apiBase: "http://127.0.0.1:3100",
+    controlToken: CONTROL_TOKEN,
+    fetchImpl: async () => response,
+  });
+
+  assert.equal(ownership.kind, "wrong_service");
+  assert.equal(cancellations, 1);
+  assert.ok(pulls < 6);
+});
+
+test("lazy native runtime refreshes an idle identity and rejects changes with an active lease", async () => {
+  const handlers = await import("./native-guard-handlers");
+  const first = nativeAgent(
+    "agent.first",
+    "C:\\first\\openclaw.cmd",
+    "http://127.0.0.1:18790",
+  );
+  const second = nativeAgent(
+    "agent.second",
+    "C:\\second\\openclaw.cmd",
+    "http://127.0.0.1:18791",
+  );
+
+  const idleAgents = [first, second];
+  const idleGateways: string[] = [];
+  const idleDependencies = handlers.createNativeGuardRouteDependencies({
+    env: { AGENT_GUARD_CONTROL_TOKEN: CONTROL_TOKEN },
+    loadActiveAgentConfig: async () => idleAgents.shift() ?? second,
+    createCoordinator(options) {
+      idleGateways.push(options.gatewayUrl);
+      return coordinatorStub();
+    },
+    createDecisionService() {
+      return { async decide() { throw new Error("not called"); } };
+    },
+  });
+  const idleApp = await createApp(idleDependencies);
+  for (let index = 0; index < 2; index += 1) {
+    const response = await idleApp.inject({
+      method: "GET",
+      url: "/api/v1/openclaw/native-guard/status",
+      headers: { "x-agent-guard-control-token": CONTROL_TOKEN },
+    });
+    assert.equal(response.statusCode, 200);
+  }
+  assert.deepEqual(idleGateways, [first.gatewayUrl, second.gatewayUrl]);
+  await idleApp.close();
+
+  const activeAgents = [first, second];
+  let activeFactoryCalls = 0;
+  const activeDependencies = handlers.createNativeGuardRouteDependencies({
+    env: {
+      AGENT_GUARD_CONTROL_TOKEN: CONTROL_TOKEN,
+      OPENCLAW_CLI: "C:\\override\\openclaw.cmd",
+      OPENCLAW_GATEWAY_URL: "http://127.0.0.1:19999",
+    },
+    loadActiveAgentConfig: async () => activeAgents.shift() ?? second,
+    createCoordinator(options) {
+      activeFactoryCalls += 1;
+      assert.equal(options.gatewayUrl, "http://127.0.0.1:19999");
+      assert.equal(
+        options.capabilityInput.cliPath,
+        "C:\\override\\openclaw.cmd",
+      );
+      return coordinatorStub({
+        coverage: "active",
+        finalizerAssurance: "exclusive_before_hook",
+        activeLeaseCount: 1,
+      });
+    },
+    createDecisionService() {
+      return { async decide() { throw new Error("not called"); } };
+    },
+  });
+  const activeApp = await createApp(activeDependencies);
+  const firstStatus = await activeApp.inject({
+    method: "GET",
+    url: "/api/v1/openclaw/native-guard/status",
+    headers: { "x-agent-guard-control-token": CONTROL_TOKEN },
+  });
+  assert.equal(firstStatus.statusCode, 200);
+  const changedStatus = await activeApp.inject({
+    method: "GET",
+    url: "/api/v1/openclaw/native-guard/status",
+    headers: { "x-agent-guard-control-token": CONTROL_TOKEN },
+  });
+  assert.equal(changedStatus.statusCode, 500);
+  assert.equal(changedStatus.json().error.code, "NATIVE_GUARD_INTERNAL_ERROR");
+  assert.equal(activeFactoryCalls, 1);
+  await activeApp.close();
+});
+
 async function createApp(dependencies: NativeGuardRouteDependencies) {
   const app = Fastify({ logger: false, bodyLimit: 2 * 1024 * 1024 });
   await app.register(openClawNativeGuardRoutes, dependencies);
@@ -916,6 +1550,11 @@ async function createSystemApp(dependencies: SystemRouteDependencies) {
   return app;
 }
 
+async function buildNativeApp(dependencies: NativeGuardRouteDependencies) {
+  const { buildApp } = await import("../../../app");
+  return buildApp({ logger: false, nativeGuardDependencies: dependencies });
+}
+
 function systemAgent(openclawCliPath?: string) {
   return {
     adapterKind: "openclaw" as const,
@@ -923,6 +1562,36 @@ function systemAgent(openclawCliPath?: string) {
     name: "System Test Agent",
     openclawCliPath,
   };
+}
+
+function nativeAgent(
+  agentId: string,
+  openclawCliPath: string | undefined,
+  gatewayUrl: string,
+) {
+  return {
+    adapterKind: "openclaw" as const,
+    agentId,
+    name: `Native Agent ${agentId}`,
+    openclawCliPath,
+    gatewayUrl,
+  };
+}
+
+function coordinatorStub(status: NativeGuardStatus = {
+  coverage: "ready",
+  finalizerAssurance: "exclusive_before_hook",
+  activeLeaseCount: 0,
+}) {
+  return {
+    async activate() { return structuredClone(status); },
+    async renew() { return structuredClone(status); },
+    async revoke() { return structuredClone(status); },
+    async status() { return structuredClone(status); },
+    isLeaseUsable() { return false; },
+    isLeaseRevoking() { return false; },
+    getLastStatus() { return structuredClone(status); },
+  } as never;
 }
 
 function createFixture() {
@@ -936,6 +1605,7 @@ function createFixture() {
     revoke: 0,
     revokeInputs: [] as string[],
     authenticate: 0,
+    resolveSession: 0,
     usable: 0,
     decide: 0,
     decisionCredentials: [] as string[],
@@ -980,9 +1650,15 @@ function createFixture() {
       },
     },
     leaseService: {
-      authenticate(_leaseId, credential) {
+      authenticate(leaseId, credential) {
         calls.authenticate += 1;
-        return credential === LEASE_CREDENTIAL ? ({} as never) : undefined;
+        return credential === LEASE_CREDENTIAL
+          ? leaseSnapshot(leaseId)
+          : undefined;
+      },
+      resolveBySession(sessionKey) {
+        calls.resolveSession += 1;
+        return leaseSnapshot("lease-1", 1, sessionKey);
       },
     },
     decisionService: {
@@ -1053,4 +1729,34 @@ function nativeEvent(overrides: Record<string, unknown> = {}) {
     detail: { reasonCode: "TOOL_COMPLETED", message: "completed" },
     ...overrides,
   };
+}
+
+function leaseSnapshot(
+  leaseId = "lease-1",
+  leaseEpoch = 1,
+  sessionKey = "session-1",
+) {
+  return {
+    leaseId,
+    leaseEpoch,
+    rootSessionKey: sessionKey,
+    state: "active",
+  } as never;
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
 }

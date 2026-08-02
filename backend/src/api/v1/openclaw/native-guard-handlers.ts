@@ -4,6 +4,7 @@ import type {
   NativeGuardStatus,
   NativeToolDecisionRequest,
 } from "@agent-guard/contracts";
+import type { AgentConnectionConfig } from "../../types";
 import {
   createNativeGuardCoordinator,
   type ActivateNativeGuardInput,
@@ -30,9 +31,11 @@ import {
   parseLeaseBearer,
   resolveNativeGuardAllowedOrigins,
 } from "../../../modules/openclaw/nativeGuardAuth";
+import { getActiveAgentConfig } from "../../../storage/agentConfigStore";
 import { failure, success } from "../../response";
 
 const BASE_PATH = "/api/v1/openclaw/native-guard";
+const DECISION_PATH = "/api/v1/openclaw/native-guard/decision";
 
 export type NativeGuardRouteDependencies = {
   controlToken?: string;
@@ -41,7 +44,10 @@ export type NativeGuardRouteDependencies = {
     NativeGuardCoordinator,
     "activate" | "renew" | "revoke" | "status" | "isLeaseUsable" | "getLastStatus"
   >;
-  leaseService: Pick<NativeGuardLeaseService, "authenticate">;
+  leaseService: Pick<
+    NativeGuardLeaseService,
+    "authenticate" | "resolveBySession"
+  >;
   decisionService: NativeToolDecisionService;
   eventStore: Pick<NativeGuardEventStore, "append">;
 };
@@ -53,6 +59,8 @@ export type NativeGuardRuntimeOptions = {
   eventStore?: NativeGuardEventStore;
   controlClient?: OpenClawControlClient;
   createDecisionService?: typeof createNativeToolDecisionService;
+  loadActiveAgentConfig?: () => Promise<AgentConnectionConfig>;
+  createCoordinator?: typeof createNativeGuardCoordinator;
 };
 
 export function createNativeGuardRouteDependencies(
@@ -62,15 +70,14 @@ export function createNativeGuardRouteDependencies(
   const leaseService = options.leaseService ?? createNativeGuardLeaseService();
   const eventStore = options.eventStore ?? createNativeGuardEventStore();
   const controlClient = options.controlClient ?? createOpenClawControlClient({ env });
-  const coordinator = options.coordinator ?? createNativeGuardCoordinator({
+  const coordinator = options.coordinator ?? createLazyNativeGuardCoordinator({
+    env,
     leaseService,
     controlClient,
-    gatewayUrl: env.OPENCLAW_GATEWAY_URL ?? "http://127.0.0.1:18789",
-    backendUrl: nativeGuardDecisionUrl(env),
-    capabilityInput: {
-      cliPath: env.OPENCLAW_CLI,
-      isolatedProfile: env.AGENT_GUARD_OPENCLAW_ISOLATED_PROFILE === "1",
-    },
+    loadActiveAgentConfig:
+      options.loadActiveAgentConfig ?? getActiveAgentConfig,
+    createCoordinator:
+      options.createCoordinator ?? createNativeGuardCoordinator,
   });
   const guardedEventStore = createLeaseUsabilityEventAppender(
     coordinator,
@@ -85,10 +92,7 @@ export function createNativeGuardRouteDependencies(
   });
 
   return {
-    controlToken:
-      env.AGENT_GUARD_CONTROL_TOKEN ||
-      env.VITE_AGENT_GUARD_CONTROL_TOKEN ||
-      undefined,
+    controlToken: resolveNativeGuardControlToken(env),
     allowedOrigins: resolveNativeGuardAllowedOrigins(env),
     coordinator,
     leaseService,
@@ -97,13 +101,231 @@ export function createNativeGuardRouteDependencies(
   };
 }
 
-function nativeGuardDecisionUrl(env: NodeJS.ProcessEnv): string {
-  if (env.AGENT_GUARD_NATIVE_GUARD_BACKEND_URL) {
-    return env.AGENT_GUARD_NATIVE_GUARD_BACKEND_URL;
+export function resolveNativeGuardControlToken(
+  env: NodeJS.ProcessEnv,
+): string | undefined {
+  if (env.AGENT_GUARD_CONTROL_TOKEN) return env.AGENT_GUARD_CONTROL_TOKEN;
+  if (
+    env.AGENT_GUARD_BROWSER_DEV === "1" &&
+    env.NODE_ENV !== "production" &&
+    env.AGENT_GUARD_DESKTOP === undefined
+  ) {
+    return env.VITE_AGENT_GUARD_CONTROL_TOKEN || undefined;
   }
-  const port = /^\d{1,5}$/.test(env.API_PORT ?? "") ? env.API_PORT : "3100";
-  return `http://127.0.0.1:${port}/api/v1/openclaw/native-guard/decision`;
+  return undefined;
 }
+
+export function resolveNativeGuardDecisionUrl(env: NodeJS.ProcessEnv): string {
+  const configured = env.AGENT_GUARD_NATIVE_GUARD_BACKEND_URL;
+  if (configured !== undefined) return validateNativeGuardDecisionUrl(configured);
+
+  const rawPort = env.API_PORT ?? "3100";
+  if (!/^\d{1,5}$/.test(rawPort)) throw backendUrlInvalid();
+  const port = Number(rawPort);
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
+    throw backendUrlInvalid();
+  }
+  return `http://127.0.0.1:${String(port)}${DECISION_PATH}`;
+}
+
+type LazyCoordinatorOptions = {
+  env: NodeJS.ProcessEnv;
+  leaseService: NativeGuardLeaseService;
+  controlClient: OpenClawControlClient;
+  loadActiveAgentConfig: () => Promise<AgentConnectionConfig>;
+  createCoordinator: typeof createNativeGuardCoordinator;
+};
+
+type NativeRuntimeIdentity = {
+  key: string;
+  gatewayUrl: string;
+  backendUrl: string;
+  capabilityInput: {
+    cliPath?: string;
+    isolatedProfile: boolean;
+  };
+};
+
+function createLazyNativeGuardCoordinator(
+  options: LazyCoordinatorOptions,
+): NativeGuardCoordinator {
+  let current: NativeGuardCoordinator | undefined;
+  let currentIdentity: string | undefined;
+  let resolving: Promise<NativeGuardCoordinator> | undefined;
+
+  async function resolveCoordinator(): Promise<NativeGuardCoordinator> {
+    if (resolving) return resolving;
+    resolving = resolveFreshCoordinator().finally(() => {
+      resolving = undefined;
+    });
+    return resolving;
+  }
+
+  async function resolveFreshCoordinator(): Promise<NativeGuardCoordinator> {
+    let activeAgent: AgentConnectionConfig;
+    try {
+      activeAgent = await options.loadActiveAgentConfig();
+    } catch {
+      throw runtimeConfigError(
+        "NATIVE_GUARD_ACTIVE_AGENT_INVALID",
+        "Native guard active agent configuration is unavailable.",
+      );
+    }
+    const identity = resolveNativeRuntimeIdentity(options.env, activeAgent);
+    if (current && currentIdentity === identity.key) return current;
+    if (current && current.getLastStatus().activeLeaseCount > 0) {
+      throw runtimeConfigError(
+        "NATIVE_GUARD_ACTIVE_AGENT_CHANGED",
+        "Native guard active agent changed while a lease is managed.",
+      );
+    }
+    const created = options.createCoordinator({
+      leaseService: options.leaseService,
+      controlClient: options.controlClient,
+      gatewayUrl: identity.gatewayUrl,
+      backendUrl: identity.backendUrl,
+      capabilityInput: identity.capabilityInput,
+    });
+    current = created;
+    currentIdentity = identity.key;
+    return created;
+  }
+
+  return {
+    async activate(input) {
+      return (await resolveCoordinator()).activate(input);
+    },
+    async renew(leaseId, ttlMs) {
+      return (await resolveCoordinator()).renew(leaseId, ttlMs);
+    },
+    async revoke(leaseId) {
+      return (await resolveCoordinator()).revoke(leaseId);
+    },
+    async status() {
+      return (await resolveCoordinator()).status();
+    },
+    isLeaseUsable(leaseId) {
+      try {
+        return current?.isLeaseUsable(leaseId) === true;
+      } catch {
+        return false;
+      }
+    },
+    isLeaseRevoking(leaseId) {
+      try {
+        return current?.isLeaseRevoking(leaseId) === true;
+      } catch {
+        return false;
+      }
+    },
+    getLastStatus() {
+      return current
+        ? current.getLastStatus()
+        : structuredClone(OFF_NATIVE_GUARD_STATUS);
+    },
+  };
+}
+
+function resolveNativeRuntimeIdentity(
+  env: NodeJS.ProcessEnv,
+  activeAgent: AgentConnectionConfig,
+): NativeRuntimeIdentity {
+  if (activeAgent.adapterKind !== "openclaw" || !activeAgent.agentId?.trim()) {
+    throw runtimeConfigError(
+      "NATIVE_GUARD_ACTIVE_AGENT_INVALID",
+      "Native guard requires an active OpenClaw agent.",
+    );
+  }
+  const gatewayUrl = nonEmpty(env.OPENCLAW_GATEWAY_URL)
+    ? env.OPENCLAW_GATEWAY_URL
+    : activeAgent.gatewayUrl;
+  if (!nonEmpty(gatewayUrl)) {
+    throw runtimeConfigError(
+      "NATIVE_GUARD_ACTIVE_AGENT_INVALID",
+      "Native guard active OpenClaw gateway is unavailable.",
+    );
+  }
+  const cliPath = nonEmpty(env.OPENCLAW_CLI)
+    ? env.OPENCLAW_CLI
+    : activeAgent.openclawCliPath;
+  const backendUrl = resolveNativeGuardDecisionUrl(env);
+  const isolatedProfile = env.AGENT_GUARD_OPENCLAW_ISOLATED_PROFILE === "1";
+  return {
+    key: JSON.stringify([
+      activeAgent.agentId,
+      cliPath ?? null,
+      gatewayUrl,
+      backendUrl,
+      isolatedProfile,
+    ]),
+    gatewayUrl,
+    backendUrl,
+    capabilityInput: {
+      ...(cliPath ? { cliPath } : {}),
+      isolatedProfile,
+    },
+  };
+}
+
+function validateNativeGuardDecisionUrl(value: string): string {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw backendUrlInvalid();
+  }
+  const hostname = url.hostname.toLowerCase();
+  const port = url.port === "" ? 80 : Number(url.port);
+  if (
+    url.protocol !== "http:" ||
+    !["127.0.0.1", "localhost", "[::1]"].includes(hostname) ||
+    url.username !== "" ||
+    url.password !== "" ||
+    url.search !== "" ||
+    url.hash !== "" ||
+    url.pathname !== DECISION_PATH ||
+    !Number.isSafeInteger(port) ||
+    port < 1 ||
+    port > 65_535
+  ) {
+    throw backendUrlInvalid();
+  }
+  return `${url.protocol}//${url.host}${url.pathname}`;
+}
+
+export class NativeGuardRuntimeConfigurationError extends Error {
+  constructor(
+    public readonly code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = "NativeGuardRuntimeConfigurationError";
+  }
+}
+
+function backendUrlInvalid(): NativeGuardRuntimeConfigurationError {
+  return runtimeConfigError(
+    "NATIVE_GUARD_BACKEND_URL_INVALID",
+    "Native guard decision backend URL is invalid.",
+  );
+}
+
+function runtimeConfigError(
+  code: string,
+  message: string,
+): NativeGuardRuntimeConfigurationError {
+  return new NativeGuardRuntimeConfigurationError(code, message);
+}
+
+function nonEmpty(value: string | undefined): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+const OFF_NATIVE_GUARD_STATUS: NativeGuardStatus = {
+  coverage: "off",
+  finalizerAssurance: "unverified",
+  activeLeaseCount: 0,
+};
 
 export class NativeGuardLeaseNotUsableError extends Error {
   readonly code = "NATIVE_GUARD_LEASE_NOT_USABLE";
@@ -327,8 +549,8 @@ export async function openClawNativeGuardRoutes(
       }
       if (
         credential &&
-        events.every(({ leaseId }) =>
-          Boolean(dependencies.leaseService.authenticate(leaseId, credential)))
+        events.every((event) =>
+          eventSessionAuthenticates(dependencies.leaseService, event, credential))
       ) return;
       return reply.code(401).send(failure(
         "NATIVE_GUARD_UNAUTHORIZED",
@@ -346,6 +568,16 @@ export async function openClawNativeGuardRoutes(
     const { events } = request.body as { events: NativeGuardEvent[] };
     for (const event of events) {
       const safeEvent = scrubExactSecret(event, credential) as NativeGuardEvent;
+      if (!eventSessionAuthenticates(
+        dependencies.leaseService,
+        event,
+        credential,
+      )) {
+        return reply.code(401).send(failure(
+          "NATIVE_GUARD_UNAUTHORIZED",
+          "Native guard authentication failed.",
+        ));
+      }
       if (!dependencies.coordinator.isLeaseUsable(event.leaseId)) {
         return reply.code(409).send(failure(
           "NATIVE_GUARD_LEASE_NOT_USABLE",
@@ -361,14 +593,49 @@ export async function openClawNativeGuardRoutes(
         ));
       }
     }
-    if (!dependencies.coordinator.isLeaseUsable(events[0].leaseId)) {
-      return reply.code(409).send(failure(
-        "NATIVE_GUARD_LEASE_NOT_USABLE",
-        "Native guard lease is not active.",
-      ));
+    for (const event of events) {
+      if (!eventSessionAuthenticates(
+        dependencies.leaseService,
+        event,
+        credential,
+      )) {
+        return reply.code(401).send(failure(
+          "NATIVE_GUARD_UNAUTHORIZED",
+          "Native guard authentication failed.",
+        ));
+      }
+      if (!dependencies.coordinator.isLeaseUsable(event.leaseId)) {
+        return reply.code(409).send(failure(
+          "NATIVE_GUARD_LEASE_NOT_USABLE",
+          "Native guard lease is not active.",
+        ));
+      }
     }
     return success({ accepted: events.length });
   });
+}
+
+function eventSessionAuthenticates(
+  leaseService: Pick<
+    NativeGuardLeaseService,
+    "authenticate" | "resolveBySession"
+  >,
+  event: NativeGuardEvent,
+  credential: string,
+): boolean {
+  try {
+    const authenticated = leaseService.authenticate(event.leaseId, credential);
+    const sessionLease = leaseService.resolveBySession(event.sessionKey);
+    return Boolean(
+      authenticated &&
+      sessionLease &&
+      authenticated.leaseId === event.leaseId &&
+      sessionLease.leaseId === authenticated.leaseId &&
+      sessionLease.leaseEpoch === authenticated.leaseEpoch,
+    );
+  } catch {
+    return false;
+  }
 }
 
 export function scrubExactSecret(value: unknown, secret: string): unknown {
@@ -377,12 +644,28 @@ export function scrubExactSecret(value: unknown, secret: string): unknown {
     return value.map((item) => scrubExactSecret(item, secret));
   }
   if (typeof value === "object" && value !== null) {
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [
-      key.replaceAll(secret, "[REDACTED]"),
-      scrubExactSecret(item, secret),
-    ]));
+    const safeEntries: Array<[string, unknown]> = [];
+    const safeKeys = new Set<string>();
+    for (const [key, item] of Object.entries(value)) {
+      const safeKey = key.replaceAll(secret, "[REDACTED]");
+      if (safeKeys.has(safeKey)) {
+        throw new NativeGuardSecretScrubConflictError();
+      }
+      safeKeys.add(safeKey);
+      safeEntries.push([safeKey, scrubExactSecret(item, secret)]);
+    }
+    return Object.fromEntries(safeEntries);
   }
   return value;
+}
+
+export class NativeGuardSecretScrubConflictError extends Error {
+  readonly code = "NATIVE_GUARD_SECRET_SCRUB_CONFLICT";
+
+  constructor() {
+    super("Native guard evidence keys conflict after secret scrubbing.");
+    this.name = "NativeGuardSecretScrubConflictError";
+  }
 }
 
 const ACTIVATE_LEASE_SCHEMA = {

@@ -12,8 +12,8 @@ import {
   unlink,
   writeFile,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { basename, join, parse } from "node:path";
 import test from "node:test";
 import type { NativeGuardLeaseActivation } from "@agent-guard/contracts";
 import {
@@ -924,6 +924,84 @@ test("filesystem store rejects group or other writable POSIX directories and mar
   await store.write(marker());
   await chmod(join(markerDir, "lease.1.json"), 0o660);
   await assert.rejects(store.load(), /permissions|owner/i);
+});
+
+test("filesystem store rejects non-sticky writable POSIX ancestors but allows trusted ancestors", async (t) => {
+  if (process.platform === "win32" || typeof process.getuid !== "function") {
+    t.skip("POSIX ancestor mode bits are unavailable on this host");
+    return;
+  }
+  const insecureParent = await mkdtemp(join(tmpdir(), "agent-guard-parent-"));
+  await chmod(insecureParent, 0o777);
+  await assert.rejects(
+    new FileMarkerStore(join(insecureParent, "markers")).write(marker()),
+    /ancestor.*permissions/i,
+  );
+
+  const stickyParent = await mkdtemp(join(tmpdir(), "agent-guard-parent-"));
+  await chmod(stickyParent, 0o1777);
+  await new FileMarkerStore(join(stickyParent, "markers")).write(marker());
+
+  const secureParent = await mkdtemp(join(tmpdir(), "agent-guard-parent-"));
+  await chmod(secureParent, 0o755);
+  await new FileMarkerStore(join(secureParent, "markers")).write(marker());
+});
+
+test("Windows marker paths are anchored to OS-provided user roots", (t) => {
+  if (process.platform !== "win32") {
+    t.skip("Windows user-root policy is not used on this host");
+    return;
+  }
+  const outsideUserRoots = join(parse(homedir()).root, "agent-guard-untrusted-root", "markers");
+  assert.throws(() => new FileMarkerStore(outsideUserRoots), /user root/i);
+  assert.doesNotThrow(() => new FileMarkerStore(join(homedir(), ".agent-guard", "markers")));
+  assert.doesNotThrow(() => new FileMarkerStore(join(tmpdir(), "agent-guard-markers")));
+});
+
+test("filesystem store creates and syncs each fresh directory entry parent-to-child", async () => {
+  const base = await mkdtemp(join(tmpdir(), "agent-guard-marker-"));
+  const markerDir = join(base, "level-one", "level-two");
+  const events: string[] = [];
+  const store = new FileMarkerStore(markerDir, {
+    createDirectory: async (directory) => {
+      events.push(`mkdir:${basename(directory)}`);
+      await mkdir(directory, { mode: 0o700 });
+    },
+    rename: async (source, destination) => {
+      events.push("rename");
+      await rename(source, destination);
+    },
+    syncDirectory: async (directory) => {
+      events.push(`sync:${basename(directory)}`);
+    },
+  });
+
+  await store.write(marker());
+
+  assert.deepEqual(events, [
+    "mkdir:level-one",
+    `sync:${basename(base)}`,
+    "mkdir:level-two",
+    "sync:level-one",
+    "rename",
+    "sync:level-two",
+  ]);
+});
+
+test("fresh directory parent sync failure stops nested creation and marker writes", async () => {
+  const base = await mkdtemp(join(tmpdir(), "agent-guard-marker-"));
+  const markerDir = join(base, "level-one", "level-two");
+  const store = new FileMarkerStore(markerDir, {
+    createDirectory: async (directory) => mkdir(directory, { mode: 0o700 }),
+    syncDirectory: async () => {
+      throw new Error("parent directory sync failed");
+    },
+  });
+
+  await assert.rejects(store.write(marker()), /parent directory sync failed/);
+
+  assert.equal((await stat(join(base, "level-one"))).isDirectory(), true);
+  await assert.rejects(stat(markerDir), { code: "ENOENT" });
 });
 
 test("filesystem store syncs directory metadata after rename and remove", async () => {

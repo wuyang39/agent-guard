@@ -9,7 +9,8 @@ import {
   rename as fsRename,
   unlink as fsUnlink,
 } from "node:fs/promises";
-import { join, parse, resolve, sep } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import type {
   NativeGuardLeaseActivation,
   NativeGuardStatus,
@@ -32,6 +33,7 @@ export interface MarkerStore {
 }
 
 export type FileMarkerStoreHooks = {
+  createDirectory?: (directory: string) => Promise<void>;
   readMarker?: (path: string, size: number) => Promise<string>;
   rename?: (source: string, destination: string) => Promise<void>;
   unlink?: (path: string) => Promise<void>;
@@ -70,6 +72,7 @@ type ActiveRecord = {
 
 export class FileMarkerStore implements MarkerStore {
   readonly #directory: string;
+  readonly #createDirectory: NonNullable<FileMarkerStoreHooks["createDirectory"]>;
   readonly #readMarker: NonNullable<FileMarkerStoreHooks["readMarker"]>;
   readonly #rename: NonNullable<FileMarkerStoreHooks["rename"]>;
   readonly #unlink: NonNullable<FileMarkerStoreHooks["unlink"]>;
@@ -85,6 +88,8 @@ export class FileMarkerStore implements MarkerStore {
       throw new TypeError("Native guard marker directory is invalid");
     }
     this.#directory = resolve(directory);
+    assertWindowsUserRoot(this.#directory);
+    this.#createDirectory = hooks.createDirectory ?? createMarkerDirectory;
     this.#readMarker = hooks.readMarker ?? readMarkerFile;
     this.#rename = hooks.rename ?? fsRename;
     this.#unlink = hooks.unlink ?? fsUnlink;
@@ -123,7 +128,7 @@ export class FileMarkerStore implements MarkerStore {
   async write(marker: GuardedMarker): Promise<void> {
     const parsedMarker = parseMarker(marker);
     if (parsedMarker === undefined) throw new TypeError("Native guard marker is invalid");
-    await ensureSecureDirectory(this.#directory);
+    await ensureSecureDirectory(this.#directory, this.#createDirectory, this.#syncDirectory);
     const destination = join(this.#directory, markerFileName(parsedMarker.leaseId));
     await rejectSymlinkIfPresent(destination);
     const temporary = join(
@@ -793,30 +798,55 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
-async function ensureSecureDirectory(directory: string): Promise<void> {
-  await assertSecureExistingAncestors(directory);
-  let created = false;
-  if (!(await pathExists(directory))) {
-    await mkdir(directory, { recursive: true, mode: 0o700 });
-    created = true;
+async function ensureSecureDirectory(
+  directory: string,
+  createDirectory: NonNullable<FileMarkerStoreHooks["createDirectory"]>,
+  syncDirectory: NonNullable<FileMarkerStoreHooks["syncDirectory"]>,
+): Promise<void> {
+  const missingDirectories = await findMissingDirectories(directory);
+  for (const missingDirectory of missingDirectories) {
+    let created = true;
+    try {
+      await createDirectory(missingDirectory);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      created = false;
+    }
+    await assertSecureDirectory(missingDirectory);
+    if (created) {
+      await chmod(missingDirectory, 0o700);
+      await assertSecureDirectory(missingDirectory);
+    }
+    await syncDirectory(dirname(missingDirectory));
   }
   await assertSecureDirectory(directory);
-  if (created) {
-    await chmod(directory, 0o700);
-    await assertSecureDirectory(directory);
-  }
 }
 
-async function assertSecureExistingAncestors(directory: string): Promise<void> {
+async function findMissingDirectories(directory: string): Promise<string[]> {
   const root = parse(directory).root;
+  const rootMetadata = await lstat(root);
+  if (!rootMetadata.isDirectory() || rootMetadata.isSymbolicLink()) {
+    throw new Error("Native guard marker path root is unsafe");
+  }
+  assertTrustedPosixAncestor(rootMetadata);
   let current = root;
+  let foundMissing = false;
+  const missingDirectories: string[] = [];
   for (const segment of directory.slice(root.length).split(sep).filter(Boolean)) {
     current = join(current, segment);
+    if (foundMissing) {
+      missingDirectories.push(current);
+      continue;
+    }
     let metadata: Awaited<ReturnType<typeof lstat>>;
     try {
       metadata = await lstat(current);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        foundMissing = true;
+        missingDirectories.push(current);
+        continue;
+      }
       throw error;
     }
     if (metadata.isSymbolicLink()) {
@@ -825,7 +855,9 @@ async function assertSecureExistingAncestors(directory: string): Promise<void> {
     if (!metadata.isDirectory()) {
       throw new Error("Native guard marker path contains a non-directory ancestor");
     }
+    assertTrustedPosixAncestor(metadata);
   }
+  return missingDirectories;
 }
 
 async function assertSecureDirectory(directory: string): Promise<void> {
@@ -837,10 +869,38 @@ async function assertSecureDirectory(directory: string): Promise<void> {
     if (metadata.isSymbolicLink()) {
       throw new Error("Native guard marker path contains a symbolic link");
     }
+    if (!metadata.isDirectory()) {
+      throw new Error("Native guard marker path contains a non-directory ancestor");
+    }
+    assertTrustedPosixAncestor(metadata);
   }
   const metadata = await lstat(directory);
   if (!metadata.isDirectory()) throw new Error("Native guard marker path is not a directory");
   assertSecurePosixMetadata(metadata, "marker directory");
+}
+
+function assertTrustedPosixAncestor(metadata: Stats): void {
+  if (process.platform === "win32") return;
+  const writableByOthers = (metadata.mode & 0o022) !== 0;
+  const hasStickyBit = (metadata.mode & 0o1000) !== 0;
+  if (writableByOthers && !hasStickyBit) {
+    throw new Error("Native guard marker ancestor permissions are invalid");
+  }
+}
+
+async function createMarkerDirectory(directory: string): Promise<void> {
+  await mkdir(directory, { mode: 0o700 });
+}
+
+function assertWindowsUserRoot(directory: string): void {
+  if (process.platform !== "win32") return;
+  if (pathIsWithin(directory, homedir()) || pathIsWithin(directory, tmpdir())) return;
+  throw new TypeError("Native guard marker directory must be within an OS-provided user root");
+}
+
+function pathIsWithin(candidate: string, anchor: string): boolean {
+  const relation = relative(resolve(anchor), candidate);
+  return relation === "" || (!relation.startsWith("..") && !isAbsolute(relation));
 }
 
 async function rejectSymlinkIfPresent(path: string): Promise<void> {

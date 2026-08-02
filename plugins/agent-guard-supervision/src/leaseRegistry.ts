@@ -194,17 +194,47 @@ export class LeaseRegistry {
       this.#assertStarted();
       await this.#purgeExpired();
       const lease = parseActivation(input, this.#now());
-      if (this.#activeByLease.has(lease.leaseId) || this.#hasRecoveringLease(lease.leaseId)) {
+      if (this.#activeByLease.has(lease.leaseId)) {
         throw new Error("Native guard lease ID is already registered");
       }
-      if (this.#activeBySession.has(lease.rootSessionKey) || this.#recoveringBySession.has(lease.rootSessionKey)) {
+      if (this.#activeBySession.has(lease.rootSessionKey)) {
+        throw new Error("Native guard session is already registered");
+      }
+
+      const recovering = this.#recoveringBySession.get(lease.rootSessionKey);
+      if (recovering !== undefined && recovering.rootSessionKey === lease.rootSessionKey) {
+        if (
+          recovering.mode !== lease.mode ||
+          recovering.policyPackId !== lease.policyPackId ||
+          recovering.policyPackDigest !== lease.policyPackDigest ||
+          (recovering.leaseId !== lease.leaseId && this.#hasRecoveringLease(lease.leaseId))
+        ) {
+          throw new Error("Native guard recovery activation does not match the guarded marker");
+        }
+        const recoveredLease = withChildSessionKeys(lease, recovering.childSessionKeys);
+        await this.#markerStore.write(markerFromLease(recoveredLease));
+        if (recovering.leaseId !== recoveredLease.leaseId) {
+          try {
+            await this.#markerStore.remove(recovering.leaseId);
+          } catch (error) {
+            await this.#markerStore.remove(recoveredLease.leaseId).catch(() => undefined);
+            throw error;
+          }
+        }
+        this.#removeRecovering(recovering);
+        this.#addActive(recoveredLease, recovering.childSessionKeys);
+        return this.#statusWithoutExpiry();
+      }
+
+      if (this.#hasRecoveringLease(lease.leaseId)) {
+        throw new Error("Native guard lease ID is already registered");
+      }
+      if (recovering !== undefined || this.#recoveringBySession.has(lease.rootSessionKey)) {
         throw new Error("Native guard session is already registered");
       }
 
       await this.#markerStore.write(markerFromLease(lease));
-      const record = { lease, parentByChild: new Map<string, string>() };
-      this.#activeByLease.set(lease.leaseId, record);
-      this.#activeBySession.set(lease.rootSessionKey, record);
+      this.#addActive(lease);
       return this.#statusWithoutExpiry();
     });
   }
@@ -241,9 +271,9 @@ export class LeaseRegistry {
       const active = this.#activeByLease.get(leaseId);
       const recovering = this.#recoveringByLease.get(leaseId);
       if (active === undefined && recovering === undefined) return false;
+      await this.#markerStore.remove(leaseId);
       if (active !== undefined) this.#removeActive(active);
       if (recovering !== undefined) this.#removeRecovering(recovering);
-      await this.#markerStore.remove(leaseId);
       return true;
     });
   }
@@ -290,8 +320,8 @@ export class LeaseRegistry {
       const active = this.#activeBySession.get(sessionKey);
       if (active !== undefined) {
         if (sessionKey === active.lease.rootSessionKey) {
-          this.#removeActive(active);
           await this.#markerStore.remove(active.lease.leaseId);
+          this.#removeActive(active);
           return true;
         }
 
@@ -310,8 +340,8 @@ export class LeaseRegistry {
       const recovering = this.#recoveringBySession.get(sessionKey);
       if (recovering === undefined) return false;
       if (sessionKey === recovering.rootSessionKey) {
-        this.#removeRecovering(recovering);
         await this.#markerStore.remove(recovering.leaseId);
+        this.#removeRecovering(recovering);
         return true;
       }
       const marker = {
@@ -339,19 +369,20 @@ export class LeaseRegistry {
 
   #statusWithoutExpiry(): NativeGuardStatus {
     const activeRecords = [...this.#activeByLease.values()];
+    const hasRecovery = this.#recoveringByLease.size > 0;
     if (activeRecords.length === 0) {
       return {
-        coverage: this.#recoveringBySession.size > 0 ? "recovery" : "off",
+        coverage: hasRecovery ? "recovery" : "off",
         finalizerAssurance: "unverified",
         activeLeaseCount: 0,
       };
     }
     const status: NativeGuardStatus = {
-      coverage: "active",
+      coverage: hasRecovery ? "recovery" : "active",
       finalizerAssurance: "unverified",
       activeLeaseCount: activeRecords.length,
     };
-    if (activeRecords.length === 1) {
+    if (activeRecords.length === 1 && !hasRecovery) {
       const lease = activeRecords[0].lease;
       status.activeLease = {
         leaseId: lease.leaseId,
@@ -401,6 +432,19 @@ export class LeaseRegistry {
     this.#activeBySession.delete(record.lease.rootSessionKey);
     for (const childSessionKey of record.lease.childSessionKeys) {
       this.#activeBySession.delete(childSessionKey);
+    }
+  }
+
+  #addActive(lease: ActiveLeaseLookup, childSessionKeys: readonly string[] = []): void {
+    const parentByChild = new Map<string, string>();
+    for (const childSessionKey of childSessionKeys) {
+      parentByChild.set(childSessionKey, lease.rootSessionKey);
+    }
+    const record = { lease, parentByChild };
+    this.#activeByLease.set(lease.leaseId, record);
+    this.#activeBySession.set(lease.rootSessionKey, record);
+    for (const childSessionKey of lease.childSessionKeys) {
+      this.#activeBySession.set(childSessionKey, record);
     }
   }
 
@@ -558,13 +602,18 @@ function validDecisionUrl(value: unknown): boolean {
   if (typeof value !== "string") return false;
   try {
     const url = new URL(value);
+    const hostname = url.hostname.toLowerCase();
+    const port = url.port === "" ? 80 : Number(url.port);
     return url.protocol === "http:" &&
-      (url.hostname === "127.0.0.1" || url.hostname === "[::1]") &&
+      ["127.0.0.1", "localhost", "[::1]"].includes(hostname) &&
       url.pathname === DECISION_PATH &&
       url.username === "" &&
       url.password === "" &&
       url.search === "" &&
-      url.hash === "";
+      url.hash === "" &&
+      Number.isSafeInteger(port) &&
+      port >= 1 &&
+      port <= 65_535;
   } catch {
     return false;
   }

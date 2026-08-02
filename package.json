@@ -12,7 +12,7 @@
     "demo:web": "node scripts/demo-web-server.mjs",
     "demo:sample-agent": "node scripts/sample-agent-server.mjs",
     "desktop": "electron desktop/main.cjs",
-    "build:desktop": "npm run build:frontend && electron-builder --win portable",
+    "build:desktop": "npm run build:frontend && npm run build:openclaw-plugin && electron-builder --win portable",
     "build:exe": "npm run build:desktop",
     "api:c": "node --import tsx backend/src/server.ts",
     "frontend": "vite --config frontend/vite.config.ts",

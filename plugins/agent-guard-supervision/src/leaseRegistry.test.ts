@@ -18,8 +18,10 @@ class MemoryMarkerStore implements MarkerStore {
   readonly markers = new Map<string, unknown>();
   writes: GuardedMarker[] = [];
   removes: string[] = [];
+  removeAttempts: string[] = [];
   failWrite = false;
   failRemove = false;
+  readonly failRemoveLeaseIds = new Set<string>();
 
   constructor(markers: unknown[] = []) {
     for (const marker of markers) {
@@ -41,7 +43,8 @@ class MemoryMarkerStore implements MarkerStore {
   }
 
   async remove(leaseId: string): Promise<void> {
-    if (this.failRemove) throw new Error("marker remove failed");
+    this.removeAttempts.push(leaseId);
+    if (this.failRemove || this.failRemoveLeaseIds.has(leaseId)) throw new Error("marker remove failed");
     this.removes.push(leaseId);
     this.markers.delete(leaseId);
   }
@@ -211,6 +214,104 @@ test("activation marker failure leaves the registry OFF", async () => {
   });
 });
 
+test("activation accepts the canonical localhost decision endpoint", async () => {
+  const registry = new LeaseRegistry({
+    markerStore: new MemoryMarkerStore(),
+    now: () => new Date(NOW),
+  });
+  await registry.start();
+
+  await registry.activate(activation({
+    backendUrl: "http://localhost:3100/api/v1/openclaw/native-guard/decision",
+  }));
+
+  assert.equal((await registry.lookup("agent:guard:root.1")).state, "active");
+});
+
+test("activation reactivates a matching recovery marker with the same lease ID and children", async () => {
+  const store = new MemoryMarkerStore([marker({
+    childSessionKeys: ["agent:guard:child.2", "agent:guard:child.1"],
+  })]);
+  const registry = new LeaseRegistry({ markerStore: store, now: () => new Date(NOW) });
+  await registry.start();
+
+  await registry.activate(activation());
+
+  const root = await registry.lookup("agent:guard:root.1");
+  assert.equal(root.state, "active");
+  if (root.state === "active") {
+    assert.equal(root.credential, "credential.1");
+    assert.deepEqual(root.childSessionKeys, ["agent:guard:child.1", "agent:guard:child.2"]);
+  }
+  assert.equal((await registry.lookup("agent:guard:child.1")).state, "active");
+  assert.deepEqual(store.removeAttempts, []);
+  assert.deepEqual(store.writes.at(-1), marker({
+    childSessionKeys: ["agent:guard:child.1", "agent:guard:child.2"],
+  }));
+});
+
+test("activation rekeys matching recovery only after writing new and removing old marker", async () => {
+  const store = new MemoryMarkerStore([marker({ childSessionKeys: ["agent:guard:child"] })]);
+  const registry = new LeaseRegistry({ markerStore: store, now: () => new Date(NOW) });
+  await registry.start();
+
+  await registry.activate(activation({ leaseId: "lease.new" }));
+
+  const child = await registry.lookup("agent:guard:child");
+  assert.equal(child.state, "active");
+  if (child.state === "active") assert.equal(child.leaseId, "lease.new");
+  assert.deepEqual(store.removeAttempts, ["lease.1"]);
+  assert.equal(store.markers.has("lease.1"), false);
+  assert.equal(store.markers.has("lease.new"), true);
+});
+
+test("recovery reactivation rejects policy identity mismatches without marker changes", async () => {
+  const mismatches = [
+    activation({ mode: "detection" }),
+    activation({ policyPackId: "policy.other" }),
+    activation({ policyPackDigest: "b".repeat(64) }),
+  ];
+  for (const candidate of mismatches) {
+    const store = new MemoryMarkerStore([marker()]);
+    const registry = new LeaseRegistry({ markerStore: store, now: () => new Date(NOW) });
+    await registry.start();
+
+    await assert.rejects(registry.activate(candidate));
+
+    assert.equal((await registry.lookup("agent:guard:root.1")).state, "recovery");
+    assert.equal(store.writes.length, 0);
+    assert.equal(store.removeAttempts.length, 0);
+  }
+});
+
+test("recovery reactivation write failure preserves recovery state", async () => {
+  const store = new MemoryMarkerStore([marker({ childSessionKeys: ["agent:guard:child"] })]);
+  store.failWrite = true;
+  const registry = new LeaseRegistry({ markerStore: store, now: () => new Date(NOW) });
+  await registry.start();
+
+  await assert.rejects(registry.activate(activation()), /marker write failed/);
+
+  assert.equal((await registry.lookup("agent:guard:root.1")).state, "recovery");
+  assert.equal((await registry.lookup("agent:guard:child")).state, "recovery");
+  assert.equal((await registry.status()).activeLeaseCount, 0);
+});
+
+test("rekey remove failure deletes the new marker best-effort and preserves recovery", async () => {
+  const store = new MemoryMarkerStore([marker({ childSessionKeys: ["agent:guard:child"] })]);
+  store.failRemoveLeaseIds.add("lease.1");
+  const registry = new LeaseRegistry({ markerStore: store, now: () => new Date(NOW) });
+  await registry.start();
+
+  await assert.rejects(registry.activate(activation({ leaseId: "lease.new" })), /marker remove failed/);
+
+  assert.equal((await registry.lookup("agent:guard:root.1")).state, "recovery");
+  assert.equal((await registry.lookup("agent:guard:child")).state, "recovery");
+  assert.deepEqual(store.removeAttempts, ["lease.1", "lease.new"]);
+  assert.equal(store.markers.has("lease.1"), true);
+  assert.equal(store.markers.has("lease.new"), false);
+});
+
 test("renew requires a greater epoch and rotated credential then replaces active state", async () => {
   let nowMs = Date.parse(NOW);
   const store = new MemoryMarkerStore();
@@ -289,6 +390,37 @@ test("explicit revoke deletes the marker, turns sessions OFF, and is idempotent"
 
   assert.deepEqual(await registry.lookup("agent:guard:root.1"), { state: "off" });
   assert.deepEqual(store.removes, ["lease.1"]);
+});
+
+test("active revoke remove failure preserves active state until retry succeeds", async () => {
+  const store = new MemoryMarkerStore();
+  const registry = new LeaseRegistry({ markerStore: store, now: () => new Date(NOW) });
+  await registry.start();
+  await registry.activate(activation());
+  store.failRemoveLeaseIds.add("lease.1");
+
+  await assert.rejects(registry.revoke("lease.1"), /marker remove failed/);
+
+  assert.equal((await registry.lookup("agent:guard:root.1")).state, "active");
+  assert.equal((await registry.status()).activeLeaseCount, 1);
+  store.failRemoveLeaseIds.clear();
+  assert.equal(await registry.revoke("lease.1"), true);
+  assert.deepEqual(await registry.lookup("agent:guard:root.1"), { state: "off" });
+});
+
+test("recovery revoke remove failure preserves recovery state until retry succeeds", async () => {
+  const store = new MemoryMarkerStore([marker()]);
+  const registry = new LeaseRegistry({ markerStore: store, now: () => new Date(NOW) });
+  await registry.start();
+  store.failRemoveLeaseIds.add("lease.1");
+
+  await assert.rejects(registry.revoke("lease.1"), /marker remove failed/);
+
+  assert.equal((await registry.lookup("agent:guard:root.1")).state, "recovery");
+  assert.equal((await registry.status()).coverage, "recovery");
+  store.failRemoveLeaseIds.clear();
+  assert.equal(await registry.revoke("lease.1"), true);
+  assert.deepEqual(await registry.lookup("agent:guard:root.1"), { state: "off" });
 });
 
 test("expiry on lookup transitions active lease OFF and deletes its marker", async () => {
@@ -386,6 +518,35 @@ test("ending the root revokes the lease and deletes its marker", async () => {
   assert.deepEqual(store.removes, ["lease.1"]);
 });
 
+test("ending an active root preserves active state when marker removal fails", async () => {
+  const store = new MemoryMarkerStore();
+  const registry = new LeaseRegistry({ markerStore: store, now: () => new Date(NOW) });
+  await registry.start();
+  await registry.activate(activation());
+  store.failRemoveLeaseIds.add("lease.1");
+
+  await assert.rejects(registry.endSession("agent:guard:root.1"), /marker remove failed/);
+
+  assert.equal((await registry.lookup("agent:guard:root.1")).state, "active");
+  store.failRemoveLeaseIds.clear();
+  assert.equal(await registry.endSession("agent:guard:root.1"), true);
+  assert.deepEqual(await registry.lookup("agent:guard:root.1"), { state: "off" });
+});
+
+test("ending a recovery root preserves recovery state when marker removal fails", async () => {
+  const store = new MemoryMarkerStore([marker()]);
+  const registry = new LeaseRegistry({ markerStore: store, now: () => new Date(NOW) });
+  await registry.start();
+  store.failRemoveLeaseIds.add("lease.1");
+
+  await assert.rejects(registry.endSession("agent:guard:root.1"), /marker remove failed/);
+
+  assert.equal((await registry.lookup("agent:guard:root.1")).state, "recovery");
+  store.failRemoveLeaseIds.clear();
+  assert.equal(await registry.endSession("agent:guard:root.1"), true);
+  assert.deepEqual(await registry.lookup("agent:guard:root.1"), { state: "off" });
+});
+
 test("multiple independent session trees report a truthful count without singular detail", async () => {
   const store = new MemoryMarkerStore();
   const registry = new LeaseRegistry({ markerStore: store, now: () => new Date(NOW) });
@@ -402,6 +563,27 @@ test("multiple independent session trees report a truthful count without singula
     finalizerAssurance: "unverified",
     activeLeaseCount: 2,
   });
+});
+
+test("any recovery marker dominates mixed coverage and suppresses singular active detail", async () => {
+  const registry = new LeaseRegistry({
+    markerStore: new MemoryMarkerStore([marker()]),
+    now: () => new Date(NOW),
+  });
+  await registry.start();
+  await registry.activate(activation({
+    leaseId: "lease.active",
+    rootSessionKey: "agent:guard:active-root",
+    credential: "credential.active",
+  }));
+
+  assert.deepEqual(await registry.status(), {
+    coverage: "recovery",
+    finalizerAssurance: "unverified",
+    activeLeaseCount: 1,
+  });
+  assert.equal((await registry.lookup("agent:guard:active-root")).state, "active");
+  assert.equal((await registry.lookup("agent:guard:root.1")).state, "recovery");
 });
 
 test("serialized writes cannot resurrect a marker after a queued revoke", async () => {
@@ -464,6 +646,34 @@ test("filesystem store writes a sanitized atomic marker with restrictive permiss
     assert.equal((await stat(path)).mode & 0o777, 0o600);
   }
 
+  const restarted = new LeaseRegistry({
+    markerStore: new FileMarkerStore(markerDir),
+    now: () => new Date(NOW),
+  });
+  await restarted.start();
+  assert.equal((await restarted.lookup("agent:guard:root.1")).state, "recovery");
+});
+
+test("filesystem store atomically replaces the same lease marker during renew", async () => {
+  const markerDir = await mkdtemp(join(tmpdir(), "agent-guard-marker-"));
+  const registry = new LeaseRegistry({
+    markerStore: new FileMarkerStore(markerDir),
+    now: () => new Date(NOW),
+  });
+  await registry.start();
+  await registry.activate(activation());
+
+  await registry.renew(activation({
+    leaseEpoch: 2,
+    credential: "credential.2",
+    expiresAt: "2026-08-02T00:06:00.000Z",
+  }));
+
+  assert.deepEqual(await readdir(markerDir), ["lease.1.json"]);
+  assert.deepEqual(
+    JSON.parse(await readFile(join(markerDir, "lease.1.json"), "utf8")),
+    marker({ expiresAt: "2026-08-02T00:06:00.000Z" }),
+  );
   const restarted = new LeaseRegistry({
     markerStore: new FileMarkerStore(markerDir),
     now: () => new Date(NOW),
@@ -590,4 +800,16 @@ test("runtime remains exact OFF without marker I/O until explicitly started", as
     activeLeaseCount: 0,
   });
   assert.equal(calls, 0);
+});
+
+test("desktop packaging builds the ignored OpenClaw bundle before electron-builder", async () => {
+  const rootPackage = JSON.parse(
+    await readFile(new URL("../../../package.json", import.meta.url), "utf8"),
+  ) as { scripts?: Record<string, string> };
+  const buildDesktop = rootPackage.scripts?.["build:desktop"] ?? "";
+
+  assert.match(buildDesktop, /npm run build:openclaw-plugin/);
+  assert.ok(
+    buildDesktop.indexOf("npm run build:openclaw-plugin") < buildDesktop.indexOf("electron-builder"),
+  );
 });

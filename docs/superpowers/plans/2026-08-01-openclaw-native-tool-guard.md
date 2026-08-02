@@ -1306,10 +1306,26 @@ git commit -m "feat: enforce signed native tool decisions"
 ### Task 10: Outcome Reporting And Bounded Spool
 
 **Files:**
+- Modify: `packages/contracts/src/types/nativeGuard.ts`
+- Modify: `backend/src/modules/openclaw/nativeGuardLeaseService.ts`
+- Modify: `backend/src/modules/openclaw/nativeGuardLeaseService.test.ts`
+- Modify: `backend/src/modules/openclaw/nativeToolDecisionService.ts`
+- Modify: `backend/src/modules/openclaw/openclawControlClient.test.ts`
+- Modify: `backend/src/api/v1/openclaw/native-guard-handlers.ts`
+- Modify: `backend/src/api/v1/openclaw/native-guard-handlers.test.ts`
+- Modify: `backend/src/storage/nativeGuardEventStore.ts`
+- Modify: `backend/src/storage/nativeGuardEventStore.test.ts`
 - Create: `plugins/agent-guard-supervision/src/eventSpool.ts`
 - Create: `plugins/agent-guard-supervision/src/eventSpool.test.ts`
+- Create: `plugins/agent-guard-supervision/src/lifecycleClient.ts`
+- Modify: `plugins/agent-guard-supervision/src/leaseRegistry.ts`
+- Modify: `plugins/agent-guard-supervision/src/leaseRegistry.test.ts`
+- Modify: `plugins/agent-guard-supervision/src/controlRoutes.ts`
+- Modify: `plugins/agent-guard-supervision/src/controlRoutes.test.ts`
 - Modify: `plugins/agent-guard-supervision/src/runtime.ts`
-- Modify: `plugins/agent-guard-supervision/src/index.ts`
+- Modify: `plugins/agent-guard-supervision/src/runtime.test.ts`
+- Modify: `plugins/agent-guard-supervision/openclaw.plugin.json`
+- Modify: `package.json`
 
 - [ ] **Step 1: Write failing spool and outcome tests**
 
@@ -1322,6 +1338,11 @@ Tests must verify:
 - maximum is 10,000 events or 50 MiB;
 - deny, approval and error events survive eviction before ordinary successful outcomes;
 - after Hook for OFF produces zero events and zero filesystem writes.
+- decision and evidence credentials are separate, rotate together, and cannot cross auth domains;
+- current evidence identity can retry old-epoch evidence without changing the event identity;
+- ended child bindings remain evidence-only for the lease lifetime and cannot authorize decisions;
+- child bind/end failures durably block the whole lease and replay after restart;
+- new events require top-level `leaseEpoch`, while valid legacy detail epochs migrate atomically.
 
 - [ ] **Step 2: Run tests and verify failure**
 
@@ -1333,11 +1354,21 @@ Expected: FAIL with missing module.
 
 Use one JSONL file plus an atomic metadata file under the configured spool directory. Serialize enqueue/ack/compact operations. Store only sanitized events. Retry batches of at most 100 with exponential delays capped at 30 seconds and stop all retries when the lease is revoked or Gateway stops.
 
-- [ ] **Step 4: Register `after_tool_call`**
+The spool must cap batches at 900 KiB as well as 100 events, reject unsafe paths/symlinks/corrupt tails, preserve high-value evidence under the 10,000-event/50-MiB bound, and keep credentials out of data and metadata. Result projection must be deterministic and bounded for circular or exotic values without invoking getters or Proxy traps.
+
+- [ ] **Step 4: Split evidence auth and make session lifecycle durable**
+
+Issue separate random decision and evidence credentials and store only their hashes. Rotate both on renewal. Add evidence-only `/lifecycle/bind-child` and `/lifecycle/end-session` backend routes plus an exact loopback client with redirect, abort, timeout and response bounds.
+
+Persist a lease-wide lifecycle intent before backend bind/end synchronization and clear it only after the local marker commit. While an intent exists, return `lifecycle_pending` for every session in the lease and block every tool with the stable lifecycle-pending reason. Replay the intent after restart. Keep ended child bindings only as lease-lifetime evidence history; decisions must require live bindings.
+
+- [ ] **Step 5: Register `after_tool_call`**
 
 Build `tool_outcome` with `toolCallId`, run/session/lease IDs, final params digest, error, duration, result digest and sanitized preview. Upload asynchronously through the spool without changing the completed tool result.
 
-- [ ] **Step 5: Run plugin tests and build**
+Every new event carries a required top-level `leaseEpoch`. The backend store and plugin spool may migrate a safe legacy `detail.leaseEpoch` to the top level with an atomic rewrite, but must reject missing or unsafe legacy epochs.
+
+- [ ] **Step 6: Run backend, plugin tests and build**
 
 Update `test:native-guard:plugin` to the final explicit list:
 
@@ -1345,14 +1376,14 @@ Update `test:native-guard:plugin` to the final explicit list:
 "test:native-guard:plugin": "node --import tsx --test plugins/agent-guard-supervision/src/leaseRegistry.test.ts plugins/agent-guard-supervision/src/controlRoutes.test.ts plugins/agent-guard-supervision/src/runtime.test.ts plugins/agent-guard-supervision/src/eventSpool.test.ts"
 ```
 
-Run: `npm run test:native-guard:plugin && npm run build:openclaw-plugin`
+Run the Task 4-6 backend aggregate, then: `npm run test:native-guard:plugin && npm run typecheck && npm run typecheck:openclaw-plugin && npm run build:openclaw-plugin`
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add plugins/agent-guard-supervision
+git add packages/contracts/src/types/nativeGuard.ts backend/src/modules/openclaw backend/src/api/v1/openclaw/native-guard-handlers.ts backend/src/api/v1/openclaw/native-guard-handlers.test.ts backend/src/storage/nativeGuardEventStore.ts backend/src/storage/nativeGuardEventStore.test.ts plugins/agent-guard-supervision package.json docs/superpowers/specs/2026-08-01-openclaw-native-tool-guard-design.md docs/superpowers/plans/2026-08-01-openclaw-native-tool-guard.md
 git commit -m "feat: spool native tool outcome evidence"
 ```
 

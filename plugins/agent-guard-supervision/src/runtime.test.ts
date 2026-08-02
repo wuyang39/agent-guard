@@ -17,8 +17,9 @@ import type { BeforeResult, ToolContext, ToolEvent } from "openclaw/plugin-sdk/p
 import { createNativeGuardLeaseService } from "../../../backend/src/modules/openclaw/nativeGuardLeaseService";
 import { createNativeToolDecisionService } from "../../../backend/src/modules/openclaw/nativeToolDecisionService";
 import { createDecisionClient } from "./decisionClient";
-import type { GuardedMarker, MarkerStore } from "./leaseRegistry";
+import type { ActiveLeaseLookup, GuardedMarker, MarkerStore } from "./leaseRegistry";
 import { AgentGuardRuntime } from "./runtime";
+import { createLifecycleClient } from "./lifecycleClient";
 
 const NOW = "2026-08-02T10:00:00.000Z";
 const MAX_PARAM_BYTES = 256 * 1024;
@@ -53,6 +54,129 @@ test("OFF returns without fetch, events, writes, approvals, blocks, or parameter
   assert.equal(fetchCalls, 0);
   assert.deepEqual(events, []);
   assert.equal(store.writes.length, 0);
+});
+
+test("lifecycle client derives only the exact loopback bind path and uses evidence identity", async () => {
+  let observedUrl = "";
+  let observedAuthorization = "";
+  const client = createLifecycleClient({
+    fetch: async (input, init) => {
+      observedUrl = String(input);
+      observedAuthorization = String((init?.headers as Record<string, string>).Authorization);
+      return jsonResponse(JSON.stringify({
+        ok: true,
+        data: { bound: true },
+        requestId: "lifecycle-request",
+      }));
+    },
+  });
+  const lease = lifecycleLease();
+
+  await client.bindChild(lease, {
+    leaseId: lease.leaseId,
+    leaseEpoch: lease.leaseEpoch,
+    parentSessionKey: lease.rootSessionKey,
+    childSessionKey: "agent:child",
+  }, new AbortController().signal);
+
+  assert.equal(
+    observedUrl,
+    "http://127.0.0.1:3100/api/v1/openclaw/native-guard/lifecycle/bind-child",
+  );
+  assert.equal(observedAuthorization, "Bearer evidence-credential-secret");
+});
+
+test("lifecycle client rejects non-loopback, wrong decision path, redirects, and oversized bodies", async () => {
+  let fetchCalls = 0;
+  const client = createLifecycleClient({
+    fetch: async () => {
+      fetchCalls += 1;
+      const response = jsonResponse("{}", 302);
+      Object.defineProperty(response, "redirected", { value: true });
+      return response;
+    },
+  });
+  const base = lifecycleLease();
+  for (const backendUrl of [
+    "http://example.com/api/v1/openclaw/native-guard/decision",
+    "http://127.0.0.1:3100/api/v1/openclaw/native-guard/events/batch",
+  ]) {
+    await assert.rejects(client.bindChild({ ...base, backendUrl }, {
+      leaseId: base.leaseId,
+      leaseEpoch: 1,
+      parentSessionKey: base.rootSessionKey,
+      childSessionKey: "agent:child",
+    }, new AbortController().signal), /lifecycle synchronization failed/);
+  }
+  await assert.rejects(client.bindChild(base, {
+    leaseId: base.leaseId,
+    leaseEpoch: 1,
+    parentSessionKey: base.rootSessionKey,
+    childSessionKey: "x".repeat(20 * 1024),
+  }, new AbortController().signal), /lifecycle synchronization failed/);
+  await assert.rejects(client.bindChild(base, {
+    leaseId: base.leaseId,
+    leaseEpoch: 1,
+    parentSessionKey: base.rootSessionKey,
+    childSessionKey: "agent:child",
+  }, new AbortController().signal), /lifecycle synchronization failed/);
+  assert.equal(fetchCalls, 1);
+});
+
+test("lifecycle timeout and host abort cover a stalled response body and clean listeners", async () => {
+  const host = observedAbortSignal();
+  let bodyCancelled = 0;
+  const client = createLifecycleClient({
+    timeoutMs: 20,
+    fetch: async () => new Response(new ReadableStream({
+      pull() { return new Promise(() => undefined); },
+      cancel() { bodyCancelled += 1; },
+    }), { headers: { "content-type": "application/json" } }),
+  });
+  const lease = lifecycleLease();
+  const pending = client.endSession(lease, {
+    leaseId: lease.leaseId,
+    leaseEpoch: 1,
+    sessionKey: lease.rootSessionKey,
+  }, host.signal);
+
+  await assert.rejects(pending, /lifecycle synchronization failed/);
+  assert.equal(bodyCancelled, 1);
+  assert.deepEqual(host.listenerCounts(), { added: 1, removed: 1 });
+
+  const alreadyAborted = new AbortController();
+  alreadyAborted.abort();
+  await assert.rejects(client.endSession(lease, {
+    leaseId: lease.leaseId,
+    leaseEpoch: 1,
+    sessionKey: lease.rootSessionKey,
+  }, alreadyAborted.signal), /lifecycle synchronization failed/);
+});
+
+test("lifecycle response bounds fail with a secret-free error", async () => {
+  const lease = lifecycleLease();
+  const client = createLifecycleClient({
+    fetch: async () => new Response("x", {
+      headers: {
+        "content-type": "application/json",
+        "content-length": String(65 * 1024),
+      },
+    }),
+  });
+  let caught: unknown;
+  try {
+    await client.bindChild(lease, {
+      leaseId: lease.leaseId,
+      leaseEpoch: 1,
+      parentSessionKey: lease.rootSessionKey,
+      childSessionKey: "agent:child",
+    }, new AbortController().signal);
+  } catch (error) {
+    caught = error;
+  }
+  assert.ok(caught instanceof Error);
+  assert.equal(caught.message.includes(lease.evidenceCredential), false);
+  assert.match(caught.message, /lifecycle synchronization failed/);
 });
 
 test("ACTIVE maps a valid signed deny to the stable policy block", async () => {
@@ -578,6 +702,7 @@ test("an attested host recheck keeps a pending approval stale after renewal", as
   await fixture.runtime.renew(fixture.activation({
     leaseEpoch: 2,
     credential: "rotated-credential",
+    evidenceCredential: "rotated-evidence-credential",
   }));
 
   await result?.requireApproval?.onResolution?.("allow-once");
@@ -955,29 +1080,20 @@ test("a signed allow released after host cancellation cannot pass or emit", asyn
   assert.deepEqual(fixture.events, []);
 });
 
-test("host cancellation during a local parameter outage is not reported as runtime stop", async () => {
+test("invalid local params fail closed without fabricated decision evidence", async () => {
   const host = observedAbortSignal();
-  const emitStarted = deferred<void>();
-  const releaseEmit = deferred<void>();
   const fixture = await activeFixture({
     action: "allow",
-    emitEvent: async () => {
-      emitStarted.resolve();
-      await releaseEmit.promise;
-    },
   });
-  const pending = fixture.runtime.beforeToolCall(
+  const result = await fixture.runtime.beforeToolCall(
     { ...execEvent(), params: paramsAtDepth(MAX_PARAM_DEPTH + 1) },
     { ...execContext(), abortSignal: host.signal },
   );
-  await emitStarted.promise;
 
-  host.abort();
-  releaseEmit.resolve();
-
-  assert.deepEqual(await pending, HOST_CANCELLED);
+  assert.deepEqual(result, DENY_OUTAGE);
   assert.deepEqual(host.listenerCounts(), { added: 1, removed: 1 });
   assert.equal(fixture.fetchCalls(), 0);
+  assert.deepEqual(fixture.events, []);
 });
 
 test("OFF does not subscribe to a host tool cancellation signal", async () => {
@@ -1029,6 +1145,118 @@ test("RECOVERY passes only an explicit exact low-risk tool without network or ev
   assert.equal(result, undefined);
   assert.equal(fetchCalls, 0);
   assert.deepEqual(events, []);
+});
+
+test("durable lifecycle intent blocks even exact low-risk tools across restart", async () => {
+  let fetchCalls = 0;
+  const runtime = new AgentGuardRuntime({
+    markerStore: memoryMarkerStore([{
+      leaseId: "lease.1",
+      rootSessionKey: "agent:main",
+      childSessionKeys: [],
+      mode: "supervision",
+      policyPackId: "pack.1",
+      policyPackDigest: "b".repeat(64),
+      expiresAt: "2026-08-02T10:05:00.000Z",
+      lifecycleIntent: {
+        kind: "bind_child",
+        parentSessionKey: "agent:main",
+        childSessionKey: "agent:child",
+      },
+    }]),
+    now: () => new Date(NOW),
+    fetch: async () => {
+      fetchCalls += 1;
+      throw new Error("must not fetch while lifecycle is pending");
+    },
+  });
+
+  assert.deepEqual(await runtime.beforeToolCall(lowRiskEvent(), lowRiskContext()), {
+    block: true,
+    blockReason: "[Agent Guard:NATIVE_GUARD_LIFECYCLE_PENDING] Native guard lifecycle synchronization is pending.",
+  });
+  assert.equal(fetchCalls, 0);
+});
+
+test("backend bind failure persists a blocking intent that replays after restart", async () => {
+  const store = memoryMarkerStore();
+  const activationWithEvidence = activation({
+    evidenceCredential: "evidence-credential",
+  } as Partial<NativeGuardLeaseActivation>);
+  const first = new AgentGuardRuntime({
+    markerStore: store,
+    now: () => new Date(NOW),
+    lifecycleClient: {
+      async bindChild() { throw new Error("backend bind unavailable"); },
+      async endSession() { throw new Error("not used"); },
+    },
+  } as never);
+  first.finalizeRegistrationAttestation(true);
+  await first.start();
+  await first.activate(activationWithEvidence);
+
+  await assert.rejects(first.bindChild(
+    "lease.1",
+    "agent:main",
+    "agent:child",
+  ), /lifecycle|bind/i);
+  assert.equal((await first.lookup("agent:main")).state, "lifecycle_pending");
+  assert.equal((await first.lookup("agent:child")).state, "lifecycle_pending");
+  assert.deepEqual(await first.beforeToolCall(
+    { toolName: "session_status", params: {}, toolCallId: "call.pending" },
+    { toolName: "session_status", sessionKey: "agent:child", toolCallId: "call.pending" },
+  ), {
+    block: true,
+    blockReason: "[Agent Guard:NATIVE_GUARD_LIFECYCLE_PENDING] Native guard lifecycle synchronization is pending.",
+  });
+  await first.stop();
+
+  let replayCalls = 0;
+  const restarted = new AgentGuardRuntime({
+    markerStore: store,
+    now: () => new Date(NOW),
+    lifecycleClient: {
+      async bindChild() { replayCalls += 1; },
+      async endSession() { throw new Error("not used"); },
+    },
+  } as never);
+  restarted.finalizeRegistrationAttestation(true);
+  await restarted.start();
+  assert.equal((await restarted.lookup("agent:main")).state, "lifecycle_pending");
+  await restarted.activate(activationWithEvidence);
+  assert.equal(replayCalls, 1);
+  assert.equal((await restarted.lookup("agent:child")).state, "active");
+  await restarted.stop();
+});
+
+test("backend end failure leaves the whole lease lifecycle-pending instead of active or OFF", async () => {
+  const store = memoryMarkerStore();
+  let failEnd = true;
+  const runtime = new AgentGuardRuntime({
+    markerStore: store,
+    now: () => new Date(NOW),
+    lifecycleClient: {
+      async bindChild() { return; },
+      async endSession() {
+        if (failEnd) throw new Error("backend end unavailable");
+      },
+    },
+  } as never);
+  runtime.finalizeRegistrationAttestation(true);
+  await runtime.start();
+  await runtime.activate(activation({
+    evidenceCredential: "evidence-credential",
+  } as Partial<NativeGuardLeaseActivation>));
+  await runtime.bindChild("lease.1", "agent:main", "agent:child");
+
+  await assert.rejects(runtime.endSession("agent:child"), /lifecycle|end/i);
+  assert.equal((await runtime.lookup("agent:main")).state, "lifecycle_pending");
+  assert.equal((await runtime.lookup("agent:child")).state, "lifecycle_pending");
+  failEnd = false;
+  assert.equal(await runtime.endSession("agent:child"), true);
+  assert.equal((await runtime.lookup("agent:main")).state, "active");
+  assert.deepEqual(await runtime.lookup("agent:child"), { state: "off" });
+  await runtime.stop();
 });
 
 test("ACTIVE low-risk outage follows immutable allow failure policy", async () => {
@@ -1103,6 +1331,7 @@ test("a renewal during the PDP request invalidates the old signed allow", async 
   await fixture.runtime.renew(fixture.activation({
     leaseEpoch: 2,
     credential: "rotated-credential",
+    evidenceCredential: "rotated-evidence-credential",
   }));
   release?.(await fixture.responseFor(execEvent()));
 
@@ -1322,8 +1551,17 @@ function activation(overrides: Partial<NativeGuardLeaseActivation> = {}): Native
     issuedAt: "2026-08-02T09:59:59.000Z",
     expiresAt: "2026-08-02T10:05:00.000Z",
     credential: "credential-secret",
+    evidenceCredential: "evidence-credential-secret",
     ...overrides,
   };
+}
+
+function lifecycleLease(): ActiveLeaseLookup {
+  return Object.freeze({
+    ...activation(),
+    state: "active" as const,
+    childSessionKeys: Object.freeze([] as string[]),
+  });
 }
 
 function servicePolicyPack(

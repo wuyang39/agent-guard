@@ -66,22 +66,35 @@ export function registerAgentGuardPlugin(
   api: AgentGuardPluginApi,
 ): AgentGuardRuntime {
   const markerDir = parseMarkerDir(api.pluginConfig);
+  const spoolDir = parseSpoolDir(api.pluginConfig);
   const runtime = new AgentGuardRuntime({
     ...(markerDir === undefined ? {} : { markerDir }),
+    ...(spoolDir === undefined ? {} : { spoolDir }),
     sessionResolver: (params) => api.runtime.agent.session.getSessionEntry(params),
   });
   // Only a future explicit `true` means the host guarantees this contribution is live.
-  const contributions = [
-    isLiveContribution(api.on(
-      "before_tool_call",
-      (event, context) => runtime.beforeToolCall(event, context),
-      { priority: -1_000_000, timeoutMs: 5_000 },
-    )),
-    ...registerAgentGuardLifecycle(api, runtime),
-    ...registerControlRoutes(api, runtime),
-  ];
-  runtime.finalizeRegistrationAttestation(contributions.every(Boolean));
-  return runtime;
+  try {
+    const contributions = [
+      isLiveContribution(api.on(
+        "before_tool_call",
+        (event, context) => runtime.beforeToolCall(event, context),
+        { priority: -1_000_000, timeoutMs: 5_000 },
+      )),
+      isLiveContribution(api.on(
+        "after_tool_call",
+        (event, context) => runtime.afterToolCall(event, context),
+        { priority: -1_000_000, timeoutMs: 1_000 },
+      )),
+      ...registerAgentGuardLifecycle(api, runtime),
+      ...registerControlRoutes(api, runtime),
+    ];
+    runtime.finalizeRegistrationAttestation(contributions.every(Boolean));
+    return runtime;
+  } catch (error) {
+    runtime.finalizeRegistrationAttestation(false);
+    void runtime.stop();
+    throw error;
+  }
 }
 
 function isLiveContribution(result: void | true): boolean {
@@ -89,17 +102,29 @@ function isLiveContribution(result: void | true): boolean {
 }
 
 function parseMarkerDir(config: Record<string, unknown> | undefined): string | undefined {
-  if (config === undefined || !Object.hasOwn(config, "markerDir")) return undefined;
-  const markerDir = config.markerDir;
+  return parseConfiguredDirectory(config, "markerDir");
+}
+
+function parseSpoolDir(config: Record<string, unknown> | undefined): string | undefined {
+  return parseConfiguredDirectory(config, "spoolDir");
+}
+
+function parseConfiguredDirectory(
+  config: Record<string, unknown> | undefined,
+  field: "markerDir" | "spoolDir",
+): string | undefined {
+  if (config === undefined || !Object.hasOwn(config, field)) return undefined;
+  const value = config[field];
   if (
-    typeof markerDir !== "string" ||
-    markerDir.trim().length === 0 ||
-    markerDir.length > 4_096 ||
-    markerDir.includes("\0")
+    typeof value !== "string" ||
+    value.trim().length === 0 ||
+    value.length > 4_096 ||
+    value.includes("\0") ||
+    value.split(/[\\/]+/).includes("..")
   ) {
-    throw new TypeError("Native guard markerDir config is invalid");
+    throw new TypeError(`Native guard ${field} config is invalid`);
   }
-  return markerDir;
+  return value;
 }
 
 export function registerAgentGuardLifecycle(

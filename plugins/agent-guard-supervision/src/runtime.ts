@@ -11,12 +11,20 @@ import type {
 } from "@agent-guard/contracts";
 import { canonicalJson } from "@agent-guard/native-guard-protocol";
 import type {
+  AfterToolEvent,
   BeforeResult,
   PluginApi,
   PluginApprovalResolution,
   ToolContext,
   ToolEvent,
 } from "openclaw/plugin-sdk/plugin-entry";
+import {
+  createEventSpool as defaultCreateEventSpool,
+  sanitizeOutcomeResult,
+  type EventSpool,
+  type EventSpoolOptions,
+  type EventUploadLease,
+} from "./eventSpool";
 import {
   createDecisionClient,
   type DecisionClient,
@@ -29,6 +37,10 @@ import {
   type MarkerStore,
 } from "./leaseRegistry";
 import { inspectBoundedParams } from "./jsonBounds";
+import {
+  createLifecycleClient,
+  type LifecycleClient,
+} from "./lifecycleClient";
 import { classifyToolRisk, type NativeToolRisk } from "./toolRisk";
 
 const MAX_DERIVED_PATHS = 256;
@@ -47,6 +59,9 @@ export type AgentGuardRuntimeOptions = {
   decisionTimeoutMs?: number;
   maxDecisionIdsPerLease?: number;
   emitEvent?: (event: NativeGuardEvent) => Promise<void> | void;
+  spoolDir?: string;
+  createEventSpool?: (options: EventSpoolOptions) => EventSpool;
+  lifecycleClient?: LifecycleClient;
   createId?: (prefix: string) => string;
   decisionClient?: DecisionClient;
   /** Unit/compat seam for a future trusted host capability. Production does not self-attest it. */
@@ -56,6 +71,10 @@ export type AgentGuardRuntimeOptions = {
 const DEFAULT_ADMISSION_TIMEOUT_MS = 4_000;
 const HOST_HOOK_TIMEOUT_MS = 5_000;
 const DEFAULT_DECISION_TIMEOUT_MS = 2_000;
+const EVENT_UPLOAD_PATH = "/api/v1/openclaw/native-guard/events/batch";
+const EVENT_UPLOAD_TIMEOUT_MS = 5_000;
+const MAX_EVENT_RESPONSE_BYTES = 64 * 1024;
+const MAX_OUTCOME_CORRELATIONS = 10_000;
 
 const OFF_STATUS: Readonly<NativeGuardStatus> = Object.freeze({
   coverage: "off",
@@ -92,10 +111,16 @@ export class AgentGuardRuntime {
   readonly #scheduleTimeout: NonNullable<AgentGuardRuntimeOptions["scheduleTimeout"]>;
   readonly #cancelTimeout: NonNullable<AgentGuardRuntimeOptions["cancelTimeout"]>;
   readonly #decisionClient: DecisionClient;
-  readonly #emitEvent: NonNullable<AgentGuardRuntimeOptions["emitEvent"]>;
+  readonly #emitEvent: AgentGuardRuntimeOptions["emitEvent"];
+  readonly #spoolDir: string;
+  readonly #createEventSpool: NonNullable<AgentGuardRuntimeOptions["createEventSpool"]>;
+  readonly #fetch: typeof globalThis.fetch | undefined;
+  readonly #lifecycleClient: LifecycleClient;
   readonly #createId: NonNullable<AgentGuardRuntimeOptions["createId"]>;
   readonly #approvalLeaseRecheckAttested: boolean;
   readonly #pendingOperations = new Set<Promise<unknown>>();
+  readonly #outcomeCorrelations = new Map<string, OutcomeCorrelation>();
+  #eventSpool: EventSpool | undefined;
   #abortController = new AbortController();
   #startPromise: Promise<void> | undefined;
   #stopPromise: Promise<void> | undefined;
@@ -131,7 +156,18 @@ export class AgentGuardRuntime {
       timeoutMs: decisionTimeoutMs,
       maxDecisionIdsPerLease: options.maxDecisionIdsPerLease,
     });
-    this.#emitEvent = options.emitEvent ?? (() => undefined);
+    this.#emitEvent = options.emitEvent;
+    this.#spoolDir = options.spoolDir ?? join(
+      homedir(),
+      ".agent-guard",
+      "native-guard-event-spool",
+    );
+    this.#createEventSpool = options.createEventSpool ?? defaultCreateEventSpool;
+    this.#fetch = options.fetch ?? globalThis.fetch;
+    this.#lifecycleClient = options.lifecycleClient ?? createLifecycleClient({
+      fetch: options.fetch,
+      timeoutMs: decisionTimeoutMs,
+    });
     this.#createId = options.createId ?? ((prefix) => `${prefix}.${randomUUID()}`);
     this.#approvalLeaseRecheckAttested = options.approvalLeaseRecheckAttested === true;
   }
@@ -159,6 +195,7 @@ export class AgentGuardRuntime {
       this.#abortController = new AbortController();
       this.#markerStore.allowWrites();
       this.#stopPromise = undefined;
+      this.#eventSpool = undefined;
     }
     if (this.#registryStarted) {
       this.#state = "running";
@@ -301,7 +338,7 @@ export class AgentGuardRuntime {
       return inheritanceBlock();
     }
     if (parent.state === "off") return;
-    if (parent.state === "recovery") return guardedAdmission(parent, event, context);
+    if (parent.state !== "active") return guardedAdmission(parent, event, context);
     try {
       if (await this.bindChild(parent.leaseId, parentSessionKey, sessionKey)) {
         return guardedAdmission(parent, event, context);
@@ -334,6 +371,7 @@ export class AgentGuardRuntime {
     const identity = guardedIdentity(event, context);
     if (identity === undefined) return contextBlock();
     if (lookup.state === "recovery") return recoveryDecision(event, identity);
+    if (lookup.state === "lifecycle_pending") return lifecyclePendingBlock();
     const unlinkHostAbort = linkAbortSignal(context.abortSignal, operationController);
     try {
       if (context.abortSignal?.aborted) return cancelledBlock();
@@ -418,6 +456,7 @@ export class AgentGuardRuntime {
     if (signal.aborted || this.abortSignal.aborted) return stoppedBlock();
     if (!(await this.#leaseIsCurrent(identity.sessionKey, lookup))) return leaseChangedBlock();
 
+    this.#rememberOutcomeCorrelation(identity, lookup, request, response);
     switch (response.action) {
       case "allow":
       case "warn":
@@ -443,14 +482,18 @@ export class AgentGuardRuntime {
     if (hostSignal?.aborted) return cancelledBlock();
     if (risk === "low" && lease.failurePolicy.lowRisk === "allow") return;
     const action = risk === "low" ? "warn" : "deny";
-    await this.#emit(outageEvent(
-      this.#createId("native_guard_event"),
-      lease,
-      identity,
-      event.toolName,
-      action,
-      this.#now(),
-    ));
+    const paramsDigest = safeFinalParamsDigest(event.params);
+    if (paramsDigest !== undefined) {
+      await this.#emit(outageEvent(
+        this.#createId("native_guard_event"),
+        lease,
+        identity,
+        event.toolName,
+        paramsDigest,
+        action,
+        this.#now(),
+      ));
+    }
     if (hostSignal?.aborted) return cancelledBlock();
     if (signal.aborted || this.abortSignal.aborted) return stoppedBlock();
     if (!(await this.#leaseIsCurrent(identity.sessionKey, lease))) return leaseChangedBlock();
@@ -529,14 +572,145 @@ export class AgentGuardRuntime {
     }
   }
 
+  async #activeLeaseIsCurrent(expected: ActiveLeaseLookup): Promise<boolean> {
+    try {
+      const current = await this.#track(this.registry.lookupActiveLease(expected.leaseId));
+      return current !== undefined &&
+        current.leaseId === expected.leaseId &&
+        current.leaseEpoch === expected.leaseEpoch &&
+        current.policyPackId === expected.policyPackId &&
+        current.policyPackDigest === expected.policyPackDigest;
+    } catch {
+      return false;
+    }
+  }
+
+  afterToolCall(event: AfterToolEvent, context: ToolContext): void {
+    if (this.#state !== "running" || this.abortSignal.aborted) return;
+    const operation = this.#track(this.#reportOutcome(event, context));
+    void operation.catch(() => undefined);
+  }
+
+  async #reportOutcome(event: AfterToolEvent, context: ToolContext): Promise<void> {
+    if (this.abortSignal.aborted || !safeSessionKey(context.sessionKey)) return;
+    const lookup = await this.lookup(context.sessionKey);
+    if (lookup.state !== "active" || this.abortSignal.aborted) return;
+    const identity = guardedIdentity(event, context);
+    if (identity === undefined) return;
+    if (
+      typeof event.durationMs !== "number" ||
+      !Number.isFinite(event.durationMs) ||
+      event.durationMs < 0
+    ) return;
+
+    let finalParamsDigest: string;
+    try {
+      finalParamsDigest = inspectBoundedParams(event.params).digest;
+    } catch {
+      return;
+    }
+    const evidence = sanitizeOutcomeResult(event.result, [
+      lookup.credential,
+      lookup.evidenceCredential,
+    ]);
+    const correlationKey = outcomeCorrelationKey(identity.sessionKey, identity.toolCallId);
+    const correlation = this.#outcomeCorrelations.get(correlationKey);
+    this.#outcomeCorrelations.delete(correlationKey);
+    if (
+      correlation !== undefined &&
+      (correlation.leaseId !== lookup.leaseId || correlation.leaseEpoch !== lookup.leaseEpoch)
+    ) return;
+    const outcome: NativeGuardEvent = {
+      schemaVersion: "native-guard-1",
+      eventId: this.#createId("native_guard_event"),
+      type: "tool_outcome",
+      leaseId: lookup.leaseId,
+      leaseEpoch: lookup.leaseEpoch,
+      sessionKey: identity.sessionKey,
+      ...(identity.runId === undefined ? {} : { runId: identity.runId }),
+      toolCallId: identity.toolCallId,
+      ...(correlation?.decisionId === undefined ? {} : { decisionId: correlation.decisionId }),
+      timestamp: this.#now().toISOString(),
+      detail: {
+        ...(correlation?.requestId === undefined ? {} : { requestId: correlation.requestId }),
+        ...(correlation?.action === undefined ? {} : { action: correlation.action }),
+        success: event.error === undefined,
+        durationMs: event.durationMs,
+        finalParamsDigest,
+        resultDigest: evidence.resultDigest,
+        resultPreview: evidence.resultPreview,
+        ...(event.error === undefined
+          ? {}
+          : {
+              error: "Tool execution failed.",
+              errorCode: "TOOL_EXECUTION_FAILED",
+            }),
+      },
+    };
+    if (this.abortSignal.aborted || !(await this.#leaseIsCurrent(identity.sessionKey, lookup))) return;
+    await this.#emit(outcome);
+  }
+
+  #rememberOutcomeCorrelation(
+    identity: GuardedIdentity,
+    lease: ActiveLeaseLookup,
+    request: NativeToolDecisionRequest,
+    response: NativeToolDecisionResponse,
+  ): void {
+    const key = outcomeCorrelationKey(identity.sessionKey, identity.toolCallId);
+    this.#outcomeCorrelations.delete(key);
+    this.#outcomeCorrelations.set(key, {
+      leaseId: lease.leaseId,
+      leaseEpoch: lease.leaseEpoch,
+      requestId: request.requestId,
+      decisionId: response.decisionId,
+      action: response.action,
+    });
+    while (this.#outcomeCorrelations.size > MAX_OUTCOME_CORRELATIONS) {
+      const oldest = this.#outcomeCorrelations.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      this.#outcomeCorrelations.delete(oldest);
+    }
+  }
+
   async #emit(event: NativeGuardEvent): Promise<void> {
-    await this.#track(Promise.resolve().then(() => this.#emitEvent(event)));
+    if (this.#emitEvent !== undefined) {
+      await this.#track(Promise.resolve().then(() => this.#emitEvent?.(event)));
+      return;
+    }
+    const spool = this.#eventSpool ??= this.#createEventSpool({
+      directory: this.#spoolDir,
+      upload: (identity, events, signal) => this.#uploadEvents(identity, events, signal),
+      scheduleTimeout: this.#scheduleTimeout,
+      cancelTimeout: this.#cancelTimeout,
+    });
+    await this.#track(spool.enqueue(event));
+  }
+
+  async #uploadEvents(
+    identity: EventUploadLease,
+    events: readonly NativeGuardEvent[],
+    signal: AbortSignal,
+  ): Promise<void> {
+    const lookup = await this.#track(this.registry.lookupActiveLease(identity.leaseId));
+    if (!sameActiveUploadLease(lookup, identity)) {
+      this.#eventSpool?.cancelLease(identity.leaseId, identity.leaseEpoch);
+      throw new Error("Native guard event lease is no longer active");
+    }
+    await uploadEventBatch(this.#fetch, lookup, events, signal);
+    const current = await this.#track(this.registry.lookupActiveLease(identity.leaseId));
+    if (!sameActiveUploadLease(current, identity)) {
+      this.#eventSpool?.cancelLease(identity.leaseId, identity.leaseEpoch);
+      throw new Error("Native guard event lease changed during upload");
+    }
   }
 
   async activate(input: NativeGuardLeaseActivation): Promise<NativeGuardStatus> {
     this.#assertRegistrationAttested();
     this.#assertRunning();
     await this.#track(this.registry.activate(input));
+    const active = await this.#track(this.registry.lookupActiveLease(input.leaseId));
+    if (active !== undefined) await this.#resumeLifecycle(active);
     return this.status();
   }
 
@@ -544,12 +718,20 @@ export class AgentGuardRuntime {
     this.#assertRegistrationAttested();
     this.#assertRunning();
     await this.#track(this.registry.renew(input));
+    const active = await this.#track(this.registry.lookupActiveLease(input.leaseId));
+    if (active !== undefined) await this.#resumeLifecycle(active);
+    this.#eventSpool?.leaseRenewed(input.leaseId);
     return this.status();
   }
 
   async revoke(leaseId: string): Promise<boolean> {
     this.#assertRunning();
-    return this.#track(this.registry.revoke(leaseId));
+    const revoked = await this.#track(this.registry.revoke(leaseId));
+    this.#eventSpool?.cancelLease(leaseId);
+    for (const [key, value] of this.#outcomeCorrelations) {
+      if (value.leaseId === leaseId) this.#outcomeCorrelations.delete(key);
+    }
+    return revoked;
   }
 
   async bindChild(
@@ -558,12 +740,76 @@ export class AgentGuardRuntime {
     childSessionKey: string,
   ): Promise<boolean> {
     this.#assertRunning();
-    return this.#track(this.registry.bindChild(leaseId, parentSessionKey, childSessionKey));
+    const prepared = await this.#track(
+      this.registry.prepareChildBinding(leaseId, parentSessionKey, childSessionKey),
+    );
+    if (!prepared) return false;
+    const lease = await this.#track(this.registry.lookupActiveLease(leaseId));
+    if (lease === undefined) throw new Error("Native guard lifecycle lease is unavailable");
+    await this.#track(this.#lifecycleClient.bindChild(lease, {
+      leaseId,
+      leaseEpoch: lease.leaseEpoch,
+      parentSessionKey,
+      childSessionKey,
+    }, this.abortSignal));
+    if (!(await this.#activeLeaseIsCurrent(lease))) {
+      throw new Error("Native guard lifecycle lease changed during binding");
+    }
+    return this.#track(
+      this.registry.completeChildBinding(leaseId, parentSessionKey, childSessionKey),
+    );
   }
 
   async endSession(sessionKey: string): Promise<boolean> {
     this.#assertRunning();
-    return this.#track(this.registry.endSession(sessionKey));
+    const current = await this.lookup(sessionKey);
+    if (current.state === "off") return false;
+    if (current.state === "recovery") return this.#track(this.registry.endSession(sessionKey));
+    const lease = await this.#track(this.registry.lookupActiveLease(current.leaseId));
+    if (lease === undefined) throw new Error("Native guard lifecycle lease is unavailable");
+    const intent = await this.#track(this.registry.prepareSessionEnd(sessionKey));
+    if (intent === undefined || intent.kind !== "end_session") return false;
+    await this.#track(this.#lifecycleClient.endSession(lease, {
+      leaseId: lease.leaseId,
+      leaseEpoch: lease.leaseEpoch,
+      sessionKey,
+    }, this.abortSignal));
+    const ended = await this.#track(this.registry.completeSessionEnd(lease.leaseId, sessionKey));
+    if (ended && lease.rootSessionKey === sessionKey) {
+      this.#eventSpool?.cancelLease(lease.leaseId);
+    }
+    return ended;
+  }
+
+  async #resumeLifecycle(lease: ActiveLeaseLookup): Promise<void> {
+    const intent = await this.#track(this.registry.pendingLifecycle(lease.leaseId));
+    if (intent === undefined) return;
+    if (intent.kind === "bind_child") {
+      await this.#track(this.#lifecycleClient.bindChild(lease, {
+        leaseId: lease.leaseId,
+        leaseEpoch: lease.leaseEpoch,
+        parentSessionKey: intent.parentSessionKey,
+        childSessionKey: intent.childSessionKey,
+      }, this.abortSignal));
+      if (!(await this.#activeLeaseIsCurrent(lease))) {
+        throw new Error("Native guard lifecycle lease changed during binding");
+      }
+      if (!(await this.#track(this.registry.completeChildBinding(
+        lease.leaseId,
+        intent.parentSessionKey,
+        intent.childSessionKey,
+      )))) throw new Error("Native guard lifecycle binding commit failed");
+      return;
+    }
+    await this.#track(this.#lifecycleClient.endSession(lease, {
+      leaseId: lease.leaseId,
+      leaseEpoch: lease.leaseEpoch,
+      sessionKey: intent.sessionKey,
+    }, this.abortSignal));
+    if (!(await this.#track(this.registry.completeSessionEnd(
+      lease.leaseId,
+      intent.sessionKey,
+    )))) throw new Error("Native guard lifecycle end commit failed");
   }
 
   async stop(): Promise<void> {
@@ -573,6 +819,8 @@ export class AgentGuardRuntime {
     }
     if (this.#state === "idle") {
       this.#abortController.abort();
+      await this.#eventSpool?.stop();
+      this.#outcomeCorrelations.clear();
       this.#markerStore.preventWrites();
       this.#state = "stopped";
       return;
@@ -583,11 +831,14 @@ export class AgentGuardRuntime {
     }
     this.#state = "stopping";
     this.#abortController.abort();
-    this.#stopPromise = this.#finishStop();
+    const spoolStop = this.#eventSpool?.stop();
+    this.#outcomeCorrelations.clear();
+    this.#stopPromise = this.#finishStop(spoolStop);
     await this.#stopPromise;
   }
 
-  async #finishStop(): Promise<void> {
+  async #finishStop(spoolStop: Promise<void> | undefined): Promise<void> {
+    if (spoolStop !== undefined) await spoolStop.catch(() => undefined);
     const pending = [...this.#pendingOperations];
     if (pending.length > 0) {
       let timer: unknown;
@@ -655,6 +906,18 @@ type GuardedIdentity = {
   toolInputKind?: ToolEvent["toolInputKind"];
 };
 
+type OutcomeCorrelation = {
+  leaseId: string;
+  leaseEpoch: number;
+  requestId: string;
+  decisionId: string;
+  action: NativeToolDecisionResponse["action"];
+};
+
+function outcomeCorrelationKey(sessionKey: string, toolCallId: string): string {
+  return `${sessionKey}\0${toolCallId}`;
+}
+
 function guardedAdmission(
   lookup: Exclude<LeaseLookup, { state: "off" }>,
   event: ToolEvent,
@@ -662,6 +925,7 @@ function guardedAdmission(
 ): BeforeResult | void {
   const identity = guardedIdentity(event, context);
   if (identity === undefined) return contextBlock();
+  if (lookup.state === "lifecycle_pending") return lifecyclePendingBlock();
   if (lookup.state === "recovery") return recoveryDecision(event, identity);
 }
 
@@ -736,6 +1000,14 @@ function buildDecisionRequest(
   };
 }
 
+function safeFinalParamsDigest(params: Record<string, unknown>): string | undefined {
+  try {
+    return inspectBoundedParams(params).digest;
+  } catch {
+    return undefined;
+  }
+}
+
 function snapshotDerivedPaths(value: readonly string[] | undefined): string[] | undefined {
   if (value === undefined) return undefined;
   if (
@@ -785,6 +1057,7 @@ function decisionEvent(
     eventId,
     type: "decision",
     leaseId: lease.leaseId,
+    leaseEpoch: lease.leaseEpoch,
     sessionKey: request.sessionKey,
     ...(request.runId === undefined ? {} : { runId: request.runId }),
     toolCallId: request.toolCallId,
@@ -796,6 +1069,7 @@ function decisionEvent(
       reasonCode: safeReasonCode(response.reasonCode, lease, request.params),
       policyPackId: response.policyPackId,
       policyPackDigest: response.policyPackDigest,
+      targetType: "tool_call",
       toolName: request.toolName,
       paramsDigest: request.paramsDigest,
       ...(response.rewrittenParamsDigest === undefined
@@ -810,6 +1084,7 @@ function outageEvent(
   lease: ActiveLeaseLookup,
   identity: GuardedIdentity,
   toolName: string,
+  paramsDigest: string,
   action: "warn" | "deny",
   timestamp: Date,
 ): NativeGuardEvent {
@@ -818,14 +1093,19 @@ function outageEvent(
     eventId,
     type: "decision",
     leaseId: lease.leaseId,
+    leaseEpoch: lease.leaseEpoch,
     sessionKey: identity.sessionKey,
     ...(identity.runId === undefined ? {} : { runId: identity.runId }),
     toolCallId: identity.toolCallId,
+    decisionId: eventId,
     timestamp: timestamp.toISOString(),
     detail: {
+      requestId: eventId,
       action,
       reasonCode: "NATIVE_GUARD_PDP_UNAVAILABLE",
+      targetType: "tool_call",
       toolName,
+      paramsDigest,
     },
   };
 }
@@ -842,15 +1122,17 @@ function approvalRequestedEvent(
     eventId,
     type: "approval_requested",
     leaseId: lease.leaseId,
+    leaseEpoch: lease.leaseEpoch,
     sessionKey: request.sessionKey,
     ...(request.runId === undefined ? {} : { runId: request.runId }),
     toolCallId: request.toolCallId,
     decisionId: response.decisionId,
     timestamp: timestamp.toISOString(),
     detail: {
-      allowedDecisions: ["allow-once", "deny"],
-      paramsDigest: request.paramsDigest,
-      timeoutBehavior: "deny",
+      requestId: request.requestId,
+      approvalId: response.decisionId,
+      action: "ask",
+      status: "requested",
     },
   };
 }
@@ -869,12 +1151,17 @@ function approvalResolvedEvent(
     eventId,
     type: "approval_resolved",
     leaseId: lease.leaseId,
+    leaseEpoch: lease.leaseEpoch,
     sessionKey: request.sessionKey,
     ...(request.runId === undefined ? {} : { runId: request.runId }),
     toolCallId: request.toolCallId,
     decisionId: response.decisionId,
     timestamp: timestamp.toISOString(),
     detail: {
+      requestId: request.requestId,
+      approvalId: response.decisionId,
+      action: "ask",
+      status: resolution,
       resolution,
       ...(reasonCode === undefined ? {} : { reasonCode }),
     },
@@ -885,6 +1172,13 @@ function recoveryBlock(): BeforeResult {
   return {
     block: true,
     blockReason: "[Agent Guard:NATIVE_GUARD_RECOVERY] Native guard recovery blocks this tool.",
+  };
+}
+
+function lifecyclePendingBlock(): BeforeResult {
+  return {
+    block: true,
+    blockReason: "[Agent Guard:NATIVE_GUARD_LIFECYCLE_PENDING] Native guard lifecycle synchronization is pending.",
   };
 }
 
@@ -1037,6 +1331,150 @@ function failClosedBlock(): BeforeResult {
     block: true,
     blockReason: "Native guard admission failed closed.",
   };
+}
+
+function sameActiveUploadLease(
+  lookup: ActiveLeaseLookup | undefined,
+  expected: EventUploadLease,
+): lookup is ActiveLeaseLookup {
+  return lookup?.state === "active" &&
+    lookup.leaseId === expected.leaseId &&
+    lookup.leaseEpoch >= expected.leaseEpoch;
+}
+
+async function uploadEventBatch(
+  fetchImplementation: typeof globalThis.fetch | undefined,
+  lease: ActiveLeaseLookup,
+  events: readonly NativeGuardEvent[],
+  parentSignal: AbortSignal,
+): Promise<void> {
+  if (typeof fetchImplementation !== "function" || events.length === 0 || events.length > 100) {
+    throw new Error("Native guard event upload is unavailable");
+  }
+  const url = new URL(lease.backendUrl);
+  url.pathname = EVENT_UPLOAD_PATH;
+  url.search = "";
+  url.hash = "";
+  const body = JSON.stringify({ events });
+  if (Buffer.byteLength(body, "utf8") > 1024 * 1024) {
+    throw new Error("Native guard event upload is oversized");
+  }
+
+  const controller = new AbortController();
+  const unlink = linkAbortSignal(parentSignal, controller);
+  const timeout = setTimeout(() => controller.abort(), EVENT_UPLOAD_TIMEOUT_MS);
+  timeout.unref();
+  try {
+    const response = await fetchImplementation(url, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${lease.evidenceCredential}`,
+        "Content-Type": "application/json; charset=utf-8",
+      },
+      body,
+      cache: "no-store",
+      redirect: "error",
+      signal: controller.signal,
+    });
+    if (
+      controller.signal.aborted ||
+      response.redirected ||
+      response.status !== 200 ||
+      !validEventResponseContentType(response.headers.get("content-type")) ||
+      response.headers.has("content-encoding")
+    ) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new Error("Native guard event upload failed");
+    }
+    const declaredLength = parseEventContentLength(response.headers.get("content-length"));
+    if (declaredLength !== undefined && declaredLength > MAX_EVENT_RESPONSE_BYTES) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new Error("Native guard event upload response is oversized");
+    }
+    const responseBody = await readBoundedEventResponse(
+      response,
+      controller.signal,
+      MAX_EVENT_RESPONSE_BYTES,
+      declaredLength,
+    );
+    const envelope = JSON.parse(responseBody) as unknown;
+    if (!validUploadEnvelope(envelope, events.length)) {
+      throw new Error("Native guard event upload response is invalid");
+    }
+  } finally {
+    clearTimeout(timeout);
+    unlink();
+  }
+}
+
+async function readBoundedEventResponse(
+  response: Response,
+  signal: AbortSignal,
+  maxBytes: number,
+  declaredLength: number | undefined,
+): Promise<string> {
+  if (response.body === null) throw new Error("Native guard event upload response is empty");
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  let complete = false;
+  const abort = (): void => { void reader.cancel().catch(() => undefined); };
+  signal.addEventListener("abort", abort, { once: true });
+  try {
+    while (true) {
+      if (signal.aborted) throw new Error("Native guard event upload was aborted");
+      const chunk = await reader.read();
+      if (chunk.done) {
+        complete = true;
+        break;
+      }
+      size += chunk.value.byteLength;
+      if (size > maxBytes || (declaredLength !== undefined && size > declaredLength)) {
+        throw new Error("Native guard event upload response is oversized");
+      }
+      chunks.push(chunk.value);
+    }
+    if (declaredLength !== undefined && size !== declaredLength) {
+      throw new Error("Native guard event upload response is incomplete");
+    }
+    return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), size).toString("utf8");
+  } finally {
+    signal.removeEventListener("abort", abort);
+    if (!complete) await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
+  }
+}
+
+function validUploadEnvelope(value: unknown, expectedAccepted: number): boolean {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value) ||
+    utilTypes.isProxy(value) ||
+    Object.getPrototypeOf(value) !== Object.prototype
+  ) return false;
+  const ok = Object.getOwnPropertyDescriptor(value, "ok");
+  const data = Object.getOwnPropertyDescriptor(value, "data");
+  if (ok === undefined || !("value" in ok) || ok.value !== true ||
+    data === undefined || !("value" in data) ||
+    typeof data.value !== "object" || data.value === null || Array.isArray(data.value)) {
+    return false;
+  }
+  const accepted = Object.getOwnPropertyDescriptor(data.value, "accepted");
+  return accepted !== undefined && "value" in accepted && accepted.value === expectedAccepted;
+}
+
+function validEventResponseContentType(value: string | null): boolean {
+  return value !== null && /^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(value.trim());
+}
+
+function parseEventContentLength(value: string | null): number | undefined {
+  if (value === null) return undefined;
+  if (!/^(0|[1-9]\d*)$/.test(value)) throw new Error("Native guard event content length is invalid");
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) throw new Error("Native guard event content length is invalid");
+  return parsed;
 }
 
 class LifecycleMarkerStore implements MarkerStore {

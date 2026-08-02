@@ -12,7 +12,11 @@ import {
   type IncomingMessage,
   type ServerResponse,
 } from "node:http";
-import type { NativeGuardLeaseActivation } from "@agent-guard/contracts";
+import type {
+  NativeGuardLeaseActivation,
+  NativeToolDecisionRequest,
+} from "@agent-guard/contracts";
+import { signNativeGuardPayload } from "@agent-guard/native-guard-protocol";
 import type {
   SessionEndEvent,
   SessionEndReason,
@@ -37,6 +41,7 @@ const PUBLIC_KEY = generateKeyPairSync("ed25519").publicKey.export({
 }).toString();
 const EXPECTED_REGISTRATIONS = [
   "hook:before_tool_call",
+  "hook:after_tool_call",
   "policy:agent-guard-admission",
   "service:agent-guard-runtime",
   "hook:subagent_spawned",
@@ -52,7 +57,14 @@ class AgentGuardRuntime extends ProductionAgentGuardRuntime {
   constructor(
     options: ConstructorParameters<typeof ProductionAgentGuardRuntime>[0] = {},
   ) {
-    super({ ...options, approvalLeaseRecheckAttested: true });
+    super({
+      ...options,
+      lifecycleClient: options.lifecycleClient ?? {
+        async bindChild() { return; },
+        async endSession() { return; },
+      },
+      approvalLeaseRecheckAttested: true,
+    });
     this.finalizeRegistrationAttestation(true);
   }
 }
@@ -147,6 +159,7 @@ function activation(
     issuedAt: NOW,
     expiresAt: "2026-08-02T00:05:00.000Z",
     credential: "credential-that-must-not-be-returned",
+    evidenceCredential: "evidence-credential-that-must-not-be-returned",
     ...overrides,
   };
 }
@@ -365,6 +378,7 @@ test("activate, renew, status, and revoke return raw credential-free status", as
         leaseEpoch: 2,
         expiresAt: "2026-08-02T00:06:00.000Z",
         credential: "rotated-credential-that-must-not-be-returned",
+        evidenceCredential: "rotated-evidence-credential-that-must-not-be-returned",
       }),
     },
   );
@@ -1989,9 +2003,16 @@ test("plugin entry wires controls and lifecycle, and root script runs all plugin
   const registryIndex = command.indexOf("leaseRegistry.test.ts");
   const routesIndex = command.indexOf("controlRoutes.test.ts");
   const runtimeIndex = command.indexOf("runtime.test.ts");
+  const spoolIndex = command.indexOf("eventSpool.test.ts");
   assert.ok(registryIndex >= 0);
   assert.ok(routesIndex > registryIndex);
   assert.ok(runtimeIndex > routesIndex);
+  assert.ok(spoolIndex > runtimeIndex);
+
+  const manifest = JSON.parse(
+    await readFile(new URL("../openclaw.plugin.json", import.meta.url), "utf8"),
+  ) as { hookNames?: string[] };
+  assert.deepEqual(manifest.hookNames, ["before_tool_call", "after_tool_call"]);
 });
 
 test("pinned void registrars install handlers but quarantine every guarded mutation", async (t) => {
@@ -2007,7 +2028,15 @@ test("pinned void registrars install handlers but quarantine every guarded mutat
 
   assert.deepEqual(host.registrations, EXPECTED_REGISTRATIONS);
   assert.equal(host.hooks.filter((entry) => entry.name === "before_tool_call").length, 1);
-  assert.deepEqual(host.hooks[0].options, { priority: -1_000_000, timeoutMs: 5_000 });
+  assert.equal(host.hooks.filter((entry) => entry.name === "after_tool_call").length, 1);
+  assert.deepEqual(
+    host.hooks.find((entry) => entry.name === "before_tool_call")?.options,
+    { priority: -1_000_000, timeoutMs: 5_000 },
+  );
+  assert.deepEqual(
+    host.hooks.find((entry) => entry.name === "after_tool_call")?.options,
+    { priority: -1_000_000, timeoutMs: 1_000 },
+  );
   assert.equal(host.policies.length, 1);
   assert.equal(host.services.length, 1);
   assert.equal(host.routes.length, 4);
@@ -2156,6 +2185,134 @@ test("trusted policy registration failures propagate instead of silently degradi
   assert.throws(() => registerAgentGuardPlugin(host.api), /duplicate trusted policy/);
 });
 
+test("after hook registration failure aborts registration before lifecycle and routes", async () => {
+  const host = createHost();
+  const registeredBeforeThrow: string[] = [];
+  host.api.on = ((
+    name: string,
+    handler: HookHandler,
+    options?: { priority?: number; timeoutMs?: number },
+  ) => {
+    registeredBeforeThrow.push(`hook:${name}`);
+    host.hooks.push({ name, handler, options });
+    if (name === "after_tool_call") throw new Error("after registrar failed");
+    return true;
+  }) as typeof host.api.on;
+
+  assert.throws(() => registerAgentGuardPlugin(host.api), /after registrar failed/);
+  assert.deepEqual(registeredBeforeThrow, ["hook:before_tool_call", "hook:after_tool_call"]);
+  assert.equal(host.services.length, 0);
+  assert.equal(host.policies.length, 0);
+  assert.equal(host.routes.length, 0);
+  assert.deepEqual(
+    await hook(host, "before_tool_call")(
+      { toolName: "read", params: {}, toolCallId: "call-after-failed" },
+      { toolName: "read", sessionKey: "ordinary", toolCallId: "call-after-failed" },
+    ),
+    {
+      block: true,
+      blockReason: "[Agent Guard:NATIVE_GUARD_STOPPED] Native guard runtime stopped during decision.",
+    },
+  );
+});
+
+test("real spawn hook binds backend before a child can receive a signed allow", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "agent-guard-real-spawn-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  let childBound = false;
+  let bindCalls = 0;
+  const server = createServer(async (request, response) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
+    if (request.url === "/api/v1/openclaw/native-guard/lifecycle/bind-child") {
+      bindCalls += 1;
+      childBound = request.headers.authorization === "Bearer evidence-credential" &&
+        body.parentSessionKey === "agent:guard:run.1" &&
+        body.childSessionKey === "agent:guard:child.1";
+      return sendJson(response, childBound ? 200 : 401, childBound
+        ? { ok: true, data: { bound: true }, requestId: "bind-request" }
+        : { ok: false, error: { code: "UNAUTHORIZED", message: "denied" }, requestId: "bind-request" });
+    }
+    if (request.url === "/api/v1/openclaw/native-guard/decision") {
+      const decisionRequest = body as NativeToolDecisionRequest;
+      if (!childBound || decisionRequest.sessionKey !== "agent:guard:child.1") {
+        return sendJson(response, 401, {
+          ok: false,
+          error: { code: "UNBOUND", message: "child is not bound" },
+          requestId: "decision-request",
+        });
+      }
+      const unsigned = {
+        schemaVersion: "native-guard-1" as const,
+        decisionId: "decision-child-1",
+        requestId: decisionRequest.requestId,
+        leaseId: decisionRequest.leaseId,
+        leaseEpoch: decisionRequest.leaseEpoch,
+        policyPackId: "policy.1",
+        policyPackDigest: "a".repeat(64),
+        action: "allow" as const,
+        reasonCode: "policy_allow",
+        reason: "Allowed by policy.",
+        evaluatedParamsDigest: decisionRequest.paramsDigest,
+        decidedAt: new Date().toISOString(),
+      };
+      return sendJson(response, 200, {
+        ok: true,
+        data: { ...unsigned, signature: signNativeGuardPayload(unsigned, privateKey) },
+        requestId: "decision-request",
+      });
+    }
+    return sendJson(response, 404, { ok: false, requestId: "not-found" });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise<void>((resolve, reject) =>
+    server.close((error) => error ? reject(error) : resolve())));
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  const host = createHost({
+    pluginConfig: {
+      markerDir: join(parent, "markers"),
+      spoolDir: join(parent, "spool"),
+    },
+    registrationResult: () => true,
+  });
+  const runtime = registerAgentGuardPlugin(host.api);
+  await host.services[0].start({});
+  const lease = liveActivation({
+    decisionPublicKey: publicKey.export({ type: "spki", format: "pem" }).toString(),
+    backendUrl: `http://127.0.0.1:${address.port}/api/v1/openclaw/native-guard/decision`,
+    credential: "decision-credential",
+    evidenceCredential: "evidence-credential",
+  } as Partial<NativeGuardLeaseActivation>);
+  await runtime.activate(lease);
+
+  await hook(host, "subagent_spawned")({
+    childSessionKey: "agent:guard:child.1",
+    agentId: "child",
+    mode: "run",
+    threadRequested: false,
+    runId: "run-child",
+  }, {
+    requesterSessionKey: "agent:guard:run.1",
+    childSessionKey: "agent:guard:child.1",
+  });
+  const result = await hook(host, "before_tool_call")({
+    toolName: "exec",
+    params: { command: "echo child" },
+    toolCallId: "call-child",
+  }, {
+    toolName: "exec",
+    sessionKey: "agent:guard:child.1",
+    toolCallId: "call-child",
+  });
+
+  assert.equal(bindCalls, 1);
+  assert.equal(result, undefined);
+  await runtime.stop();
+});
+
 class BlockingMarkerStore extends MemoryMarkerStore {
   writeStarted: Promise<void> = Promise.resolve();
   #announceWrite: (() => void) | undefined;
@@ -2238,6 +2395,15 @@ function hook(host: ReturnType<typeof createHost>, name: string): HookHandler {
   const registration = host.hooks.find((candidate) => candidate.name === name);
   assert.ok(registration);
   return registration.handler;
+}
+
+function sendJson(response: ServerResponse, statusCode: number, value: unknown): void {
+  const body = JSON.stringify(value);
+  response.writeHead(statusCode, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Content-Length": Buffer.byteLength(body),
+  });
+  response.end(body);
 }
 
 async function evaluatePolicy(

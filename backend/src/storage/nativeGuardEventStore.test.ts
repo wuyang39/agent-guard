@@ -33,6 +33,42 @@ test("persists events and paired records in append order", async () => {
   });
 });
 
+test("requires and preserves the top-level lease epoch on new native events", async () => {
+  await withStore(async ({ store }) => {
+    const event = buildEvent({ eventId: "event.epoch", leaseEpoch: 7 });
+    assert.equal(await store.append(event), true);
+    assert.equal((await store.listByRun(event.runId!))[0]?.leaseEpoch, 7);
+
+    const missingEpoch = { ...buildEvent({ eventId: "event.missing-epoch" }) } as
+      Partial<NativeGuardEvent>;
+    delete missingEpoch.leaseEpoch;
+    await assert.rejects(store.append(missingEpoch as NativeGuardEvent), /lease epoch/i);
+  });
+});
+
+test("migrates a legacy detail lease epoch to the top level and atomically rewrites JSONL", async () => {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "native-events-legacy-epoch-"));
+  try {
+    const event = buildEvent({ eventId: "event.legacy-epoch", leaseEpoch: 3 });
+    const legacyEvent = {
+      ...event,
+      detail: { ...event.detail, leaseEpoch: 3 },
+    } as Record<string, unknown>;
+    delete legacyEvent.leaseEpoch;
+    const filePath = path.join(rootDir, `${event.leaseId}.jsonl`);
+    await fs.writeFile(filePath, `${JSON.stringify({ sequence: 1, event: legacyEvent })}\n`);
+
+    const store = createNativeGuardEventStore({ rootDir });
+    assert.equal((await store.listByRun(event.runId!))[0]?.leaseEpoch, 3);
+    const rewritten = await fs.readFile(filePath, "utf8");
+    const envelope = JSON.parse(rewritten) as { event: NativeGuardEvent };
+    assert.equal(envelope.event.leaseEpoch, 3);
+    assert.equal(Object.hasOwn(envelope.event.detail, "leaseEpoch"), false);
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
 test("syncs active appends and hardens existing file permissions", async () => {
   const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "native-events-"));
   try {
@@ -807,6 +843,7 @@ function buildEvent(
     eventId: "event.1",
     type: "decision",
     leaseId: "lease.1",
+    leaseEpoch: 1,
     sessionKey: "session.root",
     runId: "run.default",
     toolCallId: "tool-call.1",

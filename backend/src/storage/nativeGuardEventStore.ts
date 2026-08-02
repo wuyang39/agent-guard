@@ -421,6 +421,7 @@ async function loadExisting(
         break;
       }
       try {
+        parsed = migrateLegacyLeaseEpoch(parsed);
         assertValidStoredEnvelope(parsed, leaseId);
       } catch {
         corruption = { line: index + 1, reasonCode: "invalid_schema" };
@@ -454,6 +455,22 @@ async function loadExisting(
     if (left.sequence === undefined || right.sequence === undefined) return 0;
     return left.sequence - right.sequence;
   });
+}
+
+function migrateLegacyLeaseEpoch(value: unknown): unknown {
+  if (!isPlainObject(value) || !isPlainObject(value.event)) return value;
+  if (value.event.leaseEpoch !== undefined || !isPlainObject(value.event.detail)) return value;
+  const legacyEpoch = value.event.detail.leaseEpoch;
+  if (!Number.isSafeInteger(legacyEpoch) || (legacyEpoch as number) <= 0) return value;
+  const { leaseEpoch: _legacyEpoch, ...detail } = value.event.detail;
+  return {
+    ...value,
+    event: {
+      ...value.event,
+      leaseEpoch: legacyEpoch,
+      detail,
+    },
+  };
 }
 
 async function quarantineAndRepair(
@@ -555,6 +572,7 @@ function projectEvent(event: NativeGuardEvent): NativeGuardEvent {
     eventId: event.eventId,
     type: event.type,
     leaseId: event.leaseId,
+    leaseEpoch: event.leaseEpoch,
     sessionKey: event.sessionKey,
     ...(event.runId === undefined ? {} : { runId: event.runId }),
     ...(event.toolCallId === undefined ? {} : { toolCallId: event.toolCallId }),
@@ -806,6 +824,9 @@ function assertValidEvent(
   }
   if (event.leaseId !== expectedLeaseId) {
     throw new Error("Native guard event lease id does not match its file");
+  }
+  if (!Number.isSafeInteger(event.leaseEpoch) || (event.leaseEpoch as number) <= 0) {
+    throw new Error("Native guard event lease epoch is invalid");
   }
   if (!EVENT_TYPES.has(event.type as NativeGuardEvent["type"])) {
     throw new Error("Native guard event type is invalid");

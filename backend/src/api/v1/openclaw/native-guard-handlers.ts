@@ -50,7 +50,12 @@ export type NativeGuardRouteDependencies = {
   >;
   leaseService: Pick<
     NativeGuardLeaseService,
-    "authenticate" | "resolveBySession"
+    | "authenticate"
+    | "authenticateEvidence"
+    | "authorizeEvidence"
+    | "resolveBySession"
+    | "bindChildWithEvidence"
+    | "endSessionWithEvidence"
   >;
   decisionService: NativeToolDecisionService;
   eventStore: Pick<NativeGuardEventStore, "append">;
@@ -566,6 +571,80 @@ export async function openClawNativeGuardRoutes(
     return success(result.response);
   });
 
+  app.post(`${BASE_PATH}/lifecycle/bind-child`, {
+    bodyLimit: 16 * 1024,
+    schema: { body: LIFECYCLE_BIND_SCHEMA },
+    onRequest: async (request, reply) => {
+      const credential = parseLeaseBearer(request.headers.authorization);
+      if (!credential) {
+        return reply.code(401).send(failure(
+          "NATIVE_GUARD_UNAUTHORIZED",
+          "Native guard authentication failed.",
+        ));
+      }
+      leaseBearers.set(request, credential);
+    },
+  }, async (request, reply) => {
+    const credential = leaseBearers.get(request);
+    const body = request.body as Parameters<NativeGuardLeaseService["bindChildWithEvidence"]>[0];
+    if (!credential || !dependencies.leaseService.authenticateEvidence(body.leaseId, credential)) {
+      return reply.code(401).send(failure(
+        "NATIVE_GUARD_UNAUTHORIZED",
+        "Native guard authentication failed.",
+      ));
+    }
+    if (!dependencies.coordinator.isLeaseUsable(body.leaseId)) {
+      return reply.code(409).send(failure(
+        "NATIVE_GUARD_LEASE_NOT_USABLE",
+        "Native guard lease is not active.",
+      ));
+    }
+    if (!dependencies.leaseService.bindChildWithEvidence(body, credential)) {
+      return reply.code(409).send(failure(
+        "NATIVE_GUARD_LIFECYCLE_CONFLICT",
+        "Native guard lifecycle binding does not match the active lease.",
+      ));
+    }
+    return success({ bound: true });
+  });
+
+  app.post(`${BASE_PATH}/lifecycle/end-session`, {
+    bodyLimit: 16 * 1024,
+    schema: { body: LIFECYCLE_END_SCHEMA },
+    onRequest: async (request, reply) => {
+      const credential = parseLeaseBearer(request.headers.authorization);
+      if (!credential) {
+        return reply.code(401).send(failure(
+          "NATIVE_GUARD_UNAUTHORIZED",
+          "Native guard authentication failed.",
+        ));
+      }
+      leaseBearers.set(request, credential);
+    },
+  }, async (request, reply) => {
+    const credential = leaseBearers.get(request);
+    const body = request.body as Parameters<NativeGuardLeaseService["endSessionWithEvidence"]>[0];
+    if (!credential || !dependencies.leaseService.authenticateEvidence(body.leaseId, credential)) {
+      return reply.code(401).send(failure(
+        "NATIVE_GUARD_UNAUTHORIZED",
+        "Native guard authentication failed.",
+      ));
+    }
+    if (!dependencies.coordinator.isLeaseUsable(body.leaseId)) {
+      return reply.code(409).send(failure(
+        "NATIVE_GUARD_LEASE_NOT_USABLE",
+        "Native guard lease is not active.",
+      ));
+    }
+    if (!dependencies.leaseService.endSessionWithEvidence(body, credential)) {
+      return reply.code(409).send(failure(
+        "NATIVE_GUARD_LIFECYCLE_CONFLICT",
+        "Native guard lifecycle end does not match the active lease.",
+      ));
+    }
+    return success({ ended: true });
+  });
+
   app.post(`${BASE_PATH}/events/batch`, {
     bodyLimit: 1024 * 1024,
     schema: { body: EVENT_BATCH_SCHEMA },
@@ -592,7 +671,7 @@ export async function openClawNativeGuardRoutes(
       if (
         credential &&
         events.every((event) =>
-          eventSessionAuthenticates(dependencies.leaseService, event, credential))
+          eventEvidenceAuthenticates(dependencies.leaseService, event, credential))
       ) return;
       return reply.code(401).send(failure(
         "NATIVE_GUARD_UNAUTHORIZED",
@@ -610,7 +689,7 @@ export async function openClawNativeGuardRoutes(
     const { events } = request.body as { events: NativeGuardEvent[] };
     for (const event of events) {
       const safeEvent = scrubExactSecret(event, credential) as NativeGuardEvent;
-      if (!eventSessionAuthenticates(
+      if (!eventEvidenceAuthenticates(
         dependencies.leaseService,
         event,
         credential,
@@ -636,7 +715,7 @@ export async function openClawNativeGuardRoutes(
       }
     }
     for (const event of events) {
-      if (!eventSessionAuthenticates(
+      if (!eventEvidenceAuthenticates(
         dependencies.leaseService,
         event,
         credential,
@@ -657,23 +736,20 @@ export async function openClawNativeGuardRoutes(
   });
 }
 
-function eventSessionAuthenticates(
+function eventEvidenceAuthenticates(
   leaseService: Pick<
     NativeGuardLeaseService,
-    "authenticate" | "resolveBySession"
+    "authorizeEvidence"
   >,
   event: NativeGuardEvent,
   credential: string,
 ): boolean {
   try {
-    const authenticated = leaseService.authenticate(event.leaseId, credential);
-    const sessionLease = leaseService.resolveBySession(event.sessionKey);
-    return Boolean(
-      authenticated &&
-      sessionLease &&
-      authenticated.leaseId === event.leaseId &&
-      sessionLease.leaseId === authenticated.leaseId &&
-      sessionLease.leaseEpoch === authenticated.leaseEpoch,
+    return leaseService.authorizeEvidence(
+      event.leaseId,
+      event.leaseEpoch,
+      event.sessionKey,
+      credential,
     );
   } catch {
     return false;
@@ -780,6 +856,29 @@ const DECISION_REQUEST_SCHEMA = {
   },
 } as const;
 
+const LIFECYCLE_BIND_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["leaseId", "leaseEpoch", "parentSessionKey", "childSessionKey"],
+  properties: {
+    leaseId: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+    leaseEpoch: { type: "integer", minimum: 1 },
+    parentSessionKey: { type: "string", minLength: 1, maxLength: 512 },
+    childSessionKey: { type: "string", minLength: 1, maxLength: 512 },
+  },
+} as const;
+
+const LIFECYCLE_END_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["leaseId", "leaseEpoch", "sessionKey"],
+  properties: {
+    leaseId: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+    leaseEpoch: { type: "integer", minimum: 1 },
+    sessionKey: { type: "string", minLength: 1, maxLength: 512 },
+  },
+} as const;
+
 const EVENT_BATCH_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -797,6 +896,7 @@ const EVENT_BATCH_SCHEMA = {
           "eventId",
           "type",
           "leaseId",
+          "leaseEpoch",
           "sessionKey",
           "timestamp",
           "detail",
@@ -823,6 +923,7 @@ const EVENT_BATCH_SCHEMA = {
             type: "string",
             pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
           },
+          leaseEpoch: { type: "integer", minimum: 1 },
           sessionKey: { type: "string", minLength: 1, maxLength: 512 },
           runId: { type: "string", minLength: 1, maxLength: 256 },
           toolCallId: { type: "string", minLength: 1, maxLength: 256 },

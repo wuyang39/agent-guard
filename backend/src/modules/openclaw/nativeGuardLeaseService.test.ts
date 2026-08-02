@@ -132,6 +132,118 @@ test("revocation invalidates authentication", () => {
   assert.equal(service.revoke(created.activation.leaseId), false);
 });
 
+test("evidence identity is separate and exclusively authorizes exact lifecycle binding", () => {
+  const service = createNativeGuardLeaseService({
+    now: () => new Date("2026-08-01T00:00:00.000Z"),
+  });
+  const activation = createLease(service, ROOT_SESSION_KEY);
+
+  assert.match(activation.evidenceCredential, /^[A-Za-z0-9_-]{43}$/);
+  assert.notEqual(activation.evidenceCredential, activation.credential);
+  assert.equal(
+    service.authenticateEvidence(activation.leaseId, activation.evidenceCredential)?.leaseEpoch,
+    1,
+  );
+  assert.equal(
+    service.authenticateEvidence(activation.leaseId, activation.credential),
+    undefined,
+  );
+  const binding = {
+    leaseId: activation.leaseId,
+    leaseEpoch: activation.leaseEpoch,
+    parentSessionKey: ROOT_SESSION_KEY,
+    childSessionKey: CHILD_SESSION_KEY,
+  };
+  assert.equal(service.bindChildWithEvidence(binding, activation.credential), false);
+  assert.equal(service.bindChildWithEvidence({ ...binding, leaseEpoch: 2 }, activation.evidenceCredential), false);
+  assert.equal(service.bindChildWithEvidence({ ...binding, parentSessionKey: "missing" }, activation.evidenceCredential), false);
+  assert.equal(service.bindChildWithEvidence(binding, activation.evidenceCredential), true);
+  assert.equal(service.resolveBySession(CHILD_SESSION_KEY)?.leaseId, activation.leaseId);
+});
+
+test("ended child remains evidence-authorized for its original epoch but not for decisions", () => {
+  const service = createNativeGuardLeaseService({
+    now: () => new Date("2026-08-01T00:00:00.000Z"),
+  });
+  const activation = createLease(service, ROOT_SESSION_KEY);
+  assert.equal(service.bindChildWithEvidence({
+    leaseId: activation.leaseId,
+    leaseEpoch: 1,
+    parentSessionKey: ROOT_SESSION_KEY,
+    childSessionKey: CHILD_SESSION_KEY,
+  }, activation.evidenceCredential), true);
+
+  assert.equal(service.endSessionWithEvidence({
+    leaseId: activation.leaseId,
+    leaseEpoch: 1,
+    sessionKey: CHILD_SESSION_KEY,
+  }, activation.evidenceCredential), true);
+
+  assert.equal(service.resolveBySession(CHILD_SESSION_KEY), undefined);
+  assert.equal(service.authorizeEvidence(
+    activation.leaseId,
+    1,
+    CHILD_SESSION_KEY,
+    activation.evidenceCredential,
+  ), true);
+  assert.equal(service.authorizeEvidence(
+    activation.leaseId,
+    2,
+    CHILD_SESSION_KEY,
+    activation.evidenceCredential,
+  ), false);
+  assert.equal(service.authorizeEvidence(
+    activation.leaseId,
+    1,
+    "agent:guard:never-bound",
+    activation.evidenceCredential,
+  ), false);
+});
+
+test("renewal rotates both identities and current evidence identity uploads old-epoch history", () => {
+  let nowMs = Date.parse("2026-08-01T00:00:00.000Z");
+  const service = createNativeGuardLeaseService({ now: () => nowMs });
+  const first = createLease(service, ROOT_SESSION_KEY);
+  assert.equal(service.bindChildWithEvidence({
+    leaseId: first.leaseId,
+    leaseEpoch: 1,
+    parentSessionKey: ROOT_SESSION_KEY,
+    childSessionKey: CHILD_SESSION_KEY,
+  }, first.evidenceCredential), true);
+  assert.equal(service.endSessionWithEvidence({
+    leaseId: first.leaseId,
+    leaseEpoch: 1,
+    sessionKey: CHILD_SESSION_KEY,
+  }, first.evidenceCredential), true);
+
+  nowMs += 1_000;
+  const renewed = service.renew(first.leaseId);
+  assert.notEqual(renewed.credential, first.credential);
+  assert.notEqual(renewed.evidenceCredential, first.evidenceCredential);
+  assert.equal(service.authenticate(first.leaseId, first.credential), undefined);
+  assert.equal(service.authenticateEvidence(first.leaseId, first.evidenceCredential), undefined);
+  assert.equal(service.authenticate(first.leaseId, renewed.credential)?.leaseEpoch, 2);
+  assert.equal(service.authenticateEvidence(first.leaseId, renewed.evidenceCredential)?.leaseEpoch, 2);
+  assert.equal(service.authorizeEvidence(
+    first.leaseId,
+    1,
+    CHILD_SESSION_KEY,
+    first.evidenceCredential,
+  ), false);
+  assert.equal(service.authorizeEvidence(
+    first.leaseId,
+    1,
+    CHILD_SESSION_KEY,
+    renewed.evidenceCredential,
+  ), true);
+  assert.equal(service.authorizeEvidence(
+    first.leaseId,
+    3,
+    CHILD_SESSION_KEY,
+    renewed.evidenceCredential,
+  ), false);
+});
+
 describe("security and recovery boundaries", () => {
   test("rejects wrong credentials, unknown sessions, and unproven child relationships", () => {
     const now = new Date("2026-08-01T00:00:00.000Z");

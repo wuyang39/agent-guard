@@ -94,6 +94,7 @@ function activation(
     issuedAt: NOW,
     expiresAt: "2026-08-02T00:05:00.000Z",
     credential: "credential.1",
+    evidenceCredential: "evidence-credential.1",
     ...overrides,
   };
 }
@@ -440,6 +441,7 @@ test("renew requires a greater epoch and rotated credential then replaces active
     issuedAt: "2026-08-02T00:01:00.000Z",
     expiresAt: "2026-08-02T00:06:00.000Z",
     credential: "credential.2",
+    evidenceCredential: "evidence-credential.2",
   }));
 
   const current = await registry.lookup("agent:guard:root.1");
@@ -484,7 +486,11 @@ test("renew marker failure rolls back to the prior active lease", async () => {
   await registry.activate(activation());
   store.failWrite = true;
 
-  await assert.rejects(registry.renew(activation({ leaseEpoch: 2, credential: "credential.2" })), /marker write failed/);
+  await assert.rejects(registry.renew(activation({
+    leaseEpoch: 2,
+    credential: "credential.2",
+    evidenceCredential: "evidence-credential.2",
+  })), /marker write failed/);
 
   const current = await registry.lookup("agent:guard:root.1");
   assert.equal(current.state, "active");
@@ -606,6 +612,112 @@ test("bindChild requires a bound parent and persists sorted unique child keys", 
     "agent:guard:child.1",
     "agent:guard:child.2",
   ]);
+});
+
+test("child binding intent blocks the whole lease until backend acknowledgement commits", async () => {
+  const store = new MemoryMarkerStore();
+  const registry = new LeaseRegistry({ markerStore: store, now: () => new Date(NOW) });
+  await registry.start();
+  await registry.activate(activation());
+
+  assert.equal(await registry.prepareChildBinding(
+    "lease.1",
+    "agent:guard:root.1",
+    "agent:guard:child",
+  ), true);
+  assert.equal((await registry.lookup("agent:guard:root.1")).state, "lifecycle_pending");
+  assert.equal((await registry.lookup("agent:guard:child")).state, "lifecycle_pending");
+  assert.deepEqual(await registry.pendingLifecycle("lease.1"), {
+    kind: "bind_child",
+    parentSessionKey: "agent:guard:root.1",
+    childSessionKey: "agent:guard:child",
+  });
+  assert.deepEqual(store.writes.at(-1)?.lifecycleIntent, {
+    kind: "bind_child",
+    parentSessionKey: "agent:guard:root.1",
+    childSessionKey: "agent:guard:child",
+  });
+
+  assert.equal(await registry.completeChildBinding(
+    "lease.1",
+    "agent:guard:root.1",
+    "agent:guard:child",
+  ), true);
+  assert.equal((await registry.lookup("agent:guard:root.1")).state, "active");
+  assert.equal((await registry.lookup("agent:guard:child")).state, "active");
+  assert.equal(await registry.pendingLifecycle("lease.1"), undefined);
+});
+
+test("binding intent write failure leaves no child window and commit failure stays blocking", async () => {
+  const store = new MemoryMarkerStore();
+  const registry = new LeaseRegistry({ markerStore: store, now: () => new Date(NOW) });
+  await registry.start();
+  await registry.activate(activation());
+  store.failWrite = true;
+  await assert.rejects(registry.prepareChildBinding(
+    "lease.1",
+    "agent:guard:root.1",
+    "agent:guard:child",
+  ), /marker write failed/);
+  assert.equal((await registry.lookup("agent:guard:root.1")).state, "active");
+  assert.deepEqual(await registry.lookup("agent:guard:child"), { state: "off" });
+
+  store.failWrite = false;
+  await registry.prepareChildBinding(
+    "lease.1",
+    "agent:guard:root.1",
+    "agent:guard:child",
+  );
+  store.failWrite = true;
+  await assert.rejects(registry.completeChildBinding(
+    "lease.1",
+    "agent:guard:root.1",
+    "agent:guard:child",
+  ), /marker write failed/);
+  assert.equal((await registry.lookup("agent:guard:root.1")).state, "lifecycle_pending");
+  assert.equal((await registry.lookup("agent:guard:child")).state, "lifecycle_pending");
+});
+
+test("lifecycle intent survives restart and reactivation without a low-risk recovery window", async () => {
+  const store = new MemoryMarkerStore();
+  const active = new LeaseRegistry({ markerStore: store, now: () => new Date(NOW) });
+  await active.start();
+  await active.activate(activation());
+  await active.prepareChildBinding(
+    "lease.1",
+    "agent:guard:root.1",
+    "agent:guard:child",
+  );
+
+  const restarted = new LeaseRegistry({ markerStore: store, now: () => new Date(NOW) });
+  await restarted.start();
+  assert.equal((await restarted.lookup("agent:guard:root.1")).state, "lifecycle_pending");
+  assert.equal((await restarted.lookup("agent:guard:child")).state, "lifecycle_pending");
+  await restarted.activate(activation());
+  assert.equal((await restarted.lookup("agent:guard:root.1")).state, "lifecycle_pending");
+  assert.deepEqual(await restarted.pendingLifecycle("lease.1"), {
+    kind: "bind_child",
+    parentSessionKey: "agent:guard:root.1",
+    childSessionKey: "agent:guard:child",
+  });
+});
+
+test("session ending intent blocks before backend history acknowledgement and commits removal", async () => {
+  const store = new MemoryMarkerStore();
+  const registry = new LeaseRegistry({ markerStore: store, now: () => new Date(NOW) });
+  await registry.start();
+  await registry.activate(activation());
+  await registry.bindChild("lease.1", "agent:guard:root.1", "agent:guard:child");
+
+  assert.deepEqual(await registry.prepareSessionEnd("agent:guard:child"), {
+    kind: "end_session",
+    sessionKey: "agent:guard:child",
+  });
+  assert.equal((await registry.lookup("agent:guard:root.1")).state, "lifecycle_pending");
+  assert.equal((await registry.lookup("agent:guard:child")).state, "lifecycle_pending");
+  assert.equal(await registry.completeSessionEnd("lease.1", "agent:guard:child"), true);
+  assert.equal((await registry.lookup("agent:guard:root.1")).state, "active");
+  assert.deepEqual(await registry.lookup("agent:guard:child"), { state: "off" });
 });
 
 test("bindChild rejects cross-lease collisions and marker failure rolls back", async () => {
@@ -738,6 +850,7 @@ test("multiple independent session trees report a truthful count without singula
     leaseId: "lease.2",
     rootSessionKey: "agent:guard:root.2",
     credential: "credential.2",
+    evidenceCredential: "evidence-credential.2",
   }));
 
   assert.deepEqual(await registry.status(), {
@@ -849,6 +962,7 @@ test("filesystem store atomically replaces the same lease marker during renew", 
   await registry.renew(activation({
     leaseEpoch: 2,
     credential: "credential.2",
+    evidenceCredential: "evidence-credential.2",
     expiresAt: "2026-08-02T00:06:00.000Z",
   }));
 

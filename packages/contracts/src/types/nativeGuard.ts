@@ -30,6 +30,7 @@ export type NativeGuardLeaseActivation = {
   issuedAt: string;
   expiresAt: string;
   credential: string;
+  evidenceCredential: string;
 };
 
 export type NativeToolDecisionRequest = {
@@ -83,6 +84,7 @@ export type NativeGuardEvent = {
     | "sandbox_attested"
     | "coverage_changed";
   leaseId: string;
+  leaseEpoch: number;
   sessionKey: string;
   runId?: string;
   toolCallId?: string;

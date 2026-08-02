@@ -493,6 +493,7 @@ export function createNativeToolDecisionService(
           eventId: createId("native_guard_event"),
           type: "decision",
           leaseId: request.leaseId,
+          leaseEpoch: request.leaseEpoch,
           sessionKey: request.sessionKey,
           ...(request.runId ? { runId: request.runId } : {}),
           toolCallId: request.toolCallId,

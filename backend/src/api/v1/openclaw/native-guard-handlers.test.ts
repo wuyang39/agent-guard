@@ -23,6 +23,132 @@ const require = createRequire(import.meta.url);
 
 const CONTROL_TOKEN = "operator-control-token";
 const LEASE_CREDENTIAL = "lease-credential";
+const EVIDENCE_CREDENTIAL = "evidence-credential";
+
+test("evidence-only lifecycle binding rejects decision bearer and exact identity mismatches", async () => {
+  const fixture = createRealDecisionFixture();
+  const app = await createApp(fixture.dependencies);
+  const binding = {
+    leaseId: fixture.activation.leaseId,
+    leaseEpoch: fixture.activation.leaseEpoch,
+    parentSessionKey: fixture.activation.rootSessionKey,
+    childSessionKey: "session.fastify:child",
+  };
+
+  const decisionBearer = await app.inject({
+    method: "POST",
+    url: "/api/v1/openclaw/native-guard/lifecycle/bind-child",
+    headers: { authorization: `Bearer ${fixture.activation.credential}` },
+    payload: binding,
+  });
+  assert.equal(decisionBearer.statusCode, 401);
+
+  for (const [mismatch, expectedStatus] of [
+    [{ ...binding, leaseId: `${binding.leaseId}-wrong` }, 401],
+    [{ ...binding, leaseEpoch: binding.leaseEpoch + 1 }, 409],
+    [{ ...binding, parentSessionKey: "session.fastify:missing" }, 409],
+  ] as const) {
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/openclaw/native-guard/lifecycle/bind-child",
+      headers: { authorization: `Bearer ${fixture.activation.evidenceCredential}` },
+      payload: mismatch,
+    });
+    assert.equal(response.statusCode, expectedStatus);
+  }
+
+  const bound = await app.inject({
+    method: "POST",
+    url: "/api/v1/openclaw/native-guard/lifecycle/bind-child",
+    headers: { authorization: `Bearer ${fixture.activation.evidenceCredential}` },
+    payload: binding,
+  });
+  assert.equal(bound.statusCode, 200);
+
+  const childDecision = await app.inject({
+    method: "POST",
+    url: "/api/v1/openclaw/native-guard/decision",
+    headers: { authorization: `Bearer ${fixture.activation.credential}` },
+    payload: fixture.requestForSession({}, "bound-child", binding.childSessionKey),
+  });
+  assert.equal(childDecision.statusCode, 200);
+  await app.close();
+});
+
+test("ended child rejects decisions while historical evidence survives renewal with new identity", async () => {
+  const fixture = createRealDecisionFixture();
+  const app = await createApp(fixture.dependencies);
+  const childSessionKey = "session.fastify:historical-child";
+  const binding = {
+    leaseId: fixture.activation.leaseId,
+    leaseEpoch: 1,
+    parentSessionKey: fixture.activation.rootSessionKey,
+    childSessionKey,
+  };
+  assert.equal((await app.inject({
+    method: "POST",
+    url: "/api/v1/openclaw/native-guard/lifecycle/bind-child",
+    headers: { authorization: `Bearer ${fixture.activation.evidenceCredential}` },
+    payload: binding,
+  })).statusCode, 200);
+  assert.equal((await app.inject({
+    method: "POST",
+    url: "/api/v1/openclaw/native-guard/lifecycle/end-session",
+    headers: { authorization: `Bearer ${fixture.activation.evidenceCredential}` },
+    payload: {
+      leaseId: fixture.activation.leaseId,
+      leaseEpoch: 1,
+      sessionKey: childSessionKey,
+    },
+  })).statusCode, 200);
+
+  const deniedDecision = await app.inject({
+    method: "POST",
+    url: "/api/v1/openclaw/native-guard/decision",
+    headers: { authorization: `Bearer ${fixture.activation.credential}` },
+    payload: fixture.requestForSession({}, "ended-child", childSessionKey),
+  });
+  assert.notEqual(deniedDecision.statusCode, 200);
+
+  const evidence = nativeEvent({
+    eventId: "event-historical-child",
+    leaseId: fixture.activation.leaseId,
+    leaseEpoch: 1,
+    sessionKey: childSessionKey,
+  });
+  const decisionIdentityUpload = await app.inject({
+    method: "POST",
+    url: "/api/v1/openclaw/native-guard/events/batch",
+    headers: { authorization: `Bearer ${fixture.activation.credential}` },
+    payload: { events: [evidence] },
+  });
+  assert.equal(decisionIdentityUpload.statusCode, 401);
+
+  const firstEvidenceUpload = await app.inject({
+    method: "POST",
+    url: "/api/v1/openclaw/native-guard/events/batch",
+    headers: { authorization: `Bearer ${fixture.activation.evidenceCredential}` },
+    payload: { events: [evidence] },
+  });
+  assert.equal(firstEvidenceUpload.statusCode, 200);
+
+  const renewed = fixture.leaseService.renew(fixture.activation.leaseId);
+  const oldEvidenceIdentity = await app.inject({
+    method: "POST",
+    url: "/api/v1/openclaw/native-guard/events/batch",
+    headers: { authorization: `Bearer ${fixture.activation.evidenceCredential}` },
+    payload: { events: [{ ...evidence, eventId: "event-old-evidence-id" }] },
+  });
+  assert.equal(oldEvidenceIdentity.statusCode, 401);
+  const renewedEvidenceIdentity = await app.inject({
+    method: "POST",
+    url: "/api/v1/openclaw/native-guard/events/batch",
+    headers: { authorization: `Bearer ${renewed.evidenceCredential}` },
+    payload: { events: [{ ...evidence, eventId: "event-new-evidence-id" }] },
+  });
+  assert.equal(renewedEvidenceIdentity.statusCode, 200);
+  await app.close();
+});
 
 test("management status rejects a missing control token without coordinator work", async () => {
   const fixture = createFixture();
@@ -481,11 +607,11 @@ test("event batch gates every append and recursively scrubs the exact bearer", a
     nativeEvent({
       eventId: "event-1",
       detail: {
-        message: `prefix ${LEASE_CREDENTIAL} suffix`,
+        message: `prefix ${EVIDENCE_CREDENTIAL} suffix`,
         value: {
-          [LEASE_CREDENTIAL]: [
-            `Bearer ${LEASE_CREDENTIAL}`,
-            { nested: LEASE_CREDENTIAL },
+          [EVIDENCE_CREDENTIAL]: [
+            `Bearer ${EVIDENCE_CREDENTIAL}`,
+            { nested: EVIDENCE_CREDENTIAL },
           ],
         },
       },
@@ -496,7 +622,7 @@ test("event batch gates every append and recursively scrubs the exact bearer", a
   const response = await app.inject({
     method: "POST",
     url: "/api/v1/openclaw/native-guard/events/batch",
-    headers: { authorization: `Bearer ${LEASE_CREDENTIAL}` },
+    headers: { authorization: `Bearer ${EVIDENCE_CREDENTIAL}` },
     payload: { events },
   });
 
@@ -505,9 +631,9 @@ test("event batch gates every append and recursively scrubs the exact bearer", a
   assert.equal(fixture.calls.append, 2);
   assert.equal(fixture.calls.usable, 4);
   const persisted = JSON.stringify(fixture.calls.appendedEvents);
-  assert.equal(persisted.includes(LEASE_CREDENTIAL), false);
+  assert.equal(persisted.includes(EVIDENCE_CREDENTIAL), false);
   assert.equal(persisted.includes("[REDACTED]"), true);
-  assert.equal(response.body.includes(LEASE_CREDENTIAL), false);
+  assert.equal(response.body.includes(EVIDENCE_CREDENTIAL), false);
   await app.close();
 });
 
@@ -806,7 +932,7 @@ test("event batch stops before the next append when its lease becomes unusable",
   const response = await app.inject({
     method: "POST",
     url: "/api/v1/openclaw/native-guard/events/batch",
-    headers: { authorization: `Bearer ${LEASE_CREDENTIAL}` },
+    headers: { authorization: `Bearer ${EVIDENCE_CREDENTIAL}` },
     payload: {
       events: [
         nativeEvent({ eventId: "event-1" }),
@@ -989,16 +1115,16 @@ test("system status creates a missing output directory before marking it availab
 
 test("event batch rejects an authenticated lease whose event session is not bound", async () => {
   const fixture = createFixture();
-  fixture.dependencies.leaseService.resolveBySession = () => {
+  fixture.dependencies.leaseService.authorizeEvidence = () => {
     fixture.calls.resolveSession += 1;
-    return undefined;
+    return false;
   };
   const app = await createApp(fixture.dependencies);
 
   const response = await app.inject({
     method: "POST",
     url: "/api/v1/openclaw/native-guard/events/batch",
-    headers: { authorization: `Bearer ${LEASE_CREDENTIAL}` },
+    headers: { authorization: `Bearer ${EVIDENCE_CREDENTIAL}` },
     payload: { events: [nativeEvent()] },
   });
 
@@ -1013,11 +1139,9 @@ test("event batch stops after credential rotation while the first append is pend
   const appendStarted = deferred<void>();
   const releaseAppend = deferred<void>();
   let credentialCurrent = true;
-  fixture.dependencies.leaseService.authenticate = (leaseId, credential) => {
+  fixture.dependencies.leaseService.authorizeEvidence = (_leaseId, _leaseEpoch, _sessionKey, credential) => {
     fixture.calls.authenticate += 1;
-    return credentialCurrent && credential === LEASE_CREDENTIAL
-      ? leaseSnapshot(leaseId)
-      : undefined;
+    return credentialCurrent && credential === EVIDENCE_CREDENTIAL;
   };
   fixture.dependencies.eventStore.append = async (event) => {
     fixture.calls.append += 1;
@@ -1033,7 +1157,7 @@ test("event batch stops after credential rotation while the first append is pend
   const responsePromise = app.inject({
     method: "POST",
     url: "/api/v1/openclaw/native-guard/events/batch",
-    headers: { authorization: `Bearer ${LEASE_CREDENTIAL}` },
+    headers: { authorization: `Bearer ${EVIDENCE_CREDENTIAL}` },
     payload: {
       events: [
         nativeEvent({ eventId: "event-1" }),
@@ -1054,9 +1178,9 @@ test("event batch stops after credential rotation while the first append is pend
 test("event batch stops when a later event session becomes unbound", async () => {
   const fixture = createFixture();
   let sessionBound = true;
-  fixture.dependencies.leaseService.resolveBySession = (sessionKey) => {
+  fixture.dependencies.leaseService.authorizeEvidence = (_leaseId, _leaseEpoch, sessionKey) => {
     fixture.calls.resolveSession += 1;
-    return sessionBound ? leaseSnapshot("lease-1", 1, sessionKey) : undefined;
+    return sessionBound && sessionKey.length > 0;
   };
   fixture.dependencies.eventStore.append = async (event) => {
     fixture.calls.append += 1;
@@ -1069,7 +1193,7 @@ test("event batch stops when a later event session becomes unbound", async () =>
   const response = await app.inject({
     method: "POST",
     url: "/api/v1/openclaw/native-guard/events/batch",
-    headers: { authorization: `Bearer ${LEASE_CREDENTIAL}` },
+    headers: { authorization: `Bearer ${EVIDENCE_CREDENTIAL}` },
     payload: {
       events: [
         nativeEvent({ eventId: "event-1" }),
@@ -1945,6 +2069,20 @@ function createFixture() {
         calls.resolveSession += 1;
         return leaseSnapshot("lease-1", 1, sessionKey);
       },
+      authenticateEvidence(leaseId, credential) {
+        return credential === EVIDENCE_CREDENTIAL
+          ? leaseSnapshot(leaseId)
+          : undefined;
+      },
+      authorizeEvidence(leaseId, leaseEpoch, sessionKey, credential) {
+        calls.authenticate += 1;
+        return credential === EVIDENCE_CREDENTIAL &&
+          leaseId === "lease-1" &&
+          leaseEpoch === 1 &&
+          sessionKey.length > 0;
+      },
+      bindChildWithEvidence() { return false; },
+      endSessionWithEvidence() { return false; },
     },
     decisionService: {
       async decide(_request, credential) {
@@ -2023,6 +2161,7 @@ function createRealDecisionFixture() {
   });
   return {
     activation,
+    leaseService,
     appended,
     dependencies: fixture.dependencies,
     request(params: Record<string, unknown>, suffix: string) {
@@ -2036,6 +2175,16 @@ function createRealDecisionFixture() {
         params,
         paramsDigest: digestJson(params),
         requestedAt: "2026-08-02T10:00:00.000Z",
+      };
+    },
+    requestForSession(
+      params: Record<string, unknown>,
+      suffix: string,
+      sessionKey: string,
+    ) {
+      return {
+        ...this.request(params, suffix),
+        sessionKey,
       };
     },
   };
@@ -2086,6 +2235,7 @@ function nativeEvent(overrides: Record<string, unknown> = {}) {
     eventId: "event-1",
     type: "tool_outcome",
     leaseId: "lease-1",
+    leaseEpoch: 1,
     sessionKey: "session-1",
     runId: "run-1",
     toolCallId: "tool-call-1",

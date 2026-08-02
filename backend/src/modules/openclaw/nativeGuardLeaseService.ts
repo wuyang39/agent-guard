@@ -34,10 +34,23 @@ export type CreateLeaseInput = {
 
 export type ActiveNativeGuardLease = Omit<
   NativeGuardLeaseActivation,
-  "credential"
+  "credential" | "evidenceCredential"
 > & {
   state: "active";
   policyPack: SupervisionPolicyPack;
+};
+
+export type NativeGuardChildBindingInput = {
+  leaseId: string;
+  leaseEpoch: number;
+  parentSessionKey: string;
+  childSessionKey: string;
+};
+
+export type NativeGuardSessionEndInput = {
+  leaseId: string;
+  leaseEpoch: number;
+  sessionKey: string;
 };
 
 export type NativeGuardLeaseService = {
@@ -45,9 +58,18 @@ export type NativeGuardLeaseService = {
   renew(leaseId: string, ttlMs?: number): NativeGuardLeaseActivation;
   revoke(leaseId: string): boolean;
   authenticate(leaseId: string, credential: string): ActiveNativeGuardLease | undefined;
+  authenticateEvidence(leaseId: string, credential: string): ActiveNativeGuardLease | undefined;
+  authorizeEvidence(
+    leaseId: string,
+    leaseEpoch: number,
+    sessionKey: string,
+    credential: string,
+  ): boolean;
   resolveBySession(sessionKey: string): ActiveNativeGuardLease | undefined;
   bindChild(leaseId: string, parentSessionKey: string, childSessionKey: string): boolean;
+  bindChildWithEvidence(input: NativeGuardChildBindingInput, credential: string): boolean;
   endSession(sessionKey: string): void;
+  endSessionWithEvidence(input: NativeGuardSessionEndInput, credential: string): boolean;
   signDecision(leaseId: string, response: Omit<NativeToolDecisionResponse, "signature">): string;
   status(): NativeGuardStatus;
 };
@@ -67,6 +89,7 @@ type StoredLease = {
   decisionPublicKey: string;
   privateKey: KeyObject;
   credentialHash: Buffer;
+  evidenceCredentialHash: Buffer;
   issuedAtMs: number;
   expiresAtMs: number;
   policyExpiresAtMs?: number;
@@ -74,8 +97,15 @@ type StoredLease = {
 
 type SessionBinding = {
   leaseId: string;
+  boundEpoch: number;
   parentSessionKey?: string;
   children: Set<string>;
+};
+
+type HistoricalSessionBinding = {
+  leaseId: string;
+  boundEpoch: number;
+  endedEpoch: number;
 };
 
 export function createNativeGuardLeaseService(
@@ -84,6 +114,7 @@ export function createNativeGuardLeaseService(
   const now = options.now ?? (() => new Date());
   const leases = new Map<string, StoredLease>();
   const sessions = new Map<string, SessionBinding>();
+  const historicalSessions = new Map<string, HistoricalSessionBinding[]>();
 
   function currentTimeMs(): number {
     const value = now();
@@ -118,6 +149,11 @@ export function createNativeGuardLeaseService(
         sessions.delete(sessionKey);
       }
     }
+    for (const [sessionKey, bindings] of historicalSessions) {
+      const retained = bindings.filter((binding) => binding.leaseId !== leaseId);
+      if (retained.length === 0) historicalSessions.delete(sessionKey);
+      else historicalSessions.set(sessionKey, retained);
+    }
     return true;
   }
 
@@ -126,9 +162,50 @@ export function createNativeGuardLeaseService(
     return { credential, credentialHash: hashCredential(credential) };
   }
 
+  function serviceForEvidence(
+    leaseId: string,
+    credential: string,
+  ): StoredLease | undefined {
+    if (typeof leaseId !== "string" || typeof credential !== "string") return undefined;
+    const lease = leases.get(leaseId);
+    if (lease === undefined) return undefined;
+    const candidateHash = hashCredential(credential);
+    return timingSafeEqual(candidateHash, lease.evidenceCredentialHash)
+      ? lease
+      : undefined;
+  }
+
+  function bindChildAtEpoch(
+    lease: StoredLease,
+    parentSessionKey: string,
+    childSessionKey: string,
+  ): boolean {
+    if (
+      !validSessionKey(parentSessionKey) ||
+      !validSessionKey(childSessionKey) ||
+      parentSessionKey === childSessionKey
+    ) return false;
+    const existing = sessions.get(childSessionKey);
+    if (existing !== undefined) {
+      return existing.leaseId === lease.leaseId &&
+        existing.parentSessionKey === parentSessionKey;
+    }
+    const parent = sessions.get(parentSessionKey);
+    if (!parent || parent.leaseId !== lease.leaseId) return false;
+    parent.children.add(childSessionKey);
+    sessions.set(childSessionKey, {
+      leaseId: lease.leaseId,
+      boundEpoch: lease.leaseEpoch,
+      parentSessionKey,
+      children: new Set(),
+    });
+    return true;
+  }
+
   function activationFor(
     lease: StoredLease,
     credential: string,
+    evidenceCredential: string,
   ): NativeGuardLeaseActivation {
     return {
       schemaVersion: "native-guard-1",
@@ -145,6 +222,7 @@ export function createNativeGuardLeaseService(
       issuedAt: new Date(lease.issuedAtMs).toISOString(),
       expiresAt: new Date(lease.expiresAtMs).toISOString(),
       credential,
+      evidenceCredential,
     };
   }
 
@@ -213,6 +291,10 @@ export function createNativeGuardLeaseService(
       const leaseId = randomUUID();
       const { publicKey, privateKey } = generateKeyPairSync("ed25519");
       const { credential, credentialHash } = createCredential();
+      const {
+        credential: evidenceCredential,
+        credentialHash: evidenceCredentialHash,
+      } = createCredential();
       const lease: StoredLease = {
         leaseId,
         leaseEpoch: 1,
@@ -224,13 +306,17 @@ export function createNativeGuardLeaseService(
         decisionPublicKey: publicKey.export({ type: "spki", format: "pem" }).toString(),
         privateKey,
         credentialHash,
+        evidenceCredentialHash,
         issuedAtMs,
         expiresAtMs: clampExpiry(issuedAtMs, ttlMs, policyExpiresAtMs),
         policyExpiresAtMs,
       };
       leases.set(leaseId, lease);
-      sessions.set(input.rootSessionKey, { leaseId, children: new Set() });
-      return { activation: activationFor(lease, credential), status: status() };
+      sessions.set(input.rootSessionKey, { leaseId, boundEpoch: 1, children: new Set() });
+      return {
+        activation: activationFor(lease, credential, evidenceCredential),
+        status: status(),
+      };
     },
 
     renew(leaseId: string, ttlMs = DEFAULT_TTL_MS): NativeGuardLeaseActivation {
@@ -241,15 +327,20 @@ export function createNativeGuardLeaseService(
       const validTtlMs = validateTtl(ttlMs);
       const issuedAtMs = currentTimeMs();
       const { credential, credentialHash } = createCredential();
+      const {
+        credential: evidenceCredential,
+        credentialHash: evidenceCredentialHash,
+      } = createCredential();
       lease.leaseEpoch += 1;
       lease.credentialHash = credentialHash;
+      lease.evidenceCredentialHash = evidenceCredentialHash;
       lease.issuedAtMs = issuedAtMs;
       lease.expiresAtMs = clampExpiry(
         issuedAtMs,
         validTtlMs,
         lease.policyExpiresAtMs,
       );
-      return activationFor(lease, credential);
+      return activationFor(lease, credential, evidenceCredential);
     },
 
     revoke(leaseId: string): boolean {
@@ -271,6 +362,46 @@ export function createNativeGuardLeaseService(
         : undefined;
     },
 
+    authenticateEvidence(
+      leaseId: string,
+      credential: string,
+    ): ActiveNativeGuardLease | undefined {
+      cleanExpired();
+      const lease = leases.get(leaseId);
+      if (!lease || typeof credential !== "string") return undefined;
+      const candidateHash = hashCredential(credential);
+      return timingSafeEqual(candidateHash, lease.evidenceCredentialHash)
+        ? activeLeaseFor(lease)
+        : undefined;
+    },
+
+    authorizeEvidence(
+      leaseId: string,
+      leaseEpoch: number,
+      sessionKey: string,
+      credential: string,
+    ): boolean {
+      cleanExpired();
+      const lease = leases.get(leaseId);
+      if (
+        !lease ||
+        !Number.isSafeInteger(leaseEpoch) ||
+        leaseEpoch <= 0 ||
+        leaseEpoch > lease.leaseEpoch ||
+        typeof sessionKey !== "string" ||
+        serviceForEvidence(leaseId, credential) === undefined
+      ) return false;
+      const live = sessions.get(sessionKey);
+      if (
+        live?.leaseId === leaseId &&
+        live.boundEpoch <= leaseEpoch
+      ) return true;
+      return historicalSessions.get(sessionKey)?.some((binding) =>
+        binding.leaseId === leaseId &&
+        binding.boundEpoch <= leaseEpoch &&
+        leaseEpoch <= binding.endedEpoch) === true;
+    },
+
     resolveBySession(sessionKey: string): ActiveNativeGuardLease | undefined {
       cleanExpired();
       const binding = sessions.get(sessionKey);
@@ -285,17 +416,25 @@ export function createNativeGuardLeaseService(
       childSessionKey: string,
     ): boolean {
       cleanExpired();
-      if (!leases.has(leaseId) || sessions.has(childSessionKey)) return false;
-      const parent = sessions.get(parentSessionKey);
-      if (!parent || parent.leaseId !== leaseId) return false;
+      const lease = leases.get(leaseId);
+      return lease === undefined
+        ? false
+        : bindChildAtEpoch(lease, parentSessionKey, childSessionKey);
+    },
 
-      parent.children.add(childSessionKey);
-      sessions.set(childSessionKey, {
-        leaseId,
-        parentSessionKey,
-        children: new Set(),
-      });
-      return true;
+    bindChildWithEvidence(
+      input: NativeGuardChildBindingInput,
+      credential: string,
+    ): boolean {
+      cleanExpired();
+      const lease = serviceForEvidence(input.leaseId, credential);
+      if (
+        lease === undefined ||
+        input.leaseEpoch !== lease.leaseEpoch ||
+        !validSessionKey(input.parentSessionKey) ||
+        !validSessionKey(input.childSessionKey)
+      ) return false;
+      return bindChildAtEpoch(lease, input.parentSessionKey, input.childSessionKey);
     },
 
     endSession(sessionKey: string): void {
@@ -307,7 +446,41 @@ export function createNativeGuardLeaseService(
         removeLease(binding.leaseId);
         return;
       }
-      removeSessionTree(sessionKey, sessions);
+      archiveAndRemoveSessionTree(
+        sessionKey,
+        binding.leaseId,
+        lease!.leaseEpoch,
+        sessions,
+        historicalSessions,
+      );
+    },
+
+    endSessionWithEvidence(
+      input: NativeGuardSessionEndInput,
+      credential: string,
+    ): boolean {
+      cleanExpired();
+      const lease = serviceForEvidence(input.leaseId, credential);
+      if (
+        lease === undefined ||
+        input.leaseEpoch !== lease.leaseEpoch ||
+        !validSessionKey(input.sessionKey)
+      ) return false;
+      const binding = sessions.get(input.sessionKey);
+      if (binding === undefined) {
+        return historicalSessions.get(input.sessionKey)?.some((historical) =>
+          historical.leaseId === input.leaseId) === true;
+      }
+      if (binding.leaseId !== input.leaseId) return false;
+      if (lease.rootSessionKey === input.sessionKey) return removeLease(input.leaseId);
+      archiveAndRemoveSessionTree(
+        input.sessionKey,
+        input.leaseId,
+        lease.leaseEpoch,
+        sessions,
+        historicalSessions,
+      );
+      return true;
     },
 
     signDecision(
@@ -386,9 +559,12 @@ function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
   return Object.freeze(value);
 }
 
-function removeSessionTree(
+function archiveAndRemoveSessionTree(
   sessionKey: string,
+  leaseId: string,
+  endedEpoch: number,
   sessions: Map<string, SessionBinding>,
+  historicalSessions: Map<string, HistoricalSessionBinding[]>,
 ): void {
   const rootBinding = sessions.get(sessionKey);
   if (!rootBinding) return;
@@ -396,7 +572,6 @@ function removeSessionTree(
   if (rootBinding.parentSessionKey) {
     sessions.get(rootBinding.parentSessionKey)?.children.delete(sessionKey);
   }
-  const leaseId = rootBinding.leaseId;
   const pending = [sessionKey];
   const visited = new Set<string>();
   while (pending.length > 0) {
@@ -408,6 +583,21 @@ function removeSessionTree(
     for (const childSessionKey of binding.children) {
       pending.push(childSessionKey);
     }
+    const history = historicalSessions.get(currentSessionKey) ?? [];
+    if (!history.some((entry) =>
+      entry.leaseId === leaseId &&
+      entry.boundEpoch === binding.boundEpoch &&
+      entry.endedEpoch === endedEpoch)) {
+      history.push({ leaseId, boundEpoch: binding.boundEpoch, endedEpoch });
+      historicalSessions.set(currentSessionKey, history);
+    }
     sessions.delete(currentSessionKey);
   }
+}
+
+function validSessionKey(value: string): boolean {
+  return typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= 512 &&
+    !/[\x00-\x1f\x7f]/.test(value);
 }

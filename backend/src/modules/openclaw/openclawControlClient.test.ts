@@ -834,4 +834,5 @@ const ACTIVATION: NativeGuardLeaseActivation = {
   issuedAt: "2026-08-02T00:00:00.000Z",
   expiresAt: "2026-08-02T00:05:00.000Z",
   credential: "lease-secret",
+  evidenceCredential: "evidence-secret",
 };

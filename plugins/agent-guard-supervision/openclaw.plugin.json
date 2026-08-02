@@ -1,0 +1,33 @@
+{
+  "id": "agent-guard-supervision",
+  "name": "Agent Guard Supervision",
+  "description": "Lease-scoped native tool policy enforcement for Agent Guard.",
+  "activation": {
+    "onStartup": true
+  },
+  "hookNames": [
+    "before_tool_call"
+  ],
+  "contracts": {
+    "trustedToolPolicies": [
+      "agent-guard-admission"
+    ]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "decisionTimeoutMs": {
+        "type": "integer",
+        "minimum": 100,
+        "maximum": 10000
+      },
+      "markerDir": {
+        "type": "string"
+      },
+      "spoolDir": {
+        "type": "string"
+      }
+    }
+  }
+}

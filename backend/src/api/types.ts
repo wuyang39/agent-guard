@@ -155,13 +155,6 @@ export type RunE2ERequest = {
   selectionPlanId?: string;
   reusePolicyPackId?: string;
   generateDefenseReport: boolean;
-  /** Task 14: Callback to activate a native-guard detection baseline lease
-   *  before any attack sample executes. Set by the API handler when the
-   *  coordinator is available. Returns the activated lease identity. */
-  activateGuardLease?: (input: {
-    rootSessionKey: string;
-    runGroupId: string;
-  }) => Promise<{ leaseId: string; leaseEpoch: number }>;
 };
 
 export type AgentConnectionConfig = {

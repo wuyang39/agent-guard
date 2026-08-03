@@ -63,6 +63,7 @@ import {
 import { createNativeGuardEventStore } from "../storage/nativeGuardEventStore";
 import type { NativeGuardEvent, RuntimeSupervisionRecord } from "@agent-guard/contracts";
 import type { SandboxEvidenceSummary, NativeGuardCoverageSummary } from "../api/types";
+import { projectNativeGuardTrace } from "../modules/openclaw/nativeGuardTraceProjector";
 
 const CONFIGS_DIR = path.resolve(process.cwd(), "configs");
 const P2_DEMO_CASES_FILE = path.join(CONFIGS_DIR, "p2_demo_cases.json");
@@ -71,6 +72,20 @@ const TRACES_DIR = path.resolve(process.cwd(), "outputs", "traces");
 const MAX_PROGRESS_FAILURES = 24;
 const RUN_CANCELLED_MESSAGE = "Run cancelled by user.";
 const activeRunControllers = new Map<string, AbortController>();
+
+// ---- Task 14: native-guard lease activation (DI) ----
+// Set by the API handler during startup after creating the coordinator.
+// Called per-session before any attack sample executes inside the sandbox.
+let guardLeaseActivator: ((input: {
+  rootSessionKey: string;
+  runGroupId: string;
+}) => Promise<{ leaseId: string; leaseEpoch: number }>) | undefined;
+
+export function setGuardLeaseActivator(
+  fn: typeof guardLeaseActivator,
+): void {
+  guardLeaseActivator = fn;
+}
 
 export class CaseIdValidationError extends Error {
   constructor(message: string) {
@@ -504,12 +519,16 @@ export async function runE2E(
       }
     }
 
-    // Activate a detection baseline lease before any attack sample executes.
-    // The callback is wired by the API handler from the NativeGuardCoordinator.
-    if (sandboxManager && request.activateGuardLease) {
+    // Activate a detection baseline lease per-session before any attack
+    // sample executes. Uses the module-level guardLeaseActivator set by
+    // the API handler during startup (not a callback in the DTO).
+    if (sandboxManager && guardLeaseActivator) {
+      // Use the first target case's ID as the initial root session key.
+      // The lease covers the session tree rooted at this key.
+      const firstCaseId = targetCases[0]?.caseId ?? runGroup.runGroupId;
       try {
-        const baselineLease = await request.activateGuardLease({
-          rootSessionKey: runGroup.runGroupId,
+        const baselineLease = await guardLeaseActivator({
+          rootSessionKey: firstCaseId,
           runGroupId: runGroup.runGroupId,
         });
         if (runGroup.nativeGuardCoverage) {
@@ -588,7 +607,8 @@ export async function runE2E(
       }
 
       // Per-session evidence reconciliation. Events are keyed by
-      // the session key (= testRun.runId), not the runGroupId.
+      // sessionKey (= testRun.runId). Uses the trace projector to
+      // detect coverage breaches (JSONL call without Hook before event).
       if (runGroup.nativeGuardCoverage && eventStore) {
         let totalEvents = 0;
         let totalBreaches = 0;
@@ -596,30 +616,29 @@ export async function runE2E(
         for (const sessionKey of sessionKeys) {
           try {
             const events = await eventStore.listBySession(sessionKey);
-            const decisions = events.filter((e: NativeGuardEvent) => e.type === "decision");
             totalEvents += events.length;
+            const decisions = events.filter((e: NativeGuardEvent) => e.type === "decision");
             if (decisions.length > 0) anyDecisions = true;
-            // Use the trace projector to reconcile: every JSONL tool call
-            // must have a corresponding Hook before event.
-            if (decisions.length > 0) {
-              const seenCallIds = new Set(decisions.map((d) => d.toolCallId).filter(Boolean));
-              // Cross-check: if we had JSONL call IDs for this session
-              // we'd detect coverage breaches here. Without them, we check
-              // that at least some decisions were made.
-            }
+            // Collect tool call IDs from Hook decisions — these are the
+            // ground truth. Coverage breaches are detected when JSONL has
+            // calls the Hook didn't see (done inside runOpenClawSession).
+            const hookCallIds = decisions
+              .map((d) => d.toolCallId)
+              .filter((id): id is string => typeof id === "string");
+            const segment = projectNativeGuardTrace(
+              { traceId: sessionKey, runId: sessionKey, caseId: sessionKey, sandboxId: "openclaw" },
+              events,
+              hookCallIds,
+            );
+            totalBreaches += segment.reconciliation.coverageBreachCount;
           } catch {
             totalBreaches += 1;
           }
         }
         runGroup.nativeGuardCoverage.eventsTotal = totalEvents;
         runGroup.nativeGuardCoverage.coverageBreachCount = totalBreaches;
-        runGroup.nativeGuardCoverage.reconciled = totalBreaches === 0;
-        if (!anyDecisions) {
-          runGroup.nativeGuardCoverage.coverage = "conditional";
-          runGroup.nativeGuardCoverage.reconciled = false;
-        } else {
-          runGroup.nativeGuardCoverage.coverage = "active";
-        }
+        runGroup.nativeGuardCoverage.reconciled = totalBreaches === 0 && anyDecisions;
+        runGroup.nativeGuardCoverage.coverage = anyDecisions ? "active" : "conditional";
       }
     }
     const riskReports = detectionResult.riskReports;
@@ -798,9 +817,13 @@ export async function runE2E(
         if (runGroup.nativeGuardCoverage) {
           runGroup.nativeGuardCoverage.reconciled = false;
         }
-        // Persist the cleanup failure immediately so the disk record
-        // doesn't show a clean run with residual containers.
-        runGroup.status = runGroup.status === "completed" ? "failed" : runGroup.status;
+        // Persist cleanup failure with consistent phase and status.
+        runGroup.status = "failed";
+        runGroup.phase = "failed";
+        if (!runGroup.error) {
+          runGroup.error = `Sandbox cleanup failed: ${message}`;
+        }
+        runGroup.endedAt = nowIso();
         await saveRunGroup(runGroup);
       }
     }

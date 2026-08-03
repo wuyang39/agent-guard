@@ -13,6 +13,7 @@ import {
   type ActivateNativeGuardInput,
   type NativeGuardCoordinator,
 } from "../../../modules/openclaw/nativeGuardCoordinator";
+import { setGuardLeaseActivator } from "../../../services/e2eRunService";
 import {
   createNativeGuardLeaseService,
   type NativeGuardLeaseService,
@@ -112,6 +113,21 @@ export function createNativeGuardRouteDependencies(
     beforeSign: async (request) => {
       assertNativeGuardLeaseUsable(coordinator, request.leaseId);
     },
+  });
+
+  // Wire the coordinator's detection-baseline activation into the
+  // e2eRunService so that every OpenClaw detection run activates a
+  // native-guard lease before any attack sample executes.
+  setGuardLeaseActivator(async ({ rootSessionKey, runGroupId }) => {
+    const status = await coordinator.activate({
+      rootSessionKey,
+      mode: "detection",
+    });
+    const lease = status.activeLease;
+    if (!lease) {
+      throw new Error("Native guard activation returned no active lease.");
+    }
+    return { leaseId: lease.leaseId, leaseEpoch: lease.leaseEpoch };
   });
 
   return {

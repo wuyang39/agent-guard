@@ -234,9 +234,11 @@ export async function checkOpenClawAvailable(cliPath?: string): Promise<{
     child.stderr?.setEncoding("utf-8");
     child.stdout?.on("data", (chunk) => {
       stdout += chunk;
+      if (Buffer.byteLength(stdout, "utf8") > 256 * 1024) child.kill();
     });
     child.stderr?.on("data", (chunk) => {
       stderr += chunk;
+      if (Buffer.byteLength(stderr, "utf8") > 256 * 1024) child.kill();
     });
     child.on("error", (error) => {
       clearTimeout(timer);

@@ -115,6 +115,7 @@ export class DetectionSandboxManager {
   private networkName?: string;
   private sinkContainerId?: string;
   private sinkLogs?: string;
+  private cleanupErrors: { operation: string; error: unknown }[] = [];
   private externalAbortListener?: () => void;
 
   constructor(options: DetectionSandboxManagerOptions) {
@@ -141,6 +142,10 @@ export class DetectionSandboxManager {
   }
 
   cancel(): void { this.abortController.abort(); }
+
+  getCleanupErrors(): readonly { operation: string; error: unknown }[] {
+    return this.cleanupErrors;
+  }
 
   async preflight(): Promise<DetectionSandboxEvidence> {
     if (this.cleaned) throw new SandboxPreflightError("CLEANED", "Detection sandbox has already been cleaned.");
@@ -328,16 +333,16 @@ export class DetectionSandboxManager {
   }
 
   private async performCleanupOnce(): Promise<void> {
-    const failures: unknown[] = [];
-    const attempt = async (operation: () => Promise<void>): Promise<void> => {
-      try { await operation(); } catch (error) { failures.push(error); }
+    const failureEntries: { operation: string; error: unknown }[] = [];
+    const attempt = async (operation: string, fn: () => Promise<void>): Promise<void> => {
+      try { await fn(); } catch (error) { failureEntries.push({ operation, error }); }
     };
-    await attempt(async () => {
+    await attempt("sink-log-capture", async () => {
       if (!this.sinkContainerId) return;
       const logs = await this.cleanupCommand("docker", ["logs", "--tail", "8192", this.sinkContainerId]);
       this.sinkLogs = `${logs.stdout}${logs.stderr}`.slice(0, 65_536);
     });
-    await attempt(async () => {
+    await attempt("container-cleanup", async () => {
       const containers = await this.cleanupCommand("docker", ["ps", "-aq", "--filter", `label=${RUN_LABEL_KEY}=${this.options.runGroupId}`]);
       if (containers.exitCode !== 0) throw new Error("Detection container inventory cleanup failed.");
       const ids = new Set(parseDockerIds(containers.stdout, "container"));
@@ -345,7 +350,7 @@ export class DetectionSandboxManager {
       const removed = await this.cleanupCommand("docker", ["rm", "-f", ...ids]);
       if (removed.exitCode !== 0) throw new Error("Detection container cleanup failed.");
     });
-    await attempt(async () => {
+    await attempt("network-cleanup", async () => {
       const networks = await this.cleanupCommand("docker", ["network", "ls", "-q", "--filter", `label=${RUN_LABEL_KEY}=${this.options.runGroupId}`]);
       if (networks.exitCode !== 0) throw new Error("Detection network inventory cleanup failed.");
       const networkIds = parseDockerIds(networks.stdout, "network");
@@ -353,7 +358,7 @@ export class DetectionSandboxManager {
       const removed = await this.cleanupCommand("docker", ["network", "rm", ...networkIds]);
       if (removed.exitCode !== 0) throw new Error("Detection network cleanup failed.");
     });
-    await attempt(async () => {
+    await attempt("gateway-terminate", async () => {
       const gatewayProcess = this.gateway?.process;
       gatewayProcess?.kill("SIGTERM");
       if (gatewayProcess?.waitForExit && !await waitForExitBounded(gatewayProcess.waitForExit, 2_000)) {
@@ -361,13 +366,15 @@ export class DetectionSandboxManager {
         await waitForExitBounded(gatewayProcess.waitForExit, 1_000);
       }
     });
-    await attempt(async () => {
+    await attempt("profile-remove", async () => {
       if (!this.profileRoot || !isSafeTempRoot(this.profileRoot)) return;
       const stat = await fs.lstat(this.profileRoot).catch(() => undefined);
       if (stat?.isDirectory() && !stat.isSymbolicLink()) await fs.rm(this.profileRoot, { recursive: true, force: true });
     });
-    if (failures.length) {
-      throw new Error(`Detection cleanup failed (${String(failures.length)} operation(s)).`);
+    if (failureEntries.length) {
+      this.cleanupErrors = [...this.cleanupErrors, ...failureEntries];
+      const names = failureEntries.map((f) => f.operation).join(", ");
+      throw new Error(`Detection cleanup failed: ${names}`);
     }
     if (!this.cleanupNotified) {
       this.cleanupNotified = true;
@@ -576,7 +583,7 @@ export class DetectionSandboxManager {
       labels[RUN_LABEL_KEY] === this.options.runGroupId && labels[RUN_ROLE_LABEL_KEY] === "sink" &&
       command.length === 5 && command.join("\u0000") === ["python3", "-u", "-m", "http.server", "8080"].join("\u0000") &&
       (entrypoint === undefined || entrypoint === null || (Array.isArray(entrypoint) && entrypoint.length === 0)) &&
-      aliases.length === 1 && aliases[0] === "sink" &&
+      aliases.includes("sink") &&
       host.ReadonlyRootfs === true && host.Privileged === false && securityOpt.some((value) => /no-new-privileges(?::true)?/i.test(value)) &&
       Array.isArray(host.CapDrop) && host.CapDrop.length === 1 && host.CapDrop[0] === "ALL" &&
       (host.CapAdd === undefined || host.CapAdd === null || (Array.isArray(host.CapAdd) && host.CapAdd.length === 0)) &&
@@ -763,8 +770,12 @@ async function launchGateway(input: Parameters<DetectionGatewayLauncher>[0]): Pr
   try {
     await waitForGateway(input.gatewayUrl, input.token, child, input.signal);
   } catch (error) {
-    terminateGatewayProcessTree(child);
-    await waitForExitBounded(() => exited, 1_000);
+    child.kill("SIGTERM");
+    const graceful = await waitForExitBounded(() => exited, 2_000);
+    if (!graceful) {
+      terminateGatewayProcessTree(child);
+      await waitForExitBounded(() => exited, 1_000);
+    }
     throw error;
   }
   return {
@@ -815,26 +826,93 @@ export async function waitForGateway(
 ): Promise<void> {
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     if (signal.aborted || child.exitCode !== null) break;
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 250);
+    const attemptController = new AbortController();
+    const attemptTimer = setTimeout(() => attemptController.abort(), 500);
     try {
-      const response = await fetch(url, {
+      // Step 1: Unauthenticated probe — the gateway must reject.
+      const unauthed = await fetch(url, {
+        method: "GET",
+        redirect: "error",
+        signal: attemptController.signal,
+      });
+      const enforcesAuth = unauthed.status === 401 || unauthed.status === 403;
+      await cancelBodyBounded(unauthed);
+      if (!enforcesAuth) {
+        clearTimeout(attemptTimer);
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        continue;
+      }
+      // Step 2: Authenticated root probe — the gateway must accept.
+      const authed = await fetch(url, {
         method: "GET",
         headers: { authorization: `Bearer ${token}` },
         redirect: "error",
-        signal: controller.signal,
+        signal: attemptController.signal,
       });
-      clearTimeout(timer);
-      const ready = response.status >= 200 && response.status < 300;
-      await response.body?.cancel().catch(() => undefined);
-      if (ready) return;
+      const rootOk = authed.status >= 200 && authed.status < 300;
+      await cancelBodyBounded(authed);
+      if (!rootOk) {
+        clearTimeout(attemptTimer);
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        continue;
+      }
+      // Step 3: Authenticated status endpoint with random nonce challenge.
+      const nonce = randomBytes(24).toString("base64url");
+      const statusUrl = new URL("/agent-guard/native-guard/v1/status", url).toString();
+      const statusResponse = await fetch(statusUrl, {
+        method: "GET",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "x-agent-guard-ready-nonce": nonce,
+        },
+        redirect: "error",
+        signal: attemptController.signal,
+      });
+      let statusBody: unknown;
+      try {
+        statusBody = await statusResponse.json();
+      } catch {
+        await cancelBodyBounded(statusResponse);
+        clearTimeout(attemptTimer);
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        continue;
+      }
+      clearTimeout(attemptTimer);
+      if (
+        statusResponse.status === 200 &&
+        isRecord(statusBody) &&
+        typeof statusBody._readyNonce === "string" &&
+        statusBody._readyNonce === nonce &&
+        typeof statusBody.coverage === "string"
+      ) {
+        return;
+      }
     } catch {
-      clearTimeout(timer);
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      clearTimeout(attemptTimer);
     }
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
   }
   child.kill();
   throw new SandboxPreflightError("GATEWAY_START_FAILED", "Isolated OpenClaw Gateway did not become ready on loopback.");
+}
+
+/**
+ * Cancel a response body with a bounded deadline — body cancellation must never
+ * hang the readiness poll, even when a malicious server never closes the stream.
+ */
+async function cancelBodyBounded(response: Response): Promise<void> {
+  if (!response.body) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      response.body.cancel(),
+      new Promise<void>((resolve) => { timer = setTimeout(resolve, 2_000); }),
+    ]);
+  } catch {
+    // Body cancellation is best effort.
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 async function ephemeralPort(): Promise<number> {

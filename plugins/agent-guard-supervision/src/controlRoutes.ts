@@ -251,7 +251,8 @@ export function registerControlRoutes(
       if (rejectQuarantinedSocket(request, quarantinedSockets)) return;
       await handleRoute(request, response, "GET", "request", () => {
         assertUnframedGet(request, quarantinedSockets);
-        return runtime.status().then((status) => sendStatus(response, status));
+        const nonce = readNonceHeader(request);
+        return runtime.status().then((status) => sendStatus(response, status, nonce));
       });
     },
   })));
@@ -590,8 +591,11 @@ function validLeaseId(value: unknown): value is string {
     !/^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i.test(value);
 }
 
-function sendStatus(response: ServerResponse, status: NativeGuardStatus): void {
-  sendJson(response, 200, projectStatus(status));
+function sendStatus(response: ServerResponse, status: NativeGuardStatus, nonce?: string): void {
+  const body = nonce !== undefined
+    ? { ...projectStatus(status), _readyNonce: nonce }
+    : projectStatus(status);
+  sendJson(response, 200, body);
 }
 
 function sendRouteResponse(
@@ -638,6 +642,14 @@ function projectStatus(status: NativeGuardStatus): NativeGuardStatus {
         }),
     ...(status.reasonCode === undefined ? {} : { reasonCode: status.reasonCode }),
   };
+}
+
+function readNonceHeader(request: IncomingMessage): string | undefined {
+  const raw = request.headers["x-agent-guard-ready-nonce"];
+  if (typeof raw !== "string" || raw.trim().length === 0) return undefined;
+  const nonce = raw.trim();
+  if (nonce.length > 128 || !/^[A-Za-z0-9+/=_-]+$/.test(nonce)) return undefined;
+  return nonce;
 }
 
 function mapRouteError(

@@ -11,6 +11,41 @@ import {
   type DetectionCommandResult,
 } from "./detectionSandboxManager";
 
+test("cleanup keeps per-operation errors queryable and tries every operation", async () => {
+  const { runner, calls } = runnerFor();
+  let networkLsCalled = false;
+  const manager = new DetectionSandboxManager({
+    runGroupId: "run-cleanup-ops", image: `openclaw@sha256:${"a".repeat(64)}`,
+    commandRunner: async (input) => {
+      // Fail container removal
+      if (input.args[0] === "rm" && input.args[1] === "-f") return { exitCode: 1, stdout: "", stderr: "container busy" };
+      // Return a network id on ls, then fail its removal
+      if (input.command === "docker" && input.args[0] === "network" && input.args[1] === "ls") {
+        networkLsCalled = true;
+        return { exitCode: 0, stdout: "net-1\n", stderr: "" };
+      }
+      if (input.args[0] === "network" && input.args[1] === "rm") return { exitCode: 1, stdout: "", stderr: "network busy" };
+      return runner(input);
+    },
+  });
+  await manager.preflight();
+  await assert.rejects(
+    manager.cleanup(),
+    (error: unknown) => error instanceof Error && /cleanup failed/.test(error.message),
+  );
+  // getCleanupErrors must return structured per-operation records.
+  const errors = manager.getCleanupErrors();
+  // container-cleanup fails on all 3 retries and appears in the final attempt record.
+  assert.ok(errors.some((e: { operation: string }) => e.operation === "container-cleanup"));
+  // network-cleanup must also appear if it was attempted.
+  if (networkLsCalled) {
+    assert.ok(errors.some((e: { operation: string }) => e.operation === "network-cleanup"),
+      "expected network-cleanup in cleanup errors");
+  }
+});
+
+
+
 function runnerFor(result: Partial<DetectionCommandResult> = {}) {
   const calls: { command: string; args: string[] }[] = [];
   const runner = async (input: { command: string; args: string[] }) => {
@@ -63,6 +98,77 @@ test("does not treat unauthorized or server-error Gateway responses as ready", a
   const url = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
   const child = { exitCode: null as number | null, kill: () => { child.exitCode = 1; } };
   await assert.rejects(waitForGateway(url, "token", child, new AbortController().signal, 1, 1), /ready|Gateway/i);
+  await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+});
+
+test("rejects a fake HTTP server that returns 200 regardless of authentication", async () => {
+  // A local impostor that responds 200 to everything must not pass readiness.
+  const server = http.createServer((_request, response) => {
+    response.statusCode = 200;
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify({ status: "ok" }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  const address = server.address();
+  const url = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
+  const child = { exitCode: null as number | null, kill: () => { child.exitCode = 1; } };
+  await assert.rejects(
+    waitForGateway(url, "token", child, new AbortController().signal, 2, 1),
+    /ready|Gateway/i,
+  );
+  await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+});
+
+test("rejects a gateway that authenticates but fails nonce echo challenge", async () => {
+  // A gateway that enforces auth but cannot echo the correct nonce must not pass readiness.
+  const server = http.createServer((request, response) => {
+    const authed = request.headers.authorization === "Bearer token";
+    if (!authed) {
+      response.statusCode = 401;
+      response.end("unauthorized");
+      return;
+    }
+    response.statusCode = 200;
+    response.setHeader("content-type", "application/json");
+    // Always return the wrong nonce — must fail readiness.
+    response.end(JSON.stringify({ coverage: "active", _readyNonce: "wrong-nonce" }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  const address = server.address();
+  const url = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
+  const child = { exitCode: null as number | null, kill: () => { child.exitCode = 1; } };
+  await assert.rejects(
+    waitForGateway(url, "token", child, new AbortController().signal, 2, 1),
+    /ready|Gateway/i,
+  );
+  await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+});
+
+test("accepts a gateway that completes all three readiness checks", async () => {
+  // Simulate a full OpenClaw gateway: 401 on unauth, 200 authed root, correct nonce on status.
+  const server = http.createServer((request, response) => {
+    const authed = request.headers.authorization === "Bearer token";
+    if (!authed) {
+      response.statusCode = 401;
+      response.end("unauthorized");
+      return;
+    }
+    // Must echo back the nonce from the request header.
+    const nonce = request.headers["x-agent-guard-ready-nonce"] as string | undefined;
+    response.statusCode = 200;
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify({
+      coverage: "active",
+      finalizerAssurance: "isolated_profile",
+      ...(nonce ? { _readyNonce: nonce } : {}),
+    }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  const address = server.address();
+  const url = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
+  const child = { exitCode: null as number | null, kill: () => { child.exitCode = 1; } };
+  // Should NOT reject — gateway is valid.
+  await waitForGateway(url, "token", child, new AbortController().signal, 2, 1);
   await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
 });
 

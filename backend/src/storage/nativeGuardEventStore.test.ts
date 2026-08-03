@@ -948,6 +948,71 @@ function buildRecord(
   };
 }
 
+
+test("rejects JSONL files exceeding the 8 MiB store limit before loading", async () => {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "native-events-"));
+  try {
+    // Write a healthy small file first — it must still be readable after the oversized one is rejected.
+    const smallEvent = buildEvent({ eventId: "event.small", leaseId: "lease.small" });
+    const smallPath = path.join(rootDir, "lease.small.jsonl");
+    await fs.writeFile(smallPath, `${JSON.stringify({ sequence: 1, event: smallEvent })}\n`, "utf8");
+
+    // Write a file just over 8 MiB via a padded JSON blob.
+    const padded = JSON.stringify({ sequence: 2, event: buildEvent({ eventId: "event.big", leaseId: "lease.big" }) });
+    const targetBytes = 8 * 1024 * 1024; // 8 MiB
+    const padding = " ".repeat(Math.max(0, targetBytes - Buffer.byteLength(padded, "utf8") + 1));
+    const bigPath = path.join(rootDir, "lease.big.jsonl");
+    await fs.writeFile(bigPath, `${padded}${padding}\n`, "utf8");
+
+    // Creating the store must fail cleanly — the oversized file must not be loaded.
+    await assert.rejects(
+      async () => createNativeGuardEventStore({ rootDir }).listByRun("any"),
+      /exceeds|limit|too large/i,
+    );
+
+    // The healthy file must still be intact on disk.
+    const remaining = await fs.readdir(rootDir);
+    assert.ok(remaining.includes("lease.small.jsonl"));
+    assert.ok(remaining.includes("lease.big.jsonl"));
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("rejects a JSONL file that grows beyond 8 MiB after the initial stat", async () => {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "native-events-"));
+  try {
+    // Write a file that is initially under the limit.
+    const event = buildEvent({ eventId: "event.grow", leaseId: "lease.grow" });
+    const line = JSON.stringify({ sequence: 1, event });
+    const growPath = path.join(rootDir, "lease.grow.jsonl");
+
+    // Start with valid content under 8 MiB.
+    let content = line + "\n";
+    while (Buffer.byteLength(content, "utf8") < 4 * 1024 * 1024) {
+      content += `${line}\n`;
+    }
+    await fs.writeFile(growPath, content, "utf8");
+
+    // After the store successfully loads the file, append enough data to exceed 8 MiB.
+    const store = createNativeGuardEventStore({ rootDir });
+    const loaded = await store.listByRun(event.runId!);
+    assert.ok(loaded.length > 0);
+
+    // Append oversized content past 8 MiB.
+    const hugePadding = "X".repeat(8 * 1024 * 1024);
+    await fs.appendFile(growPath, hugePadding, "utf8");
+
+    // A new store must reject the now-oversized file.
+    await assert.rejects(
+      async () => createNativeGuardEventStore({ rootDir }).listByRun("any"),
+      /exceeds|limit|too large/i,
+    );
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
 function hasUnpairedSurrogate(value: string): boolean {
   for (let index = 0; index < value.length; index += 1) {
     const code = value.charCodeAt(index);

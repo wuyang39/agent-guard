@@ -663,7 +663,7 @@ test("bounds injected CLI runners and reports malformed, oversized, and failed o
   });
   await assert.rejects(
     () => timed.inspectCapabilities({ isolatedProfile: false }),
-    hasCode("OPENCLAW_CLI_FAILED"),
+    hasCode("OPENCLAW_CLI_TIMEOUT"),
   );
 
   for (const results of [

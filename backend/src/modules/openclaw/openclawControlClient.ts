@@ -654,7 +654,13 @@ async function executeCli(
       }),
       parentAbort,
     ]);
-  } catch {
+  } catch (caught) {
+    if (caught instanceof Error && caught.message === "OpenClaw CLI inspection timed out.") {
+      throw controlError("OPENCLAW_CLI_TIMEOUT", "OpenClaw CLI inspection timed out.");
+    }
+    if (caught instanceof Error && caught.message === "OpenClaw CLI inspection aborted.") {
+      throw controlError("OPENCLAW_CLI_CANCELLED", "OpenClaw CLI inspection was cancelled.");
+    }
     throw controlError("OPENCLAW_CLI_FAILED", "OpenClaw CLI inspection failed.");
   } finally {
     if (timer) clearTimeout(timer);
@@ -666,7 +672,7 @@ async function executeCli(
     throw controlError("OPENCLAW_CLI_OUTPUT_TOO_LARGE", "OpenClaw CLI output exceeded the size limit.");
   }
   if (result.exitCode !== 0) {
-    throw controlError("OPENCLAW_CLI_FAILED", "OpenClaw CLI inspection failed.");
+    throw controlError("OPENCLAW_CLI_EXIT_FAILURE", "OpenClaw CLI exited with a non-zero code.");
   }
   return result;
 }
@@ -789,6 +795,12 @@ function safeControlErrorMessage(code: string): string {
       return "OpenClaw control response exceeded the size limit.";
     case "OPENCLAW_CONTROL_INVALID_RESPONSE":
       return "OpenClaw control response was invalid.";
+    case "OPENCLAW_CLI_TIMEOUT":
+      return "OpenClaw CLI inspection timed out.";
+    case "OPENCLAW_CLI_CANCELLED":
+      return "OpenClaw CLI inspection was cancelled.";
+    case "OPENCLAW_CLI_EXIT_FAILURE":
+      return "OpenClaw CLI exited with a non-zero code.";
     default:
       return "OpenClaw control request failed.";
   }

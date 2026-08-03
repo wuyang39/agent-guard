@@ -64,6 +64,7 @@ const COVERAGE_VALUES = new Set([
 ]);
 const HEX_DIGEST = /^[a-f0-9]{64}$/i;
 const MAX_RESULT_PREVIEW_BYTES = 8 * 1024;
+const MAX_EVENT_STORE_FILE_BYTES = 8 * 1024 * 1024; // 8 MiB
 const COMMON_DETAIL_FIELDS = ["reasonCode", "message", "value"] as const;
 const DETAIL_FIELDS: Record<NativeGuardEvent["type"], readonly string[]> = {
   decision: [
@@ -401,7 +402,7 @@ async function loadExisting(
     const leaseId = entry.name.slice(0, -".jsonl".length);
     if (!SAFE_LEASE_ID.test(leaseId)) continue;
     const filePath = eventFilePath(rootDir, leaseId);
-    const content = await fs.readFile(filePath, "utf8");
+    const content = await readFileBounded(filePath, MAX_EVENT_STORE_FILE_BYTES);
     const lines = content.split("\n");
     if (lines.at(-1) === "") lines.pop();
     const validLines: string[] = [];
@@ -492,6 +493,45 @@ function migrateLegacyOutcome(value: unknown): unknown {
       },
     },
   };
+}
+
+
+async function readFileBounded(filePath: string, maxBytes: number): Promise<string> {
+  const preStat = await fs.stat(filePath);
+  if (preStat.size > maxBytes) {
+    throw new Error(
+      `Event store file ${path.basename(filePath)} size ${String(preStat.size)} exceeds ${String(maxBytes)} byte limit.`,
+    );
+  }
+  const handle = await fs.open(filePath, "r", 0o600);
+  try {
+    const buffer = Buffer.alloc(64 * 1024);
+    const chunks: Buffer[] = [];
+    let totalBytes = 0;
+    while (true) {
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, totalBytes);
+      if (bytesRead === 0) break;
+      if (totalBytes + bytesRead > maxBytes) {
+        throw new Error(
+          `Event store file ${path.basename(filePath)} exceeds ${String(maxBytes)} byte limit during read.`,
+        );
+      }
+      totalBytes += bytesRead;
+      chunks.push(Buffer.from(buffer.subarray(0, bytesRead)));
+    }
+    const postStat = await handle.stat();
+    if (
+      postStat.size !== preStat.size ||
+      postStat.mtimeMs !== preStat.mtimeMs
+    ) {
+      throw new Error(
+        `Event store file ${path.basename(filePath)} was modified during read.`,
+      );
+    }
+    return Buffer.concat(chunks).toString("utf8");
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
 }
 
 async function quarantineAndRepair(

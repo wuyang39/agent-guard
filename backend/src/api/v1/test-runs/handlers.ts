@@ -8,6 +8,7 @@ import {
   PolicyPackReuseError,
   cancelRunGroup,
   createInitialE2ERunGroup,
+  type GuardLeaseDeps,
 } from "../../../services/e2eRunService";
 import {
   getRunGroup,
@@ -15,7 +16,15 @@ import {
   saveRunGroup,
 } from "../../../storage/fileRunStore";
 
-export async function testRunRoutes(app: FastifyInstance): Promise<void> {
+export type TestRunRoutesOptions = {
+  guardLease?: GuardLeaseDeps;
+};
+
+export async function testRunRoutes(
+  app: FastifyInstance,
+  opts?: TestRunRoutesOptions,
+): Promise<void> {
+  const guardLease = opts?.guardLease;
   // POST /api/v1/test-runs/e2e
   app.post("/api/v1/test-runs/e2e", async (request, reply) => {
     const body = request.body as RunE2ERequest;
@@ -64,7 +73,7 @@ export async function testRunRoutes(app: FastifyInstance): Promise<void> {
     }
 
     try {
-      const result = await runE2E(body);
+      const result = await runE2E(body, undefined, guardLease);
       reply.code(201);
       return success(result);
     } catch (err) {

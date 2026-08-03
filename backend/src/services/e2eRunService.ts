@@ -63,7 +63,6 @@ import {
 import { createNativeGuardEventStore } from "../storage/nativeGuardEventStore";
 import type { NativeGuardEvent, RuntimeSupervisionRecord } from "@agent-guard/contracts";
 import type { SandboxEvidenceSummary, NativeGuardCoverageSummary } from "../api/types";
-import { projectNativeGuardTrace } from "../modules/openclaw/nativeGuardTraceProjector";
 
 const CONFIGS_DIR = path.resolve(process.cwd(), "configs");
 const P2_DEMO_CASES_FILE = path.join(CONFIGS_DIR, "p2_demo_cases.json");
@@ -73,19 +72,15 @@ const MAX_PROGRESS_FAILURES = 24;
 const RUN_CANCELLED_MESSAGE = "Run cancelled by user.";
 const activeRunControllers = new Map<string, AbortController>();
 
-// ---- Task 14: native-guard lease activation (DI) ----
-// Set by the API handler during startup after creating the coordinator.
-// Called per-session before any attack sample executes inside the sandbox.
-let guardLeaseActivator: ((input: {
-  rootSessionKey: string;
-  runGroupId: string;
-}) => Promise<{ leaseId: string; leaseEpoch: number }>) | undefined;
-
-export function setGuardLeaseActivator(
-  fn: typeof guardLeaseActivator,
-): void {
-  guardLeaseActivator = fn;
-}
+// ---- Task 14: native-guard lease dependencies ----
+// Passed by the API handler when the coordinator is available.
+export type GuardLeaseDeps = {
+  activate: (input: {
+    rootSessionKey: string;
+    runGroupId: string;
+  }) => Promise<{ leaseId: string; leaseEpoch: number }>;
+  revoke: (leaseId: string) => Promise<void>;
+};
 
 export class CaseIdValidationError extends Error {
   constructor(message: string) {
@@ -204,6 +199,7 @@ export async function cancelRunGroup(runGroupId: string): Promise<P2RunGroup | u
 export async function runE2E(
   request: RunE2ERequest,
   existingRunGroup?: P2RunGroup,
+  guardLease?: GuardLeaseDeps,
 ): Promise<RunE2EResult> {
   // P2 adapterKind 映射到 contracts adapterType + 自定义 adapter。
   const adapterType = mapAdapterKind(request.adapterKind);
@@ -217,6 +213,7 @@ export async function runE2E(
   activeRunControllers.set(runGroup.runGroupId, controller);
   let sandboxManager: DetectionSandboxManager | undefined;
   let eventStore: ReturnType<typeof createNativeGuardEventStore> | undefined;
+  let activatedLeaseId: string | undefined;
 
   try {
     throwIfRunCancelled(controller.signal);
@@ -463,14 +460,19 @@ export async function runE2E(
         await sandboxManager.start();
 
         // Wire sandbox Gateway credentials and shared event store into the
-        // adapter. Failure to obtain credentials or a mismatched adapter
-        // type is a hard error — no silent fallback to the host gateway.
+        // adapter. Guard lease is required — fail if not provided.
         const sandboxCreds = sandboxManager.getGatewayCredentials();
         if (!sandboxCreds) {
           throw new Error("Sandbox started but no Gateway credentials returned.");
         }
         if (!(customAdapter instanceof OpenClawAdapter)) {
           throw new Error("Sandbox requires an OpenClaw adapter.");
+        }
+        if (!guardLease) {
+          throw new Error(
+            "Sandbox detection requires guardLease deps (activate/revoke). " +
+            "Wire NativeGuardCoordinator through the API handler.",
+          );
         }
         eventStore = createNativeGuardEventStore({});
         customAdapter = new OpenClawAdapter({
@@ -519,18 +521,16 @@ export async function runE2E(
       }
     }
 
-    // Activate a detection baseline lease per-session before any attack
-    // sample executes. Uses the module-level guardLeaseActivator set by
-    // the API handler during startup (not a callback in the DTO).
-    if (sandboxManager && guardLeaseActivator) {
-      // Use the first target case's ID as the initial root session key.
-      // The lease covers the session tree rooted at this key.
-      const firstCaseId = targetCases[0]?.caseId ?? runGroup.runGroupId;
+    // Activate a detection baseline lease before any attack sample
+    // executes. The root session key is the sandbox gateway's first
+    // expected session; child sessions are bound by the plugin.
+    if (sandboxManager && guardLease) {
       try {
-        const baselineLease = await guardLeaseActivator({
-          rootSessionKey: firstCaseId,
+        const baselineLease = await guardLease.activate({
+          rootSessionKey: targetCases[0]?.caseId ?? runGroup.runGroupId,
           runGroupId: runGroup.runGroupId,
         });
+        activatedLeaseId = baselineLease.leaseId;
         if (runGroup.nativeGuardCoverage) {
           runGroup.nativeGuardCoverage.leaseId = baselineLease.leaseId;
           runGroup.nativeGuardCoverage.leaseEpoch = baselineLease.leaseEpoch;
@@ -568,15 +568,14 @@ export async function runE2E(
       signal: controller.signal,
     });
 
-    // Attest sandbox integrity after all cases. For each test run, query
-    // evidence by its actual session key (= testRun.runId), then reconcile
-    // Hook events against parsed JSONL using the native guard trace projector.
+    // Attest sandbox integrity after all cases. Reconciliation of Hook
+    // events against JSONL is performed per-session inside
+    // runOpenClawSession via the native guard trace projector.
     if (sandboxManager && !controller.signal.aborted) {
       const sessionKeys = runGroup.testRunIds.length > 0
         ? runGroup.testRunIds
         : [runGroup.runGroupId];
 
-      // Attest every session.
       for (const sessionKey of sessionKeys) {
         try {
           const attested = await sandboxManager.attestSession(sessionKey, "after");
@@ -606,38 +605,21 @@ export async function runE2E(
         }
       }
 
-      // Per-session evidence reconciliation. Events are keyed by
-      // sessionKey (= testRun.runId). Uses the trace projector to
-      // detect coverage breaches (JSONL call without Hook before event).
+      // Verify guard produced real decisions (not OFF/empty). Per-session
+      // reconciliation against JSONL happens inside runOpenClawSession.
       if (runGroup.nativeGuardCoverage && eventStore) {
         let totalEvents = 0;
-        let totalBreaches = 0;
         let anyDecisions = false;
         for (const sessionKey of sessionKeys) {
           try {
             const events = await eventStore.listBySession(sessionKey);
             totalEvents += events.length;
-            const decisions = events.filter((e: NativeGuardEvent) => e.type === "decision");
-            if (decisions.length > 0) anyDecisions = true;
-            // Collect tool call IDs from Hook decisions — these are the
-            // ground truth. Coverage breaches are detected when JSONL has
-            // calls the Hook didn't see (done inside runOpenClawSession).
-            const hookCallIds = decisions
-              .map((d) => d.toolCallId)
-              .filter((id): id is string => typeof id === "string");
-            const segment = projectNativeGuardTrace(
-              { traceId: sessionKey, runId: sessionKey, caseId: sessionKey, sandboxId: "openclaw" },
-              events,
-              hookCallIds,
-            );
-            totalBreaches += segment.reconciliation.coverageBreachCount;
-          } catch {
-            totalBreaches += 1;
-          }
+            if (events.some((e: NativeGuardEvent) => e.type === "decision")) {
+              anyDecisions = true;
+            }
+          } catch { /* store unavailable — leave coverage as-is */ }
         }
         runGroup.nativeGuardCoverage.eventsTotal = totalEvents;
-        runGroup.nativeGuardCoverage.coverageBreachCount = totalBreaches;
-        runGroup.nativeGuardCoverage.reconciled = totalBreaches === 0 && anyDecisions;
         runGroup.nativeGuardCoverage.coverage = anyDecisions ? "active" : "conditional";
       }
     }
@@ -801,6 +783,10 @@ export async function runE2E(
     }
     throw err;
   } finally {
+    // Revoke the guard lease regardless of success or failure.
+    if (guardLease && activatedLeaseId) {
+      await guardLease.revoke(activatedLeaseId).catch(() => undefined);
+    }
     if (sandboxManager) {
       try {
         await sandboxManager.cleanup();

@@ -102,7 +102,22 @@ export async function buildApp(opts?: {
   await app.register(dashboardRoutes);
   await app.register(agentRoutes);
   await app.register(testSelectionRoutes);
-  await app.register(testRunRoutes);
+  // Wire native-guard lease activate/revoke into the e2e detection run.
+  const guardLease = {
+    activate: async (input: { rootSessionKey: string; runGroupId: string }) => {
+      const status = await nativeGuardDependencies.coordinator.activate({
+        rootSessionKey: input.rootSessionKey,
+        mode: "detection",
+      });
+      const lease = status.activeLease;
+      if (!lease) throw new Error("Native guard activation returned no active lease.");
+      return { leaseId: lease.leaseId, leaseEpoch: lease.leaseEpoch };
+    },
+    revoke: async (leaseId: string) => {
+      await nativeGuardDependencies.coordinator.revoke(leaseId);
+    },
+  };
+  await app.register(testRunRoutes, { guardLease });
   await app.register(supervisionRoutes);
   await app.register(askRoutes);
   await app.register(traceRoutes);

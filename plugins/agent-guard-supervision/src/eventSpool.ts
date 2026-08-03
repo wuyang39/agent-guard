@@ -9,7 +9,7 @@ import {
   rename,
   unlink,
 } from "node:fs/promises";
-import { resolve, sep } from "node:path";
+import { dirname, resolve, sep } from "node:path";
 import { types as utilTypes } from "node:util";
 import type { NativeGuardEvent } from "@agent-guard/contracts";
 import { canonicalJson } from "@agent-guard/native-guard-protocol";
@@ -27,6 +27,8 @@ const MAX_METADATA_BYTES = 4 * 1024 * 1024;
 const MAX_UPLOAD_BATCH_BYTES = 900 * 1024;
 const DATA_FILE_NAME = "events.jsonl";
 const METADATA_FILE_NAME = "metadata.json";
+const OWNER_FILE_NAME = "owner.lock";
+const MAX_OWNER_BYTES = 1_024;
 const SAFE_LEASE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const SAFE_EVENT_ID = /^[^\x00-\x1f\x7f]{1,256}$/;
 const HEX_DIGEST = /^[a-f0-9]{64}$/i;
@@ -154,6 +156,7 @@ const DETAIL_FIELDS: Record<NativeGuardEvent["type"], readonly string[]> = {
 export type OutcomeEvidence = {
   resultPreview: string;
   resultDigest: string;
+  projectionBytes: number;
 };
 
 export type EventUploadLease = {
@@ -161,6 +164,8 @@ export type EventUploadLease = {
   leaseEpoch: number;
   sessionKey: string;
 };
+
+type OwnerFileHandle = Awaited<ReturnType<typeof open>>;
 
 export type EventSpoolOptions = {
   directory: string;
@@ -175,9 +180,17 @@ export type EventSpoolOptions = {
   maxBytes?: number;
   maxRecordBytes?: number;
   autoFlush?: boolean;
+  writeOwnerFile?: (handle: OwnerFileHandle, contents: string) => Promise<void>;
+  syncOwnerFile?: (handle: OwnerFileHandle) => Promise<void>;
+  closeOwnerFile?: (handle: OwnerFileHandle) => Promise<void>;
+  hardenOwnerFile?: (ownerPath: string) => Promise<void>;
+  removeOwnerFile?: (ownerPath: string) => Promise<void>;
+  renameOwnerFile?: (source: string, destination: string) => Promise<void>;
+  onCorruptData?: (reason: "corrupt" | "oversized") => void | Promise<void>;
 };
 
 export interface EventSpool {
+  acquire(): Promise<void>;
   enqueue(event: NativeGuardEvent): Promise<boolean>;
   flushNow(): Promise<void>;
   leaseRenewed(leaseId: string): void;
@@ -197,6 +210,12 @@ type SpoolMetadata = {
   acknowledgedEventIds: string[];
 };
 
+type SpoolOwner = {
+  schemaVersion: "native-event-spool-owner-1";
+  pid: number;
+  token: string;
+};
+
 export function sanitizeOutcomeResult(
   value: unknown,
   exactSecrets: readonly string[] = [],
@@ -209,9 +228,14 @@ export function sanitizeOutcomeResult(
   };
   const projected = projectOutcomeValue(value, state, 0);
   const canonical = canonicalJson(projected);
+  const projectionBytes = Buffer.byteLength(canonical, "utf8");
+  if (projectionBytes > MAX_RESULT_PROJECTION_BYTES) {
+    throw new Error("Native guard outcome projection exceeded its byte limit");
+  }
   return {
     resultPreview: truncateUtf8(canonical, MAX_RESULT_PREVIEW_BYTES),
     resultDigest: createHash("sha256").update(canonical, "utf8").digest("hex"),
+    projectionBytes,
   };
 }
 
@@ -219,11 +243,7 @@ export function sanitizeOutcomeDiagnostic(
   value: string,
   exactSecrets: readonly string[] = [],
 ): string {
-  let scrubbed = scrubGenericSecrets(normalizeUnicode(value));
-  for (const secret of exactSecrets) {
-    if (secret.length > 0) scrubbed = scrubbed.split(secret).join("[REDACTED]");
-  }
-  return truncateUtf8(scrubbed, 4 * 1024);
+  return scrubBoundedString(value, exactSecrets, 4 * 1024);
 }
 
 export function createEventSpool(options: EventSpoolOptions): EventSpool {
@@ -234,6 +254,7 @@ class AtomicEventSpool implements EventSpool {
   readonly #directory: string;
   readonly #dataPath: string;
   readonly #metadataPath: string;
+  readonly #ownerPath: string;
   readonly #upload: EventSpoolOptions["upload"];
   readonly #scheduleTimeout: NonNullable<EventSpoolOptions["scheduleTimeout"]>;
   readonly #cancelTimeout: NonNullable<EventSpoolOptions["cancelTimeout"]>;
@@ -241,6 +262,13 @@ class AtomicEventSpool implements EventSpool {
   readonly #maxBytes: number;
   readonly #maxRecordBytes: number;
   readonly #autoFlush: boolean;
+  readonly #writeOwnerFile: NonNullable<EventSpoolOptions["writeOwnerFile"]>;
+  readonly #syncOwnerFile: NonNullable<EventSpoolOptions["syncOwnerFile"]>;
+  readonly #closeOwnerFile: NonNullable<EventSpoolOptions["closeOwnerFile"]>;
+  readonly #hardenOwnerFile: NonNullable<EventSpoolOptions["hardenOwnerFile"]>;
+  readonly #removeOwnerFile: NonNullable<EventSpoolOptions["removeOwnerFile"]>;
+  readonly #renameOwnerFile: NonNullable<EventSpoolOptions["renameOwnerFile"]>;
+  readonly #onCorruptData: EventSpoolOptions["onCorruptData"];
   readonly #pendingIds = new Set<string>();
   readonly #acknowledgedIds = new Set<string>();
   readonly #cancelledLeases = new Set<string>();
@@ -249,6 +277,11 @@ class AtomicEventSpool implements EventSpool {
   #pendingBytes = 0;
   #tail: Promise<void> = Promise.resolve();
   #loaded = false;
+  #ownerToken: string | undefined;
+  #ownerReleasePath: string | undefined;
+  #ownerReleaseUnverified = false;
+  #ownerClaimIncomplete = false;
+  #ownershipReady = false;
   #stopped = false;
   #retryAttempt = 0;
   #retryTimer: unknown;
@@ -259,6 +292,7 @@ class AtomicEventSpool implements EventSpool {
     this.#directory = parseSpoolDirectory(options.directory);
     this.#dataPath = `${this.#directory}${sep}${DATA_FILE_NAME}`;
     this.#metadataPath = `${this.#directory}${sep}${METADATA_FILE_NAME}`;
+    this.#ownerPath = `${this.#directory}${sep}${OWNER_FILE_NAME}`;
     if (typeof options.upload !== "function") throw new TypeError("Event spool uploader is invalid");
     this.#upload = options.upload;
     this.#scheduleTimeout = options.scheduleTimeout ?? ((callback, delayMs) => {
@@ -284,6 +318,27 @@ class AtomicEventSpool implements EventSpool {
       "record limit",
     );
     this.#autoFlush = options.autoFlush !== false;
+    this.#writeOwnerFile = options.writeOwnerFile ?? (async (handle, contents) => {
+      await handle.writeFile(contents, { encoding: "utf8" });
+    });
+    this.#syncOwnerFile = options.syncOwnerFile ?? ((handle) => handle.sync());
+    this.#closeOwnerFile = options.closeOwnerFile ?? ((handle) => handle.close());
+    this.#hardenOwnerFile = options.hardenOwnerFile ?? (async (ownerPath) => {
+      if (process.platform !== "win32") await chmod(ownerPath, 0o600);
+    });
+    this.#removeOwnerFile = options.removeOwnerFile ?? (async (ownerPath) => {
+      await unlink(ownerPath);
+    });
+    this.#renameOwnerFile = options.renameOwnerFile ?? ((source, destination) => rename(source, destination));
+    this.#onCorruptData = options.onCorruptData;
+  }
+
+  acquire(): Promise<void> {
+    if (this.#stopped) return Promise.reject(new Error("Native guard event spool is stopped"));
+    return this.#serialized(async () => {
+      this.#assertRunning();
+      await this.#ensureOwnership();
+    });
   }
 
   async enqueue(rawEvent: NativeGuardEvent): Promise<boolean> {
@@ -347,14 +402,13 @@ class AtomicEventSpool implements EventSpool {
   }
 
   async stop(): Promise<void> {
-    if (this.#stopped) {
-      await this.#tail;
-      return;
+    if (!this.#stopped) {
+      this.#stopped = true;
+      this.#clearRetry();
+      this.#uploadController?.abort();
     }
-    this.#stopped = true;
-    this.#clearRetry();
-    this.#uploadController?.abort();
     await this.#tail;
+    await this.#releaseOwnership();
   }
 
   async #flushPending(): Promise<void> {
@@ -469,46 +523,60 @@ class AtomicEventSpool implements EventSpool {
 
   async #ensureLoaded(): Promise<void> {
     if (this.#loaded) return;
-    await ensureSecureDirectory(this.#directory);
+    await this.#ensureOwnership();
     await removeStaleTemporaryFiles(this.#directory);
     await this.#loadMetadata();
-    const data = await readBoundedFile(
-      this.#dataPath,
-      this.#maxBytes + this.#maxRecordBytes,
-      "event spool data",
-    );
+    let data: string | undefined;
+    try {
+      data = await readBoundedFile(
+        this.#dataPath,
+        this.#maxBytes + this.#maxRecordBytes,
+        "event spool data",
+      );
+    } catch (error) {
+      if (error instanceof Error && /corrupt|oversized/i.test(error.message)) {
+        await this.#quarantineCorruptData("oversized");
+        return;
+      }
+      throw error;
+    }
     let partial = false;
     let needsRewrite = false;
     if (data !== undefined) {
       const completeText = data.endsWith("\n") ? data : data.slice(0, data.lastIndexOf("\n") + 1);
       partial = completeText.length !== data.length;
-      for (const line of completeText.split("\n")) {
-        if (line.length === 0) continue;
-        if (Buffer.byteLength(line, "utf8") + 1 > this.#maxRecordBytes) {
-          throw new Error("Native guard event spool is corrupt or oversized");
+      try {
+        for (const line of completeText.split("\n")) {
+          if (line.length === 0) continue;
+          if (Buffer.byteLength(line, "utf8") + 1 > this.#maxRecordBytes) {
+            throw new Error("Native guard event spool is corrupt or oversized");
+          }
+          let raw: unknown;
+          try {
+            raw = JSON.parse(line);
+          } catch {
+            throw new Error("Native guard event spool is corrupt");
+          }
+          const event = sanitizeEvent(raw, true);
+          if (this.#acknowledgedIds.has(event.eventId) || this.#pendingIds.has(event.eventId)) continue;
+          const normalizedLine = `${JSON.stringify(event)}\n`;
+          if (normalizedLine !== `${line}\n`) needsRewrite = true;
+          const entry = {
+            event,
+            line: normalizedLine,
+            bytes: Buffer.byteLength(normalizedLine, "utf8"),
+            priority: eventPriority(event),
+          };
+          if (entry.bytes > this.#maxRecordBytes) {
+            throw new Error("Native guard event spool record is oversized");
+          }
+          this.#pending.push(entry);
+          this.#pendingIds.add(event.eventId);
+          this.#pendingBytes += entry.bytes;
         }
-        let raw: unknown;
-        try {
-          raw = JSON.parse(line);
-        } catch {
-          throw new Error("Native guard event spool is corrupt");
-        }
-        const event = sanitizeEvent(raw, true);
-        if (this.#acknowledgedIds.has(event.eventId) || this.#pendingIds.has(event.eventId)) continue;
-        const normalizedLine = `${JSON.stringify(event)}\n`;
-        if (normalizedLine !== `${line}\n`) needsRewrite = true;
-        const entry = {
-          event,
-          line: normalizedLine,
-          bytes: Buffer.byteLength(normalizedLine, "utf8"),
-          priority: eventPriority(event),
-        };
-        if (entry.bytes > this.#maxRecordBytes) {
-          throw new Error("Native guard event spool record is oversized");
-        }
-        this.#pending.push(entry);
-        this.#pendingIds.add(event.eventId);
-        this.#pendingBytes += entry.bytes;
+      } catch {
+        await this.#quarantineCorruptData("corrupt");
+        return;
       }
     }
     this.#evictToLimits();
@@ -522,6 +590,137 @@ class AtomicEventSpool implements EventSpool {
       await this.#writeData();
     }
     if (!(await pathExists(this.#metadataPath))) await this.#writeMetadata();
+  }
+
+  async #quarantineCorruptData(reason: "corrupt" | "oversized"): Promise<void> {
+    await quarantineFile(this.#dataPath);
+    this.#pending = [];
+    this.#pendingIds.clear();
+    this.#pendingBytes = 0;
+    this.#loaded = true;
+    await this.#writeData();
+    if (!(await pathExists(this.#metadataPath))) await this.#writeMetadata();
+    try {
+      await this.#onCorruptData?.(reason);
+    } catch {
+      // A diagnostic sink cannot prevent the spool from recovering safely.
+    }
+  }
+
+  async #ensureOwnership(): Promise<void> {
+    if (this.#ownershipReady) return;
+    if (this.#ownerToken !== undefined) {
+      throw new Error("Native guard event spool ownership acquisition is incomplete");
+    }
+    await ensureSecureDirectory(this.#directory);
+    const token = randomUUID();
+    const owner: SpoolOwner = {
+      schemaVersion: "native-event-spool-owner-1",
+      pid: process.pid,
+      token,
+    };
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const handle = await open(this.#ownerPath, "wx", 0o600);
+        // Record the token as soon as wx succeeds. A partial write is still
+        // our claim and must be cleaned up through the same atomic release
+        // path, never by deleting the canonical path blindly.
+        this.#ownerToken = token;
+        this.#ownerClaimIncomplete = true;
+        try {
+          await this.#writeOwnerFile(handle, `${JSON.stringify(owner)}\n`);
+          await this.#syncOwnerFile(handle);
+          this.#ownerClaimIncomplete = false;
+          await handle.close();
+          await this.#hardenOwnerFile(this.#ownerPath);
+          this.#ownershipReady = true;
+          return;
+        } catch (error) {
+          await handle.close().catch(() => undefined);
+          await this.#releaseOwnership().catch(() => undefined);
+          throw error;
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        if (attempt > 0 || !(await recoverDeadOwner(this.#ownerPath))) {
+          throw new Error("Native guard event spool ownership is unavailable");
+        }
+      }
+    }
+    throw new Error("Native guard event spool ownership is unavailable");
+  }
+
+  async #releaseOwnership(): Promise<void> {
+    const token = this.#ownerToken;
+    if (token === undefined) return;
+
+    // Once the canonical path has been moved, all retries target the private
+    // inode. This keeps a replacement owner at owner.lock out of the retry
+    // path and gives release exactly-one semantics across processes.
+    if (this.#ownerReleasePath === undefined) {
+      const releasePath = `${this.#ownerPath}.release-${token}-${randomUUID()}`;
+      try {
+        await this.#renameOwnerFile(this.#ownerPath, releasePath);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+          this.#clearOwnership(token);
+          return;
+        }
+        throw error;
+      }
+      this.#ownerReleasePath = releasePath;
+      this.#ownerReleaseUnverified = this.#ownerClaimIncomplete;
+    }
+
+    const releasePath = this.#ownerReleasePath;
+    if (releasePath === undefined) return;
+    if (!this.#ownerReleaseUnverified) {
+      let owner: SpoolOwner;
+      try {
+        owner = await readSpoolOwner(releasePath);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+          this.#clearOwnership(token);
+          return;
+        }
+        // Preserve and retry only the private inode whose ownership could
+        // not be proved. A replacement at the canonical path belongs to a
+        // different claimant and must never be moved by this spool.
+        throw error;
+      }
+      if (owner.pid !== process.pid || owner.token !== token) {
+        // A different owner was captured by the atomic move. Try to restore
+        // it only with exclusive-create semantics; never overwrite a racing
+        // claimant. Either way, fail closed and forget our ownership token.
+        await restoreOwnerIfAbsent(releasePath, this.#ownerPath).catch(() => undefined);
+        this.#ownerReleasePath = undefined;
+        this.#ownerReleaseUnverified = false;
+        this.#clearOwnership(token);
+        throw new Error("Native guard event spool ownership changed during release");
+      }
+    }
+    try {
+      await this.#removeOwnerFile(releasePath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        this.#clearOwnership(token);
+        return;
+      }
+      // The spool is already stopped, so ownership may be handed off while
+      // cleanup retries only this private inode. Recreating owner.lock here
+      // would introduce duplicate owner state if private removal then failed.
+      throw error;
+    }
+    this.#clearOwnership(token);
+  }
+
+  #clearOwnership(token: string): void {
+    if (this.#ownerToken !== token) return;
+    this.#ownerToken = undefined;
+    this.#ownerReleasePath = undefined;
+    this.#ownerReleaseUnverified = false;
+    this.#ownerClaimIncomplete = false;
+    this.#ownershipReady = false;
   }
 
   async #loadMetadata(): Promise<void> {
@@ -588,54 +787,102 @@ type ProjectionState = {
   exactSecrets: readonly string[];
 };
 
-function projectOutcomeValue(value: unknown, state: ProjectionState, depth: number): unknown {
+const OMIT_PROJECTION = Symbol("omit-outcome-projection");
+const MAX_OUTCOME_STRING_BYTES = 32 * 1024;
+const MAX_EXACT_SECRET_OVERLAP = 4 * 1024;
+
+function projectOutcomeValue(
+  value: unknown,
+  state: ProjectionState,
+  depth: number,
+): unknown | typeof OMIT_PROJECTION {
   if (depth > MAX_RESULT_DEPTH || state.entries >= MAX_RESULT_ENTRIES || state.remainingBytes <= 0) {
-    return "[TRUNCATED]";
+    return projectFixedString("[TRUNCATED]", state);
   }
   state.entries += 1;
-  if (value === null || typeof value === "boolean") return value;
+  if (value === null) return reserveProjection(state, 4) ? null : OMIT_PROJECTION;
+  if (typeof value === "boolean") {
+    return reserveProjection(state, value ? 4 : 5) ? value : OMIT_PROJECTION;
+  }
   if (typeof value === "string") return boundedOutcomeString(value, state);
-  if (typeof value === "number") return Number.isFinite(value) ? value : "[UNAVAILABLE]";
-  if (typeof value !== "object" || utilTypes.isProxy(value)) return "[UNAVAILABLE]";
-  if (state.ancestors.has(value)) return "[CIRCULAR]";
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const bytes = Buffer.byteLength(JSON.stringify(value), "utf8");
+    return reserveProjection(state, bytes) ? value : OMIT_PROJECTION;
+  }
+  if (typeof value !== "object" || value === null || utilTypes.isProxy(value)) {
+    return projectFixedString("[UNAVAILABLE]", state);
+  }
+  if (state.ancestors.has(value)) return projectFixedString("[CIRCULAR]", state);
 
   state.ancestors.add(value);
   try {
     if (Array.isArray(value)) {
-      if (Object.getPrototypeOf(value) !== Array.prototype) return "[UNAVAILABLE]";
+      if (Object.getPrototypeOf(value) !== Array.prototype) {
+        return projectFixedString("[UNAVAILABLE]", state);
+      }
+      if (!reserveProjection(state, 2)) return OMIT_PROJECTION;
       const output: unknown[] = [];
       const length = Math.min(value.length, MAX_RESULT_ARRAY_ENTRIES);
       for (let index = 0; index < length; index += 1) {
+        const separatorBytes = output.length === 0 ? 0 : 1;
+        if (!reserveProjection(state, separatorBytes)) break;
         const descriptor = Object.getOwnPropertyDescriptor(value, index);
-        output.push(
-          descriptor !== undefined && "value" in descriptor
-            ? projectOutcomeValue(descriptor.value, state, depth + 1)
-            : "[UNAVAILABLE]",
-        );
+        const projected = descriptor !== undefined && "value" in descriptor
+          ? projectOutcomeValue(descriptor.value, state, depth + 1)
+          : projectFixedString("[UNAVAILABLE]", state);
+        if (projected === OMIT_PROJECTION) {
+          state.remainingBytes += separatorBytes;
+          break;
+        }
+        output.push(projected);
         if (state.entries >= MAX_RESULT_ENTRIES || state.remainingBytes <= 0) break;
       }
-      if (value.length > output.length) output.push("[TRUNCATED]");
+      if (value.length > output.length) addArrayTruncation(output, state);
       return output;
     }
 
     const prototype = Object.getPrototypeOf(value);
-    if (prototype !== Object.prototype && prototype !== null) return "[UNAVAILABLE]";
+    if (prototype !== Object.prototype && prototype !== null) {
+      return projectFixedString("[UNAVAILABLE]", state);
+    }
+    if (!reserveProjection(state, 2)) return OMIT_PROJECTION;
     const output: Record<string, unknown> = {};
     let keys = 0;
+    let truncated = false;
     for (const key in value) {
       if (!Object.hasOwn(value, key)) continue;
       if (keys >= MAX_RESULT_ENTRIES || state.entries >= MAX_RESULT_ENTRIES) {
-        output["[TRUNCATED]"] = true;
+        truncated = true;
+        break;
+      }
+      const safeKey = scrubBoundedString(
+        key,
+        state.exactSecrets,
+        MAX_OUTCOME_STRING_BYTES,
+      );
+      if (Object.hasOwn(output, safeKey)) {
+        truncated = true;
+        break;
+      }
+      const keyBytes = Buffer.byteLength(JSON.stringify(safeKey), "utf8") + 1 +
+        (keys === 0 ? 0 : 1);
+      if (!reserveProjection(state, keyBytes)) {
+        truncated = true;
         break;
       }
       keys += 1;
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
       const projected = SENSITIVE_KEY.test(key)
-        ? "[REDACTED]"
+        ? projectFixedString("[REDACTED]", state)
         : descriptor !== undefined && "value" in descriptor
           ? projectOutcomeValue(descriptor.value, state, depth + 1)
-          : "[UNAVAILABLE]";
-      Object.defineProperty(output, key, {
+          : projectFixedString("[UNAVAILABLE]", state);
+      if (projected === OMIT_PROJECTION) {
+        state.remainingBytes += keyBytes;
+        truncated = true;
+        break;
+      }
+      Object.defineProperty(output, safeKey, {
         value: projected,
         enumerable: true,
         configurable: true,
@@ -643,18 +890,56 @@ function projectOutcomeValue(value: unknown, state: ProjectionState, depth: numb
       });
       if (state.remainingBytes <= 0) break;
     }
+    if (truncated) addObjectTruncation(output, state);
     return output;
   } finally {
     state.ancestors.delete(value);
   }
 }
 
-function boundedOutcomeString(value: string, state: ProjectionState): string {
-  let scrubbed = scrubGenericSecrets(normalizeUnicode(value));
-  for (const secret of state.exactSecrets) scrubbed = scrubbed.split(secret).join("[REDACTED]");
-  const bounded = truncateUtf8(scrubbed, Math.min(state.remainingBytes, 32 * 1024));
-  state.remainingBytes -= Buffer.byteLength(bounded, "utf8");
-  return bounded.length === scrubbed.length ? bounded : `${bounded}[TRUNCATED]`;
+function boundedOutcomeString(
+  value: string,
+  state: ProjectionState,
+): string | typeof OMIT_PROJECTION {
+  const scrubbed = scrubBoundedString(value, state.exactSecrets, MAX_OUTCOME_STRING_BYTES);
+  const fitted = fitCanonicalString(scrubbed, state.remainingBytes);
+  if (fitted === undefined) return OMIT_PROJECTION;
+  state.remainingBytes -= Buffer.byteLength(JSON.stringify(fitted), "utf8");
+  return fitted;
+}
+
+function reserveProjection(state: ProjectionState, bytes: number): boolean {
+  if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > state.remainingBytes) return false;
+  state.remainingBytes -= bytes;
+  return true;
+}
+
+function projectFixedString(
+  value: string,
+  state: ProjectionState,
+): string | typeof OMIT_PROJECTION {
+  const bytes = Buffer.byteLength(JSON.stringify(value), "utf8");
+  return reserveProjection(state, bytes) ? value : OMIT_PROJECTION;
+}
+
+function addArrayTruncation(output: unknown[], state: ProjectionState): void {
+  const separatorBytes = output.length === 0 ? 0 : 1;
+  const markerBytes = Buffer.byteLength(JSON.stringify("[TRUNCATED]"), "utf8");
+  if (reserveProjection(state, separatorBytes + markerBytes)) output.push("[TRUNCATED]");
+}
+
+function addObjectTruncation(output: Record<string, unknown>, state: ProjectionState): void {
+  const key = "[TRUNCATED]";
+  if (Object.hasOwn(output, key)) return;
+  const bytes = Buffer.byteLength(JSON.stringify(key), "utf8") + 1 + 4 +
+    (Object.keys(output).length === 0 ? 0 : 1);
+  if (!reserveProjection(state, bytes)) return;
+  Object.defineProperty(output, key, {
+    value: true,
+    enumerable: true,
+    configurable: true,
+    writable: true,
+  });
 }
 
 function sanitizeEvent(value: unknown, allowLegacyEpoch: boolean): NativeGuardEvent {
@@ -884,6 +1169,7 @@ function positiveInteger(value: number, maximum: number, label: string): number 
 }
 
 async function ensureSecureDirectory(directory: string): Promise<void> {
+  await verifySecureAncestors(directory);
   try {
     const metadata = await lstat(directory);
     if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
@@ -892,12 +1178,246 @@ async function ensureSecureDirectory(directory: string): Promise<void> {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     await mkdir(directory, { recursive: true, mode: 0o700 });
+    await verifySecureAncestors(directory);
     const metadata = await lstat(directory);
     if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
       throw new Error("Native guard event spool directory is a symlink or is invalid");
     }
   }
   if (process.platform !== "win32") await chmod(directory, 0o700);
+}
+
+async function verifySecureAncestors(directory: string): Promise<void> {
+  let current = directory;
+  while (true) {
+    try {
+      const metadata = await lstat(current);
+      if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
+        throw new Error("Native guard event spool directory is a symlink or is invalid");
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    const parent = dirname(current);
+    if (parent === current) return;
+    current = parent;
+  }
+}
+
+async function recoverDeadOwner(ownerPath: string): Promise<boolean> {
+  const gate = await acquireOwnerRecoveryGate(ownerPath);
+  if (gate === undefined) return false;
+  try {
+    let owner: SpoolOwner;
+    try {
+      owner = await readSpoolOwner(ownerPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw error;
+    }
+    if (ownerProcessMayExist(owner.pid)) return false;
+    const quarantinedPath = `${ownerPath}.stale-${randomUUID()}`;
+    try {
+      await rename(ownerPath, quarantinedPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw error;
+    }
+    try {
+      const quarantined = await readSpoolOwner(quarantinedPath);
+      if (quarantined.pid !== owner.pid || quarantined.token !== owner.token) {
+        await restoreOwnerIfAbsent(quarantinedPath, ownerPath).catch(() => undefined);
+        return false;
+      }
+      await unlink(quarantinedPath);
+      return true;
+    } catch {
+      await restoreOwnerIfAbsent(quarantinedPath, ownerPath).catch(() => undefined);
+      return false;
+    }
+  } finally {
+    await releaseOwnerRecoveryGate(gate);
+  }
+}
+
+type OwnerRecoveryGate = {
+  path: string;
+  token: string;
+};
+
+async function acquireOwnerRecoveryGate(ownerPath: string): Promise<OwnerRecoveryGate | undefined> {
+  const gatePath = `${ownerPath}.recovery`;
+  const token = randomUUID();
+  const gate = {
+    schemaVersion: "native-event-spool-recovery-1",
+    pid: process.pid,
+    token,
+  };
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const handle = await open(gatePath, "wx", 0o600);
+      try {
+        await handle.writeFile(`${JSON.stringify(gate)}\n`, { encoding: "utf8" });
+        await handle.sync();
+      } catch (error) {
+        await handle.close().catch(() => undefined);
+        await unlink(gatePath).catch(() => undefined);
+        throw error;
+      }
+      await handle.close();
+      return { path: gatePath, token };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+
+    let existing: { pid: number; token: string };
+    try {
+      existing = await readOwnerRecoveryGate(gatePath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw error;
+    }
+    if (ownerProcessMayExist(existing.pid)) return undefined;
+
+    const quarantinedPath = `${gatePath}.stale-${randomUUID()}`;
+    try {
+      await rename(gatePath, quarantinedPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    }
+    try {
+      const quarantined = await readOwnerRecoveryGate(quarantinedPath);
+      if (quarantined.pid !== existing.pid || quarantined.token !== existing.token) {
+        await restoreOwnerIfAbsent(quarantinedPath, gatePath).catch(() => undefined);
+        return undefined;
+      }
+      await unlink(quarantinedPath);
+    } catch {
+      await restoreOwnerIfAbsent(quarantinedPath, gatePath).catch(() => undefined);
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
+async function releaseOwnerRecoveryGate(gate: OwnerRecoveryGate): Promise<void> {
+  const privatePath = `${gate.path}.release-${gate.token}-${randomUUID()}`;
+  try {
+    await rename(gate.path, privatePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  try {
+    const current = await readOwnerRecoveryGate(privatePath);
+    if (current.pid !== process.pid || current.token !== gate.token) {
+      await restoreOwnerIfAbsent(privatePath, gate.path).catch(() => undefined);
+      throw new Error("Native guard event spool recovery gate changed during release");
+    }
+    await unlink(privatePath);
+  } catch (error) {
+    await restoreOwnerIfAbsent(privatePath, gate.path).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function readOwnerRecoveryGate(gatePath: string): Promise<{ pid: number; token: string }> {
+  const metadata = await lstat(gatePath);
+  if (metadata.isSymbolicLink() || !metadata.isFile() || metadata.size > MAX_OWNER_BYTES) {
+    throw new Error("Native guard event spool ownership is unsafe");
+  }
+  const bytes = await readFile(gatePath);
+  if (bytes.byteLength === 0 || bytes.byteLength > MAX_OWNER_BYTES) {
+    throw new Error("Native guard event spool ownership is unsafe");
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(bytes.toString("utf8"));
+  } catch {
+    throw new Error("Native guard event spool ownership is unsafe");
+  }
+  if (
+    !isPlainRecord(value) ||
+    Object.keys(value).sort().join(",") !== "pid,schemaVersion,token" ||
+    value.schemaVersion !== "native-event-spool-recovery-1" ||
+    !Number.isSafeInteger(value.pid) ||
+    (value.pid as number) <= 0 ||
+    typeof value.token !== "string" ||
+    !/^[0-9a-f-]{36}$/i.test(value.token)
+  ) throw new Error("Native guard event spool ownership is unsafe");
+  return { pid: value.pid as number, token: value.token };
+}
+
+async function restoreOwnerIfAbsent(sourcePath: string, destinationPath: string): Promise<boolean> {
+  const metadata = await lstat(sourcePath);
+  if (metadata.isSymbolicLink() || !metadata.isFile() || metadata.size > MAX_OWNER_BYTES) {
+    throw new Error("Native guard event spool ownership is unsafe");
+  }
+  const contents = await readFile(sourcePath);
+  if (contents.byteLength === 0 || contents.byteLength > MAX_OWNER_BYTES) {
+    throw new Error("Native guard event spool ownership is unsafe");
+  }
+  let handle: OwnerFileHandle | undefined;
+  try {
+    handle = await open(destinationPath, "wx", 0o600);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+    throw error;
+  }
+  try {
+    await handle.writeFile(contents);
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    if (process.platform !== "win32") await chmod(destinationPath, 0o600);
+  } catch (error) {
+    await handle?.close().catch(() => undefined);
+    throw error;
+  }
+  try {
+    await unlink(sourcePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  return true;
+}
+
+async function readSpoolOwner(ownerPath: string): Promise<SpoolOwner> {
+  const metadata = await lstat(ownerPath);
+  if (metadata.isSymbolicLink() || !metadata.isFile() || metadata.size > MAX_OWNER_BYTES) {
+    throw new Error("Native guard event spool ownership is unsafe");
+  }
+  const bytes = await readFile(ownerPath);
+  if (bytes.byteLength === 0 || bytes.byteLength > MAX_OWNER_BYTES) {
+    throw new Error("Native guard event spool ownership is unsafe");
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(bytes.toString("utf8"));
+  } catch {
+    throw new Error("Native guard event spool ownership is unsafe");
+  }
+  if (
+    !isPlainRecord(value) ||
+    Object.keys(value).sort().join(",") !== "pid,schemaVersion,token" ||
+    value.schemaVersion !== "native-event-spool-owner-1" ||
+    !Number.isSafeInteger(value.pid) ||
+    (value.pid as number) <= 0 ||
+    typeof value.token !== "string" ||
+    !/^[0-9a-f-]{36}$/i.test(value.token)
+  ) throw new Error("Native guard event spool ownership is unsafe");
+  return value as SpoolOwner;
+}
+
+function ownerProcessMayExist(pid: number): boolean {
+  if (pid === process.pid) return true;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
 }
 
 async function removeStaleTemporaryFiles(directory: string): Promise<void> {
@@ -1029,7 +1549,7 @@ function safeString(value: unknown, maxLength: number): value is string {
 function scrubGenericSecrets(value: string): string {
   return value
     .replace(
-      /-----BEGIN [^-\r\n]*PRIVATE KEY-----[\s\S]*?-----END [^-\r\n]*PRIVATE KEY-----/gi,
+      /-----BEGIN [^-\r\n]{0,64}PRIVATE KEY-----[\s\S]*?(?:-----END [^-\r\n]{0,64}PRIVATE KEY-----|$)/gi,
       "[REDACTED PRIVATE KEY]",
     )
     .replace(/\b(authorization|cookie)\b\s*[:=]\s*[^\r\n,]+/gi, "$1=[REDACTED]")
@@ -1038,6 +1558,53 @@ function scrubGenericSecrets(value: string): string {
       /\b(api[_-]?key|token|secret|password|credential)\b["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;}\]]+)/gi,
       "$1=[REDACTED]",
     );
+}
+
+function scrubBoundedString(
+  value: string,
+  exactSecrets: readonly string[],
+  maxOutputBytes: number,
+): string {
+  const secrets = exactSecrets
+    .filter((entry) => typeof entry === "string" && entry.length > 0)
+    .map((entry) => entry.slice(0, MAX_EXACT_SECRET_OVERLAP));
+  const overlap = Math.min(
+    MAX_EXACT_SECRET_OVERLAP,
+    Math.max(128, ...secrets.map(({ length }) => length)),
+  );
+  const rawLimit = maxOutputBytes + overlap;
+  const raw = value.length > rawLimit ? value.slice(0, rawLimit) : value;
+  let scrubbed = scrubGenericSecrets(normalizeUnicode(raw));
+  for (const secret of secrets) scrubbed = scrubbed.split(secret).join("[REDACTED]");
+  const truncated = value.length > raw.length;
+  const suffix = truncated ? "[TRUNCATED]" : "";
+  const prefixBudget = Math.max(0, maxOutputBytes - Buffer.byteLength(suffix, "utf8"));
+  return `${truncateUtf8(scrubbed, prefixBudget)}${suffix}`;
+}
+
+function fitCanonicalString(value: string, maxBytes: number): string | undefined {
+  if (maxBytes < 2) return undefined;
+  if (Buffer.byteLength(JSON.stringify(value), "utf8") <= maxBytes) return value;
+  let low = 0;
+  let high = value.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    const candidate = safeCodeUnitPrefix(value, middle);
+    if (Buffer.byteLength(JSON.stringify(candidate), "utf8") <= maxBytes) low = middle;
+    else high = middle - 1;
+  }
+  return safeCodeUnitPrefix(value, low);
+}
+
+function safeCodeUnitPrefix(value: string, length: number): string {
+  let end = Math.min(value.length, Math.max(0, length));
+  if (
+    end > 0 &&
+    end < value.length &&
+    value.charCodeAt(end - 1) >= 0xd800 &&
+    value.charCodeAt(end - 1) <= 0xdbff
+  ) end -= 1;
+  return value.slice(0, end);
 }
 
 function normalizeUnicode(value: string): string {

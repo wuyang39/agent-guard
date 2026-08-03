@@ -835,4 +835,6 @@ const ACTIVATION: NativeGuardLeaseActivation = {
   expiresAt: "2026-08-02T00:05:00.000Z",
   credential: "lease-secret",
   evidenceCredential: "evidence-secret",
+  evidenceSigningKeyId: "evidence.control-client",
+  evidenceSigningPrivateKey: "private-key",
 };

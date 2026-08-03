@@ -166,10 +166,12 @@ OpenClaw 当前没有公开的“所有普通 Hook 之后再次运行 Trusted Po
 - `durationSource="host"` 表示 OpenClaw SDK 明确提供的 `durationMs`。SDK 缺失该值时，插件使用从 Agent Guard 为调用建立 outcome correlation 到 `after_tool_call` 的有界非负单调经过时间并标记 `guard_elapsed`；该值在 `ask` 路径包含人工审批等待，不得解释为纯工具执行耗时。若旧调用没有 correlation，则标记 `unavailable` 并省略 `durationMs`，不能填 0；旧持久化事件迁移为 `legacy_unspecified`。
 - 结果正文默认只保留脱敏后的有界预览；完整正文不进入普通审计事件。
 - 上报失败写入有界 spool，按事件 ID 幂等重试。
+- spool 默认位于 marker/profile 目录下，并在 activation 写 marker 前用 exclusive-create 获取单 owner。owner 文件为有界 mode-`0600` JSON，包含 PID 和随机 token；symlink 或 live PID 冲突 fail closed，既有 ancestor symlink 也拒绝，dead PID 通过带 PID/token recovery gate 的隔离重命名恢复，释放时必须把 canonical owner 原子移到私有 quarantine 并匹配 token。释放失败只重试私有 inode，不回头搬运 replacement owner；完整 corrupt/oversized data 原子 quarantine 后重建空 spool，并只发固定 reason 的本地诊断。OFF 不创建 spool、目录或 owner 文件。
 - 新事件必须把 `leaseEpoch` 放在事件顶层。仅对已有持久化数据兼容 `detail.leaseEpoch`：校验通过后迁移到顶层并原子重写；缺失或非安全整数的旧值不能被推断或补造。
 - 续租后使用当前 evidence credential 重试同一租约的旧 epoch 事件，不改写事件身份。已结束子会话的绑定只保留为该租约生命周期内的历史证据授权，不能继续用于决策。
 - 所有 ACTIVE 可执行返回（签名 allow/warn/redact/可执行 ask，以及低风险 PDP 故障 allow/warn）都先建立包含原 lease/epoch/session/参数摘要和单调基准的 outcome correlation。after 一开始原子取出一次；随后发生 renew 或 child end 仍按原身份入 spool。容量满时保留已有长工具 correlation 并阻断新的可执行返回，不淘汰旧项。
 - spool 达到上限时丢弃最旧的低价值 outcome 事件，但保留 deny、ask、错误和状态转换事件。
+- outcome 投影的 256 KiB 预算覆盖 escaped key、引号、冒号、逗号、括号和投影值，先完成有界投影再 canonicalize 和计算 digest。超长字符串先截取有界前缀和秘密重叠窗口再脱敏；未闭合的 OpenSSH/PKCS8 私钥标记脱敏到有界 EOF。
 - Hook 不因审计服务短暂不可用改变已经完成的工具结果。
 
 ## 7. 租约模型
@@ -197,10 +199,12 @@ type NativeGuardLease = {
   expiresAt: string;
   credential: string;
   evidenceCredential: string;
+  evidenceSigningKeyId: string;
+  evidenceSigningPrivateKey: string;
 };
 ```
 
-`credential` 和 `evidenceCredential` 是两个独立的至少 256 bit 随机值。前者只能调用 decision endpoint；后者只能调用 event ingest 和 session lifecycle endpoint。两者只存在于 Agent Guard 后端和插件内存，不进入日志、Trace、报告、URL、错误消息或持久化 marker；后端分别保存哈希。每次续租同时轮换两个身份，旧身份立即失效，且两个 bearer 不能跨鉴权域使用。
+`credential` 和 `evidenceCredential` 是两个独立的至少 256 bit 随机值。前者只能调用 decision endpoint；后者只是 evidence 请求的第一因子，不能脱离 proof 单独授权 event ingest 或 session lifecycle。每个 epoch 另生成 Ed25519 evidence signing identity：插件内存持有私钥，后端只持有公钥。bearer、evidence 私钥都不进入日志、Trace、报告、URL、错误消息、spool 或持久化 marker；后端分别保存 bearer 哈希。每次续租同时轮换两个 bearer 和 evidence signing identity，旧身份立即失效。
 
 ### 7.2 生命周期
 
@@ -211,20 +215,22 @@ OFF --activate--> ACTIVE --renew--> ACTIVE
                        v                v
                     RECOVERY <----------+
                        |
-              reactivate | explicit revoke / session end / expiry
+              reactivate | explicit revoke / expiry
                        v
                  ACTIVE or OFF
+
+ACTIVE --root end ACK + local commit--> ROOT_ENDED --revoke/expiry--> OFF
 ```
 
 - 默认 TTL 为 5 分钟，最大 TTL 为 15 分钟。
 - 后端在租约生命周期过半前续租。
 - 检测和受管运行在无法续租时先取消 OpenClaw run，再让租约到期。
-- 显式 revoke、会话结束或到达 `expiresAt` 后删除 marker 并进入 `OFF`。
+- 显式 revoke 或到达 `expiresAt` 后删除 marker 并进入 `OFF`。根会话结束先进入不可续租的 `ROOT_ENDED`，不能直接降为 OFF。
 - Gateway 重启后，如果存在尚未过期的 guarded marker 但没有内存凭据，则进入 `RECOVERY`。
 - `session_end(reason="compaction")` 只是 transcript 生命周期切换，不得删除根会话或子会话 marker；`shutdown` 和 `restart` 同样保留 marker。
-- `OFF` 只表示从未启用、已显式停用、会话结束或租约已经到期；这些状态不得调用 Agent Guard。
+- `OFF` 只表示从未启用、已显式停用或租约已经到期；这些状态不得调用 Agent Guard。`ROOT_ENDED` 对 root 和既有 descendants 返回固定 `NATIVE_GUARD_ROOT_ENDED` block，但允许同租约晚到 evidence 在到期前排空。
 
-子会话 bind/end 使用持久化三阶段状态机：先原子写入 `lifecycleIntent`，再用 evidence credential 同步后端，最后原子提交本地 marker。任一步失败或 Gateway 在中间重启时，整个租约进入 `LIFECYCLE_PENDING`；包括明确低风险工具在内的所有调用均以固定 `NATIVE_GUARD_LIFECYCLE_PENDING` 原因阻断。恢复后重放同一 intent，只有后端确认和本地提交都完成才重新进入 `ACTIVE`。公开 status 只暴露固定状态和原因码，不返回 intent 中的 session key。
+子会话 bind/end 使用持久化三阶段 FIFO：先原子追加 lifecycle operation，再同步后端，最后在同一 marker 事务中提交本地树变化并弹出队首。每个队首在联网前持久化不含秘密的 signed evidence proof；验证先 reserve exact proof，mutation/ACK/append 失败只 release 匹配 reservation，成功 signed ACK commit；失败或重启后重放完全相同的 proof。FIFO 最多 128 项且受 64 KiB marker 上限约束；overflow 状态即使在已接受队列排空后仍保持 fail closed，只有 revoke 清除。队列、overflow 或任一步失败都会让整个租约进入 `LIFECYCLE_PENDING`。root end 是 terminal barrier，成功后写 durable tombstone，不能被续租或后续队列操作复活；marker 带已知的 top-level `leaseEpoch`，legacy 无 epoch 时保持 RECOVERY，不虚构 tombstone。公开 status 不返回队列中的 session key、proof 或其他细节。
 
 该定义保留“租约到期后 OpenClaw 恢复正常”的要求，同时在尚未到期的异常重启窗口内避免静默失守。
 
@@ -239,7 +245,9 @@ OFF --activate--> ACTIVE --renew--> ACTIVE
 
 ### 7.4 激活通道
 
-Agent Guard 通过插件注册的 OpenClaw HTTP route 主动下发、续租和撤销租约。route 使用 OpenClaw `auth: "gateway"`，不开放匿名激活。插件反向同步子会话生命周期时，只能从已验证的 loopback decision URL 派生固定的 `/lifecycle/bind-child` 和 `/lifecycle/end-session` 路径，使用 evidence credential，禁止重定向，并限制连接、响应体和总超时。
+Agent Guard 通过插件注册的 OpenClaw HTTP route 主动下发、续租和撤销租约。route 使用 OpenClaw `auth: "gateway"`，不开放匿名激活。插件反向同步子会话生命周期时，只能从已验证的 loopback decision URL 派生固定的 `/lifecycle/bind-child` 和 `/lifecycle/end-session` 路径，使用 evidence bearer 加 `X-Agent-Guard-Evidence-Proof`，禁止重定向，并限制连接、proof header、响应体和总超时。proof 使用 `native_guard.evidence_request.v1`，绑定 method、exact path、lease/epoch、canonical body digest、key ID、proof ID 和 issued time。
+
+后端对通过 proof 的 lifecycle/event 成功响应使用 lease decision key 签署 `native_guard.evidence_ack.v1`。生命周期 ACK 绑定 proof/body/type；事件 ACK 还绑定 accepted count 和有序 event-ID digest。插件不接受 unsigned 或字段被改写的成功响应。所有 completed lifecycle ACK 都可用完全相同的 signed proof/path/body 幂等读取，child bind/end 仍必须提供当前 evidence bearer。根结束在后端已提交但插件丢失响应时，可以不带 bearer 读取 exact root-end ACK；这是唯一的 bearer-less evidence 恢复例外，不接受新 proof，不重复改变状态。cache 每 lease 最多 4,096 项并随 lease expiry/revoke/renew 清除。Event upload 每次 retry 生成 fresh proof，重复持久化由 event ID 幂等处理，不使用 lifecycle ACK cache。
 
 插件不通过轮询判断是否启用，因此 `OFF` 状态没有 Agent Guard 网络依赖。`backendUrl` 第一版必须解析为 `127.0.0.1`、`::1` 或明确允许的 loopback 主机，禁止重定向。
 
@@ -425,7 +433,7 @@ outputs/openclaw-detection/<runGroupId>/
 
 ### 11.1 Native Guard Lease Service
 
-负责创建、续租、撤销、live 会话树绑定、lease-scoped 历史证据绑定、两类凭据哈希、签名密钥和状态查询。决策只读取 live binding；证据可读取 live 或仍在同一租约生命周期内的 historical binding。原始凭据与私钥只驻留内存；服务重启后旧租约不可恢复，OpenClaw 插件在尚未过期的 marker 窗口进入 recovery。
+负责创建、续租、撤销、live 会话树绑定、lease-scoped 历史证据绑定、两类凭据哈希、decision signing key、evidence public key、proof replay window、root tombstone 和 exact root-ACK cache。决策只读取 live binding；证据可读取 live、root-ended 或仍在同一租约生命周期内的 historical binding。原始凭据与私钥只驻留对应进程内存；服务重启后旧租约不可恢复，OpenClaw 插件在尚未过期的 marker 窗口进入 recovery。
 
 ### 11.2 OpenClaw Control Client
 
@@ -452,7 +460,7 @@ outputs/openclaw-detection/<runGroupId>/
 | Agent Guard 管理接口 | UI / detection orchestrator | 操作员控制令牌和受限 Origin |
 | OpenClaw 插件控制接口 | Agent Guard 后端 | OpenClaw Gateway auth |
 | decision | OpenClaw 插件 | decision bearer；响应额外使用 Ed25519 签名 |
-| event ingest / session lifecycle | OpenClaw 插件 | 独立 evidence bearer |
+| event ingest / session lifecycle | OpenClaw 插件 | 独立 evidence bearer + per-epoch Ed25519 PoP；成功 ACK 由 decision key 签名 |
 
 共同要求：
 
@@ -543,6 +551,9 @@ misconfigured
 | 审批超时/缺失/格式错误 | deny |
 | lease revoke 与调用并发 | 返回前复查 epoch，旧决定失效 |
 | child bind/end 同步或 marker 提交失败 | 持久化 intent，整个租约进入 lifecycle pending 并阻断所有工具，重启后重放 |
+| lifecycle FIFO 超限 | 持久化 overflow，排空已有队列后仍阻断，直到 revoke |
+| lifecycle ACK 丢失 | child bind/end 需当前 bearer + exact proof/path/body；root end 可 exact bearer-less；其他请求 401 且零 mutation |
+| root end 本地提交成功 | durable root tombstone 阻断 root/children；晚到 evidence 可排空，revoke/expiry 后 OFF |
 | after 上报失败 | 写入有界 spool，不改变工具已完成结果 |
 | spool 损坏 | 隔离损坏文件，保留高等级本地告警 |
 | Docker daemon/image 不可用 | 检测拒绝启动 |
@@ -563,6 +574,8 @@ misconfigured
 - renew/child-end 与 fire-and-forget after 的竞态保持原 epoch outcome；revoke 后 lazy spool 不启动上传或重试。
 - host/guard-elapsed/unavailable/legacy duration source 合同，以及错误诊断的 4 KiB UTF-8 边界和秘密过滤。
 - 双凭据隔离、续租轮换、旧 epoch evidence 重试和历史子会话 evidence-only binding。
+- PoP 篡改/重放/轮换、signed lifecycle/event ACK、延迟 exact root-ACK 恢复和不同 proof/body 的零 mutation 拒绝。
+- spool 单 owner、跨进程争用、dead PID 恢复、token-matching release、OFF 零文件系统，以及 lifecycle FIFO/overflow/root tombstone 重启。
 - lifecycle intent 的写入、后端确认、本地提交、失败阻断及重启重放。
 - 顶层 `leaseEpoch` 强制校验和可验证 legacy epoch 的原子迁移。
 
@@ -621,6 +634,8 @@ misconfigured
 - Agent Guard fetch 超时 2 秒，OpenClaw Hook 总预算保持不低于 5 秒且低于其 15 秒默认上限。
 - 单个 canonical 参数对象默认上限 256 KiB，decision HTTP 信封另预留 64 KiB，工具结果预览默认上限 8 KiB。
 - spool 默认上限 10,000 个事件或 50 MiB，先到者生效。
+- lifecycle FIFO 默认最多 128 项，并与 proof、tombstone 共同受 64 KiB marker 上限约束。
+- evidence proof replay 集和 completed lifecycle ACK cache 每 lease 分别最多 4,096 项；普通 proof 接受窗口为 30 秒，cache 随 lease renewal/revoke/expiry 删除。
 - 同一租约的 decision endpoint 必须限制并发和速率，但不能让低风险洪泛饿死高风险裁决。
 
 ## 18. 上线顺序
@@ -641,14 +656,15 @@ misconfigured
 - 所有 OpenClaw 标准工具调用进入可信准入管线，不使用工具名前缀跳过。
 - 使用 Trusted Policy 做硬准入，普通 `before_tool_call` 做最终参数裁决。
 - 使用会话树范围的短期可续租 lease，OFF 状态纯透传。
-- decision 与 evidence 使用独立且随续租轮换的 bearer；历史子会话绑定只能上传同一租约的既有证据。
-- 子会话生命周期使用 durable intent 同步，本地与后端未共同提交时整个租约 fail closed。
+- decision 与 evidence 使用独立且随续租轮换的 bearer；evidence 还要求每 epoch 轮换的 Ed25519 PoP，所有成功 ACK 必须由 decision key 签名。历史子会话绑定只能上传同一租约的既有证据。
+- 子会话生命周期使用 durable FIFO 和持久化 exact proof；本地与后端未共同提交、队列 overflow 或 root tombstone 存在时保持 fail closed。
 - 使用 OpenClaw 原生审批，不复用平行阻塞状态机。
 - 高风险和未知工具在 ACTIVE/RECOVERY 的 PDP 故障下 fail closed。
 - 检测使用独立 OpenClaw profile，不修改用户全局配置。
 - 决策使用 Ed25519 签名，租约凭据不持久化。
 - 正式证据来自真实 before/after，JSONL 只作交叉校验。
 - 不把 OpenClaw 原生插件代码或 Gateway 本身误称为 Docker 已隔离。
+- 固定 `3edbe19f` 仍为 unsupported/quarantined；Task 14 的进程外 launcher gate 尚未实现和 live 验收，不能宣称 native guard 可发布。
 
 ## 20. 参考项目与上游依据
 

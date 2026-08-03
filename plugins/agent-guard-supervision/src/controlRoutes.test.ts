@@ -13,10 +13,11 @@ import {
   type ServerResponse,
 } from "node:http";
 import type {
+  NativeGuardEvidenceProof,
   NativeGuardLeaseActivation,
   NativeToolDecisionRequest,
 } from "@agent-guard/contracts";
-import { signNativeGuardPayload } from "@agent-guard/native-guard-protocol";
+import { digestJson, signNativeGuardPayload } from "@agent-guard/native-guard-protocol";
 import type {
   SessionEndEvent,
   SessionEndReason,
@@ -39,6 +40,14 @@ const PUBLIC_KEY = generateKeyPairSync("ed25519").publicKey.export({
   type: "spki",
   format: "pem",
 }).toString();
+const EVIDENCE_PRIVATE_KEY = generateKeyPairSync("ed25519").privateKey.export({
+  type: "pkcs8",
+  format: "pem",
+}).toString();
+const RENEWED_EVIDENCE_PRIVATE_KEY = generateKeyPairSync("ed25519").privateKey.export({
+  type: "pkcs8",
+  format: "pem",
+}).toString();
 const EXPECTED_REGISTRATIONS = [
   "hook:before_tool_call",
   "hook:after_tool_call",
@@ -59,6 +68,7 @@ class AgentGuardRuntime extends ProductionAgentGuardRuntime {
   ) {
     super({
       ...options,
+      emitEvent: options.emitEvent ?? (async () => undefined),
       lifecycleClient: options.lifecycleClient ?? {
         async bindChild() { return; },
         async endSession() { return; },
@@ -160,6 +170,8 @@ function activation(
     expiresAt: "2026-08-02T00:05:00.000Z",
     credential: "credential-that-must-not-be-returned",
     evidenceCredential: "evidence-credential-that-must-not-be-returned",
+    evidenceSigningKeyId: "evidence.control-test",
+    evidenceSigningPrivateKey: EVIDENCE_PRIVATE_KEY,
     ...overrides,
   };
 }
@@ -379,6 +391,8 @@ test("activate, renew, status, and revoke return raw credential-free status", as
         expiresAt: "2026-08-02T00:06:00.000Z",
         credential: "rotated-credential-that-must-not-be-returned",
         evidenceCredential: "rotated-evidence-credential-that-must-not-be-returned",
+        evidenceSigningKeyId: "evidence.control-test.renewed",
+        evidenceSigningPrivateKey: RENEWED_EVIDENCE_PRIVATE_KEY,
       }),
     },
   );
@@ -1474,7 +1488,7 @@ test("shutdown, restart, and compaction drains preserve root and child markers",
   }
 });
 
-test("terminal session reasons clear the guarded tree", async (t) => {
+test("terminal session reasons tombstone the guarded tree until explicit revoke", async (t) => {
   const terminalReasons: SessionEndReason[] = ["new", "reset", "idle", "daily", "deleted", "unknown"];
   for (const reason of terminalReasons) {
     await t.test(reason, async () => {
@@ -1496,6 +1510,22 @@ test("terminal session reasons clear the guarded tree", async (t) => {
         sessionKey: "agent:guard:run.1",
       });
 
+      assert.equal((await runtime.lookup("agent:guard:run.1")).state, "root_ended");
+      assert.equal((await runtime.lookup("agent:guard:child.1")).state, "root_ended");
+      assert.deepEqual(await runtime.beforeToolCall({
+        toolName: "exec",
+        params: { command: "echo blocked" },
+        toolCallId: `call.root-ended.${reason}`,
+      }, {
+        toolName: "exec",
+        sessionKey: "agent:guard:run.1",
+        toolCallId: `call.root-ended.${reason}`,
+      }), {
+        block: true,
+        blockReason: "[Agent Guard:NATIVE_GUARD_ROOT_ENDED] Native guard root session has ended.",
+      });
+      assert.deepEqual(store.removes, []);
+      assert.equal(await runtime.revoke("lease.1"), true);
       assert.deepEqual(await runtime.lookup("agent:guard:run.1"), { state: "off" });
       assert.deepEqual(await runtime.lookup("agent:guard:child.1"), { state: "off" });
       assert.deepEqual(store.removes, ["lease.1"]);
@@ -1584,6 +1614,21 @@ test("subagent and session end hooks remove trees idempotently with event identi
     { sessionKey: "agent:guard:run.1" },
     { sessionKey: "agent:guard:wrong-context" },
   );
+  assert.equal((await runtime.lookup("agent:guard:run.1")).state, "root_ended");
+  assert.deepEqual(await runtime.beforeToolCall({
+    toolName: "exec",
+    params: { command: "echo blocked" },
+    toolCallId: "call.root-ended",
+  }, {
+    toolName: "exec",
+    sessionKey: "agent:guard:run.1",
+    toolCallId: "call.root-ended",
+  }), {
+    block: true,
+    blockReason: "[Agent Guard:NATIVE_GUARD_ROOT_ENDED] Native guard root session has ended.",
+  });
+  assert.deepEqual(store.removes, []);
+  assert.equal(await runtime.revoke("lease.1"), true);
   assert.deepEqual(await runtime.lookup("agent:guard:run.1"), { state: "off" });
   assert.deepEqual(store.removes, ["lease.1"]);
 });
@@ -2231,8 +2276,30 @@ test("real spawn hook binds backend before a child can receive a signed allow", 
       childBound = request.headers.authorization === "Bearer evidence-credential" &&
         body.parentSessionKey === "agent:guard:run.1" &&
         body.childSessionKey === "agent:guard:child.1";
+      const proof = JSON.parse(Buffer.from(
+        String(request.headers["x-agent-guard-evidence-proof"] ?? ""),
+        "base64url",
+      ).toString("utf8")) as NativeGuardEvidenceProof;
+      const unsignedAck = {
+        schemaVersion: "native-guard-1" as const,
+        signatureContext: "native_guard.evidence_ack.v1" as const,
+        ackId: "ack.real-spawn-bind",
+        ackType: "child_bound" as const,
+        proofId: proof.proofId,
+        leaseId: proof.leaseId,
+        leaseEpoch: proof.leaseEpoch,
+        bodyDigest: digestJson(body),
+        acknowledgedAt: new Date().toISOString(),
+      };
       return sendJson(response, childBound ? 200 : 401, childBound
-        ? { ok: true, data: { bound: true }, requestId: "bind-request" }
+        ? {
+            ok: true,
+            data: {
+              ...unsignedAck,
+              signature: signNativeGuardPayload(unsignedAck, privateKey),
+            },
+            requestId: "bind-request",
+          }
         : { ok: false, error: { code: "UNAUTHORIZED", message: "denied" }, requestId: "bind-request" });
     }
     if (request.url === "/api/v1/openclaw/native-guard/decision") {

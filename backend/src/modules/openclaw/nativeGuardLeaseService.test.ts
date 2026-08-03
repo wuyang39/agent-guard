@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
-import { createPublicKey } from "node:crypto";
+import { createPrivateKey, createPublicKey } from "node:crypto";
 import { describe, test } from "node:test";
 import type {
+  NativeGuardEvidenceProof,
   NativeGuardLeaseActivation,
   NativeToolDecisionResponse,
   SupervisionPolicyPack,
 } from "@agent-guard/contracts";
 import {
   digestJson,
+  signNativeGuardPayload,
   verifyNativeGuardPayload,
 } from "@agent-guard/native-guard-protocol";
 import { createNativeGuardLeaseService } from "./nativeGuardLeaseService";
@@ -42,6 +44,12 @@ test("manages a session-tree lease through authentication, renewal, and expiry",
   assert.equal(created.activation.expiresAt, "2026-08-01T00:05:00.000Z");
   assert.match(created.activation.credential, /^[A-Za-z0-9_-]{43}$/);
   assert.match(created.activation.decisionPublicKey, /BEGIN PUBLIC KEY/);
+  assert.match(created.activation.evidenceSigningKeyId, /^[A-Za-z0-9][A-Za-z0-9._-]+$/);
+  assert.match(created.activation.evidenceSigningPrivateKey, /BEGIN PRIVATE KEY/);
+  assert.equal(
+    createPrivateKey(created.activation.evidenceSigningPrivateKey).asymmetricKeyType,
+    "ed25519",
+  );
   assert.deepEqual(created.activation.failurePolicy, {
     lowRisk: "warn",
     highRisk: "deny",
@@ -161,6 +169,174 @@ test("evidence identity is separate and exclusively authorizes exact lifecycle b
   assert.equal(service.resolveBySession(CHILD_SESSION_KEY)?.leaseId, activation.leaseId);
 });
 
+test("evidence proof binds request identity and produces a decision-key signed acknowledgement", () => {
+  const service = createNativeGuardLeaseService({
+    now: () => new Date("2026-08-01T00:00:00.000Z"),
+  });
+  const activation = createLease(service, ROOT_SESSION_KEY);
+  const path = "/api/v1/openclaw/native-guard/lifecycle/bind-child";
+  const payload = {
+    leaseId: activation.leaseId,
+    leaseEpoch: activation.leaseEpoch,
+    parentSessionKey: ROOT_SESSION_KEY,
+    childSessionKey: CHILD_SESSION_KEY,
+  };
+  const proof = evidenceProof(activation, path, payload, "proof.valid");
+
+  const verified = service.verifyEvidenceRequest(
+    activation.leaseId,
+    activation.evidenceCredential,
+    proof,
+    path,
+    digestJson(payload),
+  );
+  assert.deepEqual(verified, {
+    leaseId: activation.leaseId,
+    leaseEpoch: activation.leaseEpoch,
+    proofId: proof.proofId,
+    bodyDigest: proof.bodyDigest,
+    path,
+    proofDigest: digestJson(proof),
+  });
+  assert.equal(service.releaseEvidenceRequest(verified!), true);
+  assert.notEqual(service.verifyEvidenceRequest(
+    activation.leaseId,
+    activation.evidenceCredential,
+    proof,
+    path,
+    digestJson(payload),
+  ), undefined);
+
+  const unsignedAck = {
+    schemaVersion: "native-guard-1" as const,
+    signatureContext: "native_guard.evidence_ack.v1" as const,
+    ackId: "ack.valid",
+    ackType: "child_bound" as const,
+    proofId: proof.proofId,
+    leaseId: activation.leaseId,
+    leaseEpoch: activation.leaseEpoch,
+    bodyDigest: proof.bodyDigest,
+    acknowledgedAt: "2026-08-01T00:00:00.000Z",
+  };
+  const ack = service.signEvidenceAcknowledgement(activation.leaseId, unsignedAck);
+  const { signature, ...signedPayload } = ack;
+  assert.equal(verifyNativeGuardPayload(
+    signedPayload,
+    signature,
+    createPublicKey(activation.decisionPublicKey),
+  ), true);
+
+  assert.equal(service.verifyEvidenceRequest(
+    activation.leaseId,
+    activation.evidenceCredential,
+    proof,
+    path,
+    digestJson(payload),
+  ), undefined);
+});
+
+test("evidence proof rejects tampering, stale time, replay, and rotated identities", () => {
+  let nowMs = Date.parse("2026-08-01T00:00:00.000Z");
+  const service = createNativeGuardLeaseService({ now: () => nowMs });
+  const first = createLease(service, ROOT_SESSION_KEY);
+  const path = "/api/v1/openclaw/native-guard/events/batch";
+  const payload = { events: [{ eventId: "event.old-epoch", leaseEpoch: 1 }] };
+  const base = evidenceProof(first, path, payload, "proof.base");
+  const mutations: Array<Partial<NativeGuardEvidenceProof>> = [
+    { method: "GET" as "POST" },
+    { path: "/api/v1/openclaw/native-guard/lifecycle/end-session" },
+    { bodyDigest: "f".repeat(64) },
+    { leaseEpoch: first.leaseEpoch + 1 },
+    { keyId: `${first.evidenceSigningKeyId}.wrong` },
+    { issuedAt: "2026-07-31T23:58:00.000Z" },
+  ];
+  for (const [index, mutation] of mutations.entries()) {
+    assert.equal(service.verifyEvidenceRequest(
+      first.leaseId,
+      first.evidenceCredential,
+      evidenceProof(first, path, payload, `proof.tampered.${String(index)}`, mutation),
+      path,
+      digestJson(payload),
+    ), undefined);
+  }
+
+  const valid = evidenceProof(first, path, payload, "proof.before-renew");
+  assert.notEqual(service.verifyEvidenceRequest(
+    first.leaseId,
+    first.evidenceCredential,
+    valid,
+    path,
+    digestJson(payload),
+  ), undefined);
+  assert.equal(service.verifyEvidenceRequest(
+    first.leaseId,
+    first.evidenceCredential,
+    valid,
+    path,
+    digestJson(payload),
+  ), undefined);
+
+  nowMs += 1_000;
+  const renewed = service.renew(first.leaseId);
+  const oldKeyFreshProof = evidenceProof(first, path, payload, "proof.old-key-after-renew", {
+    leaseEpoch: renewed.leaseEpoch,
+    issuedAt: renewed.issuedAt,
+    keyId: renewed.evidenceSigningKeyId,
+  });
+  assert.equal(service.verifyEvidenceRequest(
+    renewed.leaseId,
+    renewed.evidenceCredential,
+    oldKeyFreshProof,
+    path,
+    digestJson(payload),
+  ), undefined);
+  assert.equal(service.verifyEvidenceRequest(
+    renewed.leaseId,
+    first.evidenceCredential,
+    evidenceProof(renewed, path, payload, "proof.old-bearer"),
+    path,
+    digestJson(payload),
+  ), undefined);
+  assert.notEqual(service.verifyEvidenceRequest(
+    renewed.leaseId,
+    renewed.evidenceCredential,
+    evidenceProof(renewed, path, payload, "proof.current"),
+    path,
+    digestJson(payload),
+  ), undefined);
+});
+
+test("a durable lifecycle proof remains valid within its lease while event proof freshness stays bounded", () => {
+  let nowMs = Date.parse("2026-08-01T00:00:00.000Z");
+  const service = createNativeGuardLeaseService({ now: () => nowMs });
+  const activation = createLease(service, ROOT_SESSION_KEY);
+  const bindingPath = "/api/v1/openclaw/native-guard/lifecycle/bind-child";
+  const binding = {
+    leaseId: activation.leaseId,
+    leaseEpoch: activation.leaseEpoch,
+    parentSessionKey: ROOT_SESSION_KEY,
+    childSessionKey: CHILD_SESSION_KEY,
+  };
+  const eventPath = "/api/v1/openclaw/native-guard/events/batch";
+  const batch = { events: [{ eventId: "event.stale-proof", leaseEpoch: activation.leaseEpoch }] };
+  nowMs += 2 * 60_000;
+
+  assert.notEqual(service.verifyEvidenceRequest(
+    activation.leaseId,
+    activation.evidenceCredential,
+    evidenceProof(activation, bindingPath, binding, "proof.lifecycle-delayed"),
+    bindingPath,
+    digestJson(binding),
+  ), undefined);
+  assert.equal(service.verifyEvidenceRequest(
+    activation.leaseId,
+    activation.evidenceCredential,
+    evidenceProof(activation, eventPath, batch, "proof.event-delayed"),
+    eventPath,
+    digestJson(batch),
+  ), undefined);
+});
+
 test("ended child remains evidence-authorized for its original epoch but not for decisions", () => {
   const service = createNativeGuardLeaseService({
     now: () => new Date("2026-08-01T00:00:00.000Z"),
@@ -242,6 +418,54 @@ test("renewal rotates both identities and current evidence identity uploads old-
     CHILD_SESSION_KEY,
     renewed.evidenceCredential,
   ), false);
+});
+
+test("ending the root retains evidence authorization in a non-renewable tombstone", () => {
+  const service = createNativeGuardLeaseService({
+    now: () => new Date("2026-08-01T00:00:00.000Z"),
+  });
+  const activation = createLease(service, ROOT_SESSION_KEY);
+  assert.equal(service.bindChildWithEvidence({
+    leaseId: activation.leaseId,
+    leaseEpoch: activation.leaseEpoch,
+    parentSessionKey: ROOT_SESSION_KEY,
+    childSessionKey: CHILD_SESSION_KEY,
+  }, activation.evidenceCredential), true);
+
+  assert.equal(service.endSessionWithEvidence({
+    leaseId: activation.leaseId,
+    leaseEpoch: activation.leaseEpoch,
+    sessionKey: ROOT_SESSION_KEY,
+  }, activation.evidenceCredential), true);
+
+  assert.equal(service.authenticate(activation.leaseId, activation.credential), undefined);
+  assert.notEqual(
+    service.authenticateEvidence(activation.leaseId, activation.evidenceCredential),
+    undefined,
+  );
+  assert.equal(service.authorizeEvidence(
+    activation.leaseId,
+    activation.leaseEpoch,
+    ROOT_SESSION_KEY,
+    activation.evidenceCredential,
+  ), true);
+  assert.equal(service.authorizeEvidence(
+    activation.leaseId,
+    activation.leaseEpoch,
+    CHILD_SESSION_KEY,
+    activation.evidenceCredential,
+  ), true);
+  assert.equal(service.endSessionWithEvidence({
+    leaseId: activation.leaseId,
+    leaseEpoch: activation.leaseEpoch,
+    sessionKey: ROOT_SESSION_KEY,
+  }, activation.evidenceCredential), true);
+  assert.throws(() => service.renew(activation.leaseId), /not active/i);
+  assert.equal(service.revoke(activation.leaseId), true);
+  assert.equal(
+    service.authenticateEvidence(activation.leaseId, activation.evidenceCredential),
+    undefined,
+  );
 });
 
 describe("security and recovery boundaries", () => {
@@ -399,7 +623,7 @@ describe("security and recovery boundaries", () => {
     }
   });
 
-  test("ends a child subtree but revokes the lease when the root session ends", () => {
+  test("ends a child subtree and tombstones the lease when the root session ends", () => {
     const service = createNativeGuardLeaseService({
       now: () => new Date("2026-08-01T00:00:00.000Z"),
     });
@@ -431,7 +655,9 @@ describe("security and recovery boundaries", () => {
       finalizerAssurance: "unverified",
       activeLeaseCount: 0,
     });
-    assert.equal(service.revoke(root.leaseId), false);
+    assert.notEqual(service.authenticateEvidence(root.leaseId, root.evidenceCredential), undefined);
+    assert.equal(service.revoke(root.leaseId), true);
+    assert.equal(service.authenticateEvidence(root.leaseId, root.evidenceCredential), undefined);
   });
 
   test("ends a deeply nested child subtree without recursive stack overflow", () => {
@@ -590,5 +816,34 @@ function buildDecisionResponse(
     reason: "The active policy denies this native tool call.",
     evaluatedParamsDigest: "a".repeat(64),
     decidedAt: "2026-08-01T00:00:00.000Z",
+  };
+}
+
+function evidenceProof(
+  activation: NativeGuardLeaseActivation,
+  path: string,
+  payload: unknown,
+  proofId: string,
+  overrides: Partial<Omit<NativeGuardEvidenceProof, "signature">> = {},
+): NativeGuardEvidenceProof {
+  const unsigned = {
+    schemaVersion: "native-guard-1" as const,
+    signatureContext: "native_guard.evidence_request.v1" as const,
+    proofId,
+    leaseId: activation.leaseId,
+    leaseEpoch: activation.leaseEpoch,
+    method: "POST" as const,
+    path,
+    bodyDigest: digestJson(payload),
+    issuedAt: activation.issuedAt,
+    keyId: activation.evidenceSigningKeyId,
+    ...overrides,
+  };
+  return {
+    ...unsigned,
+    signature: signNativeGuardPayload(
+      unsigned,
+      createPrivateKey(activation.evidenceSigningPrivateKey),
+    ),
   };
 }

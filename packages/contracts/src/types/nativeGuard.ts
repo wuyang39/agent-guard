@@ -31,7 +31,55 @@ export type NativeGuardLeaseActivation = {
   expiresAt: string;
   credential: string;
   evidenceCredential: string;
+  evidenceSigningKeyId: string;
+  evidenceSigningPrivateKey: string;
 };
+
+export type NativeGuardEvidenceProof = {
+  schemaVersion: "native-guard-1";
+  signatureContext: "native_guard.evidence_request.v1";
+  proofId: string;
+  leaseId: string;
+  leaseEpoch: number;
+  method: "POST";
+  path: string;
+  bodyDigest: string;
+  issuedAt: string;
+  keyId: string;
+  signature: string;
+};
+
+export type NativeGuardLifecycleAcknowledgement = {
+  schemaVersion: "native-guard-1";
+  signatureContext: "native_guard.evidence_ack.v1";
+  ackId: string;
+  ackType: "child_bound" | "session_ended";
+  proofId: string;
+  leaseId: string;
+  leaseEpoch: number;
+  bodyDigest: string;
+  acknowledgedAt: string;
+  signature: string;
+};
+
+export type NativeGuardEventAcknowledgement = {
+  schemaVersion: "native-guard-1";
+  signatureContext: "native_guard.evidence_ack.v1";
+  ackId: string;
+  ackType: "events_accepted";
+  proofId: string;
+  leaseId: string;
+  leaseEpoch: number;
+  bodyDigest: string;
+  accepted: number;
+  eventIdsDigest: string;
+  acknowledgedAt: string;
+  signature: string;
+};
+
+export type NativeGuardEvidenceAcknowledgement =
+  | NativeGuardLifecycleAcknowledgement
+  | NativeGuardEventAcknowledgement;
 
 export type NativeToolDecisionRequest = {
   schemaVersion: "native-guard-1";

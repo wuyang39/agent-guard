@@ -7,6 +7,10 @@ import {
   type KeyObject,
 } from "node:crypto";
 import type {
+  NativeGuardEvidenceAcknowledgement,
+  NativeGuardEventAcknowledgement,
+  NativeGuardEvidenceProof,
+  NativeGuardLifecycleAcknowledgement,
   NativeGuardLeaseActivation,
   NativeGuardMode,
   NativeGuardStatus,
@@ -16,10 +20,20 @@ import type {
 import {
   digestJson,
   signNativeGuardPayload,
+  verifyNativeGuardPayload,
 } from "@agent-guard/native-guard-protocol";
 
 const DEFAULT_TTL_MS = 5 * 60 * 1_000;
 const MAX_TTL_MS = 15 * 60 * 1_000;
+const MAX_EVIDENCE_PROOFS = 4_096;
+const MAX_EVIDENCE_PROOF_SKEW_MS = 30_000;
+const SAFE_PROOF_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const DIGEST = /^[a-f0-9]{64}$/;
+const EVIDENCE_PATHS = new Set([
+  "/api/v1/openclaw/native-guard/lifecycle/bind-child",
+  "/api/v1/openclaw/native-guard/lifecycle/end-session",
+  "/api/v1/openclaw/native-guard/events/batch",
+]);
 
 type FailurePolicy = NativeGuardLeaseActivation["failurePolicy"];
 
@@ -34,11 +48,31 @@ export type CreateLeaseInput = {
 
 export type ActiveNativeGuardLease = Omit<
   NativeGuardLeaseActivation,
-  "credential" | "evidenceCredential"
+  "credential" | "evidenceCredential" | "evidenceSigningPrivateKey"
 > & {
   state: "active";
   policyPack: SupervisionPolicyPack;
 };
+
+export type EvidenceNativeGuardLease = Omit<
+  ActiveNativeGuardLease,
+  "state"
+> & {
+  state: "active" | "root_ended";
+};
+
+export type VerifiedEvidenceRequest = {
+  leaseId: string;
+  leaseEpoch: number;
+  proofId: string;
+  bodyDigest: string;
+  path: string;
+  proofDigest: string;
+};
+
+type UnsignedEvidenceAcknowledgement =
+  | Omit<NativeGuardLifecycleAcknowledgement, "signature">
+  | Omit<NativeGuardEventAcknowledgement, "signature">;
 
 export type NativeGuardChildBindingInput = {
   leaseId: string;
@@ -58,7 +92,25 @@ export type NativeGuardLeaseService = {
   renew(leaseId: string, ttlMs?: number): NativeGuardLeaseActivation;
   revoke(leaseId: string): boolean;
   authenticate(leaseId: string, credential: string): ActiveNativeGuardLease | undefined;
-  authenticateEvidence(leaseId: string, credential: string): ActiveNativeGuardLease | undefined;
+  authenticateEvidence(leaseId: string, credential: string): EvidenceNativeGuardLease | undefined;
+  verifyEvidenceRequest(
+    leaseId: string,
+    credential: string,
+    proof: NativeGuardEvidenceProof,
+    path: string,
+    bodyDigest: string,
+  ): VerifiedEvidenceRequest | undefined;
+  releaseEvidenceRequest(verified: VerifiedEvidenceRequest): boolean;
+  signEvidenceAcknowledgement(
+    leaseId: string,
+    acknowledgement: UnsignedEvidenceAcknowledgement,
+  ): NativeGuardEvidenceAcknowledgement;
+  recoverEvidenceAcknowledgement(
+    proof: NativeGuardEvidenceProof,
+    path: string,
+    bodyDigest: string,
+    credential?: string,
+  ): NativeGuardEvidenceAcknowledgement | undefined;
   authorizeEvidence(
     leaseId: string,
     leaseEpoch: number,
@@ -88,8 +140,25 @@ type StoredLease = {
   backendUrl: string;
   decisionPublicKey: string;
   privateKey: KeyObject;
+  evidencePublicKey: KeyObject;
+  evidenceSigningKeyId: string;
   credentialHash: Buffer;
   evidenceCredentialHash: Buffer;
+  evidenceProofs: Map<string, {
+    rememberedAt: number;
+    path: string;
+    bodyDigest: string;
+    proofDigest: string;
+    state: "reserved" | "committed";
+  }>;
+  completedEvidenceAcknowledgements: Map<string, {
+    path: string;
+    bodyDigest: string;
+    proofDigest: string;
+    acknowledgement: NativeGuardEvidenceAcknowledgement;
+    allowBearerless: boolean;
+  }>;
+  phase: "active" | "root_ended";
   issuedAtMs: number;
   expiresAtMs: number;
   policyExpiresAtMs?: number;
@@ -162,6 +231,22 @@ export function createNativeGuardLeaseService(
     return { credential, credentialHash: hashCredential(credential) };
   }
 
+  function createEvidenceSigningIdentity(): {
+    evidencePublicKey: KeyObject;
+    evidenceSigningKeyId: string;
+    evidenceSigningPrivateKey: string;
+  } {
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    return {
+      evidencePublicKey: publicKey,
+      evidenceSigningKeyId: `evidence.${randomUUID()}`,
+      evidenceSigningPrivateKey: privateKey.export({
+        type: "pkcs8",
+        format: "pem",
+      }).toString(),
+    };
+  }
+
   function serviceForEvidence(
     leaseId: string,
     credential: string,
@@ -206,6 +291,7 @@ export function createNativeGuardLeaseService(
     lease: StoredLease,
     credential: string,
     evidenceCredential: string,
+    evidenceSigningPrivateKey: string,
   ): NativeGuardLeaseActivation {
     return {
       schemaVersion: "native-guard-1",
@@ -223,6 +309,8 @@ export function createNativeGuardLeaseService(
       expiresAt: new Date(lease.expiresAtMs).toISOString(),
       credential,
       evidenceCredential,
+      evidenceSigningKeyId: lease.evidenceSigningKeyId,
+      evidenceSigningPrivateKey,
     };
   }
 
@@ -242,17 +330,100 @@ export function createNativeGuardLeaseService(
       failurePolicy: createFailurePolicy(),
       issuedAt: new Date(lease.issuedAtMs).toISOString(),
       expiresAt: new Date(lease.expiresAtMs).toISOString(),
+      evidenceSigningKeyId: lease.evidenceSigningKeyId,
       policyPack: lease.policyPack,
     };
   }
 
+  function evidenceLeaseFor(lease: StoredLease): EvidenceNativeGuardLease {
+    return { ...activeLeaseFor(lease), state: lease.phase };
+  }
+
+  function verifyEvidenceRequest(
+    leaseId: string,
+    credential: string,
+    proof: NativeGuardEvidenceProof,
+    path: string,
+    bodyDigest: string,
+  ): VerifiedEvidenceRequest | undefined {
+    cleanExpired();
+    const lease = serviceForEvidence(leaseId, credential);
+    if (
+      lease === undefined ||
+      !isEvidenceProof(proof) ||
+      !EVIDENCE_PATHS.has(path) ||
+      proof.leaseId !== lease.leaseId ||
+      proof.leaseEpoch !== lease.leaseEpoch ||
+      proof.method !== "POST" ||
+      proof.path !== path ||
+      proof.bodyDigest !== bodyDigest ||
+      proof.keyId !== lease.evidenceSigningKeyId ||
+      !DIGEST.test(bodyDigest)
+    ) return undefined;
+    const issuedAtMs = Date.parse(proof.issuedAt);
+    const currentMs = currentTimeMs();
+    const lifecycleProof = path !== "/api/v1/openclaw/native-guard/events/batch";
+    if (
+      issuedAtMs > currentMs + MAX_EVIDENCE_PROOF_SKEW_MS ||
+      (lifecycleProof
+        ? issuedAtMs < lease.issuedAtMs - MAX_EVIDENCE_PROOF_SKEW_MS ||
+          issuedAtMs >= lease.expiresAtMs
+        : currentMs - issuedAtMs > MAX_EVIDENCE_PROOF_SKEW_MS)
+    ) return undefined;
+    for (const [proofId, remembered] of lease.evidenceProofs) {
+      if (currentMs - remembered.rememberedAt > MAX_EVIDENCE_PROOF_SKEW_MS * 2) {
+        lease.evidenceProofs.delete(proofId);
+      }
+    }
+    if (
+      lease.evidenceProofs.has(proof.proofId) ||
+      lease.evidenceProofs.size >= MAX_EVIDENCE_PROOFS ||
+      (path !== "/api/v1/openclaw/native-guard/events/batch" &&
+        lease.completedEvidenceAcknowledgements.size >= MAX_EVIDENCE_PROOFS)
+    ) return undefined;
+    const { signature, ...unsigned } = proof;
+    if (!verifyNativeGuardPayload(unsigned, signature, lease.evidencePublicKey)) return undefined;
+    lease.evidenceProofs.set(proof.proofId, {
+      rememberedAt: currentMs,
+      path,
+      bodyDigest,
+      proofDigest: digestJson(proof),
+      state: "reserved",
+    });
+    return {
+      leaseId: lease.leaseId,
+      leaseEpoch: lease.leaseEpoch,
+      proofId: proof.proofId,
+      bodyDigest: proof.bodyDigest,
+      path,
+      proofDigest: digestJson(proof),
+    };
+  }
+
+  function releaseEvidenceRequest(verified: VerifiedEvidenceRequest): boolean {
+    const lease = leases.get(verified.leaseId);
+    const remembered = lease?.evidenceProofs.get(verified.proofId);
+    if (
+      lease === undefined ||
+      remembered === undefined ||
+      remembered.state !== "reserved" ||
+      verified.leaseEpoch !== lease.leaseEpoch ||
+      remembered.path !== verified.path ||
+      remembered.bodyDigest !== verified.bodyDigest ||
+      remembered.proofDigest !== verified.proofDigest
+    ) return false;
+    lease.evidenceProofs.delete(verified.proofId);
+    return true;
+  }
+
   function status(): NativeGuardStatus {
     cleanExpired();
-    const activeLease = leases.values().next().value as StoredLease | undefined;
+    const activeLeases = [...leases.values()].filter((lease) => lease.phase === "active");
+    const activeLease = activeLeases[0];
     return {
       coverage: activeLease ? "conditional" : "ready",
       finalizerAssurance: "unverified",
-      activeLeaseCount: leases.size,
+      activeLeaseCount: activeLeases.length,
       ...(activeLease
         ? {
             activeLease: {
@@ -295,6 +466,7 @@ export function createNativeGuardLeaseService(
         credential: evidenceCredential,
         credentialHash: evidenceCredentialHash,
       } = createCredential();
+      const evidenceSigning = createEvidenceSigningIdentity();
       const lease: StoredLease = {
         leaseId,
         leaseEpoch: 1,
@@ -305,8 +477,13 @@ export function createNativeGuardLeaseService(
         backendUrl: input.backendUrl,
         decisionPublicKey: publicKey.export({ type: "spki", format: "pem" }).toString(),
         privateKey,
+        evidencePublicKey: evidenceSigning.evidencePublicKey,
+        evidenceSigningKeyId: evidenceSigning.evidenceSigningKeyId,
         credentialHash,
         evidenceCredentialHash,
+        evidenceProofs: new Map(),
+        completedEvidenceAcknowledgements: new Map(),
+        phase: "active",
         issuedAtMs,
         expiresAtMs: clampExpiry(issuedAtMs, ttlMs, policyExpiresAtMs),
         policyExpiresAtMs,
@@ -314,7 +491,12 @@ export function createNativeGuardLeaseService(
       leases.set(leaseId, lease);
       sessions.set(input.rootSessionKey, { leaseId, boundEpoch: 1, children: new Set() });
       return {
-        activation: activationFor(lease, credential, evidenceCredential),
+        activation: activationFor(
+          lease,
+          credential,
+          evidenceCredential,
+          evidenceSigning.evidenceSigningPrivateKey,
+        ),
         status: status(),
       };
     },
@@ -322,7 +504,7 @@ export function createNativeGuardLeaseService(
     renew(leaseId: string, ttlMs = DEFAULT_TTL_MS): NativeGuardLeaseActivation {
       cleanExpired();
       const lease = leases.get(leaseId);
-      if (!lease) throw new Error("Native guard lease is not active");
+      if (!lease || lease.phase !== "active") throw new Error("Native guard lease is not active");
 
       const validTtlMs = validateTtl(ttlMs);
       const issuedAtMs = currentTimeMs();
@@ -331,16 +513,26 @@ export function createNativeGuardLeaseService(
         credential: evidenceCredential,
         credentialHash: evidenceCredentialHash,
       } = createCredential();
+      const evidenceSigning = createEvidenceSigningIdentity();
       lease.leaseEpoch += 1;
       lease.credentialHash = credentialHash;
       lease.evidenceCredentialHash = evidenceCredentialHash;
+      lease.evidencePublicKey = evidenceSigning.evidencePublicKey;
+      lease.evidenceSigningKeyId = evidenceSigning.evidenceSigningKeyId;
+      lease.evidenceProofs.clear();
+      lease.completedEvidenceAcknowledgements.clear();
       lease.issuedAtMs = issuedAtMs;
       lease.expiresAtMs = clampExpiry(
         issuedAtMs,
         validTtlMs,
         lease.policyExpiresAtMs,
       );
-      return activationFor(lease, credential, evidenceCredential);
+      return activationFor(
+        lease,
+        credential,
+        evidenceCredential,
+        evidenceSigning.evidenceSigningPrivateKey,
+      );
     },
 
     revoke(leaseId: string): boolean {
@@ -354,7 +546,7 @@ export function createNativeGuardLeaseService(
     ): ActiveNativeGuardLease | undefined {
       cleanExpired();
       const lease = leases.get(leaseId);
-      if (!lease) return undefined;
+      if (!lease || lease.phase !== "active") return undefined;
 
       const candidateHash = hashCredential(credential);
       return timingSafeEqual(candidateHash, lease.credentialHash)
@@ -365,14 +557,102 @@ export function createNativeGuardLeaseService(
     authenticateEvidence(
       leaseId: string,
       credential: string,
-    ): ActiveNativeGuardLease | undefined {
+    ): EvidenceNativeGuardLease | undefined {
       cleanExpired();
       const lease = leases.get(leaseId);
       if (!lease || typeof credential !== "string") return undefined;
       const candidateHash = hashCredential(credential);
       return timingSafeEqual(candidateHash, lease.evidenceCredentialHash)
-        ? activeLeaseFor(lease)
+        ? evidenceLeaseFor(lease)
         : undefined;
+    },
+
+    verifyEvidenceRequest,
+    releaseEvidenceRequest,
+
+    signEvidenceAcknowledgement(
+      leaseId: string,
+      acknowledgement: UnsignedEvidenceAcknowledgement,
+    ): NativeGuardEvidenceAcknowledgement {
+      cleanExpired();
+      const lease = leases.get(leaseId);
+      if (
+        lease === undefined ||
+        acknowledgement.leaseId !== lease.leaseId ||
+        acknowledgement.leaseEpoch !== lease.leaseEpoch ||
+        acknowledgement.schemaVersion !== "native-guard-1" ||
+        acknowledgement.signatureContext !== "native_guard.evidence_ack.v1"
+      ) throw new Error("Native guard evidence acknowledgement does not match the lease");
+      const signed = {
+        ...acknowledgement,
+        signature: signNativeGuardPayload(acknowledgement, lease.privateKey),
+      } as NativeGuardEvidenceAcknowledgement;
+      const rememberedProof = lease.evidenceProofs.get(acknowledgement.proofId);
+      const lifecyclePath = acknowledgement.ackType === "child_bound"
+        ? "/api/v1/openclaw/native-guard/lifecycle/bind-child"
+        : acknowledgement.ackType === "session_ended"
+          ? "/api/v1/openclaw/native-guard/lifecycle/end-session"
+          : undefined;
+      if (
+        lifecyclePath !== undefined &&
+        rememberedProof !== undefined &&
+        rememberedProof.path === lifecyclePath &&
+        rememberedProof.bodyDigest === acknowledgement.bodyDigest
+      ) {
+        rememberedProof.state = "committed";
+        lease.completedEvidenceAcknowledgements.set(acknowledgement.proofId, {
+          path: rememberedProof.path,
+          bodyDigest: rememberedProof.bodyDigest,
+          proofDigest: rememberedProof.proofDigest,
+          acknowledgement: structuredClone(signed),
+          allowBearerless: lease.phase === "root_ended" &&
+            acknowledgement.ackType === "session_ended",
+        });
+      } else if (
+        rememberedProof !== undefined &&
+        rememberedProof.bodyDigest === acknowledgement.bodyDigest
+      ) {
+        rememberedProof.state = "committed";
+      }
+      return signed;
+    },
+
+    recoverEvidenceAcknowledgement(
+      proof: NativeGuardEvidenceProof,
+      path: string,
+      bodyDigest: string,
+      credential?: string,
+    ): NativeGuardEvidenceAcknowledgement | undefined {
+      cleanExpired();
+      const lease = leases.get(proof?.leaseId);
+      if (
+        lease === undefined ||
+        !isEvidenceProof(proof) ||
+        ![
+          "/api/v1/openclaw/native-guard/lifecycle/bind-child",
+          "/api/v1/openclaw/native-guard/lifecycle/end-session",
+        ].includes(path) ||
+        proof.path !== path ||
+        proof.leaseEpoch !== lease.leaseEpoch ||
+        proof.keyId !== lease.evidenceSigningKeyId ||
+        proof.bodyDigest !== bodyDigest
+      ) return undefined;
+      const cached = lease.completedEvidenceAcknowledgements.get(proof.proofId);
+      if (
+        cached === undefined ||
+        cached.path !== path ||
+        cached.bodyDigest !== bodyDigest ||
+        cached.proofDigest !== digestJson(proof)
+      ) return undefined;
+      if (
+        !cached.allowBearerless &&
+        (lease.phase !== "active" ||
+          credential === undefined ||
+          serviceForEvidence(lease.leaseId, credential) === undefined)
+      ) return undefined;
+      const { signature, ...unsigned } = proof;
+      if (!verifyNativeGuardPayload(unsigned, signature, lease.evidencePublicKey)) return undefined;
+      return structuredClone(cached.acknowledgement);
     },
 
     authorizeEvidence(
@@ -407,7 +687,7 @@ export function createNativeGuardLeaseService(
       const binding = sessions.get(sessionKey);
       if (!binding) return undefined;
       const lease = leases.get(binding.leaseId);
-      return lease ? activeLeaseFor(lease) : undefined;
+      return lease?.phase === "active" ? activeLeaseFor(lease) : undefined;
     },
 
     bindChild(
@@ -417,7 +697,7 @@ export function createNativeGuardLeaseService(
     ): boolean {
       cleanExpired();
       const lease = leases.get(leaseId);
-      return lease === undefined
+      return lease === undefined || lease.phase !== "active"
         ? false
         : bindChildAtEpoch(lease, parentSessionKey, childSessionKey);
     },
@@ -430,6 +710,7 @@ export function createNativeGuardLeaseService(
       const lease = serviceForEvidence(input.leaseId, credential);
       if (
         lease === undefined ||
+        lease.phase !== "active" ||
         input.leaseEpoch !== lease.leaseEpoch ||
         !validSessionKey(input.parentSessionKey) ||
         !validSessionKey(input.childSessionKey)
@@ -443,7 +724,14 @@ export function createNativeGuardLeaseService(
       if (!binding) return;
       const lease = leases.get(binding.leaseId);
       if (lease?.rootSessionKey === sessionKey) {
-        removeLease(binding.leaseId);
+        archiveAndRemoveSessionTree(
+          sessionKey,
+          binding.leaseId,
+          lease.leaseEpoch,
+          sessions,
+          historicalSessions,
+        );
+        lease.phase = "root_ended";
         return;
       }
       archiveAndRemoveSessionTree(
@@ -466,13 +754,29 @@ export function createNativeGuardLeaseService(
         input.leaseEpoch !== lease.leaseEpoch ||
         !validSessionKey(input.sessionKey)
       ) return false;
+      if (lease.phase === "root_ended") {
+        return input.sessionKey === lease.rootSessionKey &&
+          historicalSessions.get(input.sessionKey)?.some((historical) =>
+            historical.leaseId === input.leaseId &&
+            historical.endedEpoch === input.leaseEpoch) === true;
+      }
       const binding = sessions.get(input.sessionKey);
       if (binding === undefined) {
         return historicalSessions.get(input.sessionKey)?.some((historical) =>
           historical.leaseId === input.leaseId) === true;
       }
       if (binding.leaseId !== input.leaseId) return false;
-      if (lease.rootSessionKey === input.sessionKey) return removeLease(input.leaseId);
+      if (lease.rootSessionKey === input.sessionKey) {
+        archiveAndRemoveSessionTree(
+          input.sessionKey,
+          input.leaseId,
+          lease.leaseEpoch,
+          sessions,
+          historicalSessions,
+        );
+        lease.phase = "root_ended";
+        return true;
+      }
       archiveAndRemoveSessionTree(
         input.sessionKey,
         input.leaseId,
@@ -489,7 +793,9 @@ export function createNativeGuardLeaseService(
     ): string {
       cleanExpired();
       const lease = leases.get(leaseId);
-      if (!lease) throw new Error("Native guard lease is not active");
+      if (!lease || lease.phase !== "active") {
+        throw new Error("Native guard lease is not active");
+      }
       if (
         response.leaseId !== lease.leaseId ||
         response.leaseEpoch !== lease.leaseEpoch ||
@@ -507,6 +813,40 @@ export function createNativeGuardLeaseService(
 
 function hashCredential(credential: string): Buffer {
   return createHash("sha256").update(credential, "utf8").digest();
+}
+
+function isEvidenceProof(value: unknown): value is NativeGuardEvidenceProof {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const proof = value as Record<string, unknown>;
+  if (Object.keys(proof).sort().join(",") !== [
+    "bodyDigest",
+    "issuedAt",
+    "keyId",
+    "leaseEpoch",
+    "leaseId",
+    "method",
+    "path",
+    "proofId",
+    "schemaVersion",
+    "signature",
+    "signatureContext",
+  ].join(",")) return false;
+  return proof.schemaVersion === "native-guard-1" &&
+    proof.signatureContext === "native_guard.evidence_request.v1" &&
+    typeof proof.proofId === "string" && SAFE_PROOF_ID.test(proof.proofId) &&
+    typeof proof.leaseId === "string" && proof.leaseId.length > 0 && proof.leaseId.length <= 128 &&
+    Number.isSafeInteger(proof.leaseEpoch) && (proof.leaseEpoch as number) > 0 &&
+    proof.method === "POST" &&
+    typeof proof.path === "string" && EVIDENCE_PATHS.has(proof.path) &&
+    typeof proof.bodyDigest === "string" && DIGEST.test(proof.bodyDigest) &&
+    typeof proof.issuedAt === "string" && isCanonicalTimestamp(proof.issuedAt) &&
+    typeof proof.keyId === "string" && SAFE_PROOF_ID.test(proof.keyId) &&
+    typeof proof.signature === "string" && proof.signature.length > 0 && proof.signature.length <= 128;
+}
+
+function isCanonicalTimestamp(value: string): boolean {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && new Date(parsed).toISOString() === value;
 }
 
 function createFailurePolicy(): FailurePolicy {

@@ -1,4 +1,4 @@
-import { createPublicKey, randomUUID } from "node:crypto";
+import { createPrivateKey, createPublicKey, randomUUID } from "node:crypto";
 import type { Stats } from "node:fs";
 import {
   chmod,
@@ -12,19 +12,37 @@ import {
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import type {
+  NativeGuardEvidenceProof,
   NativeGuardLeaseActivation,
   NativeGuardStatus,
 } from "@agent-guard/contracts";
+import {
+  digestJson,
+  verifyNativeGuardPayload,
+} from "@agent-guard/native-guard-protocol";
 
 export type GuardedMarker = {
   leaseId: string;
+  leaseEpoch?: number;
   rootSessionKey: string;
   childSessionKeys: string[];
+  sessionBindings?: SessionBinding[];
   mode: "detection" | "supervision";
   policyPackId: string;
   policyPackDigest: string;
   expiresAt: string;
   lifecycleIntent?: LifecycleIntent;
+  lifecycleQueue?: LifecycleIntent[];
+  lifecycleOverflow?: true;
+  rootTombstone?: {
+    leaseEpoch: number;
+    endedAt: string;
+  };
+};
+
+export type SessionBinding = {
+  childSessionKey: string;
+  parentSessionKey: string;
 };
 
 export type LifecycleIntent =
@@ -32,10 +50,12 @@ export type LifecycleIntent =
       kind: "bind_child";
       parentSessionKey: string;
       childSessionKey: string;
+      evidenceRequest?: NativeGuardEvidenceProof;
     }
   | {
       kind: "end_session";
       sessionKey: string;
+      evidenceRequest?: NativeGuardEvidenceProof;
     };
 
 export interface MarkerStore {
@@ -54,15 +74,29 @@ export type FileMarkerStoreHooks = {
 
 export type OffLookup = { state: "off" };
 
-export type RecoveryLookup = Omit<GuardedMarker, "childSessionKeys" | "lifecycleIntent"> & {
+export type RecoveryLookup = Omit<
+  GuardedMarker,
+  "childSessionKeys" | "lifecycleIntent" | "sessionBindings"
+> & {
   state: "recovery";
 };
 
 export type LifecyclePendingLookup = Omit<
   GuardedMarker,
-  "childSessionKeys" | "lifecycleIntent"
+  "childSessionKeys" | "lifecycleIntent" | "sessionBindings"
 > & {
   state: "lifecycle_pending";
+};
+
+export type RootEndedLookup = Omit<
+  GuardedMarker,
+  | "childSessionKeys"
+  | "lifecycleIntent"
+  | "lifecycleQueue"
+  | "rootTombstone"
+  | "sessionBindings"
+> & {
+  state: "root_ended";
 };
 
 export type ActiveLeaseLookup = Readonly<NativeGuardLeaseActivation & {
@@ -70,7 +104,17 @@ export type ActiveLeaseLookup = Readonly<NativeGuardLeaseActivation & {
   childSessionKeys: readonly string[];
 }>;
 
-export type LeaseLookup = OffLookup | RecoveryLookup | LifecyclePendingLookup | ActiveLeaseLookup;
+export type RootEndedEvidenceLookup = Readonly<NativeGuardLeaseActivation & {
+  state: "root_ended";
+  childSessionKeys: readonly string[];
+}>;
+
+export type LeaseLookup =
+  | OffLookup
+  | RecoveryLookup
+  | LifecyclePendingLookup
+  | RootEndedLookup
+  | ActiveLeaseLookup;
 
 export type LeaseRegistryOptions = {
   markerStore: MarkerStore;
@@ -87,8 +131,25 @@ type ActiveRecord = {
   lease: ActiveLeaseLookup;
   parentByChild: Map<string, string>;
   flatRecoveryBindings: boolean;
-  lifecycleIntent?: LifecycleIntent;
+  lifecycleQueue: LifecycleIntent[];
+  lifecycleOverflow: boolean;
 };
+
+type RootEndedRecord = {
+  lease: RootEndedEvidenceLookup;
+  sessionKeys: readonly string[];
+  tombstone: NonNullable<GuardedMarker["rootTombstone"]>;
+};
+
+const MAX_LIFECYCLE_QUEUE_ITEMS = 128;
+const MAX_SESSION_BINDINGS = 512;
+
+class LifecycleMarkerCapacityError extends Error {
+  constructor() {
+    super("Native guard lifecycle queue exceeds its marker limit");
+    this.name = "LifecycleMarkerCapacityError";
+  }
+}
 
 export class FileMarkerStore implements MarkerStore {
   readonly #directory: string;
@@ -155,7 +216,7 @@ export class FileMarkerStore implements MarkerStore {
       this.#directory,
       `.${parsedMarker.leaseId}.${process.pid}.${randomUUID()}.tmp`,
     );
-    const contents = `${JSON.stringify(parsedMarker)}\n`;
+    const contents = serializedMarkerContents(parsedMarker);
     if (Buffer.byteLength(contents, "utf8") > MAX_MARKER_BYTES) {
       throw new TypeError("Native guard marker is too large");
     }
@@ -198,6 +259,8 @@ export class LeaseRegistry {
   readonly #recoveryConflictByLease = new Map<string, ReadonlySet<string>>();
   readonly #activeByLease = new Map<string, ActiveRecord>();
   readonly #activeBySession = new Map<string, ActiveRecord>();
+  readonly #rootEndedByLease = new Map<string, RootEndedRecord>();
+  readonly #rootEndedBySession = new Map<string, RootEndedRecord>();
   readonly #pendingDeletionLeaseIds = new Set<string>();
   #tail: Promise<void> = Promise.resolve();
   #started = false;
@@ -245,13 +308,21 @@ export class LeaseRegistry {
       await this.#purgeExpired();
       const active = this.#activeBySession.get(sessionKey);
       if (active !== undefined) {
-        return active.lifecycleIntent === undefined
+        return active.lifecycleQueue.length === 0 && !active.lifecycleOverflow
           ? active.lease
-          : lifecyclePendingLookup(markerFromLease(active.lease, active.lifecycleIntent));
+          : lifecyclePendingLookup(markerFromLease(
+              active.lease,
+              active.parentByChild,
+              active.lifecycleQueue,
+              active.lifecycleOverflow,
+            ));
       }
+      const rootEnded = this.#rootEndedBySession.get(sessionKey);
+      if (rootEnded !== undefined) return rootEndedLookup(rootEnded.lease);
       const marker = this.#recoveringBySession.get(sessionKey);
       if (marker === undefined) return { state: "off" };
-      return marker.lifecycleIntent === undefined
+      if (marker.rootTombstone !== undefined) return rootEndedLookup(marker);
+      return markerLifecycleQueue(marker).length === 0 && marker.lifecycleOverflow !== true
         ? recoveryLookup(marker)
         : lifecyclePendingLookup(marker);
     });
@@ -263,6 +334,17 @@ export class LeaseRegistry {
       await this.#purgeExpired();
       if (!safeId(leaseId)) throw new TypeError("Native guard lease ID is invalid");
       return this.#activeByLease.get(leaseId)?.lease;
+    });
+  }
+
+  async lookupEvidenceLease(
+    leaseId: string,
+  ): Promise<ActiveLeaseLookup | RootEndedEvidenceLookup | undefined> {
+    return this.#serialized(async () => {
+      this.#assertStarted();
+      await this.#purgeExpired();
+      if (!safeId(leaseId)) throw new TypeError("Native guard lease ID is invalid");
+      return this.#activeByLease.get(leaseId)?.lease ?? this.#rootEndedByLease.get(leaseId)?.lease;
     });
   }
 
@@ -294,8 +376,35 @@ export class LeaseRegistry {
         ) {
           throw new Error("Native guard recovery activation does not match the guarded marker");
         }
+        if (recovering.rootTombstone !== undefined) {
+          if (
+            recovering.leaseId !== lease.leaseId ||
+            lease.leaseEpoch < recovering.rootTombstone.leaseEpoch
+          ) {
+            throw new Error("Native guard root tombstone does not match the evidence lease");
+          }
+          const endedLease = rootEndedEvidenceLease(
+            withChildSessionKeys(lease, recovering.childSessionKeys),
+          );
+          const recoveryParentByChild = markerParentByChild(recovering);
+          await this.#markerStore.write(markerFromRootTombstone(
+            endedLease,
+            recovering.rootTombstone,
+            recoveryParentByChild,
+          ));
+          this.#removeRecovering(recovering);
+          this.#addRootEnded(endedLease, recovering.childSessionKeys, recovering.rootTombstone);
+          return this.#statusWithoutExpiry();
+        }
         const recoveredLease = withChildSessionKeys(lease, recovering.childSessionKeys);
-        await this.#markerStore.write(markerFromLease(recoveredLease, recovering.lifecycleIntent));
+        const recoveryQueue = markerLifecycleQueue(recovering);
+        const recoveryParentByChild = markerParentByChild(recovering);
+        await this.#markerStore.write(markerFromLease(
+          recoveredLease,
+          recoveryParentByChild,
+          recoveryQueue,
+          recovering.lifecycleOverflow === true,
+        ));
         if (recovering.leaseId !== recoveredLease.leaseId) {
           try {
             await this.#markerStore.remove(recovering.leaseId);
@@ -308,8 +417,10 @@ export class LeaseRegistry {
         this.#addActive(
           recoveredLease,
           recovering.childSessionKeys,
-          recovering.childSessionKeys.length > 0,
-          recovering.lifecycleIntent,
+          recovering.sessionBindings === undefined && recovering.childSessionKeys.length > 0,
+          recoveryQueue,
+          recovering.lifecycleOverflow === true,
+          recoveryParentByChild,
         );
         return this.#statusWithoutExpiry();
       }
@@ -334,6 +445,9 @@ export class LeaseRegistry {
       const candidate = parseActivation(input, this.#readNow());
       const record = this.#activeByLease.get(candidate.leaseId);
       if (record === undefined) throw new Error("Native guard lease is not active");
+      if (record.lifecycleQueue.length > 0 || record.lifecycleOverflow) {
+        throw new Error("Native guard lease renewal is blocked by pending lifecycle work");
+      }
       const current = record.lease;
       if (
         candidate.rootSessionKey !== current.rootSessionKey ||
@@ -342,12 +456,19 @@ export class LeaseRegistry {
         candidate.policyPackDigest !== current.policyPackDigest ||
         candidate.leaseEpoch <= current.leaseEpoch ||
         candidate.credential === current.credential ||
-        candidate.evidenceCredential === current.evidenceCredential
+        candidate.evidenceCredential === current.evidenceCredential ||
+        candidate.evidenceSigningKeyId === current.evidenceSigningKeyId ||
+        candidate.evidenceSigningPrivateKey === current.evidenceSigningPrivateKey
       ) {
         throw new Error("Native guard lease renewal does not match the active lease");
       }
       const renewed = withChildSessionKeys(candidate, current.childSessionKeys);
-      await this.#markerStore.write(markerFromLease(renewed, record.lifecycleIntent));
+      await this.#markerStore.write(markerFromLease(
+        renewed,
+        record.parentByChild,
+        record.lifecycleQueue,
+        record.lifecycleOverflow,
+      ));
       record.lease = renewed;
       return this.#statusWithoutExpiry();
     });
@@ -375,7 +496,8 @@ export class LeaseRegistry {
       const record = this.#activeByLease.get(leaseId);
       if (
         record === undefined ||
-        record.lifecycleIntent !== undefined ||
+        record.lifecycleQueue.length > 0 ||
+        record.lifecycleOverflow ||
         this.#activeBySession.get(parentSessionKey) !== record ||
         this.#activeBySession.has(childSessionKey) ||
         this.#recoveringBySession.has(childSessionKey) ||
@@ -388,9 +510,11 @@ export class LeaseRegistry {
         ...record.lease.childSessionKeys,
         childSessionKey,
       ]);
-      await this.#markerStore.write(markerFromLease(lease));
+      const parentByChild = new Map(record.parentByChild);
+      parentByChild.set(childSessionKey, parentSessionKey);
+      await this.#markerStore.write(markerFromLease(lease, parentByChild));
       record.lease = lease;
-      record.parentByChild.set(childSessionKey, parentSessionKey);
+      record.parentByChild = parentByChild;
       this.#activeBySession.set(childSessionKey, record);
       return true;
     });
@@ -409,18 +533,42 @@ export class LeaseRegistry {
       }
       const record = this.#activeByLease.get(leaseId);
       const expected: LifecycleIntent = { kind: "bind_child", parentSessionKey, childSessionKey };
-      if (record?.lifecycleIntent !== undefined) {
-        return sameLifecycleIntent(record.lifecycleIntent, expected);
+      const exactIndex = record?.lifecycleQueue.findIndex((intent) =>
+        sameLifecycleIntent(intent, expected)) ?? -1;
+      if (record !== undefined && exactIndex >= 0) {
+        const prefixTree = projectLifecycleTree(record, record.lifecycleQueue.slice(0, exactIndex));
+        return prefixTree !== undefined &&
+          prefixTree.sessionKeys.has(parentSessionKey) &&
+          !prefixTree.sessionKeys.has(childSessionKey);
       }
+      const projectedTree = record === undefined ? undefined : projectLifecycleTree(record);
+      const activeChild = this.#activeBySession.get(childSessionKey);
       if (
         record === undefined ||
-        this.#activeBySession.get(parentSessionKey) !== record ||
-        this.#activeBySession.has(childSessionKey) ||
+        projectedTree === undefined ||
+        !projectedTree.sessionKeys.has(parentSessionKey) ||
+        projectedTree.sessionKeys.has(childSessionKey) ||
+        (activeChild !== undefined && activeChild !== record) ||
         this.#recoveringBySession.has(childSessionKey) ||
         childSessionKey === record.lease.rootSessionKey
       ) return false;
-      await this.#markerStore.write(markerFromLease(record.lease, expected));
-      record.lifecycleIntent = expected;
+      if (record.lifecycleOverflow || record.lifecycleQueue.length >= MAX_LIFECYCLE_QUEUE_ITEMS) {
+        await this.#markLifecycleOverflow(record);
+        return false;
+      }
+      const queue = [...record.lifecycleQueue, expected];
+      let candidateMarker: GuardedMarker;
+      try {
+        candidateMarker = markerFromLease(record.lease, record.parentByChild, queue);
+      } catch (error) {
+        if (error instanceof LifecycleMarkerCapacityError) {
+          await this.#markLifecycleOverflow(record);
+          return false;
+        }
+        throw error;
+      }
+      await this.#markerStore.write(candidateMarker);
+      record.lifecycleQueue = queue;
       this.#activeBySession.set(childSessionKey, record);
       return true;
     });
@@ -436,15 +584,23 @@ export class LeaseRegistry {
       await this.#purgeExpired();
       const record = this.#activeByLease.get(leaseId);
       const expected: LifecycleIntent = { kind: "bind_child", parentSessionKey, childSessionKey };
-      if (record === undefined || !sameLifecycleIntent(record.lifecycleIntent, expected)) return false;
+      if (record === undefined || !sameLifecycleIntent(record.lifecycleQueue[0], expected)) return false;
       const lease = withChildSessionKeys(record.lease, [
         ...record.lease.childSessionKeys,
         childSessionKey,
       ]);
-      await this.#markerStore.write(markerFromLease(lease));
+      const queue = record.lifecycleQueue.slice(1);
+      const parentByChild = new Map(record.parentByChild);
+      parentByChild.set(childSessionKey, parentSessionKey);
+      await this.#markerStore.write(markerFromLease(
+        lease,
+        parentByChild,
+        queue,
+        record.lifecycleOverflow,
+      ));
       record.lease = lease;
-      record.lifecycleIntent = undefined;
-      record.parentByChild.set(childSessionKey, parentSessionKey);
+      record.lifecycleQueue = queue;
+      record.parentByChild = parentByChild;
       this.#activeBySession.set(childSessionKey, record);
       return true;
     });
@@ -455,9 +611,44 @@ export class LeaseRegistry {
       this.#assertStarted();
       await this.#purgeExpired();
       if (!safeId(leaseId)) throw new TypeError("Native guard lease ID is invalid");
-      const intent = this.#activeByLease.get(leaseId)?.lifecycleIntent ??
-        this.#recoveringByLease.get(leaseId)?.lifecycleIntent;
+      const intent = this.#activeByLease.get(leaseId)?.lifecycleQueue[0] ??
+        markerLifecycleQueue(this.#recoveringByLease.get(leaseId))[0];
       return intent === undefined ? undefined : structuredClone(intent);
+    });
+  }
+
+  async attachLifecycleEvidenceRequest(
+    leaseId: string,
+    expected: LifecycleIntent,
+    proof: NativeGuardEvidenceProof,
+  ): Promise<LifecycleIntent> {
+    return this.#serialized(async () => {
+      this.#assertStarted();
+      await this.#purgeExpired();
+      const record = this.#activeByLease.get(leaseId);
+      const head = record?.lifecycleQueue[0];
+      if (record === undefined || head === undefined || !sameLifecycleIntent(head, expected)) {
+        throw new Error("Native guard lifecycle queue head changed");
+      }
+      if (head.evidenceRequest !== undefined) {
+        if (digestJson(head.evidenceRequest) !== digestJson(proof)) {
+          throw new Error("Native guard lifecycle evidence request changed");
+        }
+        return structuredClone(head);
+      }
+      if (!validLifecycleEvidenceRequest(record.lease, head, proof)) {
+        throw new Error("Native guard lifecycle evidence request is invalid");
+      }
+      const attached = { ...head, evidenceRequest: structuredClone(proof) } as LifecycleIntent;
+      const queue = [attached, ...record.lifecycleQueue.slice(1)];
+      await this.#markerStore.write(markerFromLease(
+        record.lease,
+        record.parentByChild,
+        queue,
+        record.lifecycleOverflow,
+      ));
+      record.lifecycleQueue = queue;
+      return structuredClone(attached);
     });
   }
 
@@ -469,13 +660,35 @@ export class LeaseRegistry {
       const record = this.#activeBySession.get(sessionKey);
       if (record === undefined) return undefined;
       const expected: LifecycleIntent = { kind: "end_session", sessionKey };
-      if (record.lifecycleIntent !== undefined) {
-        return sameLifecycleIntent(record.lifecycleIntent, expected)
+      const exactIndex = record.lifecycleQueue.findIndex((intent) =>
+        sameLifecycleIntent(intent, expected));
+      if (exactIndex >= 0) {
+        const prefixTree = projectLifecycleTree(record, record.lifecycleQueue.slice(0, exactIndex));
+        return prefixTree?.sessionKeys.has(sessionKey) === true
           ? structuredClone(expected)
           : undefined;
       }
-      await this.#markerStore.write(markerFromLease(record.lease, expected));
-      record.lifecycleIntent = expected;
+      const projectedTree = projectLifecycleTree(record);
+      if (projectedTree === undefined || !projectedTree.sessionKeys.has(sessionKey)) {
+        return undefined;
+      }
+      if (record.lifecycleOverflow || record.lifecycleQueue.length >= MAX_LIFECYCLE_QUEUE_ITEMS) {
+        await this.#markLifecycleOverflow(record);
+        return undefined;
+      }
+      const queue = [...record.lifecycleQueue, expected];
+      let candidateMarker: GuardedMarker;
+      try {
+        candidateMarker = markerFromLease(record.lease, record.parentByChild, queue);
+      } catch (error) {
+        if (error instanceof LifecycleMarkerCapacityError) {
+          await this.#markLifecycleOverflow(record);
+          return undefined;
+        }
+        throw error;
+      }
+      await this.#markerStore.write(candidateMarker);
+      record.lifecycleQueue = queue;
       return structuredClone(expected);
     });
   }
@@ -486,25 +699,42 @@ export class LeaseRegistry {
       await this.#purgeExpired();
       const record = this.#activeByLease.get(leaseId);
       const expected: LifecycleIntent = { kind: "end_session", sessionKey };
-      if (record === undefined || !sameLifecycleIntent(record.lifecycleIntent, expected)) return false;
+      if (record === undefined || !sameLifecycleIntent(record.lifecycleQueue[0], expected)) return false;
       if (sessionKey === record.lease.rootSessionKey) {
-        await this.#markerStore.remove(leaseId);
+        const tombstone = {
+          leaseEpoch: record.lease.leaseEpoch,
+          endedAt: this.#readNow().toISOString(),
+        };
+        const sessionKeys = [record.lease.rootSessionKey, ...record.lease.childSessionKeys];
+        const endedLease = rootEndedEvidenceLease(record.lease);
+        await this.#markerStore.write(markerFromRootTombstone(
+          endedLease,
+          tombstone,
+          record.parentByChild,
+        ));
         this.#removeActive(record);
+        this.#addRootEnded(endedLease, sessionKeys.slice(1), tombstone);
         return true;
       }
       if (this.#activeBySession.get(sessionKey) !== record) return false;
-      const subtree = record.flatRecoveryBindings
-        ? new Set([sessionKey])
-        : collectSubtree(record.parentByChild, sessionKey);
+      const projectedTree = sessionTreeFromRecord(record);
+      const subtree = removeSessionSubtree(projectedTree, sessionKey);
+      if (subtree === undefined) return false;
       const retainedChildren = record.lease.childSessionKeys.filter((key) => !subtree.has(key));
       const lease = withChildSessionKeys(record.lease, retainedChildren);
-      await this.#markerStore.write(markerFromLease(lease));
+      const queue = pruneCoveredLifecycleTail(subtree, record.lifecycleQueue.slice(1));
+      await this.#markerStore.write(markerFromLease(
+        lease,
+        record.parentByChild,
+        queue,
+        record.lifecycleOverflow,
+      ));
       record.lease = lease;
-      record.lifecycleIntent = undefined;
+      record.lifecycleQueue = queue;
       for (const key of subtree) {
         record.parentByChild.delete(key);
-        this.#activeBySession.delete(key);
       }
+      this.#rebuildActiveSessionIndexes(record);
       if (record.lease.childSessionKeys.length === 0) record.flatRecoveryBindings = false;
       return true;
     });
@@ -517,10 +747,24 @@ export class LeaseRegistry {
       if (!safeSessionKey(sessionKey)) throw new TypeError("Native guard session key is invalid");
       const active = this.#activeBySession.get(sessionKey);
       if (active !== undefined) {
-        if (active.lifecycleIntent !== undefined) return false;
+        if (active.lifecycleQueue.length > 0 || active.lifecycleOverflow) return false;
         if (sessionKey === active.lease.rootSessionKey) {
-          await this.#markerStore.remove(active.lease.leaseId);
+          const tombstone = {
+            leaseEpoch: active.lease.leaseEpoch,
+            endedAt: this.#readNow().toISOString(),
+          };
+          const endedLease = rootEndedEvidenceLease(active.lease);
+          await this.#markerStore.write(markerFromRootTombstone(
+            endedLease,
+            tombstone,
+            active.parentByChild,
+          ));
           this.#removeActive(active);
+          this.#addRootEnded(
+            endedLease,
+            active.lease.childSessionKeys,
+            tombstone,
+          );
           return true;
         }
 
@@ -529,7 +773,7 @@ export class LeaseRegistry {
           : collectSubtree(active.parentByChild, sessionKey);
         const retainedChildren = active.lease.childSessionKeys.filter((key) => !subtree.has(key));
         const lease = withChildSessionKeys(active.lease, retainedChildren);
-        await this.#markerStore.write(markerFromLease(lease));
+        await this.#markerStore.write(markerFromLease(lease, active.parentByChild));
         active.lease = lease;
         for (const key of subtree) {
           active.parentByChild.delete(key);
@@ -542,12 +786,38 @@ export class LeaseRegistry {
       const recovering = this.#recoveringBySession.get(sessionKey);
       if (recovering === undefined) return false;
       if (sessionKey === recovering.rootSessionKey) {
-        return this.#revokeWithoutPurge(recovering.leaseId);
+        if (
+          recovering.leaseEpoch === undefined ||
+          markerLifecycleQueue(recovering).length > 0 ||
+          recovering.lifecycleOverflow === true
+        ) return false;
+        const tombstone = {
+          leaseEpoch: recovering.leaseEpoch,
+          endedAt: this.#readNow().toISOString(),
+        };
+        const marker = markerFromRecoveryRootTombstone(recovering, tombstone);
+        await this.#markerStore.write(marker);
+        this.#recoveringByLease.set(marker.leaseId, marker);
+        this.#rebuildRecoveryIndexes();
+        return true;
       }
       if (this.#recoveryConflictByLease.has(recovering.leaseId)) return false;
+      const parentByChild = markerParentByChild(recovering);
+      const subtree = recovering.sessionBindings === undefined
+        ? new Set([sessionKey])
+        : collectSubtree(parentByChild, sessionKey);
+      const childSessionKeys = recovering.childSessionKeys.filter((key) => !subtree.has(key));
+      const { sessionBindings: _sessionBindings, ...markerWithoutBindings } = recovering;
+      const sessionBindings = recovering.sessionBindings === undefined
+        ? undefined
+        : sessionBindingsFromParentMap(
+            { rootSessionKey: recovering.rootSessionKey, childSessionKeys },
+            parentByChild,
+          );
       const marker = {
-        ...recovering,
-        childSessionKeys: recovering.childSessionKeys.filter((key) => key !== sessionKey),
+        ...markerWithoutBindings,
+        childSessionKeys,
+        ...(sessionBindings === undefined ? {} : { sessionBindings }),
       };
       await this.#markerStore.write(marker);
       this.#recoveringByLease.set(marker.leaseId, marker);
@@ -566,21 +836,33 @@ export class LeaseRegistry {
 
   #statusWithoutExpiry(): NativeGuardStatus {
     const activeRecords = [...this.#activeByLease.values()];
-    const hasRecovery = this.#recoveringByLease.size > 0;
-    const hasLifecyclePending = activeRecords.some((record) => record.lifecycleIntent !== undefined) ||
-      [...this.#recoveringByLease.values()].some((marker) => marker.lifecycleIntent !== undefined);
+    const hasRootEnded = this.#rootEndedByLease.size > 0 ||
+      [...this.#recoveringByLease.values()].some((marker) => marker.rootTombstone !== undefined);
+    const hasRecovery = this.#recoveringByLease.size > 0 || hasRootEnded;
+    const hasLifecycleOverflow = activeRecords.some((record) => record.lifecycleOverflow) ||
+      [...this.#recoveringByLease.values()].some((marker) => marker.lifecycleOverflow === true);
+    const hasLifecyclePending = hasLifecycleOverflow ||
+      activeRecords.some((record) => record.lifecycleQueue.length > 0) ||
+      [...this.#recoveringByLease.values()].some((marker) => markerLifecycleQueue(marker).length > 0);
     if (activeRecords.length === 0) {
       return {
         coverage: hasRecovery ? "recovery" : "off",
         finalizerAssurance: "unverified",
         activeLeaseCount: 0,
+        ...(hasRootEnded ? { reasonCode: "NATIVE_GUARD_ROOT_ENDED" } : {}),
       };
     }
     const status: NativeGuardStatus = {
       coverage: hasRecovery || hasLifecyclePending ? "recovery" : "active",
       finalizerAssurance: "unverified",
       activeLeaseCount: activeRecords.length,
-      ...(hasLifecyclePending ? { reasonCode: "NATIVE_GUARD_LIFECYCLE_PENDING" } : {}),
+      ...(hasLifecyclePending
+        ? {
+            reasonCode: hasLifecycleOverflow
+              ? "NATIVE_GUARD_LIFECYCLE_OVERFLOW"
+              : "NATIVE_GUARD_LIFECYCLE_PENDING",
+          }
+        : {}),
     };
     if (activeRecords.length === 1 && !hasRecovery) {
       const lease = activeRecords[0].lease;
@@ -616,36 +898,96 @@ export class LeaseRegistry {
         this.#removeRecovering(marker);
       }
     }
+    for (const record of this.#rootEndedByLease.values()) {
+      if (Date.parse(record.lease.expiresAt) <= nowMs) {
+        this.#pendingDeletionLeaseIds.add(record.lease.leaseId);
+        this.#removeRootEnded(record);
+      }
+    }
     await this.#retryPendingDeletions();
   }
 
   #removeActive(record: ActiveRecord): void {
     this.#activeByLease.delete(record.lease.leaseId);
-    this.#activeBySession.delete(record.lease.rootSessionKey);
-    for (const childSessionKey of record.lease.childSessionKeys) {
-      this.#activeBySession.delete(childSessionKey);
+    for (const [sessionKey, active] of this.#activeBySession) {
+      if (active === record) this.#activeBySession.delete(sessionKey);
     }
+  }
+
+  #rebuildActiveSessionIndexes(record: ActiveRecord): void {
+    for (const [sessionKey, active] of this.#activeBySession) {
+      if (active === record) this.#activeBySession.delete(sessionKey);
+    }
+    this.#activeBySession.set(record.lease.rootSessionKey, record);
+    for (const childSessionKey of record.lease.childSessionKeys) {
+      this.#activeBySession.set(childSessionKey, record);
+    }
+    for (const intent of record.lifecycleQueue) {
+      if (intent.kind === "bind_child") {
+        this.#activeBySession.set(intent.childSessionKey, record);
+      }
+    }
+  }
+
+  #addRootEnded(
+    lease: RootEndedEvidenceLookup,
+    childSessionKeys: readonly string[],
+    tombstone: NonNullable<GuardedMarker["rootTombstone"]>,
+  ): void {
+    const sessionKeys = Object.freeze([lease.rootSessionKey, ...childSessionKeys]);
+    const record: RootEndedRecord = { lease, sessionKeys, tombstone };
+    this.#rootEndedByLease.set(lease.leaseId, record);
+    for (const sessionKey of sessionKeys) this.#rootEndedBySession.set(sessionKey, record);
+  }
+
+  #removeRootEnded(record: RootEndedRecord): void {
+    this.#rootEndedByLease.delete(record.lease.leaseId);
+    for (const sessionKey of record.sessionKeys) this.#rootEndedBySession.delete(sessionKey);
   }
 
   #addActive(
     lease: ActiveLeaseLookup,
     childSessionKeys: readonly string[] = [],
     flatRecoveryBindings = false,
-    lifecycleIntent?: LifecycleIntent,
+    lifecycleQueue: readonly LifecycleIntent[] = [],
+    lifecycleOverflow = false,
+    recoveredParentByChild?: ReadonlyMap<string, string>,
   ): void {
     const parentByChild = new Map<string, string>();
     for (const childSessionKey of childSessionKeys) {
-      parentByChild.set(childSessionKey, lease.rootSessionKey);
+      parentByChild.set(
+        childSessionKey,
+        recoveredParentByChild?.get(childSessionKey) ?? lease.rootSessionKey,
+      );
     }
-    const record = { lease, parentByChild, flatRecoveryBindings, lifecycleIntent };
+    const record: ActiveRecord = {
+      lease,
+      parentByChild,
+      flatRecoveryBindings,
+      lifecycleQueue: lifecycleQueue.map((intent) => structuredClone(intent)),
+      lifecycleOverflow,
+    };
     this.#activeByLease.set(lease.leaseId, record);
     this.#activeBySession.set(lease.rootSessionKey, record);
     for (const childSessionKey of lease.childSessionKeys) {
       this.#activeBySession.set(childSessionKey, record);
     }
-    if (lifecycleIntent?.kind === "bind_child") {
-      this.#activeBySession.set(lifecycleIntent.childSessionKey, record);
+    for (const intent of record.lifecycleQueue) {
+      if (intent.kind === "bind_child") {
+        this.#activeBySession.set(intent.childSessionKey, record);
+      }
     }
+  }
+
+  async #markLifecycleOverflow(record: ActiveRecord): Promise<void> {
+    if (record.lifecycleOverflow) return;
+    await this.#markerStore.write(markerFromLease(
+      record.lease,
+      record.parentByChild,
+      record.lifecycleQueue,
+      true,
+    ));
+    record.lifecycleOverflow = true;
   }
 
   #removeRecovering(marker: GuardedMarker): void {
@@ -655,21 +997,23 @@ export class LeaseRegistry {
 
   async #revokeWithoutPurge(leaseId: string): Promise<boolean> {
     const active = this.#activeByLease.get(leaseId);
+    const rootEnded = this.#rootEndedByLease.get(leaseId);
     const conflict = this.#recoveryConflictByLease.get(leaseId);
     const recoveryLeaseIds = conflict === undefined
       ? (this.#recoveringByLease.has(leaseId) ? [leaseId] : [])
       : [...conflict].sort();
-    if (active === undefined && recoveryLeaseIds.length === 0) {
+    if (active === undefined && rootEnded === undefined && recoveryLeaseIds.length === 0) {
       if (!this.#pendingDeletionLeaseIds.has(leaseId)) return false;
       await this.#markerStore.remove(leaseId);
       this.#pendingDeletionLeaseIds.delete(leaseId);
       return true;
     }
-    const leaseIds = active === undefined ? recoveryLeaseIds : [leaseId];
+    const leaseIds = active === undefined && rootEnded === undefined ? recoveryLeaseIds : [leaseId];
     for (const markerLeaseId of leaseIds) {
       await this.#markerStore.remove(markerLeaseId);
     }
     if (active !== undefined) this.#removeActive(active);
+    if (rootEnded !== undefined) this.#removeRootEnded(rootEnded);
     for (const markerLeaseId of recoveryLeaseIds) {
       this.#recoveringByLease.delete(markerLeaseId);
     }
@@ -791,14 +1135,154 @@ function lifecyclePendingLookup(marker: GuardedMarker): LifecyclePendingLookup {
   };
 }
 
+function rootEndedLookup(
+  value: GuardedMarker | RootEndedEvidenceLookup,
+): RootEndedLookup {
+  return {
+    state: "root_ended",
+    leaseId: value.leaseId,
+    rootSessionKey: value.rootSessionKey,
+    mode: value.mode,
+    policyPackId: value.policyPackId,
+    policyPackDigest: value.policyPackDigest,
+    expiresAt: value.expiresAt,
+  };
+}
+
 function markerSessionKeys(marker: GuardedMarker): string[] {
   return [
     marker.rootSessionKey,
     ...marker.childSessionKeys,
-    ...(marker.lifecycleIntent?.kind === "bind_child"
-      ? [marker.lifecycleIntent.childSessionKey]
-      : []),
+    ...markerLifecycleQueue(marker)
+      .filter((intent): intent is Extract<LifecycleIntent, { kind: "bind_child" }> =>
+        intent.kind === "bind_child")
+      .map(({ childSessionKey }) => childSessionKey),
   ];
+}
+
+function markerLifecycleQueue(marker: GuardedMarker | undefined): LifecycleIntent[] {
+  if (marker === undefined) return [];
+  if (marker.lifecycleQueue !== undefined) {
+    return marker.lifecycleQueue.map((intent) => structuredClone(intent));
+  }
+  return marker.lifecycleIntent === undefined ? [] : [structuredClone(marker.lifecycleIntent)];
+}
+
+function markerParentByChild(marker: GuardedMarker): Map<string, string> {
+  if (marker.sessionBindings === undefined) {
+    return new Map(marker.childSessionKeys.map((childSessionKey) => [
+      childSessionKey,
+      marker.rootSessionKey,
+    ]));
+  }
+  return new Map(marker.sessionBindings.map((binding) => [
+    binding.childSessionKey,
+    binding.parentSessionKey,
+  ]));
+}
+
+type ProjectedSessionTree = {
+  sessionKeys: Set<string>;
+  parentByChild: Map<string, string>;
+};
+
+function sessionTreeFromRecord(record: ActiveRecord): ProjectedSessionTree {
+  const sessionKeys = new Set([
+    record.lease.rootSessionKey,
+    ...record.lease.childSessionKeys,
+  ]);
+  const parentByChild = new Map<string, string>();
+  for (const childSessionKey of record.lease.childSessionKeys) {
+    const parentSessionKey = record.parentByChild.get(childSessionKey);
+    parentByChild.set(
+      childSessionKey,
+      parentSessionKey !== undefined && sessionKeys.has(parentSessionKey)
+        ? parentSessionKey
+        : record.lease.rootSessionKey,
+    );
+  }
+  return { sessionKeys, parentByChild };
+}
+
+function projectLifecycleTree(
+  record: ActiveRecord,
+  queue: readonly LifecycleIntent[] = record.lifecycleQueue,
+): ProjectedSessionTree | undefined {
+  const tree = sessionTreeFromRecord(record);
+  for (const intent of queue) {
+    if (!applyLifecycleIntent(tree, intent)) return undefined;
+  }
+  return tree;
+}
+
+function pruneCoveredLifecycleTail(
+  removedSubtree: ReadonlySet<string>,
+  queue: readonly LifecycleIntent[],
+): LifecycleIntent[] {
+  const covered = new Set(removedSubtree);
+  const retained: LifecycleIntent[] = [];
+  for (const intent of queue) {
+    if (intent.kind === "bind_child") {
+      if (covered.has(intent.parentSessionKey)) {
+        covered.add(intent.childSessionKey);
+        continue;
+      }
+      covered.delete(intent.childSessionKey);
+      retained.push(intent);
+      continue;
+    }
+    if (intent.kind === "end_session" && covered.has(intent.sessionKey)) continue;
+    retained.push(intent);
+  }
+  return retained;
+}
+
+function applyLifecycleIntent(tree: ProjectedSessionTree, intent: LifecycleIntent): boolean {
+  if (intent.kind === "bind_child") {
+    if (
+      !tree.sessionKeys.has(intent.parentSessionKey) ||
+      tree.sessionKeys.has(intent.childSessionKey)
+    ) return false;
+    tree.sessionKeys.add(intent.childSessionKey);
+    tree.parentByChild.set(intent.childSessionKey, intent.parentSessionKey);
+    return true;
+  }
+  return removeSessionSubtree(tree, intent.sessionKey) !== undefined;
+}
+
+function removeSessionSubtree(
+  tree: ProjectedSessionTree,
+  sessionKey: string,
+): Set<string> | undefined {
+  if (!tree.sessionKeys.has(sessionKey)) return undefined;
+  const subtree = collectSubtree(tree.parentByChild, sessionKey);
+  for (const key of subtree) {
+    tree.sessionKeys.delete(key);
+    tree.parentByChild.delete(key);
+  }
+  return subtree;
+}
+
+function validLifecycleEvidenceRequest(
+  lease: ActiveLeaseLookup,
+  intent: LifecycleIntent,
+  proof: NativeGuardEvidenceProof,
+): boolean {
+  if (
+    !lifecycleProofMatchesIntent(lease.leaseId, intent, proof) ||
+    proof.leaseEpoch !== lease.leaseEpoch ||
+    proof.keyId !== lease.evidenceSigningKeyId
+  ) return false;
+  try {
+    const { signature, ...unsigned } = proof;
+    return verifyNativeGuardPayload(
+      unsigned,
+      signature,
+      createPublicKey(createPrivateKey(lease.evidenceSigningPrivateKey)),
+    );
+  } catch {
+    return false;
+  }
 }
 
 function sameLifecycleIntent(
@@ -831,6 +1315,8 @@ function parseActivation(
     "credential",
     "decisionPublicKey",
     "evidenceCredential",
+    "evidenceSigningKeyId",
+    "evidenceSigningPrivateKey",
     "expiresAt",
     "failurePolicy",
     "issuedAt",
@@ -854,6 +1340,8 @@ function parseActivation(
   if (!safeId(value.policyPackId) || !DIGEST.test(value.policyPackDigest)) throw invalidActivation();
   if (!validDecisionUrl(value.backendUrl)) throw invalidActivation();
   if (!validEd25519PublicKey(value.decisionPublicKey)) throw invalidActivation();
+  if (!safeId(value.evidenceSigningKeyId)) throw invalidActivation();
+  if (!validEd25519PrivateKey(value.evidenceSigningPrivateKey)) throw invalidActivation();
   if (!validFailurePolicy(value.failurePolicy)) throw invalidActivation();
   if (!isCanonicalTimestamp(value.issuedAt) || !isCanonicalTimestamp(value.expiresAt)) throw invalidActivation();
   const issuedAtMs = Date.parse(value.issuedAt);
@@ -893,24 +1381,121 @@ function parseActivation(
     expiresAt: value.expiresAt,
     credential: value.credential,
     evidenceCredential: value.evidenceCredential,
+    evidenceSigningKeyId: value.evidenceSigningKeyId,
+    evidenceSigningPrivateKey: value.evidenceSigningPrivateKey,
     childSessionKeys: Object.freeze([] as string[]),
   });
 }
 
 function markerFromLease(
   lease: ActiveLeaseLookup,
-  lifecycleIntent?: LifecycleIntent,
+  parentByChild?: ReadonlyMap<string, string>,
+  lifecycleQueue: readonly LifecycleIntent[] = [],
+  lifecycleOverflow = false,
 ): GuardedMarker {
-  return {
+  const queue = lifecycleQueue.map((intent) => structuredClone(intent));
+  const sessionBindings = sessionBindingsFromParentMap(lease, parentByChild);
+  const marker: GuardedMarker = {
     leaseId: lease.leaseId,
+    leaseEpoch: lease.leaseEpoch,
     rootSessionKey: lease.rootSessionKey,
     childSessionKeys: [...lease.childSessionKeys].sort(),
     mode: lease.mode,
     policyPackId: lease.policyPackId,
     policyPackDigest: lease.policyPackDigest,
     expiresAt: lease.expiresAt,
-    ...(lifecycleIntent === undefined ? {} : { lifecycleIntent: structuredClone(lifecycleIntent) }),
+    ...(sessionBindings === undefined ? {} : { sessionBindings }),
+    ...(queue.length === 0
+      ? {}
+      : {
+          lifecycleIntent: structuredClone(queue[0]),
+          lifecycleQueue: queue,
+        }),
+    ...(lifecycleOverflow ? { lifecycleOverflow: true as const } : {}),
   };
+  const capacityMarker = lifecycleOverflow
+    ? marker
+    : { ...marker, lifecycleOverflow: true as const };
+  if (serializedCanonicalMarkerBytes(capacityMarker) > MAX_MARKER_BYTES) {
+    throw new LifecycleMarkerCapacityError();
+  }
+  return marker;
+}
+
+function serializedCanonicalMarkerBytes(marker: GuardedMarker): number {
+  const parsedMarker = parseMarker(marker);
+  if (parsedMarker === undefined) throw new TypeError("Native guard marker is invalid");
+  return Buffer.byteLength(serializedMarkerContents(parsedMarker), "utf8");
+}
+
+function serializedMarkerContents(marker: GuardedMarker): string {
+  return `${JSON.stringify(marker)}\n`;
+}
+
+function rootEndedEvidenceLease(lease: ActiveLeaseLookup): RootEndedEvidenceLookup {
+  return Object.freeze({ ...lease, state: "root_ended" as const });
+}
+
+function markerFromRootTombstone(
+  lease: RootEndedEvidenceLookup,
+  tombstone: NonNullable<GuardedMarker["rootTombstone"]>,
+  parentByChild?: ReadonlyMap<string, string>,
+): GuardedMarker {
+  const sessionBindings = sessionBindingsFromParentMap(lease, parentByChild);
+  const marker: GuardedMarker = {
+    leaseId: lease.leaseId,
+    leaseEpoch: lease.leaseEpoch,
+    rootSessionKey: lease.rootSessionKey,
+    childSessionKeys: [...lease.childSessionKeys].sort(),
+    mode: lease.mode,
+    policyPackId: lease.policyPackId,
+    policyPackDigest: lease.policyPackDigest,
+    expiresAt: lease.expiresAt,
+    ...(sessionBindings === undefined ? {} : { sessionBindings }),
+    rootTombstone: structuredClone(tombstone),
+  };
+  if (Buffer.byteLength(JSON.stringify(marker), "utf8") > MAX_MARKER_BYTES) {
+    throw new Error("Native guard root tombstone exceeds its marker limit");
+  }
+  return marker;
+}
+
+function markerFromRecoveryRootTombstone(
+  marker: GuardedMarker,
+  tombstone: NonNullable<GuardedMarker["rootTombstone"]>,
+): GuardedMarker {
+  const {
+    lifecycleIntent: _lifecycleIntent,
+    lifecycleQueue: _lifecycleQueue,
+    lifecycleOverflow: _lifecycleOverflow,
+    rootTombstone: _rootTombstone,
+    ...base
+  } = marker;
+  const rootEnded = {
+    ...base,
+    rootTombstone: structuredClone(tombstone),
+  };
+  if (Buffer.byteLength(JSON.stringify(rootEnded), "utf8") > MAX_MARKER_BYTES) {
+    throw new Error("Native guard root tombstone exceeds its marker limit");
+  }
+  return rootEnded;
+}
+
+function sessionBindingsFromParentMap(
+  lease: Pick<ActiveLeaseLookup, "rootSessionKey" | "childSessionKeys">,
+  parentByChild: ReadonlyMap<string, string> | undefined,
+): SessionBinding[] | undefined {
+  if (lease.childSessionKeys.length === 0) return undefined;
+  if (parentByChild === undefined) {
+    throw new Error("Native guard committed session bindings are unavailable");
+  }
+  const bindings = lease.childSessionKeys.map((childSessionKey) => ({
+    childSessionKey,
+    parentSessionKey: parentByChild.get(childSessionKey) ?? "",
+  }));
+  const parsed = parseSessionBindings(bindings, lease.rootSessionKey, lease.childSessionKeys);
+  if (parsed === undefined) throw new Error("Native guard committed session bindings are invalid");
+  return parsed;
 }
 
 function withChildSessionKeys(
@@ -976,6 +1561,20 @@ function validEd25519PublicKey(value: unknown): boolean {
   try {
     const key = createPublicKey(value);
     return key.type === "public" && key.asymmetricKeyType === "ed25519";
+  } catch {
+    return false;
+  }
+}
+
+function validEd25519PrivateKey(value: unknown): boolean {
+  if (
+    typeof value !== "string" ||
+    value.length > 4096 ||
+    !/^-----BEGIN PRIVATE KEY-----\r?\n[\s\S]+\r?\n-----END PRIVATE KEY-----\r?\n?$/.test(value)
+  ) return false;
+  try {
+    const key = createPrivateKey(value);
+    return key.type === "private" && key.asymmetricKeyType === "ed25519";
   } catch {
     return false;
   }
@@ -1187,18 +1786,42 @@ function markerCandidateError(fileName: string): Error {
 
 function parseMarker(value: unknown): GuardedMarker | undefined {
   if (!isRecord(value)) return undefined;
-  const keys = Object.keys(value).sort().join(",");
+  const requiredKeys = [
+    "childSessionKeys",
+    "expiresAt",
+    "leaseId",
+    "mode",
+    "policyPackDigest",
+    "policyPackId",
+    "rootSessionKey",
+  ];
+  const allowedKeys = new Set([
+    ...requiredKeys,
+    "leaseEpoch",
+    "lifecycleIntent",
+    "lifecycleOverflow",
+    "lifecycleQueue",
+    "rootTombstone",
+    "sessionBindings",
+  ]);
+  const keys = Object.keys(value);
   if (
-    keys !== "childSessionKeys,expiresAt,leaseId,mode,policyPackDigest,policyPackId,rootSessionKey" &&
-    keys !== "childSessionKeys,expiresAt,leaseId,lifecycleIntent,mode,policyPackDigest,policyPackId,rootSessionKey"
-  ) {
-    return undefined;
-  }
+    !requiredKeys.every((key) => Object.hasOwn(value, key)) ||
+    keys.some((key) => !allowedKeys.has(key))
+  ) return undefined;
   const lifecycleIntent = value.lifecycleIntent === undefined
     ? undefined
     : parseLifecycleIntent(value.lifecycleIntent);
+  const lifecycleQueue = value.lifecycleQueue === undefined
+    ? (lifecycleIntent === undefined ? [] : [lifecycleIntent])
+    : parseLifecycleQueue(value.lifecycleQueue);
+  const rootTombstone = value.rootTombstone === undefined
+    ? undefined
+    : parseRootTombstone(value.rootTombstone);
   if (
     !safeId(value.leaseId) ||
+    (value.leaseEpoch !== undefined &&
+      (!Number.isSafeInteger(value.leaseEpoch) || (value.leaseEpoch as number) <= 0)) ||
     !safeSessionKey(value.rootSessionKey) ||
     !Array.isArray(value.childSessionKeys) ||
     !value.childSessionKeys.every(safeSessionKey) ||
@@ -1209,42 +1832,177 @@ function parseMarker(value: unknown): GuardedMarker | undefined {
     typeof value.policyPackDigest !== "string" ||
     !DIGEST.test(value.policyPackDigest) ||
     !isCanonicalTimestamp(value.expiresAt) ||
-    (value.lifecycleIntent !== undefined && lifecycleIntent === undefined)
+    (value.lifecycleOverflow !== undefined && value.lifecycleOverflow !== true) ||
+    (value.rootTombstone !== undefined && rootTombstone === undefined) ||
+    (value.lifecycleIntent !== undefined && lifecycleIntent === undefined) ||
+    lifecycleQueue === undefined ||
+    (lifecycleIntent !== undefined && !sameLifecycleIntent(lifecycleQueue[0], lifecycleIntent))
   ) {
     return undefined;
   }
+  if (
+    rootTombstone !== undefined &&
+    (lifecycleQueue.length > 0 || value.lifecycleOverflow === true)
+  ) return undefined;
+  if (
+    rootTombstone !== undefined &&
+    value.leaseEpoch !== undefined &&
+    value.leaseEpoch !== rootTombstone.leaseEpoch
+  ) return undefined;
   const childSessionKeys = [...value.childSessionKeys].sort();
-  if (
-    lifecycleIntent?.kind === "bind_child" &&
-    (
-      lifecycleIntent.childSessionKey === value.rootSessionKey ||
-      childSessionKeys.includes(lifecycleIntent.childSessionKey) ||
-      (lifecycleIntent.parentSessionKey !== value.rootSessionKey &&
-        !childSessionKeys.includes(lifecycleIntent.parentSessionKey))
-    )
-  ) return undefined;
-  if (
-    lifecycleIntent?.kind === "end_session" &&
-    lifecycleIntent.sessionKey !== value.rootSessionKey &&
-    !childSessionKeys.includes(lifecycleIntent.sessionKey)
-  ) return undefined;
+  const sessionBindings = value.sessionBindings === undefined
+    ? undefined
+    : parseSessionBindings(value.sessionBindings, value.rootSessionKey, childSessionKeys);
+  if (value.sessionBindings !== undefined && sessionBindings === undefined) return undefined;
+  if (!validLifecycleQueue(
+    lifecycleQueue,
+    value.leaseId,
+    value.rootSessionKey,
+    childSessionKeys,
+  )) return undefined;
   return {
     leaseId: value.leaseId,
+    ...(value.leaseEpoch === undefined ? {} : { leaseEpoch: value.leaseEpoch as number }),
     rootSessionKey: value.rootSessionKey,
     childSessionKeys,
     mode: value.mode,
     policyPackId: value.policyPackId,
     policyPackDigest: value.policyPackDigest,
     expiresAt: value.expiresAt,
-    ...(lifecycleIntent === undefined ? {} : { lifecycleIntent }),
+    ...(sessionBindings === undefined ? {} : { sessionBindings }),
+    ...(lifecycleQueue.length === 0
+      ? {}
+      : {
+          lifecycleIntent: structuredClone(lifecycleQueue[0]),
+          lifecycleQueue,
+        }),
+    ...(value.lifecycleOverflow === true ? { lifecycleOverflow: true as const } : {}),
+    ...(rootTombstone === undefined ? {} : { rootTombstone }),
   };
+}
+
+function parseSessionBindings(
+  value: unknown,
+  rootSessionKey: unknown,
+  childSessionKeys: readonly string[],
+): SessionBinding[] | undefined {
+  if (
+    typeof rootSessionKey !== "string" ||
+    !Array.isArray(value) ||
+    value.length !== childSessionKeys.length ||
+    value.length > MAX_SESSION_BINDINGS
+  ) return undefined;
+  const bindings: SessionBinding[] = [];
+  for (let index = 0; index < value.length; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, index);
+    if (descriptor === undefined || !("value" in descriptor)) return undefined;
+    const binding = descriptor.value;
+    if (
+      !isRecord(binding) ||
+      Object.keys(binding).sort().join(",") !== "childSessionKey,parentSessionKey" ||
+      !safeSessionKey(binding.childSessionKey) ||
+      !safeSessionKey(binding.parentSessionKey)
+    ) return undefined;
+    bindings.push({
+      childSessionKey: binding.childSessionKey,
+      parentSessionKey: binding.parentSessionKey,
+    });
+  }
+
+  const childSet = new Set(childSessionKeys);
+  const parentByChild = new Map<string, string>();
+  for (const binding of bindings) {
+    if (
+      !childSet.has(binding.childSessionKey) ||
+      binding.childSessionKey === binding.parentSessionKey ||
+      (binding.parentSessionKey !== rootSessionKey && !childSet.has(binding.parentSessionKey)) ||
+      parentByChild.has(binding.childSessionKey)
+    ) return undefined;
+    parentByChild.set(binding.childSessionKey, binding.parentSessionKey);
+  }
+  if (parentByChild.size !== childSet.size) return undefined;
+  for (const childSessionKey of childSet) {
+    const visited = new Set<string>();
+    let current = childSessionKey;
+    while (current !== rootSessionKey) {
+      if (visited.has(current)) return undefined;
+      visited.add(current);
+      const parent = parentByChild.get(current);
+      if (parent === undefined) return undefined;
+      current = parent;
+    }
+  }
+  return bindings.sort((left, right) =>
+    left.childSessionKey < right.childSessionKey
+      ? -1
+      : (left.childSessionKey > right.childSessionKey ? 1 : 0));
+}
+
+function parseRootTombstone(
+  value: unknown,
+): NonNullable<GuardedMarker["rootTombstone"]> | undefined {
+  if (
+    !isRecord(value) ||
+    Object.keys(value).sort().join(",") !== "endedAt,leaseEpoch" ||
+    !Number.isSafeInteger(value.leaseEpoch) ||
+    (value.leaseEpoch as number) <= 0 ||
+    typeof value.endedAt !== "string" ||
+    !isCanonicalTimestamp(value.endedAt)
+  ) return undefined;
+  return { leaseEpoch: value.leaseEpoch as number, endedAt: value.endedAt };
+}
+
+function parseLifecycleQueue(value: unknown): LifecycleIntent[] | undefined {
+  if (!Array.isArray(value) || value.length === 0 || value.length > MAX_LIFECYCLE_QUEUE_ITEMS) {
+    return undefined;
+  }
+  const queue: LifecycleIntent[] = [];
+  for (let index = 0; index < value.length; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, index);
+    if (descriptor === undefined || !("value" in descriptor)) return undefined;
+    const intent = parseLifecycleIntent(descriptor.value);
+    if (intent === undefined) return undefined;
+    queue.push(intent);
+  }
+  return queue;
+}
+
+function validLifecycleQueue(
+  queue: readonly LifecycleIntent[],
+  leaseId: unknown,
+  rootSessionKey: unknown,
+  childSessionKeys: readonly string[],
+): boolean {
+  if (typeof leaseId !== "string" || typeof rootSessionKey !== "string") return false;
+  const known = new Set([rootSessionKey, ...childSessionKeys]);
+  for (let index = 0; index < queue.length; index += 1) {
+    const intent = queue[index];
+    if (
+      intent.evidenceRequest !== undefined &&
+      !lifecycleProofMatchesIntent(leaseId, intent, intent.evidenceRequest)
+    ) return false;
+    if (intent.kind === "bind_child") {
+      if (!known.has(intent.parentSessionKey) || known.has(intent.childSessionKey)) return false;
+      known.add(intent.childSessionKey);
+      continue;
+    }
+    if (!known.has(intent.sessionKey)) return false;
+    if (intent.sessionKey === rootSessionKey && index !== queue.length - 1) return false;
+    known.delete(intent.sessionKey);
+  }
+  return true;
 }
 
 function parseLifecycleIntent(value: unknown): LifecycleIntent | undefined {
   if (!isRecord(value) || typeof value.kind !== "string") return undefined;
+  const evidenceRequest = value.evidenceRequest === undefined
+    ? undefined
+    : parseEvidenceProof(value.evidenceRequest);
+  if (value.evidenceRequest !== undefined && evidenceRequest === undefined) return undefined;
   if (
     value.kind === "bind_child" &&
-    Object.keys(value).sort().join(",") === "childSessionKey,kind,parentSessionKey" &&
+    (Object.keys(value).sort().join(",") === "childSessionKey,kind,parentSessionKey" ||
+      Object.keys(value).sort().join(",") === "childSessionKey,evidenceRequest,kind,parentSessionKey") &&
     safeSessionKey(value.parentSessionKey) &&
     safeSessionKey(value.childSessionKey)
   ) {
@@ -1252,16 +2010,80 @@ function parseLifecycleIntent(value: unknown): LifecycleIntent | undefined {
       kind: "bind_child",
       parentSessionKey: value.parentSessionKey,
       childSessionKey: value.childSessionKey,
+      ...(evidenceRequest === undefined ? {} : { evidenceRequest }),
     };
   }
   if (
     value.kind === "end_session" &&
-    Object.keys(value).sort().join(",") === "kind,sessionKey" &&
+    (Object.keys(value).sort().join(",") === "kind,sessionKey" ||
+      Object.keys(value).sort().join(",") === "evidenceRequest,kind,sessionKey") &&
     safeSessionKey(value.sessionKey)
   ) {
-    return { kind: "end_session", sessionKey: value.sessionKey };
+    return {
+      kind: "end_session",
+      sessionKey: value.sessionKey,
+      ...(evidenceRequest === undefined ? {} : { evidenceRequest }),
+    };
   }
   return undefined;
+}
+
+function parseEvidenceProof(value: unknown): NativeGuardEvidenceProof | undefined {
+  if (!isRecord(value) || Object.keys(value).sort().join(",") !== [
+    "bodyDigest",
+    "issuedAt",
+    "keyId",
+    "leaseEpoch",
+    "leaseId",
+    "method",
+    "path",
+    "proofId",
+    "schemaVersion",
+    "signature",
+    "signatureContext",
+  ].join(",")) return undefined;
+  if (
+    value.schemaVersion !== "native-guard-1" ||
+    value.signatureContext !== "native_guard.evidence_request.v1" ||
+    !safeId(value.proofId) ||
+    !safeId(value.leaseId) ||
+    !Number.isSafeInteger(value.leaseEpoch) ||
+    (value.leaseEpoch as number) <= 0 ||
+    value.method !== "POST" ||
+    typeof value.path !== "string" ||
+    typeof value.bodyDigest !== "string" ||
+    !DIGEST.test(value.bodyDigest) ||
+    typeof value.issuedAt !== "string" ||
+    !isCanonicalTimestamp(value.issuedAt) ||
+    !safeId(value.keyId) ||
+    typeof value.signature !== "string" ||
+    value.signature.length === 0 ||
+    value.signature.length > 128
+  ) return undefined;
+  return value as NativeGuardEvidenceProof;
+}
+
+function lifecycleProofMatchesIntent(
+  leaseId: string,
+  intent: LifecycleIntent,
+  proof: NativeGuardEvidenceProof,
+): boolean {
+  const path = intent.kind === "bind_child"
+    ? "/api/v1/openclaw/native-guard/lifecycle/bind-child"
+    : "/api/v1/openclaw/native-guard/lifecycle/end-session";
+  const body = intent.kind === "bind_child"
+    ? {
+        leaseId,
+        leaseEpoch: proof.leaseEpoch,
+        parentSessionKey: intent.parentSessionKey,
+        childSessionKey: intent.childSessionKey,
+      }
+    : {
+        leaseId,
+        leaseEpoch: proof.leaseEpoch,
+        sessionKey: intent.sessionKey,
+      };
+  return proof.leaseId === leaseId && proof.path === path && proof.bodyDigest === digestJson(body);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

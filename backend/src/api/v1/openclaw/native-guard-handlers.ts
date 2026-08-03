@@ -1,9 +1,12 @@
+import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type {
+  NativeGuardEvidenceProof,
   NativeGuardEvent,
   NativeGuardStatus,
   NativeToolDecisionRequest,
 } from "@agent-guard/contracts";
+import { digestJson } from "@agent-guard/native-guard-protocol";
 import type { AgentConnectionConfig } from "../../types";
 import {
   createNativeGuardCoordinator,
@@ -46,12 +49,23 @@ export type NativeGuardRouteDependencies = {
   allowedOrigins: readonly string[];
   coordinator: Pick<
     NativeGuardCoordinator,
-    "activate" | "renew" | "revoke" | "status" | "isLeaseUsable" | "getLastStatus"
+    | "activate"
+    | "renew"
+    | "revoke"
+    | "status"
+    | "isLeaseUsable"
+    | "isLeaseEvidenceUsable"
+    | "markLeaseRootEnded"
+    | "getLastStatus"
   >;
   leaseService: Pick<
     NativeGuardLeaseService,
     | "authenticate"
     | "authenticateEvidence"
+    | "verifyEvidenceRequest"
+    | "releaseEvidenceRequest"
+    | "signEvidenceAcknowledgement"
+    | "recoverEvidenceAcknowledgement"
     | "authorizeEvidence"
     | "resolveBySession"
     | "bindChildWithEvidence"
@@ -258,6 +272,20 @@ function createLazyNativeGuardCoordinator(
         return false;
       }
     },
+    isLeaseEvidenceUsable(leaseId) {
+      try {
+        return current?.isLeaseEvidenceUsable(leaseId) === true;
+      } catch {
+        return false;
+      }
+    },
+    markLeaseRootEnded(leaseId) {
+      try {
+        return current?.markLeaseRootEnded(leaseId) === true;
+      } catch {
+        return false;
+      }
+    },
     isLeaseRevoking(leaseId) {
       try {
         return current?.isLeaseRevoking(leaseId) === true;
@@ -384,12 +412,14 @@ export class NativeGuardLeaseNotUsableError extends Error {
 }
 
 export function createLeaseUsabilityEventAppender(
-  coordinator: Pick<NativeGuardCoordinator, "isLeaseUsable">,
+  coordinator: Pick<NativeGuardCoordinator, "isLeaseEvidenceUsable">,
   eventStore: Pick<NativeGuardEventStore, "append">,
 ): Pick<NativeGuardEventStore, "append"> {
   return {
     async append(event, record) {
-      assertNativeGuardLeaseUsable(coordinator, event.leaseId);
+      if (!coordinator.isLeaseEvidenceUsable(event.leaseId)) {
+        throw new NativeGuardLeaseNotUsableError();
+      }
       return eventStore.append(event, record);
     },
   };
@@ -587,25 +617,65 @@ export async function openClawNativeGuardRoutes(
   }, async (request, reply) => {
     const credential = leaseBearers.get(request);
     const body = request.body as Parameters<NativeGuardLeaseService["bindChildWithEvidence"]>[0];
-    if (!credential || !dependencies.leaseService.authenticateEvidence(body.leaseId, credential)) {
+    const proof = parseEvidenceProofHeader(request.headers["x-agent-guard-evidence-proof"]);
+    const bodyDigest = digestEvidenceBody(body);
+    const cached = credential && proof && bodyDigest
+      ? dependencies.leaseService.recoverEvidenceAcknowledgement(
+          proof,
+          `${BASE_PATH}/lifecycle/bind-child`,
+          bodyDigest,
+          credential,
+        )
+      : undefined;
+    if (cached !== undefined) return success(cached);
+    const verified = credential && proof && bodyDigest
+      ? dependencies.leaseService.verifyEvidenceRequest(
+          body.leaseId,
+          credential,
+          proof,
+          `${BASE_PATH}/lifecycle/bind-child`,
+          bodyDigest,
+        )
+      : undefined;
+    if (!credential || !proof || !verified) {
       return reply.code(401).send(failure(
         "NATIVE_GUARD_UNAUTHORIZED",
         "Native guard authentication failed.",
       ));
     }
-    if (!dependencies.coordinator.isLeaseUsable(body.leaseId)) {
+    if (!dependencies.coordinator.isLeaseEvidenceUsable(body.leaseId)) {
+      dependencies.leaseService.releaseEvidenceRequest(verified);
       return reply.code(409).send(failure(
         "NATIVE_GUARD_LEASE_NOT_USABLE",
         "Native guard lease is not active.",
       ));
     }
     if (!dependencies.leaseService.bindChildWithEvidence(body, credential)) {
+      dependencies.leaseService.releaseEvidenceRequest(verified);
       return reply.code(409).send(failure(
         "NATIVE_GUARD_LIFECYCLE_CONFLICT",
         "Native guard lifecycle binding does not match the active lease.",
       ));
     }
-    return success({ bound: true });
+    try {
+      return success(dependencies.leaseService.signEvidenceAcknowledgement(body.leaseId, {
+        schemaVersion: "native-guard-1",
+        signatureContext: "native_guard.evidence_ack.v1",
+        ackId: `ack.${randomUUID()}`,
+        ackType: "child_bound",
+        proofId: verified.proofId,
+        leaseId: body.leaseId,
+        leaseEpoch: verified.leaseEpoch,
+        bodyDigest: verified.bodyDigest,
+        acknowledgedAt: new Date().toISOString(),
+      }));
+    } catch {
+      dependencies.leaseService.releaseEvidenceRequest(verified);
+      return reply.code(503).send(failure(
+        "NATIVE_GUARD_LIFECYCLE_CONFLICT",
+        "Native guard lifecycle acknowledgement could not be signed.",
+      ));
+    }
   });
 
   app.post(`${BASE_PATH}/lifecycle/end-session`, {
@@ -613,36 +683,81 @@ export async function openClawNativeGuardRoutes(
     schema: { body: LIFECYCLE_END_SCHEMA },
     onRequest: async (request, reply) => {
       const credential = parseLeaseBearer(request.headers.authorization);
-      if (!credential) {
-        return reply.code(401).send(failure(
-          "NATIVE_GUARD_UNAUTHORIZED",
-          "Native guard authentication failed.",
-        ));
-      }
-      leaseBearers.set(request, credential);
+      if (credential) leaseBearers.set(request, credential);
     },
   }, async (request, reply) => {
     const credential = leaseBearers.get(request);
     const body = request.body as Parameters<NativeGuardLeaseService["endSessionWithEvidence"]>[0];
-    if (!credential || !dependencies.leaseService.authenticateEvidence(body.leaseId, credential)) {
+    const proof = parseEvidenceProofHeader(request.headers["x-agent-guard-evidence-proof"]);
+    const bodyDigest = digestEvidenceBody(body);
+    const cached = proof && bodyDigest
+      ? dependencies.leaseService.recoverEvidenceAcknowledgement(
+          proof,
+          `${BASE_PATH}/lifecycle/end-session`,
+          bodyDigest,
+          credential,
+        )
+      : undefined;
+    if (cached !== undefined) return success(cached);
+    const verified = credential && proof && bodyDigest
+      ? dependencies.leaseService.verifyEvidenceRequest(
+          body.leaseId,
+          credential,
+          proof,
+          `${BASE_PATH}/lifecycle/end-session`,
+          bodyDigest,
+        )
+      : undefined;
+    if (!credential || !proof || !verified) {
       return reply.code(401).send(failure(
         "NATIVE_GUARD_UNAUTHORIZED",
         "Native guard authentication failed.",
       ));
     }
-    if (!dependencies.coordinator.isLeaseUsable(body.leaseId)) {
+    if (!dependencies.coordinator.isLeaseEvidenceUsable(body.leaseId)) {
+      dependencies.leaseService.releaseEvidenceRequest(verified);
       return reply.code(409).send(failure(
         "NATIVE_GUARD_LEASE_NOT_USABLE",
         "Native guard lease is not active.",
       ));
     }
+    const evidenceLease = dependencies.leaseService.authenticateEvidence(body.leaseId, credential);
     if (!dependencies.leaseService.endSessionWithEvidence(body, credential)) {
+      dependencies.leaseService.releaseEvidenceRequest(verified);
       return reply.code(409).send(failure(
         "NATIVE_GUARD_LIFECYCLE_CONFLICT",
         "Native guard lifecycle end does not match the active lease.",
       ));
     }
-    return success({ ended: true });
+    if (
+      evidenceLease?.rootSessionKey === body.sessionKey &&
+      !dependencies.coordinator.markLeaseRootEnded(body.leaseId)
+    ) {
+      dependencies.leaseService.releaseEvidenceRequest(verified);
+      return reply.code(409).send(failure(
+        "NATIVE_GUARD_LEASE_NOT_USABLE",
+        "Native guard lease is not active.",
+      ));
+    }
+    try {
+      return success(dependencies.leaseService.signEvidenceAcknowledgement(body.leaseId, {
+        schemaVersion: "native-guard-1",
+        signatureContext: "native_guard.evidence_ack.v1",
+        ackId: `ack.${randomUUID()}`,
+        ackType: "session_ended",
+        proofId: verified.proofId,
+        leaseId: body.leaseId,
+        leaseEpoch: verified.leaseEpoch,
+        bodyDigest: verified.bodyDigest,
+        acknowledgedAt: new Date().toISOString(),
+      }));
+    } catch {
+      dependencies.leaseService.releaseEvidenceRequest(verified);
+      return reply.code(503).send(failure(
+        "NATIVE_GUARD_LIFECYCLE_CONFLICT",
+        "Native guard lifecycle acknowledgement could not be signed.",
+      ));
+    }
   });
 
   app.post(`${BASE_PATH}/events/batch`, {
@@ -687,6 +802,24 @@ export async function openClawNativeGuardRoutes(
       ));
     }
     const { events } = request.body as { events: NativeGuardEvent[] };
+    const proof = parseEvidenceProofHeader(request.headers["x-agent-guard-evidence-proof"]);
+    const bodyDigest = digestEvidenceBody({ events });
+    const leaseId = events[0]?.leaseId;
+    const verified = credential && proof && bodyDigest && leaseId
+      ? dependencies.leaseService.verifyEvidenceRequest(
+          leaseId,
+          credential,
+          proof,
+          `${BASE_PATH}/events/batch`,
+          bodyDigest,
+        )
+      : undefined;
+    if (!verified || !proof) {
+      return reply.code(401).send(failure(
+        "NATIVE_GUARD_UNAUTHORIZED",
+        "Native guard authentication failed.",
+      ));
+    }
     for (const event of events) {
       const safeEvent = scrubExactSecret(event, credential) as NativeGuardEvent;
       if (!eventEvidenceAuthenticates(
@@ -699,7 +832,7 @@ export async function openClawNativeGuardRoutes(
           "Native guard authentication failed.",
         ));
       }
-      if (!dependencies.coordinator.isLeaseUsable(event.leaseId)) {
+      if (!dependencies.coordinator.isLeaseEvidenceUsable(event.leaseId)) {
         return reply.code(409).send(failure(
           "NATIVE_GUARD_LEASE_NOT_USABLE",
           "Native guard lease is not active.",
@@ -708,6 +841,7 @@ export async function openClawNativeGuardRoutes(
       try {
         await dependencies.eventStore.append(safeEvent);
       } catch {
+        dependencies.leaseService.releaseEvidenceRequest(verified);
         return reply.code(503).send(failure(
           "NATIVE_GUARD_EVENT_BATCH_FAILED",
           "Native guard events could not be persisted.",
@@ -720,20 +854,75 @@ export async function openClawNativeGuardRoutes(
         event,
         credential,
       )) {
+        dependencies.leaseService.releaseEvidenceRequest(verified);
         return reply.code(401).send(failure(
           "NATIVE_GUARD_UNAUTHORIZED",
           "Native guard authentication failed.",
         ));
       }
-      if (!dependencies.coordinator.isLeaseUsable(event.leaseId)) {
+      if (!dependencies.coordinator.isLeaseEvidenceUsable(event.leaseId)) {
+        dependencies.leaseService.releaseEvidenceRequest(verified);
         return reply.code(409).send(failure(
           "NATIVE_GUARD_LEASE_NOT_USABLE",
           "Native guard lease is not active.",
         ));
       }
     }
-    return success({ accepted: events.length });
+    const currentEvidence = dependencies.leaseService.authenticateEvidence(leaseId, credential);
+    if (
+      currentEvidence === undefined ||
+      currentEvidence.leaseEpoch !== verified.leaseEpoch ||
+      currentEvidence.evidenceSigningKeyId !== proof.keyId
+    ) {
+      dependencies.leaseService.releaseEvidenceRequest(verified);
+      return reply.code(401).send(failure(
+        "NATIVE_GUARD_UNAUTHORIZED",
+        "Native guard authentication failed.",
+      ));
+    }
+    try {
+      return success(dependencies.leaseService.signEvidenceAcknowledgement(leaseId, {
+        schemaVersion: "native-guard-1",
+        signatureContext: "native_guard.evidence_ack.v1",
+        ackId: `ack.${randomUUID()}`,
+        ackType: "events_accepted",
+        proofId: verified.proofId,
+        leaseId,
+        leaseEpoch: verified.leaseEpoch,
+        bodyDigest: verified.bodyDigest,
+        accepted: events.length,
+        eventIdsDigest: digestJson(events.map(({ eventId }) => eventId)),
+        acknowledgedAt: new Date().toISOString(),
+      }));
+    } catch {
+      dependencies.leaseService.releaseEvidenceRequest(verified);
+      return reply.code(503).send(failure(
+        "NATIVE_GUARD_EVENT_BATCH_FAILED",
+        "Native guard events could not be acknowledged.",
+      ));
+    }
   });
+}
+
+function parseEvidenceProofHeader(value: string | string[] | undefined): NativeGuardEvidenceProof | undefined {
+  if (typeof value !== "string" || value.length === 0 || value.length > 4_096) return undefined;
+  try {
+    const bytes = Buffer.from(value, "base64url");
+    if (bytes.length === 0 || bytes.length > 3_072 || bytes.toString("base64url") !== value) {
+      return undefined;
+    }
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as NativeGuardEvidenceProof;
+  } catch {
+    return undefined;
+  }
+}
+
+function digestEvidenceBody(value: unknown): string | undefined {
+  try {
+    return digestJson(value);
+  } catch {
+    return undefined;
+  }
 }
 
 function eventEvidenceAuthenticates(

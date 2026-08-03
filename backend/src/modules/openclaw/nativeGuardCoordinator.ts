@@ -52,6 +52,8 @@ export type NativeGuardCoordinator = {
   revoke(leaseId: string): Promise<NativeGuardStatus>;
   status(): Promise<NativeGuardStatus>;
   isLeaseUsable(leaseId: string): boolean;
+  isLeaseEvidenceUsable(leaseId: string): boolean;
+  markLeaseRootEnded(leaseId: string): boolean;
   isLeaseRevoking(leaseId: string): boolean;
   getLastStatus(): NativeGuardStatus;
 };
@@ -76,7 +78,7 @@ type ManagedLease = {
   expiresAt: string;
   gatewayUrl: string;
   capability: NativeGuardCapability;
-  phase: "activating" | "active" | "renewing" | "revoking";
+  phase: "activating" | "active" | "renewing" | "root_ended" | "revoking";
 };
 
 export function createNativeGuardCoordinator(
@@ -397,6 +399,19 @@ export function createNativeGuardCoordinator(
           );
         }
         managed.capability = preRenewCapability;
+        const preRenewPluginStatus = await options.controlClient.status(managed.gatewayUrl);
+        if (!ownsManagedPhase(leases, managed, "renewing")) {
+          throw coordinatorError(
+            "NATIVE_GUARD_RENEW_FAILED",
+            "Native guard renewal lost lease ownership.",
+          );
+        }
+        if (!pluginConfirmsManagedLease(preRenewPluginStatus, managed)) {
+          throw coordinatorError(
+            "NATIVE_GUARD_RENEW_FAILED",
+            "OpenClaw native guard lifecycle work must finish before renewal.",
+          );
+        }
         activation = options.leaseService.renew(leaseId, ttlMs);
         if (!ownsManagedPhase(leases, managed, "renewing")) {
           throw coordinatorError(
@@ -632,6 +647,28 @@ export function createNativeGuardCoordinator(
 
     isLeaseUsable(leaseId: string): boolean {
       return leases.get(leaseId)?.phase === "active";
+    },
+
+    isLeaseEvidenceUsable(leaseId: string): boolean {
+      const phase = leases.get(leaseId)?.phase;
+      return phase === "activating" || phase === "active" ||
+        phase === "renewing" || phase === "root_ended";
+    },
+
+    markLeaseRootEnded(leaseId: string): boolean {
+      const managed = leases.get(leaseId);
+      if (managed === undefined || managed.phase === "revoking") return false;
+      managed.phase = "root_ended";
+      setLastStatus({
+        coverage: "recovery",
+        finalizerAssurance: managed.capability.finalizerAssurance,
+        openclawVersion: managed.capability.openclawVersion,
+        pluginVersion: lastStatus.pluginVersion,
+        activeLeaseCount: 0,
+        conflictingPluginIds: [...managed.capability.conflictingPluginIds],
+        reasonCode: "NATIVE_GUARD_ROOT_ENDED",
+      });
+      return true;
     },
 
     isLeaseRevoking(leaseId: string): boolean {

@@ -1,17 +1,23 @@
-import { randomUUID } from "node:crypto";
+import { createPrivateKey, createPublicKey, randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { types as utilTypes } from "node:util";
 import type {
   NativeGuardAction,
+  NativeGuardEvidenceProof,
   NativeGuardEvent,
   NativeGuardLeaseActivation,
   NativeGuardStatus,
   NativeToolDecisionRequest,
   NativeToolDecisionResponse,
 } from "@agent-guard/contracts";
-import { canonicalJson } from "@agent-guard/native-guard-protocol";
+import {
+  canonicalJson,
+  digestJson,
+  signNativeGuardPayload,
+  verifyNativeGuardPayload,
+} from "@agent-guard/native-guard-protocol";
 import type {
   AfterToolEvent,
   BeforeResult,
@@ -38,9 +44,11 @@ import {
   LeaseRegistry,
   type LeaseLookup,
   type MarkerStore,
+  type RootEndedEvidenceLookup,
 } from "./leaseRegistry";
 import { inspectBoundedParams } from "./jsonBounds";
 import {
+  createLifecycleEvidenceProof,
   createLifecycleClient,
   type LifecycleClient,
 } from "./lifecycleClient";
@@ -127,6 +135,7 @@ export class AgentGuardRuntime {
   readonly #monotonicNow: NonNullable<AgentGuardRuntimeOptions["monotonicNow"]>;
   readonly #maxOutcomeCorrelations: number;
   readonly #pendingOperations = new Set<Promise<unknown>>();
+  readonly #lifecycleWorkers = new Map<string, Promise<void>>();
   readonly #outcomeCorrelations = new Map<string, OutcomeCorrelation>();
   #eventSpool: EventSpool | undefined;
   #abortController = new AbortController();
@@ -138,9 +147,9 @@ export class AgentGuardRuntime {
   #state: "idle" | "starting" | "running" | "stopping" | "stopped" = "idle";
 
   constructor(options: AgentGuardRuntimeOptions = {}) {
-    const markerStore = options.markerStore ?? new FileMarkerStore(
-      options.markerDir ?? join(homedir(), ".agent-guard", "native-guard-markers"),
-    );
+    const markerDirectory = options.markerDir ??
+      join(homedir(), ".agent-guard", "native-guard-markers");
+    const markerStore = options.markerStore ?? new FileMarkerStore(markerDirectory);
     this.#markerStore = new LifecycleMarkerStore(markerStore);
     this.#sessionResolver = options.sessionResolver;
     this.#now = options.now ?? (() => new Date());
@@ -174,16 +183,14 @@ export class AgentGuardRuntime {
       "outcome correlation limit",
     );
     this.#emitEvent = options.emitEvent;
-    this.#spoolDir = options.spoolDir ?? join(
-      homedir(),
-      ".agent-guard",
-      "native-guard-event-spool",
-    );
+    this.#spoolDir = options.spoolDir ?? join(markerDirectory, "event-spool");
     this.#createEventSpool = options.createEventSpool ?? defaultCreateEventSpool;
     this.#fetch = options.fetch ?? globalThis.fetch;
     this.#lifecycleClient = options.lifecycleClient ?? createLifecycleClient({
       fetch: options.fetch,
       timeoutMs: decisionTimeoutMs,
+      now: this.#now,
+      createId: () => this.#createId("evidence_proof"),
     });
     this.#createId = options.createId ?? ((prefix) => `${prefix}.${randomUUID()}`);
     this.#approvalLeaseRecheckAttested = options.approvalLeaseRecheckAttested === true;
@@ -209,10 +216,10 @@ export class AgentGuardRuntime {
       throw new Error("Native guard runtime has stopped with pending operations");
     }
     if (this.#state === "stopped") {
+      await this.#stopEventSpool(this.#eventSpool);
       this.#abortController = new AbortController();
       this.#markerStore.allowWrites();
       this.#stopPromise = undefined;
-      this.#eventSpool = undefined;
     }
     if (this.#registryStarted) {
       this.#state = "running";
@@ -389,6 +396,7 @@ export class AgentGuardRuntime {
     if (identity === undefined) return contextBlock();
     if (lookup.state === "recovery") return recoveryDecision(event, identity);
     if (lookup.state === "lifecycle_pending") return lifecyclePendingBlock();
+    if (lookup.state === "root_ended") return rootEndedBlock();
     const unlinkHostAbort = linkAbortSignal(context.abortSignal, operationController);
     try {
       if (context.abortSignal?.aborted) return cancelledBlock();
@@ -781,12 +789,7 @@ export class AgentGuardRuntime {
       await this.#track(Promise.resolve().then(() => this.#emitEvent?.(event)));
       return;
     }
-    const spool = this.#eventSpool ??= this.#createEventSpool({
-      directory: this.#spoolDir,
-      upload: (identity, events, signal) => this.#uploadEvents(identity, events, signal),
-      scheduleTimeout: this.#scheduleTimeout,
-      cancelTimeout: this.#cancelTimeout,
-    });
+    const spool = this.#ensureEventSpool();
     await this.#track(spool.enqueue(event));
   }
 
@@ -795,13 +798,20 @@ export class AgentGuardRuntime {
     events: readonly NativeGuardEvent[],
     signal: AbortSignal,
   ): Promise<void> {
-    const lookup = await this.#track(this.registry.lookupActiveLease(identity.leaseId));
+    const lookup = await this.#track(this.registry.lookupEvidenceLease(identity.leaseId));
     if (!sameActiveUploadLease(lookup, identity)) {
       this.#eventSpool?.cancelLease(identity.leaseId, identity.leaseEpoch);
       throw new Error("Native guard event lease is no longer active");
     }
-    await uploadEventBatch(this.#fetch, lookup, events, signal);
-    const current = await this.#track(this.registry.lookupActiveLease(identity.leaseId));
+    await uploadEventBatch(
+      this.#fetch,
+      lookup,
+      events,
+      signal,
+      this.#now,
+      () => this.#createId("evidence_proof"),
+    );
+    const current = await this.#track(this.registry.lookupEvidenceLease(identity.leaseId));
     if (!sameActiveUploadLease(current, identity)) {
       this.#eventSpool?.cancelLease(identity.leaseId, identity.leaseEpoch);
       throw new Error("Native guard event lease changed during upload");
@@ -811,10 +821,37 @@ export class AgentGuardRuntime {
   async activate(input: NativeGuardLeaseActivation): Promise<NativeGuardStatus> {
     this.#assertRegistrationAttested();
     this.#assertRunning();
-    await this.#track(this.registry.activate(input));
+    const spoolWasAbsent = this.#eventSpool === undefined;
+    const spool = this.#emitEvent === undefined ? this.#ensureEventSpool() : undefined;
+    try {
+      if (spool !== undefined) await this.#track(spool.acquire());
+      await this.#track(this.registry.activate(input));
+    } catch (error) {
+      if (spoolWasAbsent && spool !== undefined) {
+        let stopped = false;
+        try {
+          await spool.stop();
+          stopped = true;
+        } catch {
+          // Keep the spool reference when release is incomplete so a later
+          // runtime stop can retry the private owner quarantine.
+        }
+        if (stopped && this.#eventSpool === spool) this.#eventSpool = undefined;
+      }
+      throw error;
+    }
     const active = await this.#track(this.registry.lookupActiveLease(input.leaseId));
     if (active !== undefined) await this.#resumeLifecycle(active);
     return this.status();
+  }
+
+  #ensureEventSpool(): EventSpool {
+    return this.#eventSpool ??= this.#createEventSpool({
+      directory: this.#spoolDir,
+      upload: (identity, events, signal) => this.#uploadEvents(identity, events, signal),
+      scheduleTimeout: this.#scheduleTimeout,
+      cancelTimeout: this.#cancelTimeout,
+    });
   }
 
   async renew(input: NativeGuardLeaseActivation): Promise<NativeGuardStatus> {
@@ -847,82 +884,121 @@ export class AgentGuardRuntime {
       this.registry.prepareChildBinding(leaseId, parentSessionKey, childSessionKey),
     );
     if (!prepared) return false;
-    const lease = await this.#track(this.registry.lookupActiveLease(leaseId));
-    if (lease === undefined) throw new Error("Native guard lifecycle lease is unavailable");
-    await this.#track(this.#lifecycleClient.bindChild(lease, {
-      leaseId,
-      leaseEpoch: lease.leaseEpoch,
-      parentSessionKey,
-      childSessionKey,
-    }, this.abortSignal));
-    if (!(await this.#activeLeaseIsCurrent(lease))) {
-      throw new Error("Native guard lifecycle lease changed during binding");
-    }
-    return this.#track(
-      this.registry.completeChildBinding(leaseId, parentSessionKey, childSessionKey),
-    );
+    await this.#drainLifecycle(leaseId);
+    return true;
   }
 
   async endSession(sessionKey: string): Promise<boolean> {
     this.#assertRunning();
     const current = await this.lookup(sessionKey);
     if (current.state === "off") return false;
+    if (current.state === "root_ended") return false;
     if (current.state === "recovery") return this.#track(this.registry.endSession(sessionKey));
     const lease = await this.#track(this.registry.lookupActiveLease(current.leaseId));
     if (lease === undefined) throw new Error("Native guard lifecycle lease is unavailable");
     const intent = await this.#track(this.registry.prepareSessionEnd(sessionKey));
     if (intent === undefined || intent.kind !== "end_session") return false;
-    await this.#track(this.#lifecycleClient.endSession(lease, {
-      leaseId: lease.leaseId,
-      leaseEpoch: lease.leaseEpoch,
-      sessionKey,
-    }, this.abortSignal));
-    const ended = await this.#track(this.registry.completeSessionEnd(lease.leaseId, sessionKey));
-    if (ended && lease.rootSessionKey === sessionKey) {
-      this.#eventSpool?.cancelLease(lease.leaseId);
-    }
-    return ended;
+    await this.#drainLifecycle(lease.leaseId);
+    return true;
   }
 
   async #resumeLifecycle(lease: ActiveLeaseLookup): Promise<void> {
-    const intent = await this.#track(this.registry.pendingLifecycle(lease.leaseId));
-    if (intent === undefined) return;
-    if (intent.kind === "bind_child") {
-      await this.#track(this.#lifecycleClient.bindChild(lease, {
-        leaseId: lease.leaseId,
-        leaseEpoch: lease.leaseEpoch,
-        parentSessionKey: intent.parentSessionKey,
-        childSessionKey: intent.childSessionKey,
-      }, this.abortSignal));
-      if (!(await this.#activeLeaseIsCurrent(lease))) {
-        throw new Error("Native guard lifecycle lease changed during binding");
+    if ((await this.#track(this.registry.pendingLifecycle(lease.leaseId))) === undefined) return;
+    await this.#drainLifecycle(lease.leaseId);
+  }
+
+  async #drainLifecycle(leaseId: string): Promise<void> {
+    while (true) {
+      let worker = this.#lifecycleWorkers.get(leaseId);
+      if (worker === undefined) {
+        worker = this.#runLifecycleWorker(leaseId);
+        this.#lifecycleWorkers.set(leaseId, worker);
+        void worker.finally(() => {
+          if (this.#lifecycleWorkers.get(leaseId) === worker) {
+            this.#lifecycleWorkers.delete(leaseId);
+          }
+        }).catch(() => undefined);
       }
-      if (!(await this.#track(this.registry.completeChildBinding(
-        lease.leaseId,
-        intent.parentSessionKey,
-        intent.childSessionKey,
-      )))) throw new Error("Native guard lifecycle binding commit failed");
-      return;
+      await this.#track(worker);
+      if ((await this.#track(this.registry.pendingLifecycle(leaseId))) === undefined) return;
     }
-    await this.#track(this.#lifecycleClient.endSession(lease, {
-      leaseId: lease.leaseId,
-      leaseEpoch: lease.leaseEpoch,
-      sessionKey: intent.sessionKey,
-    }, this.abortSignal));
-    if (!(await this.#track(this.registry.completeSessionEnd(
-      lease.leaseId,
-      intent.sessionKey,
-    )))) throw new Error("Native guard lifecycle end commit failed");
+  }
+
+  async #runLifecycleWorker(leaseId: string): Promise<void> {
+    while (!this.abortSignal.aborted) {
+      const intent = await this.#track(this.registry.pendingLifecycle(leaseId));
+      if (intent === undefined) return;
+      const lease = await this.#track(this.registry.lookupActiveLease(leaseId));
+      if (lease === undefined) throw new Error("Native guard lifecycle lease is unavailable");
+      let durableIntent = intent;
+      if (durableIntent.evidenceRequest === undefined) {
+        const path = durableIntent.kind === "bind_child"
+          ? "/api/v1/openclaw/native-guard/lifecycle/bind-child"
+          : "/api/v1/openclaw/native-guard/lifecycle/end-session";
+        const body = durableIntent.kind === "bind_child"
+          ? {
+              leaseId,
+              leaseEpoch: lease.leaseEpoch,
+              parentSessionKey: durableIntent.parentSessionKey,
+              childSessionKey: durableIntent.childSessionKey,
+            }
+          : {
+              leaseId,
+              leaseEpoch: lease.leaseEpoch,
+              sessionKey: durableIntent.sessionKey,
+            };
+        const proof = createLifecycleEvidenceProof(
+          lease,
+          path,
+          body,
+          this.#now(),
+          this.#createId("evidence_proof"),
+        );
+        durableIntent = await this.#track(this.registry.attachLifecycleEvidenceRequest(
+          leaseId,
+          durableIntent,
+          proof,
+        ));
+      }
+      if (durableIntent.kind === "bind_child") {
+        await this.#track(this.#lifecycleClient.bindChild(lease, {
+          leaseId,
+          leaseEpoch: lease.leaseEpoch,
+          parentSessionKey: durableIntent.parentSessionKey,
+          childSessionKey: durableIntent.childSessionKey,
+        }, this.abortSignal, durableIntent.evidenceRequest));
+        if (!(await this.#activeLeaseIsCurrent(lease))) {
+          throw new Error("Native guard lifecycle lease changed during binding");
+        }
+        if (!(await this.#track(this.registry.completeChildBinding(
+          leaseId,
+          durableIntent.parentSessionKey,
+          durableIntent.childSessionKey,
+        )))) throw new Error("Native guard lifecycle binding commit failed");
+        continue;
+      }
+      await this.#track(this.#lifecycleClient.endSession(lease, {
+        leaseId,
+        leaseEpoch: lease.leaseEpoch,
+        sessionKey: durableIntent.sessionKey,
+      }, this.abortSignal, durableIntent.evidenceRequest));
+      if (!(await this.#track(this.registry.completeSessionEnd(
+        leaseId,
+        durableIntent.sessionKey,
+      )))) throw new Error("Native guard lifecycle end commit failed");
+    }
+    throw new Error("Native guard lifecycle synchronization was aborted");
   }
 
   async stop(): Promise<void> {
     if (this.#state === "stopped") {
-      await this.#stopPromise;
+      if (this.#stopPromise !== undefined) await this.#stopPromise;
+      await this.#stopEventSpool(this.#eventSpool);
       return;
     }
     if (this.#state === "idle") {
       this.#abortController.abort();
-      await this.#eventSpool?.stop();
+      await this.#stopEventSpool(this.#eventSpool);
       this.#outcomeCorrelations.clear();
       this.#markerStore.preventWrites();
       this.#state = "stopped";
@@ -934,26 +1010,48 @@ export class AgentGuardRuntime {
     }
     this.#state = "stopping";
     this.#abortController.abort();
-    const spoolStop = this.#eventSpool?.stop();
     this.#outcomeCorrelations.clear();
-    this.#stopPromise = this.#finishStop(spoolStop);
-    await this.#stopPromise;
+    const stopping = this.#finishStop(this.#eventSpool);
+    this.#stopPromise = stopping;
+    try {
+      await stopping;
+    } finally {
+      if (this.#stopPromise === stopping) this.#stopPromise = undefined;
+    }
   }
 
-  async #finishStop(spoolStop: Promise<void> | undefined): Promise<void> {
-    if (spoolStop !== undefined) await spoolStop.catch(() => undefined);
+  async #finishStop(spool: EventSpool | undefined): Promise<void> {
     const pending = [...this.#pendingOperations];
+    let timer: unknown;
+    const flushed = pending.length === 0
+      ? Promise.resolve("flushed" as const)
+      : Promise.allSettled(pending).then(() => "flushed" as const);
+    const timedOut = new Promise<"timed-out">((resolve) => {
+      timer = this.#scheduleTimeout(() => resolve("timed-out"), 4_000);
+    });
+    let spoolFailed = false;
+    let spoolError: unknown;
+    try {
+      await this.#stopEventSpool(spool);
+    } catch (error) {
+      spoolFailed = true;
+      spoolError = error;
+    }
     if (pending.length > 0) {
-      let timer: unknown;
-      const flushed = Promise.allSettled(pending).then(() => "flushed" as const);
-      const timedOut = new Promise<"timed-out">((resolve) => {
-        timer = this.#scheduleTimeout(() => resolve("timed-out"), 4_000);
-      });
       const result = await Promise.race([flushed, timedOut]);
       if (result === "flushed" && timer !== undefined) this.#cancelTimeout(timer);
+    } else if (timer !== undefined) {
+      this.#cancelTimeout(timer);
     }
     this.#markerStore.preventWrites();
     this.#state = "stopped";
+    if (spoolFailed) throw spoolError;
+  }
+
+  async #stopEventSpool(spool: EventSpool | undefined): Promise<void> {
+    if (spool === undefined) return;
+    await spool.stop();
+    if (this.#eventSpool === spool) this.#eventSpool = undefined;
   }
 
   #track<T>(operation: Promise<T>): Promise<T> {
@@ -1076,6 +1174,7 @@ function guardedAdmission(
   if (identity === undefined) return contextBlock();
   if (lookup.state === "lifecycle_pending") return lifecyclePendingBlock();
   if (lookup.state === "recovery") return recoveryDecision(event, identity);
+  if (lookup.state === "root_ended") return rootEndedBlock();
 }
 
 function guardedIdentity(event: ToolEvent, context: ToolContext): GuardedIdentity | undefined {
@@ -1331,6 +1430,13 @@ function lifecyclePendingBlock(): BeforeResult {
   };
 }
 
+function rootEndedBlock(): BeforeResult {
+  return {
+    block: true,
+    blockReason: "[Agent Guard:NATIVE_GUARD_ROOT_ENDED] Native guard root session has ended.",
+  };
+}
+
 function contextBlock(): BeforeResult {
   return {
     block: true,
@@ -1490,19 +1596,21 @@ function failClosedBlock(): BeforeResult {
 }
 
 function sameActiveUploadLease(
-  lookup: ActiveLeaseLookup | undefined,
+  lookup: ActiveLeaseLookup | RootEndedEvidenceLookup | undefined,
   expected: EventUploadLease,
-): lookup is ActiveLeaseLookup {
-  return lookup?.state === "active" &&
+): lookup is ActiveLeaseLookup | RootEndedEvidenceLookup {
+  return (lookup?.state === "active" || lookup?.state === "root_ended") &&
     lookup.leaseId === expected.leaseId &&
     lookup.leaseEpoch >= expected.leaseEpoch;
 }
 
 async function uploadEventBatch(
   fetchImplementation: typeof globalThis.fetch | undefined,
-  lease: ActiveLeaseLookup,
+  lease: ActiveLeaseLookup | RootEndedEvidenceLookup,
   events: readonly NativeGuardEvent[],
   parentSignal: AbortSignal,
+  now: () => Date,
+  createId: () => string,
 ): Promise<void> {
   if (typeof fetchImplementation !== "function" || events.length === 0 || events.length > 100) {
     throw new Error("Native guard event upload is unavailable");
@@ -1511,10 +1619,14 @@ async function uploadEventBatch(
   url.pathname = EVENT_UPLOAD_PATH;
   url.search = "";
   url.hash = "";
-  const body = JSON.stringify({ events });
+  const payload = { events };
+  const body = canonicalJson(payload);
   if (Buffer.byteLength(body, "utf8") > 1024 * 1024) {
     throw new Error("Native guard event upload is oversized");
   }
+  const proof = createEventEvidenceProof(lease, payload, now(), createId());
+  const encodedProof = Buffer.from(JSON.stringify(proof), "utf8").toString("base64url");
+  if (encodedProof.length > 4_096) throw new Error("Native guard event upload is unavailable");
 
   const controller = new AbortController();
   const unlink = linkAbortSignal(parentSignal, controller);
@@ -1527,6 +1639,7 @@ async function uploadEventBatch(
         Accept: "application/json",
         Authorization: `Bearer ${lease.evidenceCredential}`,
         "Content-Type": "application/json; charset=utf-8",
+        "X-Agent-Guard-Evidence-Proof": encodedProof,
       },
       body,
       cache: "no-store",
@@ -1555,7 +1668,7 @@ async function uploadEventBatch(
       declaredLength,
     );
     const envelope = JSON.parse(responseBody) as unknown;
-    if (!validUploadEnvelope(envelope, events.length)) {
+    if (!validUploadEnvelope(envelope, events, lease, proof, now())) {
       throw new Error("Native guard event upload response is invalid");
     }
   } finally {
@@ -1602,23 +1715,110 @@ async function readBoundedEventResponse(
   }
 }
 
-function validUploadEnvelope(value: unknown, expectedAccepted: number): boolean {
+function createEventEvidenceProof(
+  lease: ActiveLeaseLookup | RootEndedEvidenceLookup,
+  payload: { events: readonly NativeGuardEvent[] },
+  now: Date,
+  proofId: string,
+): NativeGuardEvidenceProof {
   if (
-    typeof value !== "object" ||
-    value === null ||
-    Array.isArray(value) ||
-    utilTypes.isProxy(value) ||
-    Object.getPrototypeOf(value) !== Object.prototype
-  ) return false;
-  const ok = Object.getOwnPropertyDescriptor(value, "ok");
-  const data = Object.getOwnPropertyDescriptor(value, "data");
-  if (ok === undefined || !("value" in ok) || ok.value !== true ||
-    data === undefined || !("value" in data) ||
-    typeof data.value !== "object" || data.value === null || Array.isArray(data.value)) {
+    !(now instanceof Date) ||
+    !Number.isFinite(now.getTime()) ||
+    !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(proofId)
+  ) throw new Error("Native guard event upload is unavailable");
+  const unsigned = {
+    schemaVersion: "native-guard-1" as const,
+    signatureContext: "native_guard.evidence_request.v1" as const,
+    proofId,
+    leaseId: lease.leaseId,
+    leaseEpoch: lease.leaseEpoch,
+    method: "POST" as const,
+    path: EVENT_UPLOAD_PATH,
+    bodyDigest: digestJson(payload),
+    issuedAt: now.toISOString(),
+    keyId: lease.evidenceSigningKeyId,
+  };
+  return {
+    ...unsigned,
+    signature: signNativeGuardPayload(
+      unsigned,
+      createPrivateKey(lease.evidenceSigningPrivateKey),
+    ),
+  };
+}
+
+function validUploadEnvelope(
+  value: unknown,
+  events: readonly NativeGuardEvent[],
+  lease: ActiveLeaseLookup | RootEndedEvidenceLookup,
+  proof: NativeGuardEvidenceProof,
+  now: Date,
+): boolean {
+  if (!plainRuntimeRecord(value) || !exactRuntimeKeys(value, ["data", "ok", "requestId"])) {
     return false;
   }
-  const accepted = Object.getOwnPropertyDescriptor(data.value, "accepted");
-  return accepted !== undefined && "value" in accepted && accepted.value === expectedAccepted;
+  if (value.ok !== true || typeof value.requestId !== "string" || !plainRuntimeRecord(value.data)) {
+    return false;
+  }
+  const acknowledgement = value.data;
+  if (!exactRuntimeKeys(acknowledgement, [
+    "accepted",
+    "ackId",
+    "ackType",
+    "acknowledgedAt",
+    "bodyDigest",
+    "eventIdsDigest",
+    "leaseEpoch",
+    "leaseId",
+    "proofId",
+    "schemaVersion",
+    "signature",
+    "signatureContext",
+  ])) return false;
+  if (
+    acknowledgement.schemaVersion !== "native-guard-1" ||
+    acknowledgement.signatureContext !== "native_guard.evidence_ack.v1" ||
+    typeof acknowledgement.ackId !== "string" ||
+    !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(acknowledgement.ackId) ||
+    acknowledgement.ackType !== "events_accepted" ||
+    acknowledgement.proofId !== proof.proofId ||
+    acknowledgement.leaseId !== lease.leaseId ||
+    acknowledgement.leaseEpoch !== lease.leaseEpoch ||
+    acknowledgement.bodyDigest !== proof.bodyDigest ||
+    acknowledgement.accepted !== events.length ||
+    acknowledgement.eventIdsDigest !== digestJson(events.map(({ eventId }) => eventId)) ||
+    typeof acknowledgement.acknowledgedAt !== "string" ||
+    !canonicalRuntimeTimestamp(acknowledgement.acknowledgedAt) ||
+    !(now instanceof Date) ||
+    !Number.isFinite(now.getTime()) ||
+    Math.abs(now.getTime() - Date.parse(acknowledgement.acknowledgedAt)) > 30_000 ||
+    typeof acknowledgement.signature !== "string"
+  ) return false;
+  const { signature, ...unsigned } = acknowledgement;
+  try {
+    return verifyNativeGuardPayload(
+      unsigned,
+      signature,
+      createPublicKey(lease.decisionPublicKey),
+    );
+  } catch {
+    return false;
+  }
+}
+
+function plainRuntimeRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value) &&
+    !utilTypes.isProxy(value) && Object.getPrototypeOf(value) === Object.prototype;
+}
+
+function exactRuntimeKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
+  const keys = Object.keys(value);
+  return keys.length === expected.length && expected.every((key) => Object.hasOwn(value, key));
+}
+
+function canonicalRuntimeTimestamp(value: string): boolean {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && new Date(parsed).toISOString() === value;
 }
 
 function validEventResponseContentType(value: string | null): boolean {

@@ -150,6 +150,36 @@ test("fails closed and clears state when plugin renewal cannot confirm the new e
   assert.equal(fixture.revokeCalls.at(-1), leaseId);
 });
 
+test("refuses lifecycle-pending renewal before rotating backend evidence identity", async () => {
+  const fixture = coordinatorFixture();
+  await fixture.coordinator.activate(supervisionInput());
+  const leaseId = fixture.activationCalls[0].leaseId;
+  let backendRenewCalls = 0;
+  const renewBackend = fixture.leaseService.renew.bind(fixture.leaseService);
+  fixture.leaseService.renew = (...args) => {
+    backendRenewCalls += 1;
+    return renewBackend(...args);
+  };
+  fixture.pluginStatus = {
+    coverage: "recovery",
+    finalizerAssurance: "exclusive_before_hook",
+    openclawVersion: "2026.7.2",
+    activeLeaseCount: 0,
+    reasonCode: "NATIVE_GUARD_LIFECYCLE_PENDING",
+  };
+
+  await assert.rejects(
+    () => fixture.coordinator.renew(leaseId),
+    hasCoordinatorCode("NATIVE_GUARD_RENEW_FAILED"),
+  );
+
+  assert.equal(fixture.statusCalls, 1);
+  assert.equal(backendRenewCalls, 0);
+  assert.equal(fixture.renewCalls.length, 0);
+  assert.equal(fixture.revokeCalls.at(-1), leaseId);
+  assert.equal(fixture.leaseService.status().activeLeaseCount, 0);
+});
+
 test("rejects a plugin activation status for another lease and rolls back", async () => {
   const fixture = coordinatorFixture({ activationMismatch: true });
   await assert.rejects(
@@ -254,6 +284,55 @@ test("keeps the lease unusable after plugin activation ACK until final backend c
   releaseAck.resolve();
   await activating;
   assert.equal(isLeaseUsable(fixture.coordinator, leaseId), true);
+});
+
+test("evidence stays usable through activation, renewal, and root-ended drain only", async () => {
+  const fixture = coordinatorFixture();
+  const activateStarted = deferred<void>();
+  const releaseActivate = deferred<void>();
+  fixture.controlClient.activate = async (_gatewayUrl, activation) => {
+    fixture.activationCalls.push(activation);
+    activateStarted.resolve();
+    await releaseActivate.promise;
+    fixture.pluginStatus = status("active", activation.leaseId, activation);
+    return fixture.pluginStatus;
+  };
+
+  const activating = fixture.coordinator.activate(supervisionInput());
+  await activateStarted.promise;
+  const leaseId = fixture.activationCalls[0].leaseId;
+  assert.equal(fixture.coordinator.isLeaseUsable(leaseId), false);
+  assert.equal(fixture.coordinator.isLeaseEvidenceUsable(leaseId), true);
+  releaseActivate.resolve();
+  await activating;
+
+  const renewStarted = deferred<void>();
+  const releaseRenew = deferred<void>();
+  fixture.controlClient.renew = async (_gatewayUrl, activation) => {
+    fixture.renewCalls.push(activation);
+    renewStarted.resolve();
+    await releaseRenew.promise;
+    fixture.pluginStatus = status("active", activation.leaseId, activation);
+    return fixture.pluginStatus;
+  };
+  const renewing = fixture.coordinator.renew(leaseId);
+  await renewStarted.promise;
+  assert.equal(fixture.coordinator.isLeaseUsable(leaseId), false);
+  assert.equal(fixture.coordinator.isLeaseEvidenceUsable(leaseId), true);
+  releaseRenew.resolve();
+  await renewing;
+
+  assert.equal(fixture.coordinator.markLeaseRootEnded(leaseId), true);
+  assert.equal(fixture.coordinator.isLeaseUsable(leaseId), false);
+  assert.equal(fixture.coordinator.isLeaseEvidenceUsable(leaseId), true);
+  assert.equal(fixture.coordinator.getLastStatus().coverage, "recovery");
+  assert.equal(fixture.coordinator.getLastStatus().activeLeaseCount, 0);
+  await assert.rejects(
+    fixture.coordinator.renew(leaseId),
+    hasCoordinatorCode("NATIVE_GUARD_RENEW_FAILED"),
+  );
+  await fixture.coordinator.revoke(leaseId);
+  assert.equal(fixture.coordinator.isLeaseEvidenceUsable(leaseId), false);
 });
 
 test("does not let activation reclaim active phase after public revoke takes ownership", async () => {

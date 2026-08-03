@@ -908,7 +908,7 @@ Run: `node --import tsx --test backend/src/api/v1/openclaw/native-guard-handlers
 
 Expected: API tests PASS and both builds exit 0.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add backend/src/api/v1/openclaw backend/src/modules/openclaw/nativeGuardAuth.ts backend/src/app.ts backend/src/api/v1/system/handlers.ts desktop/main.cjs
@@ -1309,6 +1309,8 @@ git commit -m "feat: enforce signed native tool decisions"
 - Modify: `packages/contracts/src/types/nativeGuard.ts`
 - Modify: `backend/src/modules/openclaw/nativeGuardLeaseService.ts`
 - Modify: `backend/src/modules/openclaw/nativeGuardLeaseService.test.ts`
+- Modify: `backend/src/modules/openclaw/nativeGuardCoordinator.ts`
+- Modify: `backend/src/modules/openclaw/nativeGuardCoordinator.test.ts`
 - Modify: `backend/src/modules/openclaw/nativeToolDecisionService.ts`
 - Modify: `backend/src/modules/openclaw/openclawControlClient.test.ts`
 - Modify: `backend/src/api/v1/openclaw/native-guard-handlers.ts`
@@ -1327,7 +1329,7 @@ git commit -m "feat: enforce signed native tool decisions"
 - Modify: `plugins/agent-guard-supervision/openclaw.plugin.json`
 - Modify: `package.json`
 
-- [ ] **Step 1: Write failing spool and outcome tests**
+- [x] **Step 1: Write failing spool and outcome tests**
 
 Tests must verify:
 
@@ -1348,26 +1350,33 @@ Tests must verify:
 - missing host duration uses a bounded monotonic `guard_elapsed` value, while missing correlation is explicitly `unavailable` without an invented duration;
 - failure diagnostics retain useful text within 4 KiB while removing generic and exact lease secrets;
 - revoke before lazy spool creation produces no upload or retry.
+- evidence request proof binds method, exact path, lease/epoch, canonical body digest, key ID, proof ID and issued time; tampering, replay and epoch rotation fail before mutation; verification reserves the exact proof, mutation failure releases only that reservation, and signed ACK success commits it;
+- lifecycle and event success require a decision-key signed ACK; event ACK also binds accepted count and the ordered event-ID digest;
+- a lost root-end response can recover only the exact cached signed ACK for the exact proof/path/body, including after a delayed restart within the lease lifetime;
+- one profile spool has exactly one filesystem owner; live-owner contention fails before marker activation and a dead owner is recovered behind a PID/token gate without loading untrusted spool data; symlinked ancestors are rejected, and complete corrupt/oversized data is quarantined into an empty spool with a fixed diagnostic reason;
+- lifecycle operations persist and replay FIFO; overflow remains fail closed, and root end creates a durable non-renewable tombstone until revoke or expiry.
 
-- [ ] **Step 2: Run tests and verify failure**
+- [x] **Step 2: Run tests and verify failure**
 
 Run: `node --import tsx --test plugins/agent-guard-supervision/src/eventSpool.test.ts`
 
 Expected: FAIL with missing module.
 
-- [ ] **Step 3: Implement atomic spool**
+- [x] **Step 3: Implement atomic spool**
 
 Use one JSONL file plus an atomic metadata file under the configured spool directory. Serialize enqueue/ack/compact operations. Store only sanitized events. Retry batches of at most 100 with exponential delays capped at 30 seconds and stop all retries when the lease is revoked or Gateway stops.
 
-The spool must cap batches at 900 KiB as well as 100 events, reject unsafe paths/symlinks/corrupt tails, preserve high-value evidence under the 10,000-event/50-MiB bound, and keep credentials out of data and metadata. Result projection must be deterministic and bounded for circular or exotic values without invoking getters or Proxy traps.
+The spool must cap batches at 900 KiB as well as 100 events, reject unsafe paths/symlinks/corrupt tails, preserve high-value evidence under the 10,000-event/50-MiB bound, and keep credentials out of data and metadata. Its default directory is derived from the active marker/profile directory. Before marker activation it atomically claims a mode-`0600` owner record with exclusive create, rejects symlink or live-PID owners and symlinked ancestors, quarantines a dead-PID owner behind a PID/token recovery gate, and releases only a token-matching private quarantine on every stop or activation rollback path. Failed release retries remain on that private inode and never rename a replacement canonical owner. Complete corrupt or oversized data is atomically quarantined into a fresh empty spool and emits only a fixed local diagnostic reason. OFF never creates the spool or owner record.
 
-- [ ] **Step 4: Split evidence auth and make session lifecycle durable**
+Result projection must be deterministic and bounded for circular or exotic values without invoking getters or Proxy traps. The 256 KiB projection budget includes escaped keys, JSON punctuation and projected values before canonicalization; the digest is computed only from that bounded projection. Large strings are sliced before normalization while retaining a bounded secret-overlap window, including unterminated private-key markers.
 
-Issue separate random decision and evidence credentials and store only their hashes. Rotate both on renewal. Add evidence-only `/lifecycle/bind-child` and `/lifecycle/end-session` backend routes plus an exact loopback client with redirect, abort, timeout and response bounds.
+- [x] **Step 4: Split evidence auth and make session lifecycle durable**
 
-Persist a lease-wide lifecycle intent before backend bind/end synchronization and clear it only after the local marker commit. While an intent exists, return `lifecycle_pending` for every session in the lease and block every tool with the stable lifecycle-pending reason. Replay the intent after restart. Keep ended child bindings only as lease-lifetime evidence history; decisions must require live bindings.
+Issue separate random decision and evidence credentials and store only their hashes. Create a separate per-epoch Ed25519 evidence signing identity; activation sends the private key to plugin memory and the backend retains only its public key. Rotate both bearer identities and the evidence signing identity on renewal. Every lifecycle/event request carries a bounded base64url `X-Agent-Guard-Evidence-Proof` binding method, exact path, lease/epoch, canonical body digest, key ID, proof ID and issued time. Bearer authentication alone is insufficient. Backend success uses a decision-key signed ACK; lifecycle ACK binds the request proof, while event ACK additionally binds accepted count and the ordered event-ID digest.
 
-- [ ] **Step 5: Register `after_tool_call`**
+Persist lifecycle operations as a FIFO before backend bind/end synchronization and pop only after the local marker commit. Persist each non-secret signed proof before network I/O and replay that exact wire proof after retry or restart. Bound the FIFO at 128 entries and the 64 KiB marker envelope; overflow remains sticky fail closed after accepted entries drain and clears only on revoke. While the queue or overflow exists, return `lifecycle_pending` for every session in the lease and block every tool. Root end is a terminal barrier that writes a durable `root_ended` tombstone; root and descendants keep the stable root-ended block across restart while late evidence drains through in-memory evidence identity. Only explicit revoke or expiry removes the tombstone. Keep ended child bindings only as lease-lifetime evidence history; decisions must require live bindings.
+
+- [x] **Step 5: Register `after_tool_call`**
 
 Build `tool_outcome` with `toolCallId`, run/session/lease IDs, final params digest, error, duration, result digest and sanitized preview. Upload asynchronously through the spool without changing the completed tool result.
 
@@ -1375,9 +1384,11 @@ Take the outcome correlation exactly once at the start of `after_tool_call`. Bui
 
 Mark SDK-provided duration as `host`. Otherwise use a non-negative bounded monotonic elapsed value from outcome-correlation creation to the after callback and mark it `guard_elapsed`; for `ask`, this includes approval wait and is not pure tool duration. If correlation is unavailable, emit `durationSource="unavailable"` without `durationMs`. Migrate stored legacy outcomes to `legacy_unspecified`. Preserve a UTF-8-safe, generically and exactly scrubbed failure diagnostic of at most 4 KiB with a stable error code.
 
-Every new event carries a required top-level `leaseEpoch`. The backend store and plugin spool may migrate a safe legacy `detail.leaseEpoch` to the top level with an atomic rewrite, but must reject missing or unsafe legacy epochs.
+Every new event carries a required top-level `leaseEpoch`. The backend store and plugin spool may migrate a safe legacy `detail.leaseEpoch` to the top level with an atomic rewrite, but must reject missing or unsafe legacy epochs. Persisted recovery markers carry a top-level epoch when known; legacy markers without it keep root end in recovery rather than inventing a tombstone epoch.
 
-- [ ] **Step 6: Run backend, plugin tests and build**
+The backend keeps a bounded, lease-lifetime exact proof-to-signed-ACK cache for completed lifecycle requests. Verification reserves a proof; failed coordinator/mutation/append/sign operations release only the matching reservation, while successful signed ACKs commit it. Child bind/end retries must present the current evidence bearer plus the exact signed proof/path/body. After the root tombstone commits, a bearer-less retry may read the root-end ACK only when those bindings match; this is the sole bearer-less exception. A different proof/body/path remains unauthorized and performs no mutation. Plugin ACK validation permits delayed exact replay within the lease lifetime while retaining signature, proof, body, epoch and type checks. Event upload generates a fresh proof on every retry and relies on event-ID idempotency rather than this lifecycle cache.
+
+- [x] **Step 6: Run backend, plugin tests and build**
 
 Update `test:native-guard:plugin` to the final explicit list:
 

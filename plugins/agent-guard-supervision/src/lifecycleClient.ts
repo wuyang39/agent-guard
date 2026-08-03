@@ -1,4 +1,15 @@
+import { createPrivateKey, createPublicKey, randomUUID } from "node:crypto";
 import type { NativeGuardLeaseActivation } from "@agent-guard/contracts";
+import type {
+  NativeGuardEvidenceProof,
+  NativeGuardLifecycleAcknowledgement,
+} from "@agent-guard/contracts";
+import {
+  canonicalJson,
+  digestJson,
+  signNativeGuardPayload,
+  verifyNativeGuardPayload,
+} from "@agent-guard/native-guard-protocol";
 import type { ActiveLeaseLookup } from "./leaseRegistry";
 
 const BIND_PATH = "/api/v1/openclaw/native-guard/lifecycle/bind-child";
@@ -6,6 +17,7 @@ const END_PATH = "/api/v1/openclaw/native-guard/lifecycle/end-session";
 const DEFAULT_TIMEOUT_MS = 2_000;
 const MAX_REQUEST_BYTES = 16 * 1024;
 const MAX_RESPONSE_BYTES = 64 * 1024;
+const MAX_ACK_SKEW_MS = 30_000;
 
 export type BindChildLifecycleInput = {
   leaseId: string;
@@ -25,40 +37,52 @@ export interface LifecycleClient {
     lease: ActiveLeaseLookup,
     input: BindChildLifecycleInput,
     signal: AbortSignal,
+    proof?: NativeGuardEvidenceProof,
   ): Promise<void>;
   endSession(
     lease: ActiveLeaseLookup,
     input: EndSessionLifecycleInput,
     signal: AbortSignal,
+    proof?: NativeGuardEvidenceProof,
   ): Promise<void>;
 }
 
 export type LifecycleClientOptions = {
   fetch?: typeof globalThis.fetch;
   timeoutMs?: number;
+  now?: () => Date;
+  createId?: () => string;
 };
 
 export function createLifecycleClient(options: LifecycleClientOptions = {}): LifecycleClient {
   const fetchImplementation = options.fetch ?? globalThis.fetch;
   const timeoutMs = positiveInteger(options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  const now = options.now ?? (() => new Date());
+  const createId = options.createId ?? (() => `proof.${randomUUID()}`);
   return {
-    bindChild: (lease, input, signal) => requestLifecycle(
+    bindChild: (lease, input, signal, proof) => requestLifecycle(
       fetchImplementation,
       timeoutMs,
       lease,
       BIND_PATH,
       input,
-      "bound",
+      "child_bound",
       signal,
+      now,
+      createId,
+      proof,
     ),
-    endSession: (lease, input, signal) => requestLifecycle(
+    endSession: (lease, input, signal, proof) => requestLifecycle(
       fetchImplementation,
       timeoutMs,
       lease,
       END_PATH,
       input,
-      "ended",
+      "session_ended",
       signal,
+      now,
+      createId,
+      proof,
     ),
   };
 }
@@ -69,8 +93,11 @@ async function requestLifecycle(
   lease: ActiveLeaseLookup,
   path: string,
   input: BindChildLifecycleInput | EndSessionLifecycleInput,
-  acknowledgement: "bound" | "ended",
+  acknowledgement: "child_bound" | "session_ended",
   parentSignal: AbortSignal,
+  now: () => Date,
+  createId: () => string,
+  providedProof?: NativeGuardEvidenceProof,
 ): Promise<void> {
   if (
     typeof fetchImplementation !== "function" ||
@@ -78,8 +105,12 @@ async function requestLifecycle(
     input.leaseEpoch !== lease.leaseEpoch
   ) throw unavailable();
   const url = lifecycleUrl(lease.backendUrl, path);
-  const body = JSON.stringify(input);
+  const body = canonicalJson(input);
   if (Buffer.byteLength(body, "utf8") > MAX_REQUEST_BYTES) throw unavailable();
+  const proof = providedProof ?? createLifecycleEvidenceProof(lease, path, input, now(), createId());
+  if (!validLifecycleEvidenceProof(lease, path, input, proof)) throw unavailable();
+  const encodedProof = Buffer.from(JSON.stringify(proof), "utf8").toString("base64url");
+  if (encodedProof.length > 4_096) throw unavailable();
   const controller = new AbortController();
   const abort = (): void => controller.abort();
   parentSignal.addEventListener("abort", abort, { once: true });
@@ -93,6 +124,7 @@ async function requestLifecycle(
         Accept: "application/json",
         Authorization: `Bearer ${lease.evidenceCredential}`,
         "Content-Type": "application/json; charset=utf-8",
+        "X-Agent-Guard-Evidence-Proof": encodedProof,
       },
       body,
       cache: "no-store",
@@ -116,7 +148,13 @@ async function requestLifecycle(
     }
     const text = await readBoundedBody(response, controller.signal, declaredLength);
     const envelope = JSON.parse(text) as unknown;
-    if (!validAcknowledgement(envelope, acknowledgement)) throw unavailable();
+    if (!validAcknowledgement(
+      envelope,
+      acknowledgement,
+      lease,
+      proof,
+      now(),
+    )) throw unavailable();
   } catch {
     throw unavailable();
   } finally {
@@ -177,13 +215,127 @@ function lifecycleUrl(backendUrl: string, path: string): URL {
   return url;
 }
 
-function validAcknowledgement(value: unknown, field: "bound" | "ended"): boolean {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  const envelope = value as Record<string, unknown>;
-  if (envelope.ok !== true || typeof envelope.data !== "object" || envelope.data === null) {
+export function createLifecycleEvidenceProof(
+  lease: ActiveLeaseLookup,
+  path: string,
+  body: BindChildLifecycleInput | EndSessionLifecycleInput,
+  now: Date,
+  proofId: string,
+): NativeGuardEvidenceProof {
+  if (!validProofId(proofId) || !validDate(now)) throw unavailable();
+  const unsigned = {
+    schemaVersion: "native-guard-1" as const,
+    signatureContext: "native_guard.evidence_request.v1" as const,
+    proofId,
+    leaseId: lease.leaseId,
+    leaseEpoch: lease.leaseEpoch,
+    method: "POST" as const,
+    path,
+    bodyDigest: digestJson(body),
+    issuedAt: now.toISOString(),
+    keyId: lease.evidenceSigningKeyId,
+  };
+  const privateKey = createPrivateKey(lease.evidenceSigningPrivateKey);
+  return {
+    ...unsigned,
+    signature: signNativeGuardPayload(unsigned, privateKey),
+  };
+}
+
+function validLifecycleEvidenceProof(
+  lease: ActiveLeaseLookup,
+  path: string,
+  body: BindChildLifecycleInput | EndSessionLifecycleInput,
+  proof: NativeGuardEvidenceProof,
+): boolean {
+  if (
+    proof.schemaVersion !== "native-guard-1" ||
+    proof.signatureContext !== "native_guard.evidence_request.v1" ||
+    !validProofId(proof.proofId) ||
+    proof.leaseId !== lease.leaseId ||
+    proof.leaseEpoch !== lease.leaseEpoch ||
+    proof.method !== "POST" ||
+    proof.path !== path ||
+    proof.bodyDigest !== digestJson(body) ||
+    !validCanonicalTimestamp(proof.issuedAt) ||
+    proof.keyId !== lease.evidenceSigningKeyId
+  ) return false;
+  try {
+    const privateKey = createPrivateKey(lease.evidenceSigningPrivateKey);
+    return verifyNativeGuardPayload(
+      Object.fromEntries(Object.entries(proof).filter(([key]) => key !== "signature")),
+      proof.signature,
+      createPublicKey(privateKey),
+    );
+  } catch {
     return false;
   }
-  return (envelope.data as Record<string, unknown>)[field] === true;
+}
+
+function validAcknowledgement(
+  value: unknown,
+  ackType: "child_bound" | "session_ended",
+  lease: ActiveLeaseLookup,
+  proof: NativeGuardEvidenceProof,
+  now: Date,
+): boolean {
+  if (!isRecord(value) || !hasExactKeys(value, ["data", "ok", "requestId"])) return false;
+  if (value.ok !== true || typeof value.requestId !== "string" || !isRecord(value.data)) return false;
+  const acknowledgement = value.data;
+  if (!hasExactKeys(acknowledgement, [
+    "ackId",
+    "ackType",
+    "acknowledgedAt",
+    "bodyDigest",
+    "leaseEpoch",
+    "leaseId",
+    "proofId",
+    "schemaVersion",
+    "signature",
+    "signatureContext",
+  ])) return false;
+  const acknowledgedAt = typeof acknowledgement.acknowledgedAt === "string"
+    ? Date.parse(acknowledgement.acknowledgedAt)
+    : Number.NaN;
+  const proofIssuedAt = Date.parse(proof.issuedAt);
+  const leaseIssuedAt = Date.parse(lease.issuedAt);
+  const leaseExpiresAt = Date.parse(lease.expiresAt);
+  const nowMs = now.getTime();
+  if (
+    acknowledgement.schemaVersion !== "native-guard-1" ||
+    acknowledgement.signatureContext !== "native_guard.evidence_ack.v1" ||
+    !validProofId(acknowledgement.ackId) ||
+    acknowledgement.ackType !== ackType ||
+    acknowledgement.proofId !== proof.proofId ||
+    acknowledgement.leaseId !== lease.leaseId ||
+    acknowledgement.leaseEpoch !== lease.leaseEpoch ||
+    acknowledgement.bodyDigest !== proof.bodyDigest ||
+    typeof acknowledgement.acknowledgedAt !== "string" ||
+    !validCanonicalTimestamp(acknowledgement.acknowledgedAt) ||
+    !validDate(now) ||
+    !Number.isFinite(proofIssuedAt) ||
+    !Number.isFinite(leaseIssuedAt) ||
+    !Number.isFinite(leaseExpiresAt) ||
+    leaseExpiresAt <= leaseIssuedAt ||
+    nowMs >= leaseExpiresAt ||
+    proofIssuedAt < leaseIssuedAt - MAX_ACK_SKEW_MS ||
+    proofIssuedAt >= leaseExpiresAt ||
+    acknowledgedAt < leaseIssuedAt ||
+    acknowledgedAt < proofIssuedAt - MAX_ACK_SKEW_MS ||
+    acknowledgedAt > leaseExpiresAt ||
+    acknowledgedAt > nowMs + MAX_ACK_SKEW_MS ||
+    typeof acknowledgement.signature !== "string"
+  ) return false;
+  const { signature, ...unsigned } = acknowledgement;
+  try {
+    return verifyNativeGuardPayload(
+      unsigned,
+      signature,
+      createPublicKey(lease.decisionPublicKey),
+    );
+  } catch {
+    return false;
+  }
 }
 
 function validJsonContentType(value: string | null): boolean {
@@ -209,5 +361,35 @@ function unavailable(): Error {
 
 export type LifecycleLease = Pick<
   NativeGuardLeaseActivation,
-  "leaseId" | "leaseEpoch" | "backendUrl" | "evidenceCredential"
+  | "leaseId"
+  | "leaseEpoch"
+  | "backendUrl"
+  | "decisionPublicKey"
+  | "evidenceCredential"
+  | "evidenceSigningKeyId"
+  | "evidenceSigningPrivateKey"
 >;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function hasExactKeys(value: Record<string, unknown>, required: readonly string[]): boolean {
+  const keys = Object.keys(value);
+  return keys.length === required.length && required.every((key) => Object.hasOwn(value, key));
+}
+
+function validProofId(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value);
+}
+
+function validCanonicalTimestamp(value: string): boolean {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && new Date(parsed).toISOString() === value;
+}
+
+function validDate(value: Date): boolean {
+  return value instanceof Date && Number.isFinite(value.getTime());
+}

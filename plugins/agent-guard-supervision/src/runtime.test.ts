@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import test from "node:test";
 import type {
   NativeGuardAction,
+  NativeGuardEvidenceProof,
   NativeGuardEvent,
   NativeGuardLeaseActivation,
   NativeToolDecisionRequest,
@@ -12,14 +13,23 @@ import type {
   SupervisionPolicy,
   SupervisionPolicyPack,
 } from "@agent-guard/contracts";
-import { canonicalJson, digestJson, signNativeGuardPayload } from "@agent-guard/native-guard-protocol";
+import {
+  canonicalJson,
+  digestJson,
+  signNativeGuardPayload,
+  verifyNativeGuardPayload,
+} from "@agent-guard/native-guard-protocol";
 import type { BeforeResult, ToolContext, ToolEvent } from "openclaw/plugin-sdk/plugin-entry";
 import { createNativeGuardLeaseService } from "../../../backend/src/modules/openclaw/nativeGuardLeaseService";
 import { createNativeToolDecisionService } from "../../../backend/src/modules/openclaw/nativeToolDecisionService";
 import { createDecisionClient } from "./decisionClient";
 import type { ActiveLeaseLookup, GuardedMarker, MarkerStore } from "./leaseRegistry";
 import { AgentGuardRuntime } from "./runtime";
-import { createLifecycleClient, type LifecycleClient } from "./lifecycleClient";
+import {
+  createLifecycleClient,
+  createLifecycleEvidenceProof,
+  type LifecycleClient,
+} from "./lifecycleClient";
 
 const NOW = "2026-08-02T10:00:00.000Z";
 const MAX_PARAM_BYTES = 256 * 1024;
@@ -57,20 +67,50 @@ test("OFF returns without fetch, events, writes, approvals, blocks, or parameter
 });
 
 test("lifecycle client derives only the exact loopback bind path and uses evidence identity", async () => {
+  const decisionKeys = generateKeyPairSync("ed25519");
+  const evidenceKeys = generateKeyPairSync("ed25519");
+  const lease = lifecycleLease({
+    decisionPublicKey: decisionKeys.publicKey.export({ type: "spki", format: "pem" }).toString(),
+    evidenceSigningKeyId: "evidence.test-key",
+    evidenceSigningPrivateKey: evidenceKeys.privateKey.export({
+      type: "pkcs8",
+      format: "pem",
+    }).toString(),
+  });
   let observedUrl = "";
   let observedAuthorization = "";
+  let proofVerified = false;
   const client = createLifecycleClient({
     fetch: async (input, init) => {
       observedUrl = String(input);
       observedAuthorization = String((init?.headers as Record<string, string>).Authorization);
+      const proof = decodeEvidenceProof(init);
+      const { signature, ...unsignedProof } = proof;
+      proofVerified = verifyNativeGuardPayload(unsignedProof, signature, evidenceKeys.publicKey);
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      const unsignedAck = {
+        schemaVersion: "native-guard-1" as const,
+        signatureContext: "native_guard.evidence_ack.v1" as const,
+        ackId: "ack.lifecycle.valid",
+        ackType: "child_bound" as const,
+        proofId: proof.proofId,
+        leaseId: lease.leaseId,
+        leaseEpoch: lease.leaseEpoch,
+        bodyDigest: digestJson(body),
+        acknowledgedAt: NOW,
+      };
       return jsonResponse(JSON.stringify({
         ok: true,
-        data: { bound: true },
+        data: {
+          ...unsignedAck,
+          signature: signNativeGuardPayload(unsignedAck, decisionKeys.privateKey),
+        },
         requestId: "lifecycle-request",
       }));
     },
+    now: () => new Date(NOW),
+    createId: () => "proof.lifecycle.valid",
   });
-  const lease = lifecycleLease();
 
   await client.bindChild(lease, {
     leaseId: lease.leaseId,
@@ -84,6 +124,139 @@ test("lifecycle client derives only the exact loopback bind path and uses eviden
     "http://127.0.0.1:3100/api/v1/openclaw/native-guard/lifecycle/bind-child",
   );
   assert.equal(observedAuthorization, "Bearer evidence-credential-secret");
+  assert.equal(proofVerified, true);
+});
+
+test("lifecycle client accepts an exact cached acknowledgement after a delayed restart", async () => {
+  const decisionKeys = generateKeyPairSync("ed25519");
+  const evidenceKeys = generateKeyPairSync("ed25519");
+  const lease = lifecycleLease({
+    decisionPublicKey: decisionKeys.publicKey.export({ type: "spki", format: "pem" }).toString(),
+    evidenceSigningKeyId: "evidence.delayed-restart",
+    evidenceSigningPrivateKey: evidenceKeys.privateKey.export({
+      type: "pkcs8",
+      format: "pem",
+    }).toString(),
+  });
+  const input = {
+    leaseId: lease.leaseId,
+    leaseEpoch: lease.leaseEpoch,
+    sessionKey: lease.rootSessionKey,
+  };
+  const proof = createLifecycleEvidenceProof(
+    lease,
+    "/api/v1/openclaw/native-guard/lifecycle/end-session",
+    input,
+    new Date(NOW),
+    "proof.delayed-restart",
+  );
+  const unsignedAck = {
+    schemaVersion: "native-guard-1" as const,
+    signatureContext: "native_guard.evidence_ack.v1" as const,
+    ackId: "ack.delayed-restart",
+    ackType: "session_ended" as const,
+    proofId: proof.proofId,
+    leaseId: lease.leaseId,
+    leaseEpoch: lease.leaseEpoch,
+    bodyDigest: proof.bodyDigest,
+    acknowledgedAt: NOW,
+  };
+  const client = createLifecycleClient({
+    now: () => new Date("2026-08-02T10:02:00.000Z"),
+    fetch: async () => jsonResponse(JSON.stringify({
+      ok: true,
+      data: {
+        ...unsignedAck,
+        signature: signNativeGuardPayload(unsignedAck, decisionKeys.privateKey),
+      },
+      requestId: "request.delayed-restart",
+    })),
+  });
+
+  await client.endSession(lease, input, new AbortController().signal, proof);
+});
+
+test("lifecycle client rejects an unsigned forged success acknowledgement", async () => {
+  const client = createLifecycleClient({
+    fetch: async () => jsonResponse(JSON.stringify({
+      ok: true,
+      data: { bound: true },
+      requestId: "forged-lifecycle-request",
+    })),
+  });
+  const lease = lifecycleLease();
+
+  await assert.rejects(client.bindChild(lease, {
+    leaseId: lease.leaseId,
+    leaseEpoch: lease.leaseEpoch,
+    parentSessionKey: lease.rootSessionKey,
+    childSessionKey: "agent:forged-child",
+  }, new AbortController().signal), /lifecycle synchronization failed/);
+});
+
+test("lifecycle client rejects signed acknowledgements with altered request bindings", async () => {
+  const decisionKeys = generateKeyPairSync("ed25519");
+  const wrongDecisionKeys = generateKeyPairSync("ed25519");
+  const evidenceKeys = generateKeyPairSync("ed25519");
+  const lease = lifecycleLease({
+    decisionPublicKey: decisionKeys.publicKey.export({ type: "spki", format: "pem" }).toString(),
+    evidenceSigningKeyId: "evidence.ack-binding",
+    evidenceSigningPrivateKey: evidenceKeys.privateKey.export({
+      type: "pkcs8",
+      format: "pem",
+    }).toString(),
+  });
+  const cases: Array<{
+    name: string;
+    mutate: (ack: Record<string, unknown>) => Record<string, unknown>;
+    signingKey?: KeyObject;
+  }> = [
+    { name: "proof", mutate: (ack) => ({ ...ack, proofId: "proof.wrong" }) },
+    { name: "digest", mutate: (ack) => ({ ...ack, bodyDigest: "f".repeat(64) }) },
+    { name: "type", mutate: (ack) => ({ ...ack, ackType: "session_ended" }) },
+    { name: "epoch", mutate: (ack) => ({ ...ack, leaseEpoch: lease.leaseEpoch + 1 }) },
+    { name: "stale", mutate: (ack) => ({ ...ack, acknowledgedAt: "2026-08-02T09:58:00.000Z" }) },
+    { name: "key", mutate: (ack) => ack, signingKey: wrongDecisionKeys.privateKey },
+  ];
+
+  for (const scenario of cases) {
+    const client = createLifecycleClient({
+      now: () => new Date(NOW),
+      createId: () => `proof.ack-${scenario.name}`,
+      fetch: async (_input, init) => {
+        const proof = decodeEvidenceProof(init);
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        const mutated = scenario.mutate({
+          schemaVersion: "native-guard-1",
+          signatureContext: "native_guard.evidence_ack.v1",
+          ackId: `ack.${scenario.name}`,
+          ackType: "child_bound",
+          proofId: proof.proofId,
+          leaseId: lease.leaseId,
+          leaseEpoch: lease.leaseEpoch,
+          bodyDigest: digestJson(body),
+          acknowledgedAt: NOW,
+        });
+        return jsonResponse(JSON.stringify({
+          ok: true,
+          data: {
+            ...mutated,
+            signature: signNativeGuardPayload(
+              mutated,
+              scenario.signingKey ?? decisionKeys.privateKey,
+            ),
+          },
+          requestId: `request.${scenario.name}`,
+        }));
+      },
+    });
+    await assert.rejects(client.bindChild(lease, {
+      leaseId: lease.leaseId,
+      leaseEpoch: lease.leaseEpoch,
+      parentSessionKey: lease.rootSessionKey,
+      childSessionKey: `agent:ack-${scenario.name}`,
+    }, new AbortController().signal), /lifecycle synchronization failed/, scenario.name);
+  }
 });
 
 test("lifecycle client rejects non-loopback, wrong decision path, redirects, and oversized bodies", async () => {
@@ -703,6 +876,7 @@ test("an attested host recheck keeps a pending approval stale after renewal", as
     leaseEpoch: 2,
     credential: "rotated-credential",
     evidenceCredential: "rotated-evidence-credential",
+    ...renewedEvidenceIdentity("evidence.approval-renewed"),
   }));
 
   await result?.requireApproval?.onResolution?.("allow-once");
@@ -759,6 +933,7 @@ test("signed epoch-one outcome survives an after lookup paused across renewal", 
     leaseEpoch: 2,
     credential: "rotated-credential",
     evidenceCredential: "rotated-evidence-credential",
+    ...renewedEvidenceIdentity("evidence.outcome-renewed"),
   }));
   release.resolve();
   await waitFor(() => fixture.events.some(({ type }) => type === "tool_outcome"));
@@ -1375,6 +1550,7 @@ test("backend bind failure persists a blocking intent that replays after restart
   const first = new AgentGuardRuntime({
     markerStore: store,
     now: () => new Date(NOW),
+    emitEvent: async () => undefined,
     lifecycleClient: {
       async bindChild() { throw new Error("backend bind unavailable"); },
       async endSession() { throw new Error("not used"); },
@@ -1404,6 +1580,7 @@ test("backend bind failure persists a blocking intent that replays after restart
   const restarted = new AgentGuardRuntime({
     markerStore: store,
     now: () => new Date(NOW),
+    emitEvent: async () => undefined,
     lifecycleClient: {
       async bindChild() { replayCalls += 1; },
       async endSession() { throw new Error("not used"); },
@@ -1424,6 +1601,7 @@ test("backend end failure leaves the whole lease lifecycle-pending instead of ac
   const runtime = new AgentGuardRuntime({
     markerStore: store,
     now: () => new Date(NOW),
+    emitEvent: async () => undefined,
     lifecycleClient: {
       async bindChild() { return; },
       async endSession() {
@@ -1446,6 +1624,245 @@ test("backend end failure leaves the whole lease lifecycle-pending instead of ac
   assert.equal((await runtime.lookup("agent:main")).state, "active");
   assert.deepEqual(await runtime.lookup("agent:child"), { state: "off" });
   await runtime.stop();
+});
+
+test("concurrent child end queues behind a pending child bind without disappearing", async () => {
+  const bindEntered = deferred();
+  const releaseBind = deferred();
+  const operations: string[] = [];
+  const runtime = new AgentGuardRuntime({
+    markerStore: memoryMarkerStore(),
+    now: () => new Date(NOW),
+    emitEvent: async () => undefined,
+    lifecycleClient: {
+      async bindChild(_lease: ActiveLeaseLookup, input: { childSessionKey: string }) {
+        operations.push(`bind:${input.childSessionKey}`);
+        bindEntered.resolve();
+        await releaseBind.promise;
+      },
+      async endSession(_lease: ActiveLeaseLookup, input: { sessionKey: string }) {
+        operations.push(`end:${input.sessionKey}`);
+      },
+    },
+  } as never);
+  runtime.finalizeRegistrationAttestation(true);
+  await runtime.start();
+  await runtime.activate(activation({ evidenceCredential: "evidence-credential" }));
+
+  const binding = runtime.bindChild("lease.1", "agent:main", "agent:queued-child");
+  await bindEntered.promise;
+  const ending = runtime.endSession("agent:queued-child");
+
+  const beforeRelease = await Promise.race([
+    ending.then((value) => ({ state: "settled" as const, value })),
+    new Promise<{ state: "pending" }>((resolve) => {
+      setImmediate(() => resolve({ state: "pending" }));
+    }),
+  ]);
+  releaseBind.resolve();
+
+  assert.deepEqual(beforeRelease, { state: "pending" });
+  assert.deepEqual(await Promise.all([binding, ending]), [true, true]);
+  assert.deepEqual(operations, ["bind:agent:queued-child", "end:agent:queued-child"]);
+  assert.deepEqual(await runtime.lookup("agent:queued-child"), { state: "off" });
+  await runtime.stop();
+});
+
+test("root end queues behind pending work and becomes a terminal tombstone", async () => {
+  const bindEntered = deferred();
+  const releaseBind = deferred();
+  const operations: string[] = [];
+  const runtime = new AgentGuardRuntime({
+    markerStore: memoryMarkerStore(),
+    now: () => new Date(NOW),
+    lifecycleClient: {
+      async bindChild(_lease: ActiveLeaseLookup, input: { childSessionKey: string }) {
+        operations.push(`bind:${input.childSessionKey}`);
+        bindEntered.resolve();
+        await releaseBind.promise;
+      },
+      async endSession(_lease: ActiveLeaseLookup, input: { sessionKey: string }) {
+        operations.push(`end:${input.sessionKey}`);
+      },
+    },
+    emitEvent: async () => undefined,
+  } as never);
+  runtime.finalizeRegistrationAttestation(true);
+  await runtime.start();
+  await runtime.activate(activation());
+
+  const binding = runtime.bindChild("lease.1", "agent:main", "agent:root-tail-child");
+  await bindEntered.promise;
+  const endingRoot = runtime.endSession("agent:main");
+  const beforeRelease = await Promise.race([
+    endingRoot.then((value) => ({ state: "settled" as const, value })),
+    new Promise<{ state: "pending" }>((resolve) => {
+      setImmediate(() => resolve({ state: "pending" }));
+    }),
+  ]);
+  releaseBind.resolve();
+
+  assert.deepEqual(beforeRelease, { state: "pending" });
+  assert.deepEqual(await Promise.all([binding, endingRoot]), [true, true]);
+  assert.deepEqual(operations, ["bind:agent:root-tail-child", "end:agent:main"]);
+  assert.equal((await runtime.lookup("agent:main")).state, "root_ended");
+  assert.equal((await runtime.lookup("agent:root-tail-child")).state, "root_ended");
+  assert.deepEqual(await runtime.beforeToolCall(lowRiskEvent(), lowRiskContext()), {
+    block: true,
+    blockReason: "[Agent Guard:NATIVE_GUARD_ROOT_ENDED] Native guard root session has ended.",
+  });
+  assert.equal(await runtime.bindChild(
+    "lease.1",
+    "agent:main",
+    "agent:after-root",
+  ), false);
+  await runtime.stop();
+});
+
+test("root lifecycle proof is durable before send and reused after local tombstone failure", async () => {
+  const decisionKeys = generateKeyPairSync("ed25519");
+  const evidenceKeys = generateKeyPairSync("ed25519");
+  const persisted = memoryMarkerStore();
+  let failTombstoneCommit = true;
+  const store: MarkerStore = {
+    load: () => persisted.load(),
+    async write(marker) {
+      if (failTombstoneCommit && marker.rootTombstone !== undefined) {
+        throw new Error("root tombstone commit failed");
+      }
+      await persisted.write(marker);
+    },
+    remove: (leaseId) => persisted.remove(leaseId),
+  };
+  const proofs: NativeGuardEvidenceProof[] = [];
+  const lease = activation({
+    decisionPublicKey: decisionKeys.publicKey.export({ type: "spki", format: "pem" }).toString(),
+    evidenceSigningKeyId: "evidence.root-persisted",
+    evidenceSigningPrivateKey: evidenceKeys.privateKey.export({
+      type: "pkcs8",
+      format: "pem",
+    }).toString(),
+  });
+  const runtime = new AgentGuardRuntime({
+    markerStore: store,
+    now: () => new Date(NOW),
+    emitEvent: async () => undefined,
+    createId: (prefix) => `${prefix}.${String(proofs.length + 1)}`,
+    fetch: async (_input, init) => {
+      const proof = decodeEvidenceProof(init);
+      proofs.push(proof);
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      const unsignedAck = {
+        schemaVersion: "native-guard-1" as const,
+        signatureContext: "native_guard.evidence_ack.v1" as const,
+        ackId: "ack.root-persisted",
+        ackType: "session_ended" as const,
+        proofId: proof.proofId,
+        leaseId: proof.leaseId,
+        leaseEpoch: proof.leaseEpoch,
+        bodyDigest: digestJson(body),
+        acknowledgedAt: NOW,
+      };
+      return jsonResponse(JSON.stringify({
+        ok: true,
+        data: {
+          ...unsignedAck,
+          signature: signNativeGuardPayload(unsignedAck, decisionKeys.privateKey),
+        },
+        requestId: "request.root-persisted",
+      }));
+    },
+  });
+  runtime.finalizeRegistrationAttestation(true);
+  await runtime.start();
+  await runtime.activate(lease);
+
+  await assert.rejects(runtime.endSession("agent:main"), /tombstone commit failed/);
+  const queued = persisted.writes.at(-1)?.lifecycleQueue?.[0] as
+    (Record<string, unknown> & { evidenceRequest?: NativeGuardEvidenceProof }) | undefined;
+  assert.deepEqual(queued?.evidenceRequest, proofs[0]);
+  assert.equal((await runtime.lookup("agent:main")).state, "lifecycle_pending");
+
+  failTombstoneCommit = false;
+  assert.equal(await runtime.endSession("agent:main"), true);
+  assert.equal(proofs.length, 2);
+  assert.deepEqual(proofs[1], proofs[0]);
+  assert.equal((await runtime.lookup("agent:main")).state, "root_ended");
+  await runtime.stop();
+});
+
+test("never-acknowledged root proof remains pending and replays exactly after restart", async () => {
+  const decisionKeys = generateKeyPairSync("ed25519");
+  const evidenceKeys = generateKeyPairSync("ed25519");
+  const store = memoryMarkerStore();
+  const proofs: NativeGuardEvidenceProof[] = [];
+  const lease = activation({
+    decisionPublicKey: decisionKeys.publicKey.export({ type: "spki", format: "pem" }).toString(),
+    evidenceSigningKeyId: "evidence.root-restart",
+    evidenceSigningPrivateKey: evidenceKeys.privateKey.export({
+      type: "pkcs8",
+      format: "pem",
+    }).toString(),
+  });
+  const first = new AgentGuardRuntime({
+    markerStore: store,
+    now: () => new Date(NOW),
+    emitEvent: async () => undefined,
+    createId: () => "proof.root-restart",
+    fetch: async (_input, init) => {
+      proofs.push(decodeEvidenceProof(init));
+      throw new Error("connection lost before acknowledgement");
+    },
+  });
+  first.finalizeRegistrationAttestation(true);
+  await first.start();
+  await first.activate(lease);
+  await assert.rejects(first.endSession("agent:main"), /lifecycle synchronization failed/);
+  assert.equal((await first.lookup("agent:main")).state, "lifecycle_pending");
+  await first.stop();
+
+  let backendCalls = 0;
+  const restarted = new AgentGuardRuntime({
+    markerStore: store,
+    now: () => new Date(NOW),
+    emitEvent: async () => undefined,
+    createId: () => "proof.must-not-be-generated",
+    fetch: async (_input, init) => {
+      backendCalls += 1;
+      const proof = decodeEvidenceProof(init);
+      proofs.push(proof);
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      const unsignedAck = {
+        schemaVersion: "native-guard-1" as const,
+        signatureContext: "native_guard.evidence_ack.v1" as const,
+        ackId: "ack.root-restart",
+        ackType: "session_ended" as const,
+        proofId: proof.proofId,
+        leaseId: proof.leaseId,
+        leaseEpoch: proof.leaseEpoch,
+        bodyDigest: digestJson(body),
+        acknowledgedAt: NOW,
+      };
+      return jsonResponse(JSON.stringify({
+        ok: true,
+        data: {
+          ...unsignedAck,
+          signature: signNativeGuardPayload(unsignedAck, decisionKeys.privateKey),
+        },
+        requestId: "request.root-restart",
+      }));
+    },
+  });
+  restarted.finalizeRegistrationAttestation(true);
+  await restarted.start();
+  assert.equal((await restarted.lookup("agent:main")).state, "lifecycle_pending");
+  assert.equal(backendCalls, 0);
+  await restarted.activate(lease);
+
+  assert.equal(backendCalls, 1);
+  assert.deepEqual(proofs[1], proofs[0]);
+  assert.equal((await restarted.lookup("agent:main")).state, "root_ended");
+  await restarted.stop();
 });
 
 test("ACTIVE low-risk outage follows immutable allow failure policy", async () => {
@@ -1521,6 +1938,7 @@ test("a renewal during the PDP request invalidates the old signed allow", async 
     leaseEpoch: 2,
     credential: "rotated-credential",
     evidenceCredential: "rotated-evidence-credential",
+    ...renewedEvidenceIdentity("evidence.pdp-renewed"),
   }));
   release?.(await fixture.responseFor(execEvent()));
 
@@ -1738,6 +2156,7 @@ function decisionResponse(
 
 function activation(overrides: Partial<NativeGuardLeaseActivation> = {}): NativeGuardLeaseActivation {
   const { publicKey } = generateKeyPairSync("ed25519");
+  const { privateKey: evidencePrivateKey } = generateKeyPairSync("ed25519");
   return {
     schemaVersion: "native-guard-1",
     leaseId: "lease.1",
@@ -1754,16 +2173,38 @@ function activation(overrides: Partial<NativeGuardLeaseActivation> = {}): Native
     expiresAt: "2026-08-02T10:05:00.000Z",
     credential: "credential-secret",
     evidenceCredential: "evidence-credential-secret",
+    evidenceSigningKeyId: "evidence.test-key",
+    evidenceSigningPrivateKey: evidencePrivateKey.export({ type: "pkcs8", format: "pem" }).toString(),
     ...overrides,
   };
 }
 
-function lifecycleLease(): ActiveLeaseLookup {
+function lifecycleLease(overrides: Partial<NativeGuardLeaseActivation> = {}): ActiveLeaseLookup {
   return Object.freeze({
-    ...activation(),
+    ...activation(overrides),
     state: "active" as const,
     childSessionKeys: Object.freeze([] as string[]),
   });
+}
+
+function renewedEvidenceIdentity(keyId: string): Pick<
+  NativeGuardLeaseActivation,
+  "evidenceSigningKeyId" | "evidenceSigningPrivateKey"
+> {
+  const { privateKey } = generateKeyPairSync("ed25519");
+  return {
+    evidenceSigningKeyId: keyId,
+    evidenceSigningPrivateKey: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+  };
+}
+
+function decodeEvidenceProof(init: RequestInit | undefined): NativeGuardEvidenceProof {
+  const encoded = String(
+    (init?.headers as Record<string, string> | undefined)?.["X-Agent-Guard-Evidence-Proof"] ??
+    (init?.headers as Record<string, string> | undefined)?.["x-agent-guard-evidence-proof"] ??
+    "",
+  );
+  return JSON.parse(Buffer.from(encoded, "base64url").toString("utf8")) as NativeGuardEvidenceProof;
 }
 
 function servicePolicyPack(

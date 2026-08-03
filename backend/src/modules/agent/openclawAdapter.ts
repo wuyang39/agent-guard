@@ -27,6 +27,8 @@ export type OpenClawAdapterOptions = {
   timeoutMs?: number;
   env?: Record<string, string | undefined>;
   nativeGuardRequired?: boolean;
+  /** Task 12: Native guard event store for draining runtime evidence. */
+  nativeGuardEventStore?: import("./openclawSession").OpenClawRunOptions["nativeGuardEventStore"];
 };
 
 export function resolveOpenClawCliPath(preferredCliPath?: string): string {
@@ -125,8 +127,10 @@ export class OpenClawSession implements AgentSession {
   private readonly timeoutMs?: number;
   private readonly env?: Record<string, string | undefined>;
   private readonly nativeGuardRequired: boolean;
+  private readonly nativeGuardEventStore?: OpenClawAdapterOptions["nativeGuardEventStore"];
   private sandboxTools: { toolId: string; toolName?: string; description?: string }[] = [];
   private sandboxResources: { resourceId: string; path?: string; sensitivity?: string; description?: string }[] = [];
+  private lastRunMeta?: import("./agentAdapter").AgentRunMeta;
 
   constructor(
     agent: AgentUnderTest,
@@ -141,6 +145,7 @@ export class OpenClawSession implements AgentSession {
     this.timeoutMs = options.timeoutMs;
     this.env = options.env;
     this.nativeGuardRequired = options.nativeGuardRequired ?? false;
+    this.nativeGuardEventStore = options.nativeGuardEventStore;
   }
 
   setSandboxContext(ctx: {
@@ -159,9 +164,10 @@ export class OpenClawSession implements AgentSession {
     const startedAt = nowIso();
 
     try {
+      this.lastRunMeta = runMeta;
       const result = await runOpenClawSession(
         task,
-        bridge,  // ← 传入 bridge：tool calls 将通过 bridge 写入 trace
+        bridge,
         {
           runId: runMeta?.runId ?? "unknown",
           caseId: runMeta?.caseId ?? task.caseId,
@@ -175,6 +181,7 @@ export class OpenClawSession implements AgentSession {
           gatewayUrl: this.gatewayUrl,
           gatewayToken: this.gatewayToken,
           nativeGuardRequired: this.nativeGuardRequired,
+          nativeGuardEventStore: this.nativeGuardEventStore,
         },
       );
 
@@ -206,6 +213,26 @@ export class OpenClawSession implements AgentSession {
   }
 
   async close(): Promise<void> {}
+
+  /** Task 12: Drain runtime evidence from the native guard event store. */
+  async drainRuntimeEvidence(): Promise<{
+    nativeGuardEvents: import("@agent-guard/contracts").NativeGuardEvent[];
+    supervisionRecords: import("@agent-guard/contracts").RuntimeSupervisionRecord[];
+  }> {
+    if (!this.nativeGuardEventStore || !this.lastRunMeta) {
+      return { nativeGuardEvents: [], supervisionRecords: [] };
+    }
+    const runId = this.lastRunMeta.runId;
+    try {
+      const [events, records] = await Promise.all([
+        this.nativeGuardEventStore.listByRun(runId).catch(() => [] as import("@agent-guard/contracts").NativeGuardEvent[]),
+        this.nativeGuardEventStore.listRecordsByRun(runId).catch(() => [] as import("@agent-guard/contracts").RuntimeSupervisionRecord[]),
+      ]);
+      return { nativeGuardEvents: events, supervisionRecords: records };
+    } catch {
+      return { nativeGuardEvents: [], supervisionRecords: [] };
+    }
+  }
 }
 
 /** 检测 OpenClaw CLI 是否可用 */

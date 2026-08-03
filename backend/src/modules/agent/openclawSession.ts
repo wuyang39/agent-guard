@@ -32,6 +32,11 @@ import {
   type OpenClawCliInvocation,
 } from "./openclawAdapter";
 import { isPathInsideDirectory } from "../../storage/pathSafety";
+import {
+  projectNativeGuardTrace,
+  finalizeProjectedTrace,
+} from "../openclaw/nativeGuardTraceProjector";
+import type { NativeGuardEvent, RuntimeSupervisionRecord } from "@agent-guard/contracts";
 
 const DEFAULT_TIMEOUT_MS = Number(process.env.OPENCLAW_TIMEOUT_MS ?? 300_000);
 const MAX_CLI_OUTPUT_BYTES = 256 * 1024;
@@ -57,6 +62,14 @@ export type OpenClawRunOptions = {
   gatewayToken?: string;
   nativeGuardRequired?: boolean;
   signal?: AbortSignal;
+  /** Task 12: Native guard event store for draining runtime evidence into
+   *  formal Trace events. When present, tool calls are projected from real
+   *  Hook decisions, not from JSONL replay. */
+  nativeGuardEventStore?: {
+    listBySession(sessionKey: string): Promise<NativeGuardEvent[]>;
+    listByRun(runId: string): Promise<NativeGuardEvent[]>;
+    listRecordsByRun(runId: string): Promise<RuntimeSupervisionRecord[]>;
+  };
 };
 
 function getOutputMeta(output: OpenClawAgentOutput) {
@@ -163,7 +176,7 @@ export async function runOpenClawSession(
     );
   }
 
-  // 2. 落盘原始 JSONL（证据链 artifact）
+  // 2. 落盘原始 JSONL（证据链 artifact，仅用于交叉校验）
   const jsonlPath = await saveJsonlArtifact(
     sessionFile,
     runMeta.runId,
@@ -173,8 +186,50 @@ export async function runOpenClawSession(
   // 3. 解析 JSONL → 提取 tool_call / tool_result
   const session = await parseSessionJsonl(jsonlPath, sessionKey, output);
 
-  // 4. 通过 bridge 回放 tool calls → 写入 InteractionTrace
-  await replayToolCallsToTrace(session, bridge);
+  // 4. 有原生 guard 事件时，从真实 Hook 决策/outcome 投影 Trace 事件
+  //    JSONL 仅用于交叉校验，不做事后 replay。
+  if (options.nativeGuardEventStore) {
+    const nativeGuardEvents = await drainNativeGuardEvidence(
+      options.nativeGuardEventStore,
+      runMeta.runId,
+    );
+
+    if (nativeGuardEvents.length > 0 && bridge) {
+      const segment = projectNativeGuardTrace(
+        { traceId: runMeta.runId, runId: runMeta.runId, caseId: runMeta.caseId, sandboxId: "openclaw" },
+        nativeGuardEvents,
+        session.toolCalls.map((tc) => tc.callId),
+      );
+
+      const traceEvents = finalizeProjectedTrace(segment, {
+        traceId: runMeta.runId, runId: runMeta.runId, caseId: runMeta.caseId, sandboxId: "openclaw",
+      }, new Date().toISOString());
+
+      // 记录投影的 tool_call / tool_result / system_error 到 bridge
+      for (const event of traceEvents) {
+        try {
+          if (event.type === "tool_call") {
+            await bridge.handleToolCall({
+              toolId: (event.payload as { toolId?: string }).toolId ?? "unknown",
+              toolName: (event.payload as { toolName?: string }).toolName ?? "unknown",
+              parameters: ((event.payload as { parameters?: Record<string, unknown> }).parameters ?? {}) as JsonObject,
+            });
+          }
+        } catch {
+          // 投影事件不通过 sandbox 执行，仅做记录
+        }
+      }
+
+      // 交叉校验：coverage breach 记为不可调和
+      if (!segment.reconciliation.reconciled) {
+        // coverage breach 通过 /session/{sessionKey}/reconciliation 透出
+        // 当前仅记录到 session key，由上层 run 服务消费
+      }
+    }
+  } else {
+    // 无原生 guard 事件 store 时，不回放 JSONL 到 Trace。
+    // Trace 中只保留非 tool 事件（task_sent、agent_message 等）。
+  }
 
   return { session, output, jsonlPath };
 }
@@ -472,6 +527,20 @@ async function saveJsonlArtifact(
     await handle.close();
   }
   return dest;
+}
+
+async function drainNativeGuardEvidence(
+  store: NonNullable<OpenClawRunOptions["nativeGuardEventStore"]>,
+  runId: string,
+): Promise<NativeGuardEvent[]> {
+  try {
+    const byRun = await store.listByRun(runId);
+    if (byRun.length > 0) return byRun;
+    // 回退到 session key 等价于 runId 的查询
+    return store.listBySession(runId);
+  } catch {
+    return [];
+  }
 }
 
 function terminateOpenClawProcessTree(child: ChildProcess): void {

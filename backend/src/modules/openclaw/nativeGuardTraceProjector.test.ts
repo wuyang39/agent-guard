@@ -1,0 +1,227 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+  projectNativeGuardTrace,
+  finalizeProjectedTrace,
+} from "./nativeGuardTraceProjector";
+import type { NativeGuardEvent } from "@agent-guard/contracts";
+
+const CTX = { traceId: "trace.1", runId: "run.1", caseId: "case.1", sandboxId: "sandbox.1" };
+
+function buildEvent(overrides: Partial<NativeGuardEvent> = {}): NativeGuardEvent {
+  return {
+    schemaVersion: "native-guard-1",
+    eventId: "event.1",
+    type: "decision",
+    leaseId: "lease.1",
+    leaseEpoch: 1,
+    sessionKey: "session.1",
+    runId: "run.1",
+    toolCallId: "call.1",
+    decisionId: "decision.1",
+    timestamp: "2026-08-01T00:00:01.000Z",
+    detail: {
+      action: "allow",
+      reasonCode: "policy_allow",
+      toolName: "read",
+      toolCallId: "call.1",
+      params: { path: "/tmp/test" },
+    },
+    ...overrides,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Reconciliation scenarios
+// ---------------------------------------------------------------------------
+
+test("allow+outcome: projects tool_call and tool_result, reconciled clean", () => {
+  const decision = buildEvent({
+    eventId: "decision.allow",
+    type: "decision",
+    toolCallId: "call.1",
+    detail: { action: "allow", reasonCode: "policy_allow", toolName: "read", toolCallId: "call.1", params: { path: "/tmp/test" } },
+  });
+  const outcome = buildEvent({
+    eventId: "outcome.1",
+    type: "tool_outcome",
+    toolCallId: "call.1",
+    decisionId: undefined,
+    detail: {
+      finalParamsDigest: "a".repeat(64),
+      durationMs: 100,
+      durationSource: "host",
+      resultDigest: "b".repeat(64),
+      resultPreview: "file content",
+      toolName: "read",
+    },
+  });
+
+  const result = projectNativeGuardTrace(CTX, [decision, outcome], ["call.1"]);
+
+  assert.equal(result.reconciliation.reconciled, true);
+  assert.equal(result.reconciliation.coverageBreachCount, 0);
+  assert.equal(result.reconciliation.projected.tool_call, 1);
+  assert.equal(result.reconciliation.projected.tool_result, 1);
+  assert.equal(result.events.length, 2);
+  assert.equal(result.events[0].type, "tool_call");
+  assert.equal((result.events[0].payload as { callId: string }).callId, "call.1");
+  assert.equal(result.events[1].type, "tool_result");
+});
+
+test("deny: projects tool_call without tool_result, reconciled clean", () => {
+  const decision = buildEvent({
+    eventId: "decision.deny",
+    type: "decision",
+    toolCallId: "call.denied",
+    detail: { action: "deny", reasonCode: "policy_deny", toolName: "exec", toolCallId: "call.denied", params: { command: "rm -rf /" } },
+  });
+
+  const result = projectNativeGuardTrace(CTX, [decision], ["call.denied"]);
+
+  assert.equal(result.reconciliation.reconciled, true);
+  assert.equal(result.reconciliation.projected.tool_call, 1);
+  assert.equal(result.reconciliation.projected.tool_result, 0);
+  const payload = result.events[0].payload as { isHighRiskTool: boolean };
+  assert.equal(payload.isHighRiskTool, true);
+});
+
+test("coverage breach: JSONL has call but Hook has no before event", () => {
+  const decision = buildEvent({
+    eventId: "decision.other",
+    toolCallId: "call.other",
+    detail: { action: "allow", reasonCode: "policy_allow", toolName: "read", toolCallId: "call.other", params: {} },
+  });
+
+  const result = projectNativeGuardTrace(CTX, [decision], ["call.other", "call.missing"]);
+
+  assert.equal(result.reconciliation.reconciled, false);
+  assert.equal(result.reconciliation.coverageBreachCount, 1);
+  assert.ok(result.reconciliation.issues.some((issue) =>
+    issue.kind === "coverage_breach" && issue.toolCallId === "call.missing"
+  ));
+});
+
+test("duplicate outcome: flags mismatch but still projects both", () => {
+  const decision = buildEvent({
+    eventId: "decision.dup",
+    type: "decision",
+    toolCallId: "call.dup",
+    detail: { action: "allow", reasonCode: "policy_allow", toolName: "read", toolCallId: "call.dup", params: {} },
+  });
+  const outcome1 = buildEvent({
+    eventId: "outcome.dup.1",
+    type: "tool_outcome",
+    toolCallId: "call.dup",
+    decisionId: undefined,
+    detail: { finalParamsDigest: "a".repeat(64), durationMs: 100, durationSource: "host", resultDigest: "b".repeat(64), resultPreview: "ok" },
+  });
+  const outcome2 = buildEvent({
+    eventId: "outcome.dup.2",
+    type: "tool_outcome",
+    toolCallId: "call.dup",
+    decisionId: undefined,
+    detail: { finalParamsDigest: "c".repeat(64), durationMs: 200, durationSource: "host", resultDigest: "d".repeat(64), resultPreview: "also ok" },
+  });
+
+  const result = projectNativeGuardTrace(CTX, [decision, outcome1, outcome2], ["call.dup"]);
+
+  assert.equal(result.reconciliation.reconciled, false);
+  assert.ok(result.reconciliation.issues.some((issue) =>
+    issue.kind === "duplicate_outcome" && issue.toolCallId === "call.dup"
+  ));
+  // Still projects both outcomes.
+  assert.equal(result.reconciliation.projected.tool_result, 2);
+});
+
+test("OFF: zero hook events, no coverage breach for empty JSONL", () => {
+  const result = projectNativeGuardTrace(CTX, [], []);
+
+  assert.equal(result.reconciliation.reconciled, true);
+  assert.equal(result.reconciliation.coverageBreachCount, 0);
+  assert.deepEqual(result.events, []);
+});
+
+test("OFF: zero hook events, JSONL has calls → coverage breach", () => {
+  const result = projectNativeGuardTrace(CTX, [], ["call.orphan"]);
+
+  assert.equal(result.reconciliation.reconciled, false);
+  assert.equal(result.reconciliation.coverageBreachCount, 1);
+  assert.ok(result.reconciliation.issues.some((issue) =>
+    issue.kind === "coverage_breach" && issue.toolCallId === "call.orphan"
+  ));
+});
+
+test("system_error: error outcome without prior decision projects system_error", () => {
+  const outcome = buildEvent({
+    eventId: "outcome.error",
+    type: "tool_outcome",
+    toolCallId: "call.error",
+    decisionId: undefined,
+    detail: {
+      finalParamsDigest: "a".repeat(64),
+      error: "command not found",
+      durationSource: "unavailable",
+      resultDigest: "b".repeat(64),
+      toolName: "exec",
+    },
+  });
+
+  const result = projectNativeGuardTrace(CTX, [outcome], ["call.error"]);
+
+  assert.equal(result.reconciliation.projected.system_error, 1);
+  assert.equal(result.reconciliation.coverageBreachCount, 1); // No decision event for this call
+  const sysError = result.events.find((e) => e.type === "system_error");
+  assert.ok(sysError);
+  assert.equal((sysError.payload as { code: string }).code, "TOOL_OUTCOME_ERROR");
+});
+
+test("mixed: multiple calls reconciled correctly", () => {
+  const decision1 = buildEvent({ eventId: "d1", toolCallId: "c1", detail: { action: "allow", reasonCode: "ok", toolName: "read", toolCallId: "c1", params: {} } });
+  const outcome1 = buildEvent({ eventId: "o1", type: "tool_outcome", toolCallId: "c1", decisionId: undefined, detail: { finalParamsDigest: "a".repeat(64), durationMs: 1, durationSource: "host", resultDigest: "b".repeat(64), resultPreview: "ok" } });
+  const decision2 = buildEvent({ eventId: "d2", toolCallId: "c2", detail: { action: "deny", reasonCode: "blocked", toolName: "exec", toolCallId: "c2", params: {} } });
+
+  const result = projectNativeGuardTrace(CTX, [decision1, outcome1, decision2], ["c1", "c2"]);
+
+  assert.equal(result.reconciliation.reconciled, true);
+  assert.equal(result.reconciliation.projected.tool_call, 2);
+  assert.equal(result.reconciliation.projected.tool_result, 1);
+  assert.equal(result.events.length, 3);
+});
+
+test("cancel: no outcome for a cancelled tool call", () => {
+  const decision = buildEvent({
+    eventId: "decision.cancel",
+    type: "decision",
+    toolCallId: "call.cancel",
+    detail: { action: "deny", reasonCode: "cancelled", toolName: "exec", toolCallId: "call.cancel", params: {} },
+  });
+
+  const result = projectNativeGuardTrace(CTX, [decision], ["call.cancel"]);
+
+  // Denied call counted as reconciled when JSONL also has it.
+  assert.equal(result.reconciliation.reconciled, true);
+  assert.equal(result.reconciliation.projected.tool_call, 1);
+  assert.equal(result.reconciliation.projected.tool_result, 0);
+});
+
+// ---------------------------------------------------------------------------
+// Finalize
+// ---------------------------------------------------------------------------
+
+test("finalizeProjectedTrace assigns sequence and timestamps", () => {
+  const segment = projectNativeGuardTrace(
+    CTX,
+    [buildEvent({ eventId: "d1", toolCallId: "c1", detail: { action: "allow", reasonCode: "ok", toolName: "read", toolCallId: "c1", params: {} } })],
+    ["c1"],
+  );
+  const startedAt = "2026-08-01T00:00:00.000Z";
+  const events = finalizeProjectedTrace(segment, CTX, startedAt);
+
+  assert.equal(events.length, 1);
+  assert.equal(events[0].sequence, 1);
+  assert.equal(events[0].timestamp, startedAt);
+  assert.equal(events[0].traceId, CTX.traceId);
+  assert.equal(events[0].runId, CTX.runId);
+  assert.equal(events[0].caseId, CTX.caseId);
+});

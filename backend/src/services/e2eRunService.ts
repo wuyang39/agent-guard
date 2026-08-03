@@ -56,6 +56,13 @@ import {
 } from "../modules/runner/testSelectionService";
 import { updateSelectionPlanStatus } from "../modules/runner/selectionPlanStore";
 import { resolveInsideDirectory } from "../storage/pathSafety";
+import {
+  DetectionSandboxManager,
+  type DetectionSandboxEvidence,
+} from "../modules/openclaw/detectionSandboxManager";
+import { createNativeGuardEventStore } from "../storage/nativeGuardEventStore";
+import type { NativeGuardEvent, RuntimeSupervisionRecord } from "@agent-guard/contracts";
+import type { SandboxEvidenceSummary, NativeGuardCoverageSummary } from "../api/types";
 
 const CONFIGS_DIR = path.resolve(process.cwd(), "configs");
 const P2_DEMO_CASES_FILE = path.join(CONFIGS_DIR, "p2_demo_cases.json");
@@ -402,15 +409,85 @@ export async function runE2E(
     startRunProgress(runGroup, "detecting", targetCases.length, getDetectionConcurrency(request));
     await saveRunGroup(runGroup);
 
-    const detectionResult = await runDetectionCasesConcurrently({
-      targetCases,
-      agent,
-      adapterConfig,
-      customAdapter,
-      runGroup,
-      request,
-      signal: controller.signal,
-    });
+    // ====== Task 12: OpenClaw sandbox lifecycle ======
+    let sandboxManager: DetectionSandboxManager | undefined;
+    const isOpenClaw = request.adapterKind === "openclaw";
+    const detectionImage = process.env.AGENT_GUARD_DETECTION_IMAGE;
+    const nativeGuardRequired = isOpenClaw && Boolean(detectionImage);
+
+    if (nativeGuardRequired) {
+      try {
+        sandboxManager = new DetectionSandboxManager({
+          runGroupId: runGroup.runGroupId,
+          image: detectionImage!,
+          cliPath: request.connection?.cliPath,
+          signal: controller.signal,
+          commandRunner: undefined, // use real Docker
+        });
+        const evidence = await sandboxManager.preflight();
+        await sandboxManager.start();
+
+        runGroup.sandboxEvidence = buildSandboxEvidenceSummary(evidence, undefined);
+        runGroup.nativeGuardCoverage = {
+          coverage: "active",
+          eventsTotal: 0,
+          reconciled: true,
+          coverageBreachCount: 0,
+        };
+        await saveRunGroup(runGroup);
+      } catch (error) {
+        // Docker / sandbox failure: zero attack samples executed.
+        const category = sandboxPreflightFailureCategory(error);
+        runGroup.sandboxEvidence = buildSandboxEvidenceSummary(undefined, category);
+        runGroup.nativeGuardCoverage = {
+          coverage: "misconfigured",
+          eventsTotal: 0,
+          reconciled: false,
+          coverageBreachCount: 0,
+        };
+        runGroup.status = "failed";
+        runGroup.phase = "failed";
+        runGroup.error = error instanceof Error ? error.message : String(error);
+        updateRunProgress(runGroup, {
+          phase: "failed",
+          runningCaseIds: [],
+          retryingCaseIds: [],
+        });
+        appendDetectionFailure(runGroup, {
+          caseId: "sandbox_preflight",
+          phase: "detecting",
+          reason: runGroup.error!,
+          category,
+          attempts: 1,
+          retryable: false,
+          skipped: false,
+          occurredAt: nowIso(),
+        });
+        await saveRunGroup(runGroup);
+        throw error;
+      }
+    }
+
+    let detectionResult: DetectionBatchResult;
+    try {
+      detectionResult = await runDetectionCasesConcurrently({
+        targetCases,
+        agent,
+        adapterConfig,
+        customAdapter,
+        runGroup,
+        request,
+        signal: controller.signal,
+      });
+    } finally {
+      if (sandboxManager) {
+        try {
+          await sandboxManager.cleanup();
+        } catch {
+          // Cleanup failures are recorded but don't override the main error.
+        }
+      }
+    }
     const riskReports = detectionResult.riskReports;
 
     // ====== 阶段 2: 检测报告 → 画像 → 策略包 ======
@@ -467,8 +544,6 @@ export async function runE2E(
     const allSupervisionRecords: Awaited<
       ReturnType<typeof runTestCase>
     >["supervisionRecords"] = [];
-
-    const isOpenClaw = request.adapterKind === "openclaw";
 
     if (!isOpenClaw) {
       allSupervisionRecords.push(
@@ -1602,4 +1677,42 @@ async function readP2DemoCasesConfig(): Promise<P2DemoCasesConfig> {
   } catch {
     return {};
   }
+}
+
+// ---- Task 12: sandbox evidence helpers ----
+
+function sandboxPreflightFailureCategory(
+  error: unknown,
+): P2RunCaseFailure["category"] {
+  const message = error instanceof Error ? error.message : String(error);
+  const normalized = message.toLowerCase();
+  if (normalized.includes("docker") || normalized.includes("unavailable")) return "sandbox_preflight_failed";
+  if (normalized.includes("attestation")) return "sandbox_attestation_failed";
+  if (normalized.includes("cleanup")) return "sandbox_cleanup_failed";
+  if (normalized.includes("openclaw") || normalized.includes("capability")) return "native_guard_unavailable";
+  return "sandbox_preflight_failed";
+}
+
+function buildSandboxEvidenceSummary(
+  evidence?: DetectionSandboxEvidence,
+  failureCategory?: string,
+): SandboxEvidenceSummary {
+  if (evidence) {
+    return {
+      preflightPassed: evidence.status !== "cleaned",
+      attested: evidence.status === "attested",
+      imageId: evidence.imageId,
+      imageDigest: evidence.image,
+      openclawVersion: evidence.openclawVersion,
+      networkMode: evidence.networkMode,
+      containerId: evidence.containerId,
+      configDigest: evidence.configDigest,
+    };
+  }
+  return {
+    preflightPassed: false,
+    attested: false,
+    networkMode: "none",
+    failureCategory,
+  };
 }

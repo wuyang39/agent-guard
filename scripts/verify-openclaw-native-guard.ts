@@ -16,9 +16,14 @@
 
 import { spawnSync } from "node:child_process";
 
-const ARGS = {
+const isWindows = process.platform === "win32";
+const SHELL = isWindows ? (true as const) : (false as const);
+const NPM_CMD = isWindows ? "npm.cmd" : "npm";
+const NODE_CMD = isWindows ? "node.exe" : "node";
+
+const BASE_ARGS = {
   windowsHide: true,
-  shell: false as const,
+  shell: SHELL,
   timeout: 300_000,
   encoding: "utf-8" as const,
   cwd: process.cwd(),
@@ -27,14 +32,25 @@ const ARGS = {
 
 function runTest(testLabel: string, testFiles: string[]): void {
   process.stdout.write(`\n  ${testLabel}...\n`);
-  const result = spawnSync("node", ["--import", "tsx", "--test", ...testFiles], { ...ARGS, stdio: "inherit" });
+  const result = spawnSync(NODE_CMD, ["--import", "tsx", "--test", ...testFiles], { ...BASE_ARGS, stdio: "inherit" });
   if (result.status !== 0) process.exit(1);
   process.stdout.write(`  ✓ ${testLabel} passed.\n`);
 }
 
 function runTypecheck(label: string, script: string): void {
   process.stdout.write(`\n  ${label}...`);
-  const result = spawnSync("npm", ["run", script], ARGS);
+  const result = spawnSync(NPM_CMD, ["run", script], BASE_ARGS);
+  if (result.status !== 0) {
+    const output = (result.stdout ?? "") + (result.stderr ?? "");
+    process.stderr.write(`\n${output.slice(-2000)}`);
+    process.exit(1);
+  }
+  process.stdout.write(" ✓\n");
+}
+
+function runNpm(script: string): void {
+  process.stdout.write(`\n  npm run ${script}...`);
+  const result = spawnSync(NPM_CMD, ["run", script], BASE_ARGS);
   if (result.status !== 0) {
     const output = (result.stdout ?? "") + (result.stderr ?? "");
     process.stderr.write(`\n${output.slice(-2000)}`);
@@ -69,10 +85,7 @@ runTypecheck("Backend typecheck", "typecheck");
 runTypecheck("Plugin typecheck", "typecheck:openclaw-plugin");
 runTypecheck("Frontend typecheck", "typecheck:frontend");
 
-process.stdout.write("\n  Plugin build...");
-const build = spawnSync("npm", ["run", "build:openclaw-plugin"], ARGS);
-if (build.status !== 0) { process.stderr.write(`\n${(build.stderr ?? "").slice(-2000)}`); process.exit(1); }
-process.stdout.write(" ✓\n");
+runNpm("build:openclaw-plugin");
 
 process.stdout.write(`
 ============================================================

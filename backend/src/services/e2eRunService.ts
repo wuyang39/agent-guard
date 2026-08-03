@@ -428,24 +428,29 @@ export async function runE2E(
         await sandboxManager.start();
 
         // Wire sandbox Gateway credentials into the adapter so attack
-        // cases execute inside the isolated Docker sandbox, not the
-        // default host OpenClaw gateway.
+        // cases execute inside the isolated Docker sandbox.
         const sandboxCreds = sandboxManager.getGatewayCredentials();
         if (sandboxCreds && customAdapter instanceof OpenClawAdapter) {
+          const eventStore = createNativeGuardEventStore({
+            rootDir: path.join(OUTPUT_DIR, runGroup.runGroupId, "native-events"),
+          });
           customAdapter = new OpenClawAdapter({
             gatewayUrl: sandboxCreds.gatewayUrl,
             gatewayToken: sandboxCreds.gatewayToken,
             cliPath: request.connection?.cliPath,
             timeoutMs: request.connection?.timeoutMs ?? 300_000,
             nativeGuardRequired: true,
+            nativeGuardEventStore: eventStore,
           });
         }
 
+        // Coverage starts as "conditional" — upgraded to "active" only
+        // after attestation confirms the sandbox is intact post-run.
         runGroup.sandboxEvidence = buildSandboxEvidenceSummary(evidence, undefined);
         runGroup.nativeGuardCoverage = {
-          coverage: "active",
+          coverage: "conditional",
           eventsTotal: 0,
-          reconciled: true,
+          reconciled: false,
           coverageBreachCount: 0,
         };
         await saveRunGroup(runGroup);
@@ -480,6 +485,15 @@ export async function runE2E(
         await saveRunGroup(runGroup);
         throw error;
       }
+    } else if (isOpenClaw) {
+      // No Docker image configured — run without sandbox isolation.
+      // Coverage reflects the degraded state explicitly.
+      runGroup.nativeGuardCoverage = {
+        coverage: "unavailable",
+        eventsTotal: 0,
+        reconciled: false,
+        coverageBreachCount: 0,
+      };
     }
 
     let detectionResult: DetectionBatchResult;
@@ -494,7 +508,26 @@ export async function runE2E(
         signal: controller.signal,
       });
     } finally {
-      if (sandboxManager) {
+      if (sandboxManager && !controller.signal.aborted) {
+        try {
+          // Attest the sandbox is still intact after all cases ran.
+          const firstCaseId = targetCases[0]?.caseId ?? runGroup.runGroupId;
+          const attested = await sandboxManager.attestSession(firstCaseId, "after");
+          runGroup.sandboxEvidence = buildSandboxEvidenceSummary(attested, undefined);
+          if (runGroup.nativeGuardCoverage) {
+            runGroup.nativeGuardCoverage.coverage = "active";
+            runGroup.nativeGuardCoverage.reconciled = true;
+          }
+        } catch (attestError) {
+          runGroup.sandboxEvidence = buildSandboxEvidenceSummary(
+            undefined,
+            sandboxPreflightFailureCategory(attestError),
+          );
+          if (runGroup.nativeGuardCoverage) {
+            runGroup.nativeGuardCoverage.coverage = "misconfigured";
+            runGroup.nativeGuardCoverage.reconciled = false;
+          }
+        }
         try {
           await sandboxManager.cleanup();
         } catch {

@@ -150,14 +150,18 @@ async function main(): Promise<void> {
   });
   occupied = true;
 
-  // Verify the port is indeed occupied.
+  // Verify the port is indeed occupied: nc with a short timeout should
+  // succeed (exit 0) because the port is bound by occupier.
   const portCheck = run("docker", [
     "run", "--rm", "--network", "host",
     "--entrypoint", "",
     image,
-    "sh", "-c", `echo | nc -w 1 127.0.0.1 ${String(probePort)} || true`,
+    "sh", "-c", `echo | nc -w 2 127.0.0.1 ${String(probePort)}`,
   ]);
-  log(`Port ${String(probePort)} occupancy verified (netcat exit ${String(portCheck.exitCode)}).`);
+  if (portCheck.exitCode !== 0) {
+    die("Port hijack defense: occupier did not respond on port — port may not be bound.");
+  }
+  log(`Port ${String(probePort)} occupancy confirmed.`);
 
   occupier.close();
   await new Promise<void>((resolve) => occupier.on("close", resolve));
@@ -186,7 +190,7 @@ async function main(): Promise<void> {
     "--name", containerName,
     "--entrypoint", "",
     image,
-    "sh", "-c", "id -u && mount | grep ' / ' && cat /proc/1/cgroup && capsh --print 2>/dev/null || true && sleep 1",
+    "sh", "-c", "id -u && mount | grep ' / ' && cat /proc/1/cgroup && capsh --print 2>/dev/null || true && sleep 30",
   ]);
 
   let containerId = "";

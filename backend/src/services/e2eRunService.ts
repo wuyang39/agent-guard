@@ -201,6 +201,7 @@ export async function runE2E(
   const controller = new AbortController();
   activeRunControllers.set(runGroup.runGroupId, controller);
   let sandboxManager: DetectionSandboxManager | undefined;
+  let eventStore: ReturnType<typeof createNativeGuardEventStore> | undefined;
 
   try {
     throwIfRunCancelled(controller.signal);
@@ -447,20 +448,24 @@ export async function runE2E(
         await sandboxManager.start();
 
         // Wire sandbox Gateway credentials and shared event store into the
-        // adapter. Uses the same directory as the API handlers so the
-        // decision service and drainRuntimeEvidence see the same events.
+        // adapter. Failure to obtain credentials or a mismatched adapter
+        // type is a hard error — no silent fallback to the host gateway.
         const sandboxCreds = sandboxManager.getGatewayCredentials();
-        if (sandboxCreds && customAdapter instanceof OpenClawAdapter) {
-          const eventStore = createNativeGuardEventStore({});
-          customAdapter = new OpenClawAdapter({
-            gatewayUrl: sandboxCreds.gatewayUrl,
-            gatewayToken: sandboxCreds.gatewayToken,
-            cliPath: request.connection?.cliPath,
-            timeoutMs: request.connection?.timeoutMs ?? 300_000,
-            nativeGuardRequired: true,
-            nativeGuardEventStore: eventStore,
-          });
+        if (!sandboxCreds) {
+          throw new Error("Sandbox started but no Gateway credentials returned.");
         }
+        if (!(customAdapter instanceof OpenClawAdapter)) {
+          throw new Error("Sandbox requires an OpenClaw adapter.");
+        }
+        eventStore = createNativeGuardEventStore({});
+        customAdapter = new OpenClawAdapter({
+          gatewayUrl: sandboxCreds.gatewayUrl,
+          gatewayToken: sandboxCreds.gatewayToken,
+          cliPath: request.connection?.cliPath,
+          timeoutMs: request.connection?.timeoutMs ?? 300_000,
+          nativeGuardRequired: true,
+          nativeGuardEventStore: eventStore,
+        });
 
         runGroup.sandboxEvidence = buildSandboxEvidenceSummary(evidence, undefined);
         runGroup.nativeGuardCoverage = {
@@ -509,44 +514,63 @@ export async function runE2E(
       signal: controller.signal,
     });
 
-    // Attest sandbox integrity after all cases ran. Uses the test run's
-    // actual session key (= testRun.runId), not the caseId.
+    // Attest sandbox integrity after all cases ran, plus verify that the
+    // native guard produced real Hook events (not OFF / empty).
     if (sandboxManager && !controller.signal.aborted) {
-      try {
-        const sessionKey = runGroup.testRunIds[0] ?? runGroup.runGroupId;
-        const attested = await sandboxManager.attestSession(sessionKey, "after");
-        runGroup.sandboxEvidence = buildSandboxEvidenceSummary(attested, undefined);
-        if (runGroup.nativeGuardCoverage) {
-          runGroup.nativeGuardCoverage.coverage = "active";
-          runGroup.nativeGuardCoverage.reconciled = true;
+      // Attest every test run's session, not just the first.
+      const sessionKeys = runGroup.testRunIds.length > 0
+        ? runGroup.testRunIds
+        : [runGroup.runGroupId];
+      for (const sessionKey of sessionKeys) {
+        try {
+          const attested = await sandboxManager.attestSession(sessionKey, "after");
+          runGroup.sandboxEvidence = buildSandboxEvidenceSummary(attested, undefined);
+        } catch (attestError) {
+          const category = sandboxPreflightFailureCategory(attestError);
+          const message = attestError instanceof Error ? attestError.message : String(attestError);
+          runGroup.sandboxEvidence = buildSandboxEvidenceSummary(undefined, category);
+          runGroup.status = "failed";
+          runGroup.phase = "failed";
+          runGroup.error = `Sandbox attestation failed for ${sessionKey}: ${message}`;
+          if (runGroup.nativeGuardCoverage) {
+            runGroup.nativeGuardCoverage.coverage = "misconfigured";
+            runGroup.nativeGuardCoverage.reconciled = false;
+          }
+          updateRunProgress(runGroup, { phase: "failed", runningCaseIds: [], retryingCaseIds: [] });
+          appendDetectionFailure(runGroup, {
+            caseId: "sandbox_attestation",
+            phase: "detecting",
+            reason: runGroup.error!,
+            category,
+            attempts: 1,
+            retryable: false,
+            skipped: false,
+            occurredAt: nowIso(),
+          });
+          await saveRunGroup(runGroup);
+          // Re-throw — attestation failure is fatal.
+          throw attestError;
         }
-      } catch (attestError) {
-        const category = sandboxPreflightFailureCategory(attestError);
-        const message = attestError instanceof Error ? attestError.message : String(attestError);
-        runGroup.sandboxEvidence = buildSandboxEvidenceSummary(undefined, category);
-        runGroup.status = "failed";
-        runGroup.phase = "failed";
-        runGroup.error = `Sandbox attestation failed: ${message}`;
-        if (runGroup.nativeGuardCoverage) {
-          runGroup.nativeGuardCoverage.coverage = "misconfigured";
-          runGroup.nativeGuardCoverage.reconciled = false;
+      }
+
+      // Verify guard produced real decision events, not empty/OFF.
+      if (runGroup.nativeGuardCoverage && eventStore) {
+        try {
+          const events = await eventStore.listByRun(runGroup.runGroupId);
+          const decisions = events.filter((e: NativeGuardEvent) => e.type === "decision");
+          runGroup.nativeGuardCoverage.eventsTotal = events.length;
+          if (decisions.length === 0) {
+            // Guard was OFF or unreachable — no real supervision occurred.
+            runGroup.nativeGuardCoverage.coverage = "conditional";
+            runGroup.nativeGuardCoverage.reconciled = false;
+            runGroup.nativeGuardCoverage.coverageBreachCount = events.length > 0 ? 0 : 1;
+          } else {
+            runGroup.nativeGuardCoverage.coverage = "active";
+            runGroup.nativeGuardCoverage.reconciled = true;
+          }
+        } catch {
+          // Event store unavailable — leave coverage as conditional.
         }
-        updateRunProgress(runGroup, { phase: "failed", runningCaseIds: [], retryingCaseIds: [] });
-        appendDetectionFailure(runGroup, {
-          caseId: "sandbox_attestation",
-          phase: "detecting",
-          reason: runGroup.error!,
-          category,
-          attempts: 1,
-          retryable: false,
-          skipped: false,
-          occurredAt: nowIso(),
-        });
-        await saveRunGroup(runGroup);
-        // Clean up sandbox resources even after attestation failure.
-        await sandboxManager.cleanup().catch(() => undefined);
-        // Re-throw so the run is marked as failed.
-        throw attestError;
       }
     }
     const riskReports = detectionResult.riskReports;
@@ -710,7 +734,26 @@ export async function runE2E(
     throw err;
   } finally {
     if (sandboxManager) {
-      await sandboxManager.cleanup().catch(() => undefined);
+      try {
+        await sandboxManager.cleanup();
+      } catch (cleanupError) {
+        // Cleanup failures are recorded as stable failure category so they
+        // survive the run and can be inspected later.
+        const message = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+        appendDetectionFailure(runGroup, {
+          caseId: "sandbox_cleanup",
+          phase: "detecting",
+          reason: `Sandbox cleanup failed: ${message}`,
+          category: "sandbox_cleanup_failed",
+          attempts: 1,
+          retryable: true,
+          skipped: false,
+          occurredAt: nowIso(),
+        });
+        if (runGroup.nativeGuardCoverage) {
+          runGroup.nativeGuardCoverage.reconciled = false;
+        }
+      }
     }
     if (activeRunControllers.get(runGroup.runGroupId) === controller) {
       activeRunControllers.delete(runGroup.runGroupId);

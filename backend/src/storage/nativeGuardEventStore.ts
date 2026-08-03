@@ -8,6 +8,7 @@ import type {
 import { digestJson } from "@agent-guard/native-guard-protocol";
 import { Mutex } from "../shared/mutex";
 import { resolveInsideDirectory } from "./pathSafety";
+import { scrubSecrets } from "../shared/scrubSecrets";
 
 const DEFAULT_ROOT = path.resolve(
   process.cwd(),
@@ -820,17 +821,7 @@ function isSensitiveKey(key: string): boolean {
 }
 
 function scrubString(value: string): string {
-  return value
-    .replace(
-      /-----BEGIN [^-\r\n]*PRIVATE KEY-----[\s\S]*?-----END [^-\r\n]*PRIVATE KEY-----/gi,
-      "[REDACTED PRIVATE KEY]",
-    )
-    .replace(/\b(authorization|cookie)\b\s*[:=]\s*[^\r\n,]+/gi, "$1=[REDACTED]")
-    .replace(/\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]+/gi, "$1 [REDACTED]")
-    .replace(
-      /\b(api[_-]?key|token|secret|password|credential)\b["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;}\]]+)/gi,
-      "$1=[REDACTED]",
-    );
+  return scrubSecrets(value);
 }
 
 function normalizeWellFormedUnicode(value: string): string {

@@ -37,6 +37,7 @@ import {
   finalizeProjectedTrace,
 } from "../openclaw/nativeGuardTraceProjector";
 import type { NativeGuardEvent, RuntimeSupervisionRecord } from "@agent-guard/contracts";
+import { scrubSecrets } from "../../shared/scrubSecrets";
 
 const DEFAULT_TIMEOUT_MS = Number(process.env.OPENCLAW_TIMEOUT_MS ?? 300_000);
 const MAX_CLI_OUTPUT_BYTES = 256 * 1024;
@@ -352,7 +353,7 @@ export async function spawnOpenClawAgent(
       settled = true;
       reject(new Error(
         `Cannot execute OpenClaw CLI "${cli.displayPath}": ${error.message}. ` +
-        `Check OPENCLAW_CLI env. stderr: ${stderr.slice(0, 300)}`,
+        `Check OPENCLAW_CLI env. stderr: ${safeStderr(stderr)}`,
       ));
     });
     child.on("close", (code) => {
@@ -364,7 +365,7 @@ export async function spawnOpenClawAgent(
       if (code !== 0 && stdout.trim().length === 0) {
         reject(new Error(
           `OpenClaw CLI "${cli.displayPath}" exited with code ${code ?? "unknown"}. ` +
-          `stderr: ${stderr.slice(0, 300)}`,
+          `stderr: ${safeStderr(stderr)}`,
         ));
         return;
       }
@@ -380,11 +381,21 @@ export async function spawnOpenClawAgent(
             result: { payloads: [{ text: stdout.trim(), mediaUrl: null }] },
           });
         } else {
-          reject(new Error(`OpenClaw empty output. stderr: ${stderr.slice(0, 300)}`));
+          reject(new Error(`OpenClaw empty output. stderr: ${safeStderr(stderr)}`));
         }
       }
     });
   });
+}
+
+/**
+ * Scrub stderr for credential patterns BEFORE truncation, so that
+ * a 300-char window never captures a partial secret that survives
+ * pattern matching. Preserves diagnostic value while redacting values.
+ */
+function safeStderr(stderr: string, maxLen = 300): string {
+  const scrubbed = scrubSecrets(stderr);
+  return scrubbed.length <= maxLen ? scrubbed : `${scrubbed.slice(0, maxLen)}…`;
 }
 
 // ---- JSONL 解析 ----

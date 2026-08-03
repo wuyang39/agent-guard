@@ -463,6 +463,71 @@ Evidence 面使用双因子：独立 evidence bearer 加每 epoch Ed25519 proof-
 
 进程外 launcher 是最终启动边界：若 guarded marker 存在，而 live registry query 不能同时证明 Agent Guard plugin、final `before_tool_call`、recovery service、可信的 post-approval lease recheck capability，以及 trusted JSON-only params provenance 或原子 approved-snapshot execution 参数契约，launcher 必须拒绝正常 Gateway 启动，并且只开放不调度工具的 maintenance cleanup。参数契约是审批后租约复查之外的附加门禁；固定 `3edbe19f` 宿主不提供这两项未来能力，继续处于 unsupported/quarantined。插件 quarantine 不是该门禁的替代品；外部门禁的实现与 live 验收仍是 Task 14 的阻断残余工作。
 
+### 7.2 Detection Sandbox 生命周期 (Task 11-12)
+
+`DetectionSandboxManager` (`backend/src/modules/openclaw/detectionSandboxManager.ts`) 管理 OpenClaw 检测的 Docker 隔离运行时。生命周期在 `e2eRunService` 中编排：
+
+```
+preflight → start → [run cases] → attest → revoke → cleanup
+```
+
+**Preflight**：验证 Docker daemon 可用 → 解析不可变镜像 digest (sha256) → 创建隔离 profile → 探测 OpenClaw 能力 → 可选创建受控 sink 网络。
+
+**Start**：生成随机 Bearer token → 分配临时 loopback 端口 → 启动隔离 OpenClaw Gateway，三步就绪检测：未认证请求必须 401/403 → 已认证 root 200 → status 端点 nonce 挑战（`X-Agent-Guard-Ready-Nonce` 回显验证）。
+
+**Run**：每个 attack case 在沙箱内执行，Gateway URL/token 注入 OpenClaw session。
+
+**Attest**：`sandbox explain` 验证 → Docker inspect 验证容器（user, readonly root, capDrop ALL, pids/memory/cpu limits, no-new-privileges, tmpfs mounts）。
+
+**Cleanup**：捕获 sink 日志 → 移除 labeled 容器 → 移除 labeled 网络 → SIGTERM 后 force-kill Gateway 进程树 → 移除 profile 目录。每步错误记录到 `getCleanupErrors()`，失败不阻止其他步骤。
+
+任何 Docker/沙箱失败 → `runGroup.phase = "failed"`，**零 attack sample 执行**。失败类别：`sandbox_preflight_failed`、`sandbox_attestation_failed`、`sandbox_cleanup_failed`、`native_guard_unavailable`。
+
+### 7.3 Native Guard Trace Projection (Task 12)
+
+`nativeGuardTraceProjector` (`backend/src/modules/openclaw/nativeGuardTraceProjector.ts`) 从真实 Hook 事件投影正式 `InteractionTrace` 的 `tool_call`/`tool_result`/`system_error` 事件。JSONL 仅保留为交叉校验 artifact，**不做事后 replay**。
+
+**投影规则**：
+- `decision` Hook 事件 (type=decision) → `tool_call` TraceEvent
+- `tool_outcome` Hook 事件 → `tool_result` TraceEvent
+- Error outcome 无对应 decision → `system_error` TraceEvent (code=TOOL_OUTCOME_ERROR)
+
+**调和 (Reconciliation)**：
+- Hook 有 + JSONL 有 → complete evidence
+- Hook deny + JSONL 无 result → as expected
+- JSONL 有 + Hook 无 before → **coverage breach**，run 失败
+- 同一 callId 多个 outcome → duplicate outcome，标记 mismatch
+
+调和结果写入 `P2RunGroup.nativeGuardCoverage`（`NativeGuardCoverageSummary`），包括 `coverage`、`eventsTotal`、`reconciled`、`coverageBreachCount`、`leaseId`/`leaseEpoch`。
+
+### 7.4 Realtime Hook Events & Coverage UI (Task 13)
+
+`realtimeMcpServer.ts` 新增 `native_tool_hook` 事件类型。`emitNativeToolHookEvent()` 将原生 guard 决策/outcome 发布到实时 SSE 流，携带 `toolCallId`、`toolName`、`action`、`coverage`。
+
+**前端覆盖状态显示** (Task 13)：
+
+System 页面渲染 6 种覆盖状态及降级说明：
+
+| coverage | 显示 |
+|---|---|
+| `active` | ✓ 完整监督 — 原生工具受控 |
+| `conditional` | ⚠ 有条件 — 存在配置冲突或依赖缺失 |
+| `unsupported` | ✗ 不支持 — OpenClaw 版本过低 |
+| `misconfigured` | ✗ 配置错误 — 插件/认证/策略/Docker 异常 |
+| `off` | ○ 关闭 — 未启用 |
+| `recovery` | ⟳ 恢复中 — 功能受限 |
+
+TestRuns 页面新增"沙箱与原生监护"诊断区，显示 Docker Preflight/Attestation 状态、镜像 digest、网络模式、容器 ID、失败类别。
+
+### 7.5 沙箱证据与覆盖摘要类型 (P2RunGroup 扩展)
+
+`P2RunGroup` 新增两个字段：
+
+- `nativeGuardCoverage?: NativeGuardCoverageSummary` — coverage 状态、事件总数、调和状态、覆盖缺口数、leaseId/epoch
+- `sandboxEvidence?: SandboxEvidenceSummary` — Docker preflight/attest 通过状态、镜像 ID/digest、OpenClaw 版本、网络模式、容器 ID、失败类别
+
+`RunCaseFailure.category` 新增 5 种稳定失败类别：`sandbox_preflight_failed`、`sandbox_attestation_failed`、`sandbox_cleanup_failed`、`native_guard_unavailable`、`native_guard_coverage_breach`。
+
 ## 8. 输出文件约束
 
 每次测试运行至少生成:

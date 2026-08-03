@@ -192,7 +192,7 @@ export async function runE2E(
 ): Promise<RunE2EResult> {
   // P2 adapterKind 映射到 contracts adapterType + 自定义 adapter。
   const adapterType = mapAdapterKind(request.adapterKind);
-  const customAdapter = buildCustomAdapter(request);
+  let customAdapter = buildCustomAdapter(request);
   const provisionalAgentId =
     existingRunGroup?.agentId ?? request.agent.agentId ?? createId("agent");
   const runGroup =
@@ -426,6 +426,20 @@ export async function runE2E(
         });
         const evidence = await sandboxManager.preflight();
         await sandboxManager.start();
+
+        // Wire sandbox Gateway credentials into the adapter so attack
+        // cases execute inside the isolated Docker sandbox, not the
+        // default host OpenClaw gateway.
+        const sandboxCreds = sandboxManager.getGatewayCredentials();
+        if (sandboxCreds && customAdapter instanceof OpenClawAdapter) {
+          customAdapter = new OpenClawAdapter({
+            gatewayUrl: sandboxCreds.gatewayUrl,
+            gatewayToken: sandboxCreds.gatewayToken,
+            cliPath: request.connection?.cliPath,
+            timeoutMs: request.connection?.timeoutMs ?? 300_000,
+            nativeGuardRequired: true,
+          });
+        }
 
         runGroup.sandboxEvidence = buildSandboxEvidenceSummary(evidence, undefined);
         runGroup.nativeGuardCoverage = {

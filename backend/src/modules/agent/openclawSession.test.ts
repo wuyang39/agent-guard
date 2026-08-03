@@ -123,3 +123,31 @@ test("scrubSecrets handles empty and short strings safely", () => {
   assert.equal(scrubSecrets("ok"), "ok");
   assert.equal(scrubSecrets("err"), "err");
 });
+
+test("scrubSecrets redacts OPENAI_API_KEY env var assignments", () => {
+  const raw = "Error: OPENAI_API_KEY=sk-proj-abc123xyz fetch failed";
+  const scrubbed = scrubSecrets(raw);
+  assert.equal(scrubbed.includes("sk-proj-abc123xyz"), false);
+  assert.match(scrubbed, /OPENAI_API_KEY=\[REDACTED\]/);
+});
+
+test("scrubSecrets redacts ANTHROPIC_AUTH_TOKEN env var assignments", () => {
+  const raw = "ANTHROPIC_AUTH_TOKEN=sk-ant-api03-xxx authentication error";
+  const scrubbed = scrubSecrets(raw);
+  assert.equal(scrubbed.includes("sk-ant-api03-xxx"), false);
+  assert.match(scrubbed, /ANTHROPIC_AUTH_TOKEN=\[REDACTED\]/);
+});
+
+test("scrubSecrets redacts AWS_SECRET_ACCESS_KEY env var assignments", () => {
+  const raw = "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+  const scrubbed = scrubSecrets(raw);
+  assert.equal(scrubbed.includes("wJalrXUtnFEMI"), false);
+  assert.match(scrubbed, /AWS_SECRET_ACCESS_KEY=\[REDACTED\]/);
+});
+
+test("scrubSecrets redacts CLIENT_SECRET env var assignments", () => {
+  const raw = "CLIENT_SECRET=GOCSPX-abc123def456";
+  const scrubbed = scrubSecrets(raw);
+  assert.equal(scrubbed.includes("GOCSPX-abc123def456"), false);
+  assert.match(scrubbed, /CLIENT_SECRET=\[REDACTED\]/);
+});

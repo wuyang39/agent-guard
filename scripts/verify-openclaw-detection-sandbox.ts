@@ -115,9 +115,7 @@ async function main(): Promise<void> {
   // --- Immutable image check -----------------------------------------------
   const image = process.env.AGENT_GUARD_DETECTION_IMAGE ?? "";
   if (!image) {
-    log("AGENT_GUARD_DETECTION_IMAGE not set — skipping container-level checks.");
-    log("Set AGENT_GUARD_DETECTION_IMAGE=registry/image@sha256:... to enable full verification.");
-    process.exit(0);
+    die("AGENT_GUARD_DETECTION_IMAGE not set. Set the env var to registry/image@sha256:... or set AGENT_GUARD_ALLOW_DOCKER_TEST_SKIP=1 to skip.");
   }
 
   if (!/^.*@sha256:[0-9a-f]{64}$/i.test(image)) {

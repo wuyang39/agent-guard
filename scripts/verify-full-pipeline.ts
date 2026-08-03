@@ -189,14 +189,16 @@ async function main(): Promise<void> {
     }
     // Generated oracles declare seed-intended categories; for encoding-mutated
     // prompts the rule engine may produce semantically equivalent but differently
-    // named categories. Require at least one match instead of all.
+    // named categories. Require at least one match — the || findings.length
+    // fallback is intentionally absent so that a complete category mismatch
+    // (e.g. seed declares unauthorized_access but no rule can fire it) is caught.
     const isGenerated = oracle.caseId.startsWith("case.generated.");
     if (isGenerated) {
       const hasAnyMatch = oracle.expectedOutcome.expectedRiskCategories.some(
         (category) => findingCategories.has(category),
       );
       assert(
-        hasAnyMatch || evaluation.findings.length > 0,
+        hasAnyMatch,
         `${oracle.caseId}: none of the expected categories ${JSON.stringify(oracle.expectedOutcome.expectedRiskCategories)} matched actual ${JSON.stringify([...findingCategories])}`,
       );
     } else {

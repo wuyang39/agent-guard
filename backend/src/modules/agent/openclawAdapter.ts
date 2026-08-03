@@ -22,20 +22,18 @@ import { runOpenClawSession } from "./openclawSession";
 
 export type OpenClawAdapterOptions = {
   gatewayUrl?: string;
+  gatewayToken?: string;
   cliPath?: string;
   timeoutMs?: number;
+  env?: Record<string, string | undefined>;
+  nativeGuardRequired?: boolean;
 };
-
-const CLI_CANDIDATES = [
-  process.env.OPENCLAW_CLI,
-  "openclaw",
-].filter((value): value is string => Boolean(value && value.trim()));
 
 export function resolveOpenClawCliPath(preferredCliPath?: string): string {
   if (preferredCliPath?.trim()) {
     return resolveCommandPath(preferredCliPath.trim());
   }
-  for (const candidate of CLI_CANDIDATES) {
+  for (const candidate of [process.env.OPENCLAW_CLI, "openclaw"].filter((value): value is string => Boolean(value && value.trim()))) {
     if (candidate === "openclaw") {
       return resolveCommandPath(candidate);
     }
@@ -54,9 +52,12 @@ export type OpenClawCliInvocation = {
   env?: Record<string, string>;
 };
 
-export function buildOpenClawProcessEnv(extraEnv?: Record<string, string>): NodeJS.ProcessEnv {
+export function buildOpenClawProcessEnv(
+  extraEnv?: Record<string, string | undefined>,
+  inheritProcessEnv = true,
+): NodeJS.ProcessEnv {
   return {
-    ...process.env,
+    ...(inheritProcessEnv ? process.env : minimalProcessEnv()),
     ...extraEnv,
     HTTP_PROXY: "",
     HTTPS_PROXY: "",
@@ -67,6 +68,15 @@ export function buildOpenClawProcessEnv(extraEnv?: Record<string, string>): Node
     NO_PROXY: "*",
     no_proxy: "*",
   };
+}
+
+function minimalProcessEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const key of ["PATH", "PATHEXT", "SystemRoot", "WINDIR", "ComSpec", "TEMP", "TMP", "LANG", "LC_ALL", "TZ"] as const) {
+    const value = process.env[key];
+    if (value !== undefined) env[key] = value;
+  }
+  return env;
 }
 
 export function resolveOpenClawCliInvocation(preferredCliPath?: string): OpenClawCliInvocation {
@@ -85,7 +95,8 @@ export function resolveOpenClawCliInvocation(preferredCliPath?: string): OpenCla
     command: cliPath,
     argsPrefix: [],
     displayPath: cliPath,
-    shell: shouldUseWindowsShell(cliPath),
+    // Never route untrusted session/message arguments through a shell.
+    shell: false,
   };
 }
 
@@ -108,9 +119,12 @@ export class OpenClawAdapter implements AgentAdapter {
 export class OpenClawSession implements AgentSession {
   public readonly agent: AgentUnderTest;
   public readonly config: AgentAdapterConfig;
-  private readonly gatewayUrl: string;
+  private readonly gatewayUrl?: string;
+  private readonly gatewayToken?: string;
   private readonly cliPath?: string;
   private readonly timeoutMs?: number;
+  private readonly env?: Record<string, string | undefined>;
+  private readonly nativeGuardRequired: boolean;
   private sandboxTools: { toolId: string; toolName?: string; description?: string }[] = [];
   private sandboxResources: { resourceId: string; path?: string; sensitivity?: string; description?: string }[] = [];
 
@@ -121,9 +135,12 @@ export class OpenClawSession implements AgentSession {
   ) {
     this.agent = agent;
     this.config = config;
-    this.gatewayUrl = options.gatewayUrl ?? DEFAULT_GATEWAY;
+    this.gatewayUrl = options.gatewayUrl ?? (options.nativeGuardRequired ? DEFAULT_GATEWAY : undefined);
+    this.gatewayToken = options.gatewayToken;
     this.cliPath = options.cliPath;
     this.timeoutMs = options.timeoutMs;
+    this.env = options.env;
+    this.nativeGuardRequired = options.nativeGuardRequired ?? false;
   }
 
   setSandboxContext(ctx: {
@@ -151,7 +168,14 @@ export class OpenClawSession implements AgentSession {
           agentId: runMeta?.agentId ?? this.agent.agentId,
         },
         { tools: this.sandboxTools, resources: this.sandboxResources },
-        { cliPath: this.cliPath, timeoutMs: this.timeoutMs },
+        {
+          cliPath: this.cliPath,
+          timeoutMs: this.timeoutMs,
+          env: this.env,
+          gatewayUrl: this.gatewayUrl,
+          gatewayToken: this.gatewayToken,
+          nativeGuardRequired: this.nativeGuardRequired,
+        },
       );
 
       const endedAt = nowIso();
@@ -235,10 +259,6 @@ export async function checkOpenClawAvailable(cliPath?: string): Promise<{
       }
     });
   });
-}
-
-function shouldUseWindowsShell(commandPath: string): boolean {
-  return process.platform === "win32" && /\.(?:cmd|bat)$/i.test(commandPath);
 }
 
 function resolveWindowsNpmShimTarget(commandPath: string): {

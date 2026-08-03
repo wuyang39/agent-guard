@@ -47,6 +47,8 @@ export type InspectOpenClawCapabilitiesInput = {
   cliPath?: string;
   env?: Record<string, string>;
   isolatedProfile: boolean;
+  inheritProcessEnv?: boolean;
+  signal?: AbortSignal;
 };
 
 export type OpenClawCommandInput = {
@@ -56,6 +58,7 @@ export type OpenClawCommandInput = {
   env: NodeJS.ProcessEnv;
   timeoutMs: number;
   maxOutputBytes: number;
+  signal?: AbortSignal;
 };
 
 export type OpenClawCommandResult = {
@@ -177,13 +180,14 @@ export function createOpenClawControlClient(
       const env = buildOpenClawProcessEnv({
         ...cli.env,
         ...input.env,
-      });
+      }, input.inheritProcessEnv ?? true);
       const versionResult = await executeCli(
         commandRunner,
         cli,
         ["--version"],
         env,
         timeoutMs,
+        input.signal,
       );
       const pluginResult = await executeCli(
         commandRunner,
@@ -191,6 +195,7 @@ export function createOpenClawControlClient(
         ["plugins", "list", "--json"],
         env,
         timeoutMs,
+        input.signal,
       );
       const openclawVersion = parseVersion(versionResult.stdout);
       const inventory = parsePluginList(pluginResult.stdout);
@@ -617,10 +622,20 @@ async function executeCli(
   args: string[],
   env: NodeJS.ProcessEnv,
   timeoutMs: number,
+  parentSignal?: AbortSignal,
 ): Promise<OpenClawCommandResult> {
   let result: OpenClawCommandResult;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  const controller = new AbortController();
+  let rejectParentAbort: ((reason?: unknown) => void) | undefined;
+  const parentAbort = new Promise<never>((_resolve, reject) => { rejectParentAbort = reject; });
+  const onParentAbort = (): void => {
+    controller.abort();
+    rejectParentAbort?.(new Error("OpenClaw CLI inspection aborted."));
+  };
+  parentSignal?.addEventListener("abort", onParentAbort, { once: true });
   try {
+    if (parentSignal?.aborted) onParentAbort();
     result = await Promise.race([
       runner({
         command: cli.command,
@@ -629,18 +644,21 @@ async function executeCli(
         env,
         timeoutMs,
         maxOutputBytes: MAX_RESPONSE_BYTES,
+        signal: controller.signal,
       }),
       new Promise<never>((_resolve, reject) => {
         timer = setTimeout(
-          () => reject(new Error("OpenClaw CLI inspection timed out.")),
+          () => { controller.abort(); reject(new Error("OpenClaw CLI inspection timed out.")); },
           timeoutMs,
         );
       }),
+      parentAbort,
     ]);
   } catch {
     throw controlError("OPENCLAW_CLI_FAILED", "OpenClaw CLI inspection failed.");
   } finally {
     if (timer) clearTimeout(timer);
+    parentSignal?.removeEventListener("abort", onParentAbort);
   }
   assertOutputLimit(result.stdout);
   assertOutputLimit(result.stderr);
@@ -655,6 +673,10 @@ async function executeCli(
 
 function runCommand(input: OpenClawCommandInput): Promise<OpenClawCommandResult> {
   return new Promise((resolve, reject) => {
+    if (input.signal?.aborted) {
+      reject(new Error("OpenClaw CLI inspection aborted."));
+      return;
+    }
     const child = spawn(input.command, input.args, {
       windowsHide: true,
       shell: input.shell,
@@ -668,6 +690,7 @@ function runCommand(input: OpenClawCommandInput): Promise<OpenClawCommandResult>
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      input.signal?.removeEventListener("abort", onAbort);
       terminateProcessTree(child);
       reject(new Error("OpenClaw CLI inspection failed."));
     };
@@ -680,6 +703,8 @@ function runCommand(input: OpenClawCommandInput): Promise<OpenClawCommandResult>
       return current + chunk.toString();
     };
     const timer = setTimeout(fail, input.timeoutMs);
+    const onAbort = (): void => fail();
+    input.signal?.addEventListener("abort", onAbort, { once: true });
     child.stdout?.on("data", (chunk: Buffer | string) => { stdout = append(stdout, chunk); });
     child.stderr?.on("data", (chunk: Buffer | string) => { stderr = append(stderr, chunk); });
     child.on("error", fail);
@@ -687,6 +712,7 @@ function runCommand(input: OpenClawCommandInput): Promise<OpenClawCommandResult>
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      input.signal?.removeEventListener("abort", onAbort);
       resolve({ exitCode: exitCode ?? -1, stdout, stderr });
     });
   });

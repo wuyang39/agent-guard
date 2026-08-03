@@ -200,6 +200,7 @@ export async function runE2E(
   runGroup.selectionPlanId = request.selectionPlanId;
   const controller = new AbortController();
   activeRunControllers.set(runGroup.runGroupId, controller);
+  let sandboxManager: DetectionSandboxManager | undefined;
 
   try {
     throwIfRunCancelled(controller.signal);
@@ -410,16 +411,34 @@ export async function runE2E(
     await saveRunGroup(runGroup);
 
     // ====== Task 12: OpenClaw sandbox lifecycle ======
-    let sandboxManager: DetectionSandboxManager | undefined;
+    sandboxManager = undefined;
     const isOpenClaw = request.adapterKind === "openclaw";
     const detectionImage = process.env.AGENT_GUARD_DETECTION_IMAGE;
-    const nativeGuardRequired = isOpenClaw && Boolean(detectionImage);
 
-    if (nativeGuardRequired) {
+    if (isOpenClaw) {
+      // OpenClaw detection requires Docker isolation. Without an immutable
+      // image the sandbox cannot be provisioned. Fail immediately —
+      // zero attack samples are executed.
+      if (!detectionImage) {
+        const message = "OpenClaw detection requires AGENT_GUARD_DETECTION_IMAGE env var set to an immutable image digest (registry/image@sha256:...).";
+        runGroup.status = "failed";
+        runGroup.phase = "failed";
+        runGroup.error = message;
+        runGroup.nativeGuardCoverage = {
+          coverage: "misconfigured",
+          eventsTotal: 0,
+          reconciled: false,
+          coverageBreachCount: 0,
+        };
+        updateRunProgress(runGroup, { phase: "failed", runningCaseIds: [], retryingCaseIds: [] });
+        await saveRunGroup(runGroup);
+        throw new Error(message);
+      }
+
       try {
         sandboxManager = new DetectionSandboxManager({
           runGroupId: runGroup.runGroupId,
-          image: detectionImage!,
+          image: detectionImage,
           cliPath: request.connection?.cliPath,
           signal: controller.signal,
           commandRunner: undefined, // use real Docker
@@ -427,13 +446,12 @@ export async function runE2E(
         const evidence = await sandboxManager.preflight();
         await sandboxManager.start();
 
-        // Wire sandbox Gateway credentials into the adapter so attack
-        // cases execute inside the isolated Docker sandbox.
+        // Wire sandbox Gateway credentials and shared event store into the
+        // adapter. Uses the same directory as the API handlers so the
+        // decision service and drainRuntimeEvidence see the same events.
         const sandboxCreds = sandboxManager.getGatewayCredentials();
         if (sandboxCreds && customAdapter instanceof OpenClawAdapter) {
-          const eventStore = createNativeGuardEventStore({
-            rootDir: path.join(OUTPUT_DIR, runGroup.runGroupId, "native-events"),
-          });
+          const eventStore = createNativeGuardEventStore({});
           customAdapter = new OpenClawAdapter({
             gatewayUrl: sandboxCreds.gatewayUrl,
             gatewayToken: sandboxCreds.gatewayToken,
@@ -444,8 +462,6 @@ export async function runE2E(
           });
         }
 
-        // Coverage starts as "conditional" — upgraded to "active" only
-        // after attestation confirms the sandbox is intact post-run.
         runGroup.sandboxEvidence = buildSandboxEvidenceSummary(evidence, undefined);
         runGroup.nativeGuardCoverage = {
           coverage: "conditional",
@@ -467,11 +483,7 @@ export async function runE2E(
         runGroup.status = "failed";
         runGroup.phase = "failed";
         runGroup.error = error instanceof Error ? error.message : String(error);
-        updateRunProgress(runGroup, {
-          phase: "failed",
-          runningCaseIds: [],
-          retryingCaseIds: [],
-        });
+        updateRunProgress(runGroup, { phase: "failed", runningCaseIds: [], retryingCaseIds: [] });
         appendDetectionFailure(runGroup, {
           caseId: "sandbox_preflight",
           phase: "detecting",
@@ -485,54 +497,56 @@ export async function runE2E(
         await saveRunGroup(runGroup);
         throw error;
       }
-    } else if (isOpenClaw) {
-      // No Docker image configured — run without sandbox isolation.
-      // Coverage reflects the degraded state explicitly.
-      runGroup.nativeGuardCoverage = {
-        coverage: "unavailable",
-        eventsTotal: 0,
-        reconciled: false,
-        coverageBreachCount: 0,
-      };
     }
 
-    let detectionResult: DetectionBatchResult;
-    try {
-      detectionResult = await runDetectionCasesConcurrently({
-        targetCases,
-        agent,
-        adapterConfig,
-        customAdapter,
-        runGroup,
-        request,
-        signal: controller.signal,
-      });
-    } finally {
-      if (sandboxManager && !controller.signal.aborted) {
-        try {
-          // Attest the sandbox is still intact after all cases ran.
-          const firstCaseId = targetCases[0]?.caseId ?? runGroup.runGroupId;
-          const attested = await sandboxManager.attestSession(firstCaseId, "after");
-          runGroup.sandboxEvidence = buildSandboxEvidenceSummary(attested, undefined);
-          if (runGroup.nativeGuardCoverage) {
-            runGroup.nativeGuardCoverage.coverage = "active";
-            runGroup.nativeGuardCoverage.reconciled = true;
-          }
-        } catch (attestError) {
-          runGroup.sandboxEvidence = buildSandboxEvidenceSummary(
-            undefined,
-            sandboxPreflightFailureCategory(attestError),
-          );
-          if (runGroup.nativeGuardCoverage) {
-            runGroup.nativeGuardCoverage.coverage = "misconfigured";
-            runGroup.nativeGuardCoverage.reconciled = false;
-          }
+    const detectionResult = await runDetectionCasesConcurrently({
+      targetCases,
+      agent,
+      adapterConfig,
+      customAdapter,
+      runGroup,
+      request,
+      signal: controller.signal,
+    });
+
+    // Attest sandbox integrity after all cases ran. Uses the test run's
+    // actual session key (= testRun.runId), not the caseId.
+    if (sandboxManager && !controller.signal.aborted) {
+      try {
+        const sessionKey = runGroup.testRunIds[0] ?? runGroup.runGroupId;
+        const attested = await sandboxManager.attestSession(sessionKey, "after");
+        runGroup.sandboxEvidence = buildSandboxEvidenceSummary(attested, undefined);
+        if (runGroup.nativeGuardCoverage) {
+          runGroup.nativeGuardCoverage.coverage = "active";
+          runGroup.nativeGuardCoverage.reconciled = true;
         }
-        try {
-          await sandboxManager.cleanup();
-        } catch {
-          // Cleanup failures are recorded but don't override the main error.
+      } catch (attestError) {
+        const category = sandboxPreflightFailureCategory(attestError);
+        const message = attestError instanceof Error ? attestError.message : String(attestError);
+        runGroup.sandboxEvidence = buildSandboxEvidenceSummary(undefined, category);
+        runGroup.status = "failed";
+        runGroup.phase = "failed";
+        runGroup.error = `Sandbox attestation failed: ${message}`;
+        if (runGroup.nativeGuardCoverage) {
+          runGroup.nativeGuardCoverage.coverage = "misconfigured";
+          runGroup.nativeGuardCoverage.reconciled = false;
         }
+        updateRunProgress(runGroup, { phase: "failed", runningCaseIds: [], retryingCaseIds: [] });
+        appendDetectionFailure(runGroup, {
+          caseId: "sandbox_attestation",
+          phase: "detecting",
+          reason: runGroup.error!,
+          category,
+          attempts: 1,
+          retryable: false,
+          skipped: false,
+          occurredAt: nowIso(),
+        });
+        await saveRunGroup(runGroup);
+        // Clean up sandbox resources even after attestation failure.
+        await sandboxManager.cleanup().catch(() => undefined);
+        // Re-throw so the run is marked as failed.
+        throw attestError;
       }
     }
     const riskReports = detectionResult.riskReports;
@@ -695,6 +709,9 @@ export async function runE2E(
     }
     throw err;
   } finally {
+    if (sandboxManager) {
+      await sandboxManager.cleanup().catch(() => undefined);
+    }
     if (activeRunControllers.get(runGroup.runGroupId) === controller) {
       activeRunControllers.delete(runGroup.runGroupId);
     }

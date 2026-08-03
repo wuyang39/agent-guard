@@ -60,7 +60,7 @@ export async function testRunRoutes(
     if (query.async === "1" || query.async === "true") {
       const runGroup = createInitialE2ERunGroup(body);
       await saveRunGroup(runGroup);
-      void runE2E(body, runGroup).catch((err) => {
+      void runE2E(body, runGroup, guardLease).catch((err) => {
         request.log.error({ err, runGroupId: runGroup.runGroupId }, "Async E2E run failed");
       });
       reply.code(202);

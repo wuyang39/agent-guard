@@ -52,6 +52,9 @@ export type OpenClawRunResult = {
   session: ParsedSession;
   output: OpenClawAgentOutput;
   jsonlPath: string;
+  /** Task 12: Reconciliation result from Hook events vs JSONL cross-check.
+   *  Undefined when nativeGuardEventStore is not available. */
+  reconciliation?: { reconciled: boolean; coverageBreachCount: number };
 };
 
 export type OpenClawRunOptions = {
@@ -189,6 +192,7 @@ export async function runOpenClawSession(
 
   // 4. 有原生 guard 事件时，从真实 Hook 决策/outcome 投影 Trace 事件
   //    JSONL 仅用于交叉校验，不做事后 replay。
+  let reconciliation: OpenClawRunResult["reconciliation"];
   if (options.nativeGuardEventStore) {
     const nativeGuardEvents = await drainNativeGuardEvidence(
       options.nativeGuardEventStore,
@@ -221,10 +225,14 @@ export async function runOpenClawSession(
         }
       }
 
-      // 交叉校验：coverage breach 记为不可调和
+      // Propagate reconciliation result to caller for run-group aggregation.
+      reconciliation = {
+        reconciled: segment.reconciliation.reconciled,
+        coverageBreachCount: segment.reconciliation.coverageBreachCount,
+      };
       if (!segment.reconciliation.reconciled) {
-        // coverage breach 通过 /session/{sessionKey}/reconciliation 透出
-        // 当前仅记录到 session key，由上层 run 服务消费
+        // Coverage breach — JSONL has calls without Hook before events.
+        // The reconciliation detail is returned so the caller can fail the run.
       }
     }
   } else {
@@ -232,7 +240,7 @@ export async function runOpenClawSession(
     // Trace 中只保留非 tool 事件（task_sent、agent_message 等）。
   }
 
-  return { session, output, jsonlPath };
+  return { session, output, jsonlPath, reconciliation };
 }
 
 async function replayToolCallsToTrace(

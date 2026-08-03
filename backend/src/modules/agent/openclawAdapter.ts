@@ -29,6 +29,14 @@ export type OpenClawAdapterOptions = {
   nativeGuardRequired?: boolean;
   /** Task 12: Native guard event store for draining runtime evidence. */
   nativeGuardEventStore?: import("./openclawSession").OpenClawRunOptions["nativeGuardEventStore"];
+  /** Task 14: Lease activation per-session. Called before CLI with the
+   *  actual OpenClaw session key (= runMeta.runId). */
+  guardLease?: {
+    activate(input: {
+      rootSessionKey: string; runGroupId: string;
+    }): Promise<{ leaseId: string; leaseEpoch: number }>;
+    revoke(leaseId: string): Promise<void>;
+  };
 };
 
 export function resolveOpenClawCliPath(preferredCliPath?: string): string {
@@ -128,9 +136,11 @@ export class OpenClawSession implements AgentSession {
   private readonly env?: Record<string, string | undefined>;
   private readonly nativeGuardRequired: boolean;
   private readonly nativeGuardEventStore?: OpenClawAdapterOptions["nativeGuardEventStore"];
+  private readonly guardLease?: OpenClawAdapterOptions["guardLease"];
   private sandboxTools: { toolId: string; toolName?: string; description?: string }[] = [];
   private sandboxResources: { resourceId: string; path?: string; sensitivity?: string; description?: string }[] = [];
   private lastRunMeta?: import("./agentAdapter").AgentRunMeta;
+  private activatedLeaseId?: string;
 
   constructor(
     agent: AgentUnderTest,
@@ -146,6 +156,7 @@ export class OpenClawSession implements AgentSession {
     this.env = options.env;
     this.nativeGuardRequired = options.nativeGuardRequired ?? false;
     this.nativeGuardEventStore = options.nativeGuardEventStore;
+    this.guardLease = options.guardLease;
   }
 
   setSandboxContext(ctx: {
@@ -162,6 +173,31 @@ export class OpenClawSession implements AgentSession {
     runMeta?: AgentRunMeta,
   ): Promise<AgentRunResult> {
     const startedAt = nowIso();
+    const sessionKey = runMeta?.runId ?? "unknown";
+
+    // Activate native-guard lease for this session before tool execution.
+    if (this.guardLease && this.nativeGuardRequired) {
+      try {
+        const lease = await this.guardLease.activate({
+          rootSessionKey: sessionKey,
+          runGroupId: runMeta?.runId ?? sessionKey,
+        });
+        this.activatedLeaseId = lease.leaseId;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return {
+          schemaVersion: "mvp-1",
+          runId: sessionKey,
+          agentId: runMeta?.agentId ?? this.agent.agentId,
+          caseId: runMeta?.caseId ?? task.caseId,
+          status: "failed",
+          error: `Native guard lease activation failed: ${message}`,
+          finalMessage: `[OpenClaw Error] Native guard lease activation failed: ${message}`,
+          startedAt,
+          endedAt: nowIso(),
+        };
+      }
+    }
 
     try {
       this.lastRunMeta = runMeta;
@@ -209,6 +245,11 @@ export class OpenClawSession implements AgentSession {
         startedAt,
         endedAt: nowIso(),
       };
+    } finally {
+      if (this.guardLease && this.activatedLeaseId) {
+        await this.guardLease.revoke(this.activatedLeaseId).catch(() => undefined);
+        this.activatedLeaseId = undefined;
+      }
     }
   }
 

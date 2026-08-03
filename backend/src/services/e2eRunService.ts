@@ -213,7 +213,6 @@ export async function runE2E(
   activeRunControllers.set(runGroup.runGroupId, controller);
   let sandboxManager: DetectionSandboxManager | undefined;
   let eventStore: ReturnType<typeof createNativeGuardEventStore> | undefined;
-  let activatedLeaseId: string | undefined;
 
   try {
     throwIfRunCancelled(controller.signal);
@@ -482,6 +481,7 @@ export async function runE2E(
           timeoutMs: request.connection?.timeoutMs ?? 300_000,
           nativeGuardRequired: true,
           nativeGuardEventStore: eventStore,
+          guardLease,
         });
 
         runGroup.sandboxEvidence = buildSandboxEvidenceSummary(evidence, undefined);
@@ -518,43 +518,6 @@ export async function runE2E(
         });
         await saveRunGroup(runGroup);
         throw error;
-      }
-    }
-
-    // Activate a detection baseline lease before any attack sample
-    // executes. The root session key is the sandbox gateway's first
-    // expected session; child sessions are bound by the plugin.
-    if (sandboxManager && guardLease) {
-      try {
-        const baselineLease = await guardLease.activate({
-          rootSessionKey: targetCases[0]?.caseId ?? runGroup.runGroupId,
-          runGroupId: runGroup.runGroupId,
-        });
-        activatedLeaseId = baselineLease.leaseId;
-        if (runGroup.nativeGuardCoverage) {
-          runGroup.nativeGuardCoverage.leaseId = baselineLease.leaseId;
-          runGroup.nativeGuardCoverage.leaseEpoch = baselineLease.leaseEpoch;
-        }
-      } catch (leaseError) {
-        const message = leaseError instanceof Error ? leaseError.message : String(leaseError);
-        runGroup.status = "failed";
-        runGroup.phase = "failed";
-        runGroup.error = `Native guard lease activation failed: ${message}`;
-        if (runGroup.nativeGuardCoverage) {
-          runGroup.nativeGuardCoverage.coverage = "misconfigured";
-          runGroup.nativeGuardCoverage.reconciled = false;
-        }
-        updateRunProgress(runGroup, { phase: "failed", runningCaseIds: [], retryingCaseIds: [] });
-        appendDetectionFailure(runGroup, {
-          caseId: "lease_activation",
-          phase: "detecting",
-          reason: runGroup.error,
-          category: "native_guard_unavailable",
-          attempts: 1, retryable: false, skipped: false,
-          occurredAt: nowIso(),
-        });
-        await saveRunGroup(runGroup);
-        throw leaseError;
       }
     }
 
@@ -783,10 +746,6 @@ export async function runE2E(
     }
     throw err;
   } finally {
-    // Revoke the guard lease regardless of success or failure.
-    if (guardLease && activatedLeaseId) {
-      await guardLease.revoke(activatedLeaseId).catch(() => undefined);
-    }
     if (sandboxManager) {
       try {
         await sandboxManager.cleanup();

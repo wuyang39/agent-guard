@@ -62,6 +62,26 @@ export type CLineRunGroup = {
   runtimeSessionIds: string[];
   artifactIds: string[];
   error?: string;
+  /** Task 13: Native guard coverage and sandbox evidence. */
+  nativeGuardCoverage?: {
+    coverage: "active" | "conditional" | "unsupported" | "misconfigured" | "off" | "unavailable";
+    eventsTotal: number;
+    reconciled: boolean;
+    coverageBreachCount: number;
+    leaseId?: string;
+    leaseEpoch?: number;
+  };
+  sandboxEvidence?: {
+    preflightPassed: boolean;
+    attested: boolean;
+    imageId?: string;
+    imageDigest?: string;
+    openclawVersion?: string;
+    networkMode: "none" | "internal";
+    containerId?: string;
+    configDigest?: string;
+    failureCategory?: string;
+  };
   createdAt: string;
   updatedAt: string;
 };
@@ -76,7 +96,12 @@ export type RunCaseFailureView = {
     | "provider_rate_limit"
     | "transient_provider"
     | "agent_error"
-    | "fatal";
+    | "fatal"
+    | "sandbox_preflight_failed"
+    | "sandbox_attestation_failed"
+    | "sandbox_cleanup_failed"
+    | "native_guard_unavailable"
+    | "native_guard_coverage_breach";
   attempts: number;
   retryable: boolean;
   skipped: boolean;
@@ -221,6 +246,17 @@ export type SystemStatus = {
     outputStore: boolean;
     realtimeMcp: boolean;
     configuredAgents: number;
+    nativeGuard?: {
+      coverage: string;
+      finalizerAssurance: string;
+      activeLeaseCount: number;
+      pluginVersion?: string;
+      openclawVersion?: string;
+      conflictingPluginIds?: string[];
+      activeLease?: Record<string, unknown>;
+      reasonCode?: string;
+      detail?: string;
+    };
   };
   features?: Record<string, boolean>;
 };
@@ -249,6 +285,7 @@ export type LiveSupervisionEvent = {
     | "supervision_batch_started"
     | "supervision_batch_completed"
     | "defense_report_generated"
+    | "native_tool_hook"
     | "live_error";
   message?: string;
   runtimeSessionId?: string;

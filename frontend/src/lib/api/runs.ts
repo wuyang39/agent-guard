@@ -138,6 +138,8 @@ type P2RunGroupWire = {
   defenseReportId?: string;
   artifactIds: string[];
   error?: string;
+  nativeGuardCoverage?: CLineRunGroup["nativeGuardCoverage"];
+  sandboxEvidence?: CLineRunGroup["sandboxEvidence"];
 };
 
 function toRunGroup(run: P2RunGroupWire): CLineRunGroup {
@@ -163,6 +165,8 @@ function toRunGroup(run: P2RunGroupWire): CLineRunGroup {
     runtimeSessionIds: run.runtimeSessionIds,
     artifactIds: run.artifactIds,
     error: run.error,
+    nativeGuardCoverage: run.nativeGuardCoverage,
+    sandboxEvidence: run.sandboxEvidence,
     createdAt: run.startedAt,
     updatedAt: run.updatedAt ?? run.endedAt ?? run.startedAt,
   };

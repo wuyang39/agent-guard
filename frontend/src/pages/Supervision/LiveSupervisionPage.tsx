@@ -568,6 +568,7 @@ function eventTypeLabel(type: LiveSupervisionEvent["type"]): string {
     supervision_batch_started: "批量测试开始",
     supervision_batch_completed: "批量测试完成",
     defense_report_generated: "防御报告已生成",
+    native_tool_hook: "原生工具 Hook",
     live_error: "实时连接错误",
   };
   return labels[type];

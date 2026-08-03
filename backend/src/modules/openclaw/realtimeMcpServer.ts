@@ -138,7 +138,8 @@ export type RealtimeEvent = {
     | "provider_refresh_failed"
     | "supervision_batch_started"
     | "supervision_batch_completed"
-    | "defense_report_generated";
+    | "defense_report_generated"
+    | "native_tool_hook";
   timestamp: string;
   runtimeSessionId?: string;
   policyPackId?: string;
@@ -1813,6 +1814,31 @@ function emitRealtimeEvent(
   }
   realtimeEvents.emit("event", event);
   return event;
+}
+
+/**
+ * Task 13: Publish native tool hook events to the realtime stream.
+ * Each native guard decision or outcome is emitted as a `native_tool_hook` event.
+ */
+export function emitNativeToolHookEvent(input: {
+  runtimeSessionId?: string;
+  toolCallId?: string;
+  toolName?: string;
+  action?: string;
+  leaseId?: string;
+  leaseEpoch?: number;
+  coverage?: string;
+  detail?: Record<string, unknown>;
+}): RealtimeEvent {
+  return emitRealtimeEvent({
+    type: "native_tool_hook",
+    runtimeSessionId: input.runtimeSessionId,
+    toolId: input.toolCallId,
+    toolName: input.toolName,
+    action: input.action as RuntimeSupervisionRecord["action"] | undefined,
+    message: input.coverage,
+    detail: input.detail as JsonObject | undefined,
+  });
 }
 
 function buildFallbackRealtimePolicyPack(): SupervisionPolicyPack {

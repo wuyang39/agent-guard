@@ -75,6 +75,12 @@ export class NativeGuardCoordinatorError extends Error {
   }
 }
 
+export type SandboxControlContext = {
+  controlClient: OpenClawControlClient;
+  gatewayUrl: string;
+  capabilityInput: InspectOpenClawCapabilitiesInput;
+};
+
 type ManagedLease = {
   leaseId: string;
   leaseEpoch: number;
@@ -86,9 +92,9 @@ type ManagedLease = {
   gatewayUrl: string;
   capability: NativeGuardCapability;
   phase: "activating" | "active" | "renewing" | "root_ended" | "revoking";
-  /** For sandbox leases: control client and Gateway URL for plugin
-   *  HTTP calls (revoke, renew, capability recheck). */
-  sandboxControlClient?: OpenClawControlClient;
+  /** For sandbox leases: unified control context used by all
+   *  lifecycle operations (activate, revoke, renew, capability). */
+  sandbox?: SandboxControlContext;
 };
 
 export function createNativeGuardCoordinator(
@@ -255,10 +261,13 @@ export function createNativeGuardCoordinator(
 
   async function inspectCompatibleCapability(
     expected: NativeGuardCapability,
+    sandbox?: SandboxControlContext,
   ): Promise<NativeGuardCapability> {
+    const client = sandbox?.controlClient ?? options.controlClient;
+    const input = sandbox?.capabilityInput ?? options.capabilityInput;
     let fresh: NativeGuardCapability;
     try {
-      fresh = await options.controlClient.inspectCapabilities(options.capabilityInput);
+      fresh = await client.inspectCapabilities(input);
     } catch {
       throw coordinatorError(
         "NATIVE_GUARD_CAPABILITY_CHANGED",
@@ -333,15 +342,24 @@ export function createNativeGuardCoordinator(
           );
         }
 
+        const sandboxCtx: SandboxControlContext | undefined =
+          input.sandboxControlClient && input.sandboxGatewayUrl && input.sandboxCapabilityInput
+            ? {
+                controlClient: input.sandboxControlClient,
+                gatewayUrl: input.sandboxGatewayUrl,
+                capabilityInput: input.sandboxCapabilityInput,
+              }
+            : undefined;
+
         const managed: ManagedLease = {
-          ...managedLeaseMetadata(activation, options.gatewayUrl, capability),
+          ...managedLeaseMetadata(activation, sandboxCtx?.gatewayUrl ?? options.gatewayUrl, capability),
           phase: "activating",
-          sandboxControlClient: input.sandboxControlClient,
+          sandbox: sandboxCtx,
         };
         leases.set(activation.leaseId, managed);
         try {
-          const pluginClient = input.sandboxControlClient ?? options.controlClient;
-          const pluginUrl = input.sandboxGatewayUrl ?? options.gatewayUrl;
+          const pluginClient = sandboxCtx?.controlClient ?? options.controlClient;
+          const pluginUrl = sandboxCtx?.gatewayUrl ?? options.gatewayUrl;
           const pluginStatus = await pluginClient.activate(pluginUrl, activation);
           if (!ownsManagedPhase(leases, managed, "activating")) {
             throw coordinatorError(
@@ -355,7 +373,7 @@ export function createNativeGuardCoordinator(
               "OpenClaw did not confirm the native guard lease.",
             );
           }
-          const freshCapability = await inspectCompatibleCapability(capability);
+          const freshCapability = await inspectCompatibleCapability(capability, managed.sandbox);
           if (!ownsManagedPhase(leases, managed, "activating")) {
             throw coordinatorError(
               "NATIVE_GUARD_ACTIVATION_FAILED",
@@ -415,7 +433,7 @@ export function createNativeGuardCoordinator(
       managed.phase = "renewing";
       let activation: NativeGuardLeaseActivation | undefined;
       try {
-        const preRenewCapability = await inspectCompatibleCapability(managed.capability);
+        const preRenewCapability = await inspectCompatibleCapability(managed.capability, managed.sandbox);
         if (!ownsManagedPhase(leases, managed, "renewing")) {
           throw coordinatorError(
             "NATIVE_GUARD_RENEW_FAILED",
@@ -456,7 +474,7 @@ export function createNativeGuardCoordinator(
             "OpenClaw did not confirm the renewed native guard lease.",
           );
         }
-        const postRenewCapability = await inspectCompatibleCapability(preRenewCapability);
+        const postRenewCapability = await inspectCompatibleCapability(preRenewCapability, managed.sandbox);
         if (!ownsManagedPhase(leases, managed, "renewing")) {
           throw coordinatorError(
             "NATIVE_GUARD_RENEW_FAILED",
@@ -540,8 +558,9 @@ export function createNativeGuardCoordinator(
       let backendRevocationFailed = false;
       try {
         try {
-          const revokeClient = managed.sandboxControlClient ?? options.controlClient;
-          const pluginStatus = await revokeClient.revoke(managed.gatewayUrl, leaseId);
+          const revokeClient = managed.sandbox?.controlClient ?? options.controlClient;
+          const revokeUrl = managed.sandbox?.gatewayUrl ?? managed.gatewayUrl;
+          const pluginStatus = await revokeClient.revoke(revokeUrl, leaseId);
           pluginConfirmed = pluginConfirmsRevoke(pluginStatus, leaseId);
         } catch {
           // The revoking gate remains authoritative while acknowledgement is unavailable.

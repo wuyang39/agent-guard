@@ -128,6 +128,12 @@ export async function buildApp(opts?: {
           mode: "detection",
           sandboxControlClient,
           sandboxGatewayUrl: input.gatewayUrl,
+          sandboxCapabilityInput: {
+            cliPath: input.cliPath,
+            env: input.profileEnv,
+            isolatedProfile: true,
+            inheritProcessEnv: false,
+          },
         } as Parameters<typeof nativeGuardDependencies.coordinator.activate>[0]);
         const lease = status.activeLease;
         if (!lease) throw new Error("Sandbox guard activation returned no active lease.");

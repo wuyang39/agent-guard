@@ -514,6 +514,7 @@ export async function runE2E(
           gatewayToken: sandboxCreds.gatewayToken,
           cliPath: request.connection?.cliPath,
           timeoutMs: request.connection?.timeoutMs ?? 300_000,
+          env: profileEnv,
           nativeGuardRequired: true,
           nativeGuardEventStore: eventStore,
           guardLease: { activate: runGuard.activate, revoke: runGuard.revoke },
@@ -526,6 +527,9 @@ export async function runE2E(
           reconciled: false,
           coverageBreachCount: 0,
         };
+        // Sandbox coordinator allows only one active lease. Force
+        // sequential execution regardless of env var override.
+        if (runGroup.progress) runGroup.progress.concurrency = 1;
         await saveRunGroup(runGroup);
       } catch (error) {
         // Docker / sandbox failure: zero attack samples executed.

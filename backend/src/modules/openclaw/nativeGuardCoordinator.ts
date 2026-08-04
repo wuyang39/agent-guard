@@ -49,6 +49,8 @@ export type ActivateNativeGuardInput = {
    *  by this coordinator so PDP/evidence handlers see it. */
   sandboxControlClient?: OpenClawControlClient;
   sandboxGatewayUrl?: string;
+  /** Sandbox profile for capability inspection. */
+  sandboxCapabilityInput?: InspectOpenClawCapabilitiesInput;
 };
 
 export type NativeGuardCoordinator = {
@@ -84,6 +86,9 @@ type ManagedLease = {
   gatewayUrl: string;
   capability: NativeGuardCapability;
   phase: "activating" | "active" | "renewing" | "root_ended" | "revoking";
+  /** For sandbox leases: control client and Gateway URL for plugin
+   *  HTTP calls (revoke, renew, capability recheck). */
+  sandboxControlClient?: OpenClawControlClient;
 };
 
 export function createNativeGuardCoordinator(
@@ -142,10 +147,14 @@ export function createNativeGuardCoordinator(
       : backendUnavailableStatus(lastStatus, capability);
   }
 
-  async function inspectForActivation(): Promise<NativeGuardCapability> {
+  async function inspectForActivation(
+    override?: { controlClient?: OpenClawControlClient; capabilityInput?: InspectOpenClawCapabilitiesInput },
+  ): Promise<NativeGuardCapability> {
+    const client = override?.controlClient ?? options.controlClient;
+    const input = override?.capabilityInput ?? options.capabilityInput;
     let capability: NativeGuardCapability;
     try {
-      capability = await options.controlClient.inspectCapabilities(options.capabilityInput);
+      capability = await client.inspectCapabilities(input);
     } catch {
       setLastStatus({
         coverage: "unsupported",
@@ -290,7 +299,14 @@ export function createNativeGuardCoordinator(
       }
       activationReserved = true;
       try {
-        const capability = await inspectForActivation();
+        const capability = await inspectForActivation(
+          input.sandboxControlClient || input.sandboxCapabilityInput
+            ? {
+                controlClient: input.sandboxControlClient,
+                capabilityInput: input.sandboxCapabilityInput,
+              }
+            : undefined,
+        );
         let policy: Awaited<ReturnType<typeof resolvePolicy>>;
         try {
           policy = await resolvePolicy(input);
@@ -320,6 +336,7 @@ export function createNativeGuardCoordinator(
         const managed: ManagedLease = {
           ...managedLeaseMetadata(activation, options.gatewayUrl, capability),
           phase: "activating",
+          sandboxControlClient: input.sandboxControlClient,
         };
         leases.set(activation.leaseId, managed);
         try {
@@ -523,7 +540,8 @@ export function createNativeGuardCoordinator(
       let backendRevocationFailed = false;
       try {
         try {
-          const pluginStatus = await options.controlClient.revoke(managed.gatewayUrl, leaseId);
+          const revokeClient = managed.sandboxControlClient ?? options.controlClient;
+          const pluginStatus = await revokeClient.revoke(managed.gatewayUrl, leaseId);
           pluginConfirmed = pluginConfirmsRevoke(pluginStatus, leaseId);
         } catch {
           // The revoking gate remains authoritative while acknowledgement is unavailable.

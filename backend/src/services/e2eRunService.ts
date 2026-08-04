@@ -623,13 +623,11 @@ export async function runE2E(
           } catch { /* store unavailable — leave coverage as-is */ }
         }
         runGroup.nativeGuardCoverage.eventsTotal = totalEvents;
-        // Count coverage breaches from skipped/failed cases.
-        const breachFailures = (runGroup.progress?.caseFailures ?? [])
-          .filter((f) => f.category === "native_guard_coverage_breach");
-        runGroup.nativeGuardCoverage.coverageBreachCount = breachFailures.length;
-        runGroup.nativeGuardCoverage.reconciled = breachFailures.length === 0;
-        // Active only if guard produced decisions AND all sessions reconciled.
-        runGroup.nativeGuardCoverage.coverage = (anyDecisions && breachFailures.length === 0)
+        // coverageBreachCount is incremented by appendDetectionFailure
+        // and persists regardless of the bounded caseFailures list.
+        const breaches = runGroup.nativeGuardCoverage.coverageBreachCount;
+        runGroup.nativeGuardCoverage.reconciled = breaches === 0;
+        runGroup.nativeGuardCoverage.coverage = (anyDecisions && breaches === 0)
           ? "active" : "conditional";
       }
     }
@@ -1441,8 +1439,8 @@ function classifyDetectionError(
   }
 
   const normalized = message.toLowerCase();
-  // Coverage breach: Hook missed tool calls. Not retryable but the
-  // run can skip this case and continue to aggregate breach counts.
+  // Coverage breach: Hook missed tool calls. Fatal per spec —
+  // coverage breach must cause the run to fail.
   if (
     normalized.includes("native_guard_coverage_breach") ||
     normalized.includes("coverage breach")
@@ -1450,7 +1448,7 @@ function classifyDetectionError(
     return {
       category: "native_guard_coverage_breach",
       retryable: false,
-      skipAllowed: true,
+      skipAllowed: false,
     };
   }
   if (
@@ -1683,6 +1681,11 @@ function appendDetectionFailure(
   runGroup: P2RunGroup,
   failure: P2RunCaseFailure,
 ): void {
+  // Increment persistent breach counter before the bounded list evicts it.
+  if (failure.category === "native_guard_coverage_breach" && runGroup.nativeGuardCoverage) {
+    runGroup.nativeGuardCoverage.coverageBreachCount += 1;
+    runGroup.nativeGuardCoverage.reconciled = false;
+  }
   const previous = runGroup.progress?.caseFailures ?? [];
   const next = [...previous, failure].slice(-MAX_PROGRESS_FAILURES);
   updateRunProgress(runGroup, { caseFailures: next });

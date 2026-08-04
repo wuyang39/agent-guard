@@ -143,6 +143,8 @@ export class OpenClawSession implements AgentSession {
   private sandboxResources: { resourceId: string; path?: string; sensitivity?: string; description?: string }[] = [];
   private lastRunMeta?: import("./agentAdapter").AgentRunMeta;
   private activatedLeaseId?: string;
+  private lastReconciliation?: { reconciled: boolean; coverageBreachCount: number };
+  private lastRevokeError?: string;
 
   constructor(
     agent: AgentUnderTest,
@@ -227,6 +229,7 @@ export class OpenClawSession implements AgentSession {
         },
       );
 
+      this.lastReconciliation = result.reconciliation;
       const endedAt = nowIso();
       return {
         schemaVersion: "mvp-1",
@@ -253,12 +256,19 @@ export class OpenClawSession implements AgentSession {
       };
     } finally {
       if (this.guardLease && this.activatedLeaseId && this.gatewayUrl && this.gatewayToken) {
-        await this.guardLease.revoke(
-          this.activatedLeaseId,
-          this.gatewayUrl,
-          this.gatewayToken,
-        ).catch(() => undefined);
-        this.activatedLeaseId = undefined;
+        try {
+          await this.guardLease.revoke(
+            this.activatedLeaseId,
+            this.gatewayUrl,
+            this.gatewayToken,
+          );
+        } catch (revokeError) {
+          this.lastRevokeError = revokeError instanceof Error
+            ? revokeError.message
+            : String(revokeError);
+        } finally {
+          this.activatedLeaseId = undefined;
+        }
       }
     }
   }
@@ -269,6 +279,7 @@ export class OpenClawSession implements AgentSession {
   async drainRuntimeEvidence(): Promise<{
     nativeGuardEvents: import("@agent-guard/contracts").NativeGuardEvent[];
     supervisionRecords: import("@agent-guard/contracts").RuntimeSupervisionRecord[];
+    reconciliation?: { reconciled: boolean; coverageBreachCount: number };
   }> {
     if (!this.nativeGuardEventStore || !this.lastRunMeta) {
       return { nativeGuardEvents: [], supervisionRecords: [] };
@@ -279,7 +290,7 @@ export class OpenClawSession implements AgentSession {
         this.nativeGuardEventStore.listByRun(runId).catch(() => [] as import("@agent-guard/contracts").NativeGuardEvent[]),
         this.nativeGuardEventStore.listRecordsByRun(runId).catch(() => [] as import("@agent-guard/contracts").RuntimeSupervisionRecord[]),
       ]);
-      return { nativeGuardEvents: events, supervisionRecords: records };
+      return { nativeGuardEvents: events, supervisionRecords: records, reconciliation: this.lastReconciliation };
     } catch {
       return { nativeGuardEvents: [], supervisionRecords: [] };
     }

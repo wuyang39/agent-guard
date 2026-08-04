@@ -126,13 +126,15 @@ export async function buildApp(opts?: {
         const status = await nativeGuardDependencies.coordinator.activate({
           rootSessionKey: actInput.rootSessionKey,
           mode: "detection",
-          sandboxControlClient,
-          sandboxGatewayUrl: input.gatewayUrl,
-          sandboxCapabilityInput: {
-            cliPath: input.cliPath,
-            env: input.profileEnv,
-            isolatedProfile: true,
-            inheritProcessEnv: false,
+          sandbox: {
+            controlClient: sandboxControlClient,
+            gatewayUrl: input.gatewayUrl,
+            capabilityInput: {
+              cliPath: input.cliPath,
+              env: input.profileEnv,
+              isolatedProfile: true,
+              inheritProcessEnv: false,
+            },
           },
         } as Parameters<typeof nativeGuardDependencies.coordinator.activate>[0]);
         const lease = status.activeLease;

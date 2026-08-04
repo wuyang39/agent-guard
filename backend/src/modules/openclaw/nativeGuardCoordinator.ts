@@ -44,13 +44,11 @@ export type ActivateNativeGuardInput = {
   mode: NativeGuardMode;
   policyPackId?: string;
   ttlMs?: number;
-  /** For sandbox detection: use this control client and Gateway URL
-   *  for the HTTP request to the plugin. The lease is still tracked
-   *  by this coordinator so PDP/evidence handlers see it. */
-  sandboxControlClient?: OpenClawControlClient;
-  sandboxGatewayUrl?: string;
-  /** Sandbox profile for capability inspection. */
-  sandboxCapabilityInput?: InspectOpenClawCapabilitiesInput;
+  /** For sandbox detection: unified control context (controlClient,
+   *  gatewayUrl, capabilityInput) used by all lifecycle operations.
+   *  The lease is still tracked by this coordinator so PDP/evidence
+   *  handlers see it. */
+  sandbox?: SandboxControlContext;
 };
 
 export type NativeGuardCoordinator = {
@@ -251,7 +249,8 @@ export function createNativeGuardCoordinator(
       // Keep cleanup errors contained so no dependency message can expose credentials.
     }
     try {
-      await options.controlClient.revoke(managed.gatewayUrl, managed.leaseId);
+      const compensateClient = managed.sandbox?.controlClient ?? options.controlClient;
+      await compensateClient.revoke(managed.gatewayUrl, managed.leaseId);
     } catch {
       // Plugin cleanup is best effort; the return value records backend invalidation.
     }
@@ -309,12 +308,7 @@ export function createNativeGuardCoordinator(
       activationReserved = true;
       try {
         const capability = await inspectForActivation(
-          input.sandboxControlClient || input.sandboxCapabilityInput
-            ? {
-                controlClient: input.sandboxControlClient,
-                capabilityInput: input.sandboxCapabilityInput,
-              }
-            : undefined,
+          input.sandbox ? { controlClient: input.sandbox.controlClient, capabilityInput: input.sandbox.capabilityInput } : undefined,
         );
         let policy: Awaited<ReturnType<typeof resolvePolicy>>;
         try {
@@ -342,24 +336,15 @@ export function createNativeGuardCoordinator(
           );
         }
 
-        const sandboxCtx: SandboxControlContext | undefined =
-          input.sandboxControlClient && input.sandboxGatewayUrl && input.sandboxCapabilityInput
-            ? {
-                controlClient: input.sandboxControlClient,
-                gatewayUrl: input.sandboxGatewayUrl,
-                capabilityInput: input.sandboxCapabilityInput,
-              }
-            : undefined;
-
         const managed: ManagedLease = {
-          ...managedLeaseMetadata(activation, sandboxCtx?.gatewayUrl ?? options.gatewayUrl, capability),
+          ...managedLeaseMetadata(activation, input.sandbox?.gatewayUrl ?? options.gatewayUrl, capability),
           phase: "activating",
-          sandbox: sandboxCtx,
+          sandbox: input.sandbox,
         };
         leases.set(activation.leaseId, managed);
         try {
-          const pluginClient = sandboxCtx?.controlClient ?? options.controlClient;
-          const pluginUrl = sandboxCtx?.gatewayUrl ?? options.gatewayUrl;
+          const pluginClient = input.sandbox?.controlClient ?? options.controlClient;
+          const pluginUrl = input.sandbox?.gatewayUrl ?? options.gatewayUrl;
           const pluginStatus = await pluginClient.activate(pluginUrl, activation);
           if (!ownsManagedPhase(leases, managed, "activating")) {
             throw coordinatorError(
@@ -441,7 +426,8 @@ export function createNativeGuardCoordinator(
           );
         }
         managed.capability = preRenewCapability;
-        const preRenewPluginStatus = await options.controlClient.status(managed.gatewayUrl);
+        const renewClient = managed.sandbox?.controlClient ?? options.controlClient;
+        const preRenewPluginStatus = await renewClient.status(managed.gatewayUrl);
         if (!ownsManagedPhase(leases, managed, "renewing")) {
           throw coordinatorError(
             "NATIVE_GUARD_RENEW_FAILED",
@@ -461,7 +447,7 @@ export function createNativeGuardCoordinator(
             "Native guard renewal lost lease ownership.",
           );
         }
-        const pluginStatus = await options.controlClient.renew(managed.gatewayUrl, activation);
+        const pluginStatus = await renewClient.renew(managed.gatewayUrl, activation);
         if (!ownsManagedPhase(leases, managed, "renewing")) {
           throw coordinatorError(
             "NATIVE_GUARD_RENEW_FAILED",
@@ -591,9 +577,11 @@ export function createNativeGuardCoordinator(
         return setLastStatus(backendUnavailableStatus(lastStatus, managed?.capability));
       }
       const backendStatus = backend.status;
+      const statusClient = managed?.sandbox?.controlClient ?? options.controlClient;
       let capability: NativeGuardCapability;
       try {
-        capability = await options.controlClient.inspectCapabilities(options.capabilityInput);
+        const statusInput = managed?.sandbox?.capabilityInput ?? options.capabilityInput;
+        capability = await statusClient.inspectCapabilities(statusInput);
       } catch {
         return setLastStatus({
           coverage: backendStatus.activeLeaseCount > 0 ? "conditional" : "unsupported",
@@ -635,7 +623,8 @@ export function createNativeGuardCoordinator(
 
       let pluginStatus: NativeGuardStatus;
       try {
-        pluginStatus = await options.controlClient.status(options.gatewayUrl);
+        const statusGwUrl = managed?.sandbox?.gatewayUrl ?? options.gatewayUrl;
+        pluginStatus = await statusClient.status(statusGwUrl);
       } catch {
         return setLastStatus({
           coverage: backendStatus.activeLeaseCount > 0 ? "conditional" : "misconfigured",

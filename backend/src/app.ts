@@ -21,7 +21,6 @@ import { openClawRealtimeMcpRoutes } from "./api/v1/openclaw/realtime-mcp-handle
 import { runtimeConfigRoutes } from "./api/v1/runtime-config/handlers";
 import { openClawPyritOpenAiRoutes } from "./api/v1/openclaw/pyrit-openai-handlers";
 import { createOpenClawControlClient } from "./modules/openclaw/openclawControlClient";
-import { createNativeGuardCoordinator } from "./modules/openclaw/nativeGuardCoordinator";
 import { createNativeGuardLeaseService } from "./modules/openclaw/nativeGuardLeaseService";
 import { createNativeGuardEventStore } from "./storage/nativeGuardEventStore";
 import type { SandboxCoordinatorFactory } from "./services/e2eRunService";
@@ -112,37 +111,30 @@ export async function buildApp(opts?: {
   await app.register(dashboardRoutes);
   await app.register(agentRoutes);
   await app.register(testSelectionRoutes);
-  // Sandbox coordinator factory: shared lease service + real backend
-  // PDP URL so decision/event handlers recognize the lease credential.
+  // Sandbox coordinator factory: uses the APP coordinator (shared
+  // lease state) with sandbox controlClient override for the HTTP
+  // request to the plugin. The lease is tracked by the app coordinator
+  // so PDP/evidence handlers see it.
   const backendPort = Number(process.env.API_PORT ?? 3100);
   const sandboxCoordinatorFactory: SandboxCoordinatorFactory = (input) => {
-    const coordinator = createNativeGuardCoordinator({
-      leaseService: sharedLeaseService,
-      controlClient: createOpenClawControlClient({
-        gatewayToken: input.gatewayToken,
-      }),
-      gatewayUrl: input.gatewayUrl,
-      backendUrl: `http://127.0.0.1:${backendPort}`,
-      capabilityInput: {
-        cliPath: input.cliPath,
-        env: input.profileEnv,
-        isolatedProfile: true,
-        inheritProcessEnv: false,
-      },
+    const sandboxControlClient = createOpenClawControlClient({
+      gatewayToken: input.gatewayToken,
     });
     const eventStore = createNativeGuardEventStore({});
     return {
       activate: async (actInput) => {
-        const status = await coordinator.activate({
+        const status = await nativeGuardDependencies.coordinator.activate({
           rootSessionKey: actInput.rootSessionKey,
           mode: "detection",
-        });
+          sandboxControlClient,
+          sandboxGatewayUrl: input.gatewayUrl,
+        } as Parameters<typeof nativeGuardDependencies.coordinator.activate>[0]);
         const lease = status.activeLease;
         if (!lease) throw new Error("Sandbox guard activation returned no active lease.");
         return { leaseId: lease.leaseId, leaseEpoch: lease.leaseEpoch };
       },
       revoke: async (leaseId) => {
-        await coordinator.revoke(leaseId);
+        await nativeGuardDependencies.coordinator.revoke(leaseId);
       },
       eventStore,
     };

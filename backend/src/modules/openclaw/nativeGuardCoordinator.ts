@@ -44,6 +44,11 @@ export type ActivateNativeGuardInput = {
   mode: NativeGuardMode;
   policyPackId?: string;
   ttlMs?: number;
+  /** For sandbox detection: use this control client and Gateway URL
+   *  for the HTTP request to the plugin. The lease is still tracked
+   *  by this coordinator so PDP/evidence handlers see it. */
+  sandboxControlClient?: OpenClawControlClient;
+  sandboxGatewayUrl?: string;
 };
 
 export type NativeGuardCoordinator = {
@@ -318,7 +323,9 @@ export function createNativeGuardCoordinator(
         };
         leases.set(activation.leaseId, managed);
         try {
-          const pluginStatus = await options.controlClient.activate(options.gatewayUrl, activation);
+          const pluginClient = input.sandboxControlClient ?? options.controlClient;
+          const pluginUrl = input.sandboxGatewayUrl ?? options.gatewayUrl;
+          const pluginStatus = await pluginClient.activate(pluginUrl, activation);
           if (!ownsManagedPhase(leases, managed, "activating")) {
             throw coordinatorError(
               "NATIVE_GUARD_ACTIVATION_FAILED",

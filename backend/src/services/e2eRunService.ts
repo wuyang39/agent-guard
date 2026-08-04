@@ -1681,9 +1681,11 @@ function appendDetectionFailure(
   runGroup: P2RunGroup,
   failure: P2RunCaseFailure,
 ): void {
-  // Increment persistent breach counter before the bounded list evicts it.
+  // Extract precise breach count from structured error messages.
   if (failure.category === "native_guard_coverage_breach" && runGroup.nativeGuardCoverage) {
-    runGroup.nativeGuardCoverage.coverageBreachCount += 1;
+    const parsed = /NATIVE_GUARD_COVERAGE_BREACH:(\d+):/.exec(failure.reason);
+    const count = parsed ? Number(parsed[1]) : 1;
+    runGroup.nativeGuardCoverage.coverageBreachCount += count;
     runGroup.nativeGuardCoverage.reconciled = false;
   }
   const previous = runGroup.progress?.caseFailures ?? [];

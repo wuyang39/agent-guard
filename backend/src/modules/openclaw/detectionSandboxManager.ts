@@ -7,7 +7,10 @@ import net from "node:net";
 import { generateDetectionOpenClawConfig, detectionConfigDigest, type DetectionOpenClawConfig } from "./detectionOpenClawConfig";
 import { createOpenClawControlClient, type NativeGuardCapability } from "./openclawControlClient";
 
-const REQUIRED_OPENCLAW = [2026, 7, 2] as const;
+const REQUIRED_OPENCLAW = [2026, 7, 1] as const;
+// Fork identifier: version strings containing "agentguard" are accepted
+// at the base version even without the official 2026.7.2+ release.
+const FORK_IDENTIFIER = "agentguard";
 const RUN_LABEL_KEY = "agent-guard.run-group";
 const RUN_ROLE_LABEL_KEY = "agent-guard.role";
 const COMMAND_TIMEOUT_MS = 30_000;
@@ -197,6 +200,17 @@ export class DetectionSandboxManager {
       const version = capability.openclawVersion;
       if (!version || !versionAtLeast(version, REQUIRED_OPENCLAW)) {
         throw new SandboxPreflightError("OPENCLAW_UNSUPPORTED", "OpenClaw detection runtime is unsupported.");
+      }
+      // Fork builds identify with the "agentguard" marker in the version
+      // string. They are accepted at 2026.7.1 base; official builds
+      // require 2026.7.2+.
+      const isFork = version.toLowerCase().includes(FORK_IDENTIFIER);
+      const minVersion = isFork ? REQUIRED_OPENCLAW : ([2026, 7, 2] as const);
+      if (!versionAtLeast(version, minVersion)) {
+        throw new SandboxPreflightError(
+          "OPENCLAW_UNSUPPORTED",
+          `OpenClaw ${version} is below the minimum ${isFork ? "2026.7.1 (fork)" : "2026.7.2"}.`,
+        );
       }
       if (!capability.supportsNativeGuard || capability.finalizerAssurance !== "isolated_profile") {
         throw new SandboxPreflightError("OPENCLAW_CAPABILITY_UNAVAILABLE", "OpenClaw native guard capability is unavailable.");

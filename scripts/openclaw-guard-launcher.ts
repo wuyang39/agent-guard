@@ -139,32 +139,26 @@ function main(): void {
     die(1, `Live contributions incomplete (missing: ${missing}). Use --maintenance for cleanup-only mode.`);
   }
 
-  // Step 5: Check for live attestation capability
-  // Fixed 2026.7.2 registrar returns void — live attestation is unavailable.
-  // A compatible fork must provide:
-  //   - registrar that returns live contribution result
-  //   - post-approval lease recheck capability
-  //   - JSON-only params provenance / atomic approved-snapshot
-  const registryDiagnostics = isRecord(registry) && Array.isArray(registry.diagnostics)
-    ? registry.diagnostics : [];
-  const agentGuardErrors = registryDiagnostics.filter((d: Record<string, unknown>) =>
-    isRecord(d) && (d.pluginId === PLUGIN_ID || String(d.message ?? "").includes(PLUGIN_ID)),
-  );
+  // Step 5: Check for live attestation capability.
+  // The official registrar returns void. The agent-guard fork provides
+  // `registry.liveAttestation: true` in `plugins list --json`.
+  const versionResult = runCli(["--version"]);
+  const isAgentGuardFork = versionResult.stdout.toLowerCase().includes("agentguard");
 
   const hasLiveAttestation = isRecord(registry) &&
     isRecord(registry.registry) &&
     registry.registry.liveAttestation === true;
 
-  if (!hasLiveAttestation) {
-    log("Live attestation not available (fixed 2026.7.2 limitation).");
+  if (!hasLiveAttestation || !isAgentGuardFork) {
+    log(`Live attestation: ${String(hasLiveAttestation)}, fork: ${String(isAgentGuardFork)}`);
     if (maintenanceMode) {
       log("--maintenance mode active — allowing maintenance cleanup.");
       process.exit(0);
     }
     die(1,
-      "OpenClaw registrar does not support live attestation. " +
-      "A compatible fork or upgrade is required for guarded Gateway startup. " +
-      "Use --maintenance for cleanup-only mode.",
+      "Live attestation is not available. " +
+      "Install the agent-guard OpenClaw fork (2026.7.1-agentguard.1) " +
+      "for guarded Gateway startup. Use --maintenance for cleanup-only mode.",
     );
   }
 

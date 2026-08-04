@@ -205,6 +205,32 @@ test("cancel: no outcome for a cancelled tool call", () => {
   assert.equal(result.reconciliation.projected.tool_result, 0);
 });
 
+test("multiple missing calls: each JSONL call without Hook is a breach", () => {
+  // Zero Hook events, three JSONL calls → 3 coverage breaches.
+  const result = projectNativeGuardTrace(CTX, [], ["c1", "c2", "c3"]);
+  assert.equal(result.reconciliation.reconciled, false);
+  assert.equal(result.reconciliation.coverageBreachCount, 3);
+});
+
+test("partial breach: some calls have Hook, some do not", () => {
+  const decision = buildEvent({ eventId: "d1", toolCallId: "c1", detail: { action: "allow", reasonCode: "ok", toolName: "read", toolCallId: "c1", params: {} } });
+  // Two JSONL calls: c1 has Hook, c2 does not → 1 breach.
+  const result = projectNativeGuardTrace(CTX, [decision], ["c1", "c2"]);
+  assert.equal(result.reconciliation.reconciled, false);
+  assert.equal(result.reconciliation.coverageBreachCount, 1);
+  assert.equal(result.reconciliation.projected.tool_call, 1);
+});
+
+test("mismatch without coverage breach: duplicate outcome only", () => {
+  const decision = buildEvent({ eventId: "d1", toolCallId: "call.dup", detail: { action: "allow", reasonCode: "ok", toolName: "read", toolCallId: "call.dup", params: {} } });
+  const o1 = buildEvent({ eventId: "o1", type: "tool_outcome", toolCallId: "call.dup", decisionId: undefined, detail: { finalParamsDigest: "a".repeat(64), durationMs: 1, durationSource: "host", resultDigest: "b".repeat(64), resultPreview: "ok" } });
+  const o2 = buildEvent({ eventId: "o2", type: "tool_outcome", toolCallId: "call.dup", decisionId: undefined, detail: { finalParamsDigest: "c".repeat(64), durationMs: 2, durationSource: "host", resultDigest: "d".repeat(64), resultPreview: "also ok" } });
+  // Duplicate outcome is a mismatch but no coverage breach (call is seen).
+  const result = projectNativeGuardTrace(CTX, [decision, o1, o2], ["call.dup"]);
+  assert.equal(result.reconciliation.reconciled, false);
+  assert.equal(result.reconciliation.coverageBreachCount, 0); // mismatch ≠ breach
+});
+
 // ---------------------------------------------------------------------------
 // Finalize
 // ---------------------------------------------------------------------------

@@ -35,12 +35,14 @@ export async function buildApp(opts?: {
   logger?: FastifyServerOptions["logger"];
   nativeGuardDependencies?: NativeGuardRouteDependencies;
 }) {
-  // Shared lease service: used by both the API handlers (decision/event)
-  // and the sandbox coordinator factory (activate/revoke).
+  // Shared lease service and event store: used by both the API handlers
+  // (decision/event) and the sandbox coordinator factory.
   const sharedLeaseService = createNativeGuardLeaseService();
+  const sharedEventStore = createNativeGuardEventStore();
   const nativeGuardDependencies =
     opts?.nativeGuardDependencies ?? createNativeGuardRouteDependencies({
       leaseService: sharedLeaseService,
+      eventStore: sharedEventStore,
     });
   const redaction = {
     paths: [
@@ -120,7 +122,6 @@ export async function buildApp(opts?: {
     const sandboxControlClient = createOpenClawControlClient({
       gatewayToken: input.gatewayToken,
     });
-    const eventStore = createNativeGuardEventStore({});
     return {
       activate: async (actInput) => {
         const status = await nativeGuardDependencies.coordinator.activate({
@@ -144,7 +145,7 @@ export async function buildApp(opts?: {
       revoke: async (leaseId) => {
         await nativeGuardDependencies.coordinator.revoke(leaseId);
       },
-      eventStore,
+      eventStore: sharedEventStore,
     };
   };
   await app.register(testRunRoutes, { sandboxCoordinatorFactory });

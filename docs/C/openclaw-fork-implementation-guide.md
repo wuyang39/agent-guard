@@ -153,6 +153,54 @@ Agent Guard 插件需要在 `registerAgentGuardPlugin()` 中调用
 `api.registerService("agent-guard-runtime", { start, stop })`。
 插件已实现此逻辑（见 `plugins/agent-guard-supervision/src/index.ts`）。
 
+## 信任模型
+
+Agent Guard 对 fork 的信任由三重证明共同建立：
+
+| 证明 | 来源 | 验证点 |
+|---|---|---|
+| **Fork 标识** | `openclaw --version` 含 `agentguard` | `detectionSandboxManager.preflight()` |
+| **Live attestation** | `plugins list --json` 中 `registry.liveAttestation: true` | Launcher + capability probe |
+| **不可变镜像 digest** | `AGENT_GUARD_DETECTION_IMAGE=...@sha256:...` | `detectionSandboxManager.preflight()` |
+
+**SemVer 注意事项**：`2026.7.1-agentguard.1` 是 SemVer prerelease。
+`versionAtLeast()` 只提取 `(\d+)\.(\d+)\.(\d+)` 前缀进行数值比较，
+fork 标识符 `agentguard` 单独检查。因此：
+
+- `2026.7.1-agentguard.1` → base `2026.7.1` → 接受（fork）
+- `2026.7.1` 正式版 → base `2026.7.1` → 拒绝（无 fork 标识，需 ≥2026.7.2）
+- `2026.7.2` 正式版 → base `2026.7.2` → 接受（官方）
+
+## Docker 镜像集成
+
+宿主机的 `npm link` 不会进入 Docker 容器。Fork 必须构建进镜像：
+
+```dockerfile
+# 在 OpenClaw fork 仓库中
+FROM node:22-bookworm-slim AS openclaw-build
+COPY . /src
+WORKDIR /src
+RUN npm ci && npm run build && npm pack --pack-destination /tmp
+
+# Agent Guard 检测镜像
+FROM python:3.12-slim
+COPY --from=openclaw-build /tmp/openclaw-2026.7.1-agentguard.1.tgz /tmp/
+RUN npm install -g /tmp/openclaw-2026.7.1-agentguard.1.tgz
+# 安装 Agent Guard 插件到全局 OpenClaw
+COPY plugins/agent-guard-supervision/dist /opt/agent-guard/plugin
+RUN openclaw config set pluginDirs '["/opt/agent-guard/plugin"]'
+USER 65532:65532
+```
+
+构建后固定 digest：
+
+```bash
+docker build -t openclaw-sandbox:agentguard .
+docker push openclaw-sandbox:agentguard
+# 记录 digest
+docker image inspect openclaw-sandbox:agentguard --format '{{.RepoDigests}}'
+```
+
 ## 构建与验证
 
 ```bash
@@ -168,6 +216,16 @@ npm run build
 openclaw plugins list --json | jq '.registry.liveAttestation'
 # 预期: true
 ```
+
+## 发布清单
+
+- [ ] Fork commit: `_________`
+- [ ] Fork 版本: `2026.7.1-agentguard.1`
+- [ ] Agent Guard 插件版本: `_________`
+- [ ] 镜像 digest: `sha256:_________`
+- [ ] `registry.liveAttestation === true`
+- [ ] `verify:native-guard:docker` 通过
+- [ ] SBOM 生成并归档
 
 ## Agent Guard 侧配合变更
 

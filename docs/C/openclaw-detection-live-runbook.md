@@ -33,9 +33,14 @@ $env:AGENT_GUARD_DETECTION_IMAGE = "registry/openclaw-sandbox@sha256:aaaa..."
 
 镜像要求：
 - 非 root 用户 (65532:65532)
+- 包含 OpenClaw fork binary (`2026.7.1-agentguard.1`)
+- 包含已构建的 Agent Guard 插件
 - 包含 `python3`、`nc`、`sh`、`wget`/`curl`
 - 不可变（digest pinned）
 - 只读文件系统友好
+
+**注意**：Fork 完成前可先用现有镜像测试基础设施（Docker daemon、port hijack 防御）。
+Fork 完成后必须重新构建镜像，digest 会变化——记录新 digest 并用它运行验收。
 
 ## 第三步：安装插件
 
@@ -58,7 +63,19 @@ npm run verify:native-guard
 
 预期：protocol 8/8、plugin 319/319、backend tests 全部通过。
 
-## 第五步：Docker 真实验收
+## 第五步（fork 后）：镜像内验证
+
+```powershell
+# 确认 fork 版本
+docker run --rm --entrypoint "" $env:AGENT_GUARD_DETECTION_IMAGE openclaw --version
+# 预期: openclaw 2026.7.1-agentguard.1
+
+# 确认 live attestation
+docker run --rm --entrypoint "" $env:AGENT_GUARD_DETECTION_IMAGE openclaw plugins list --json
+# 预期: "liveAttestation": true
+```
+
+## 第六步：Docker 真实验收
 
 ```powershell
 npm run verify:native-guard:docker
@@ -84,13 +101,13 @@ npm run verify:native-guard:docker
 
 失败时设置 `AGENT_GUARD_ALLOW_DOCKER_TEST_SKIP=1` 仅可在非发布环境跳过。发布环境禁止该变量。
 
-## 第六步：全链路
+## 第七步：全链路
 
 ```powershell
 npm run verify:native-guard:all
 ```
 
-## 第七步：E2E 场景手动验收
+## 第八步：E2E 场景手动验收
 
 按顺序执行，每一步都需验证结果：
 

@@ -20,7 +20,11 @@ import { reportRoutes, artifactRoutes, policyRoutes } from "./api/v1/reports/han
 import { openClawRealtimeMcpRoutes } from "./api/v1/openclaw/realtime-mcp-handlers";
 import { runtimeConfigRoutes } from "./api/v1/runtime-config/handlers";
 import { openClawPyritOpenAiRoutes } from "./api/v1/openclaw/pyrit-openai-handlers";
-import { randomBytes } from "node:crypto";
+import { createOpenClawControlClient } from "./modules/openclaw/openclawControlClient";
+import { createNativeGuardCoordinator } from "./modules/openclaw/nativeGuardCoordinator";
+import { createNativeGuardLeaseService } from "./modules/openclaw/nativeGuardLeaseService";
+import { createNativeGuardEventStore } from "./storage/nativeGuardEventStore";
+import type { SandboxCoordinatorFactory } from "./services/e2eRunService";
 import {
   createNativeGuardRouteDependencies,
   openClawNativeGuardRoutes,
@@ -32,8 +36,13 @@ export async function buildApp(opts?: {
   logger?: FastifyServerOptions["logger"];
   nativeGuardDependencies?: NativeGuardRouteDependencies;
 }) {
+  // Shared lease service: used by both the API handlers (decision/event)
+  // and the sandbox coordinator factory (activate/revoke).
+  const sharedLeaseService = createNativeGuardLeaseService();
   const nativeGuardDependencies =
-    opts?.nativeGuardDependencies ?? createNativeGuardRouteDependencies();
+    opts?.nativeGuardDependencies ?? createNativeGuardRouteDependencies({
+      leaseService: sharedLeaseService,
+    });
   const redaction = {
     paths: [
       "req.headers.authorization",
@@ -103,28 +112,42 @@ export async function buildApp(opts?: {
   await app.register(dashboardRoutes);
   await app.register(agentRoutes);
   await app.register(testSelectionRoutes);
-  // Wire native-guard lease activate/revoke into the e2e detection run.
-  // Targets the sandbox Gateway (not host) by accepting gatewayUrl/token
-  // from the e2eRunService. The coordinator handles policy resolution
-  // and lease tracking; sandbox Gateway identity is passed per-request.
-  const guardLease = {
-    activate: async (input: {
-      rootSessionKey: string; runGroupId: string;
-      gatewayUrl: string; gatewayToken: string;
-    }) => {
-      const status = await nativeGuardDependencies.coordinator.activate({
-        rootSessionKey: input.rootSessionKey,
-        mode: "detection",
-      });
-      const lease = status.activeLease;
-      if (!lease) throw new Error("Native guard activation returned no active lease.");
-      return { leaseId: lease.leaseId, leaseEpoch: lease.leaseEpoch };
-    },
-    revoke: async (leaseId: string, _gatewayUrl: string, _gatewayToken: string) => {
-      await nativeGuardDependencies.coordinator.revoke(leaseId);
-    },
+  // Sandbox coordinator factory: shared lease service + real backend
+  // PDP URL so decision/event handlers recognize the lease credential.
+  const backendPort = Number(process.env.API_PORT ?? 3100);
+  const sandboxCoordinatorFactory: SandboxCoordinatorFactory = (input) => {
+    const coordinator = createNativeGuardCoordinator({
+      leaseService: sharedLeaseService,
+      controlClient: createOpenClawControlClient({
+        gatewayToken: input.gatewayToken,
+      }),
+      gatewayUrl: input.gatewayUrl,
+      backendUrl: `http://127.0.0.1:${backendPort}`,
+      capabilityInput: {
+        cliPath: input.cliPath,
+        env: input.profileEnv,
+        isolatedProfile: true,
+        inheritProcessEnv: false,
+      },
+    });
+    const eventStore = createNativeGuardEventStore({});
+    return {
+      activate: async (actInput) => {
+        const status = await coordinator.activate({
+          rootSessionKey: actInput.rootSessionKey,
+          mode: "detection",
+        });
+        const lease = status.activeLease;
+        if (!lease) throw new Error("Sandbox guard activation returned no active lease.");
+        return { leaseId: lease.leaseId, leaseEpoch: lease.leaseEpoch };
+      },
+      revoke: async (leaseId) => {
+        await coordinator.revoke(leaseId);
+      },
+      eventStore,
+    };
   };
-  await app.register(testRunRoutes, { guardLease });
+  await app.register(testRunRoutes, { sandboxCoordinatorFactory });
   await app.register(supervisionRoutes);
   await app.register(askRoutes);
   await app.register(traceRoutes);

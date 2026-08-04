@@ -63,9 +63,6 @@ import {
 import { createNativeGuardEventStore } from "../storage/nativeGuardEventStore";
 import type { NativeGuardEvent, RuntimeSupervisionRecord } from "@agent-guard/contracts";
 import type { SandboxEvidenceSummary, NativeGuardCoverageSummary } from "../api/types";
-import { createOpenClawControlClient } from "../modules/openclaw/openclawControlClient";
-import { createNativeGuardLeaseService } from "../modules/openclaw/nativeGuardLeaseService";
-import { createNativeGuardCoordinator } from "../modules/openclaw/nativeGuardCoordinator";
 
 const CONFIGS_DIR = path.resolve(process.cwd(), "configs");
 const P2_DEMO_CASES_FILE = path.join(CONFIGS_DIR, "p2_demo_cases.json");
@@ -81,10 +78,26 @@ export type GuardLeaseDeps = {
   activate: (input: {
     rootSessionKey: string;
     runGroupId: string;
-    gatewayUrl: string;
-    gatewayToken: string;
   }) => Promise<{ leaseId: string; leaseEpoch: number }>;
-  revoke: (leaseId: string, gatewayUrl: string, gatewayToken: string) => Promise<void>;
+  revoke: (leaseId: string) => Promise<void>;
+};
+
+/** Factory provided by app.ts. Shares the API's lease service and backend
+ *  PDP URL, creates a per-run coordinator targeting the sandbox Gateway. */
+export type SandboxCoordinatorFactory = (input: {
+  gatewayUrl: string;
+  gatewayToken: string;
+  cliPath?: string;
+  /** Isolated profile env: OPENCLAW_CONFIG_PATH, OPENCLAW_STATE_DIR, etc. */
+  profileEnv: Record<string, string>;
+}) => {
+  activate(input: {
+    rootSessionKey: string;
+    runGroupId: string;
+  }): Promise<{ leaseId: string; leaseEpoch: number }>;
+  revoke(leaseId: string): Promise<void>;
+  /** The event store shared with the API's decision/event handlers. */
+  eventStore: ReturnType<typeof createNativeGuardEventStore>;
 };
 
 export class CaseIdValidationError extends Error {
@@ -204,7 +217,7 @@ export async function cancelRunGroup(runGroupId: string): Promise<P2RunGroup | u
 export async function runE2E(
   request: RunE2ERequest,
   existingRunGroup?: P2RunGroup,
-  guardLease?: GuardLeaseDeps,
+  sandboxCoordinatorFactory?: SandboxCoordinatorFactory,
 ): Promise<RunE2EResult> {
   // P2 adapterKind 映射到 contracts adapterType + 自定义 adapter。
   const adapterType = mapAdapterKind(request.adapterKind);
@@ -474,32 +487,28 @@ export async function runE2E(
         if (!(customAdapter instanceof OpenClawAdapter)) {
           throw new Error("Sandbox requires an OpenClaw adapter.");
         }
-        // Run-scoped coordinator: controlClient uses the sandbox Gateway
-        // token so all activate/revoke calls target the correct plugin.
-        const sandboxCoordinator = createNativeGuardCoordinator({
-          leaseService: createNativeGuardLeaseService(),
-          controlClient: createOpenClawControlClient({
-            gatewayToken: sandboxCreds.gatewayToken,
-          }),
-          gatewayUrl: sandboxCreds.gatewayUrl,
-          backendUrl: sandboxCreds.gatewayUrl, // loopback, same host
-          capabilityInput: { isolatedProfile: true },
-        });
-        const runGuardLease: GuardLeaseDeps = {
-          activate: async (input) => {
-            const status = await sandboxCoordinator.activate({
-              rootSessionKey: input.rootSessionKey,
-              mode: "detection",
-            });
-            const lease = status.activeLease;
-            if (!lease) throw new Error("Sandbox guard activation returned no active lease.");
-            return { leaseId: lease.leaseId, leaseEpoch: lease.leaseEpoch };
-          },
-          revoke: async (leaseId, _gwUrl, _gwToken) => {
-            await sandboxCoordinator.revoke(leaseId);
-          },
+        // Use the app-provided factory to create a run-scoped coordinator.
+        // The factory shares the API's lease service and real backend PDP
+        // URL, so decision/event handlers recognize the lease credential.
+        if (!sandboxCoordinatorFactory) {
+          throw new Error(
+            "Sandbox detection requires sandboxCoordinatorFactory. " +
+            "Wire it from app.ts via runE2E().",
+          );
+        }
+        const profileEnv: Record<string, string> = {
+          OPENCLAW_CONFIG_PATH: evidence.configPath,
+          OPENCLAW_STATE_DIR: path.join(evidence.profileRoot, "state"),
+          OPENCLAW_WORKSPACE_DIR: path.join(evidence.profileRoot, "workspace"),
+          OPENCLAW_HOME: evidence.profileRoot,
         };
-        eventStore = createNativeGuardEventStore({});
+        const runGuard = sandboxCoordinatorFactory({
+          gatewayUrl: sandboxCreds.gatewayUrl,
+          gatewayToken: sandboxCreds.gatewayToken,
+          cliPath: request.connection?.cliPath,
+          profileEnv,
+        });
+        eventStore = runGuard.eventStore;
         customAdapter = new OpenClawAdapter({
           gatewayUrl: sandboxCreds.gatewayUrl,
           gatewayToken: sandboxCreds.gatewayToken,
@@ -507,7 +516,7 @@ export async function runE2E(
           timeoutMs: request.connection?.timeoutMs ?? 300_000,
           nativeGuardRequired: true,
           nativeGuardEventStore: eventStore,
-          guardLease: runGuardLease,
+          guardLease: { activate: runGuard.activate, revoke: runGuard.revoke },
         });
 
         runGroup.sandboxEvidence = buildSandboxEvidenceSummary(evidence, undefined);

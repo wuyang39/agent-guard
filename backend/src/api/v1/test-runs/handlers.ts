@@ -8,7 +8,7 @@ import {
   PolicyPackReuseError,
   cancelRunGroup,
   createInitialE2ERunGroup,
-  type GuardLeaseDeps,
+  type SandboxCoordinatorFactory,
 } from "../../../services/e2eRunService";
 import {
   getRunGroup,
@@ -17,14 +17,14 @@ import {
 } from "../../../storage/fileRunStore";
 
 export type TestRunRoutesOptions = {
-  guardLease?: GuardLeaseDeps;
+  sandboxCoordinatorFactory?: SandboxCoordinatorFactory;
 };
 
 export async function testRunRoutes(
   app: FastifyInstance,
   opts?: TestRunRoutesOptions,
 ): Promise<void> {
-  const guardLease = opts?.guardLease;
+  const sandboxCoordinatorFactory = opts?.sandboxCoordinatorFactory;
   // POST /api/v1/test-runs/e2e
   app.post("/api/v1/test-runs/e2e", async (request, reply) => {
     const body = request.body as RunE2ERequest;
@@ -60,7 +60,7 @@ export async function testRunRoutes(
     if (query.async === "1" || query.async === "true") {
       const runGroup = createInitialE2ERunGroup(body);
       await saveRunGroup(runGroup);
-      void runE2E(body, runGroup, guardLease).catch((err) => {
+      void runE2E(body, runGroup, sandboxCoordinatorFactory).catch((err) => {
         request.log.error({ err, runGroupId: runGroup.runGroupId }, "Async E2E run failed");
       });
       reply.code(202);
@@ -73,7 +73,7 @@ export async function testRunRoutes(
     }
 
     try {
-      const result = await runE2E(body, undefined, guardLease);
+      const result = await runE2E(body, undefined, sandboxCoordinatorFactory);
       reply.code(201);
       return success(result);
     } catch (err) {

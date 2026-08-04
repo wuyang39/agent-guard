@@ -155,6 +155,18 @@ export async function runTestCase(
     testRun.status = "failed";
     testRun.error = error instanceof Error ? error.message : String(error);
   } finally {
+    // Drain native guard runtime evidence before the session is destroyed.
+    let nativeGuardRuntime: TestRunResult["nativeGuardRuntime"];
+    if (typeof session.drainRuntimeEvidence === "function") {
+      try {
+        const evidence = await session.drainRuntimeEvidence();
+        nativeGuardRuntime = {
+          events: evidence.nativeGuardEvents,
+          reconciliation: evidence.reconciliation,
+          revokeError: evidence.revokeError,
+        };
+      } catch { /* drain failure is non-fatal */ }
+    }
     await session.close?.();
     testRun.endedAt = nowIso();
 
@@ -180,6 +192,6 @@ export async function runTestCase(
       endedAt: testRun.endedAt,
     });
 
-    return { testRun, trace, supervisionRecords };
+    return { testRun, trace, supervisionRecords, nativeGuardRuntime };
   }
 }

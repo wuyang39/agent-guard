@@ -27,12 +27,14 @@ export type AgentSession = {
     runMeta?: AgentRunMeta,
   ): Promise<AgentRunResult>;
   close?(): Promise<void>;
-  /** Task 12: Drain runtime evidence from native guard events after a run.
-   *  Returns real Hook events and supervision records for the last run.
-   *  OpenClaw sessions consume from NativeGuardEventStore; other adapters return empty. */
+  /** Task 12-14: Drain runtime evidence from native guard events after a run.
+   *  Returns real Hook events, supervision records, reconciliation status,
+   *  and any revoke error for persistence in the run group. */
   drainRuntimeEvidence?(): Promise<{
     nativeGuardEvents: import("@agent-guard/contracts").NativeGuardEvent[];
     supervisionRecords: import("@agent-guard/contracts").RuntimeSupervisionRecord[];
+    reconciliation?: { reconciled: boolean; coverageBreachCount: number };
+    revokeError?: string;
   }>;
 };
 

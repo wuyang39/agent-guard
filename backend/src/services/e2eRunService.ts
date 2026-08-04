@@ -1138,7 +1138,7 @@ async function runSingleDetectionAttempt(input: {
 }): Promise<ReturnType<typeof buildRiskReport>> {
   const { agent, adapterConfig, context, customAdapter, runGroup, signal } = input;
   throwIfRunCancelled(signal);
-  const { testRun, trace } = await runTestCase(agent, adapterConfig, context, {
+  const { testRun, trace, nativeGuardRuntime } = await runTestCase(agent, adapterConfig, context, {
     customAdapter,
     selectionPlanId: runGroup.selectionPlanId,
     signal,
@@ -1148,6 +1148,25 @@ async function runSingleDetectionAttempt(input: {
   runGroup.testRunIds.push(testRun.runId);
   runGroup.traceIds.push(trace.traceId);
   await writeTraceFile(trace);
+
+  // Aggregate per-session reconciliation into the run group.
+  if (nativeGuardRuntime && runGroup.nativeGuardCoverage) {
+    if (nativeGuardRuntime.reconciliation) {
+      const rec = nativeGuardRuntime.reconciliation;
+      runGroup.nativeGuardCoverage.coverageBreachCount += rec.coverageBreachCount;
+      if (!rec.reconciled) runGroup.nativeGuardCoverage.reconciled = false;
+    }
+    if (nativeGuardRuntime.revokeError) {
+      appendDetectionFailure(runGroup, {
+        caseId: context.caseId,
+        phase: "detecting",
+        reason: `Native guard revoke failed: ${nativeGuardRuntime.revokeError}`,
+        category: "sandbox_cleanup_failed",
+        attempts: 1, retryable: false, skipped: false,
+        occurredAt: nowIso(),
+      });
+    }
+  }
 
   if (testRun.status === "failed") {
     throw new Error(testRun.error ?? "Detection test run failed");
@@ -1681,12 +1700,7 @@ function appendDetectionFailure(
   runGroup: P2RunGroup,
   failure: P2RunCaseFailure,
 ): void {
-  // Extract precise breach count from structured error messages.
   if (failure.category === "native_guard_coverage_breach" && runGroup.nativeGuardCoverage) {
-    const parsed = /NATIVE_GUARD_COVERAGE_BREACH:(\d+):/.exec(failure.reason);
-    const raw = parsed ? Number(parsed[1]) : 1;
-    const count = Number.isSafeInteger(raw) ? Math.min(raw, 10_000) : 1;
-    runGroup.nativeGuardCoverage.coverageBreachCount += count;
     runGroup.nativeGuardCoverage.reconciled = false;
   }
   const previous = runGroup.progress?.caseFailures ?? [];

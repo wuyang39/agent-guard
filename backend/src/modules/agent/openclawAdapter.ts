@@ -229,11 +229,10 @@ export class OpenClawSession implements AgentSession {
       // didn't see, or duplicate outcomes were detected.
       if (result.reconciliation && !result.reconciliation.reconciled) {
         const count = result.reconciliation.coverageBreachCount;
-        // Include the actual count so e2eRunService can record it precisely.
         this.lastReconciliation = result.reconciliation;
         const breachMsg = count > 0
-          ? `NATIVE_GUARD_COVERAGE_BREACH:${String(count)}: ${String(count)} JSONL tool call(s) missing Hook before event.`
-          : `NATIVE_GUARD_COVERAGE_BREACH:0: reconciliation mismatch (duplicate outcome or inconsistent state).`;
+          ? `NATIVE_GUARD_COVERAGE_BREACH: ${String(count)} JSONL tool call(s) missing Hook before event.`
+          : `NATIVE_GUARD_COVERAGE_BREACH: reconciliation mismatch (duplicate outcome or inconsistent state).`;
         return {
           schemaVersion: "mvp-1",
           runId: runMeta?.runId ?? "unknown",

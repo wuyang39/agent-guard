@@ -72,6 +72,26 @@ const MAX_PROGRESS_FAILURES = 24;
 const RUN_CANCELLED_MESSAGE = "Run cancelled by user.";
 const activeRunControllers = new Map<string, AbortController>();
 
+// ---- Task 14: detection run serialization ----
+// Only one OpenClaw sandbox detection run at a time. The app
+// coordinator supports a single active lease; concurrent runs
+// would fail with NATIVE_GUARD_ALREADY_ACTIVE.
+let detectionRunActive = false;
+
+function acquireDetectionLock(): void {
+  if (detectionRunActive) {
+    throw new Error(
+      "CONFLICT: Another OpenClaw detection run is already in progress. " +
+      "Wait for it to complete or cancel it before starting a new run.",
+    );
+  }
+  detectionRunActive = true;
+}
+
+function releaseDetectionLock(): void {
+  detectionRunActive = false;
+}
+
 // ---- Task 14: native-guard lease dependencies ----
 // Passed by the API handler when the coordinator is available.
 export type GuardLeaseDeps = {
@@ -231,6 +251,7 @@ export async function runE2E(
   activeRunControllers.set(runGroup.runGroupId, controller);
   let sandboxManager: DetectionSandboxManager | undefined;
   let eventStore: ReturnType<typeof createNativeGuardEventStore> | undefined;
+  let isOpenClaw = false;
 
   try {
     throwIfRunCancelled(controller.signal);
@@ -442,10 +463,14 @@ export async function runE2E(
 
     // ====== Task 12: OpenClaw sandbox lifecycle ======
     sandboxManager = undefined;
-    const isOpenClaw = request.adapterKind === "openclaw";
+    isOpenClaw = request.adapterKind === "openclaw";
     const detectionImage = process.env.AGENT_GUARD_DETECTION_IMAGE;
 
     if (isOpenClaw) {
+      // OpenClaw detection requires Docker isolation. Only one detection
+      // run at a time — the app coordinator supports a single active lease.
+      acquireDetectionLock();
+
       // OpenClaw detection requires Docker isolation. Without an immutable
       // image the sandbox cannot be provisioned. Fail immediately —
       // zero attack samples are executed.
@@ -462,6 +487,7 @@ export async function runE2E(
         };
         updateRunProgress(runGroup, { phase: "failed", runningCaseIds: [], retryingCaseIds: [] });
         await saveRunGroup(runGroup);
+        releaseDetectionLock();
         throw new Error(message);
       }
 
@@ -791,6 +817,7 @@ export async function runE2E(
     }
     throw err;
   } finally {
+    if (isOpenClaw) releaseDetectionLock();
     if (sandboxManager) {
       try {
         await sandboxManager.cleanup();

@@ -225,6 +225,21 @@ export class OpenClawSession implements AgentSession {
 
       this.lastReconciliation = result.reconciliation;
       const endedAt = nowIso();
+      // Coverage breach: JSONL has tool calls without Hook before events.
+      if (result.reconciliation && !result.reconciliation.reconciled) {
+        const breachMsg = `Native guard coverage breach: ${String(result.reconciliation.coverageBreachCount)} JSONL tool call(s) missing Hook before event.`;
+        return {
+          schemaVersion: "mvp-1",
+          runId: runMeta?.runId ?? "unknown",
+          agentId: runMeta?.agentId ?? this.agent.agentId,
+          caseId: runMeta?.caseId ?? task.caseId,
+          status: "failed",
+          error: breachMsg,
+          finalMessage: `[OpenClaw Error] ${breachMsg}`,
+          startedAt,
+          endedAt,
+        };
+      }
       return {
         schemaVersion: "mvp-1",
         runId: runMeta?.runId ?? "unknown",

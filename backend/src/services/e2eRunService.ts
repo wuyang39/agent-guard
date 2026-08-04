@@ -607,8 +607,9 @@ export async function runE2E(
         }
       }
 
-      // Verify guard produced real decisions (not OFF/empty). Per-session
-      // reconciliation against JSONL happens inside runOpenClawSession.
+      // Verify guard produced real decisions and no coverage breaches.
+      // Per-session reconciliation against JSONL happens inside
+      // runOpenClawSession; breaches cause the session to fail.
       if (runGroup.nativeGuardCoverage && eventStore) {
         let totalEvents = 0;
         let anyDecisions = false;
@@ -622,7 +623,15 @@ export async function runE2E(
           } catch { /* store unavailable — leave coverage as-is */ }
         }
         runGroup.nativeGuardCoverage.eventsTotal = totalEvents;
-        runGroup.nativeGuardCoverage.coverage = anyDecisions ? "active" : "conditional";
+        // Active only if guard produced decisions AND no session failed
+        // due to coverage breach (checked in OpenClawSession.sendTask).
+        const hasCoverageBreaches = (detectionResult.failedCases ?? 0) > 0
+          ? runGroup.progress?.caseFailures?.some(
+              (f) => f.category === "native_guard_coverage_breach",
+            )
+          : false;
+        runGroup.nativeGuardCoverage.coverage = (anyDecisions && !hasCoverageBreaches)
+          ? "active" : "conditional";
       }
     }
     const riskReports = detectionResult.riskReports;

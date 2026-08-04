@@ -270,6 +270,7 @@ export class OpenClawSession implements AgentSession {
     nativeGuardEvents: import("@agent-guard/contracts").NativeGuardEvent[];
     supervisionRecords: import("@agent-guard/contracts").RuntimeSupervisionRecord[];
     reconciliation?: { reconciled: boolean; coverageBreachCount: number };
+    revokeError?: string;
   }> {
     if (!this.nativeGuardEventStore || !this.lastRunMeta) {
       return { nativeGuardEvents: [], supervisionRecords: [] };
@@ -280,7 +281,9 @@ export class OpenClawSession implements AgentSession {
         this.nativeGuardEventStore.listByRun(runId).catch(() => [] as import("@agent-guard/contracts").NativeGuardEvent[]),
         this.nativeGuardEventStore.listRecordsByRun(runId).catch(() => [] as import("@agent-guard/contracts").RuntimeSupervisionRecord[]),
       ]);
-      return { nativeGuardEvents: events, supervisionRecords: records, reconciliation: this.lastReconciliation };
+      const revokeError = this.lastRevokeError;
+      this.lastRevokeError = undefined;
+      return { nativeGuardEvents: events, supervisionRecords: records, reconciliation: this.lastReconciliation, revokeError };
     } catch {
       return { nativeGuardEvents: [], supervisionRecords: [] };
     }

@@ -463,6 +463,26 @@ Evidence 面使用双因子：独立 evidence bearer 加每 epoch Ed25519 proof-
 
 进程外 launcher 是最终启动边界：若 guarded marker 存在，而 live registry query 不能同时证明 Agent Guard plugin、final `before_tool_call`、recovery service、可信的 post-approval lease recheck capability，以及 trusted JSON-only params provenance 或原子 approved-snapshot execution 参数契约，launcher 必须拒绝正常 Gateway 启动，并且只开放不调度工具的 maintenance cleanup。参数契约是审批后租约复查之外的附加门禁；固定 `3edbe19f` 宿主不提供这两项未来能力，继续处于 unsupported/quarantined。插件 quarantine 不是该门禁的替代品；外部门禁的实现与 live 验收仍是 Task 14 的阻断残余工作。
 
+Launcher 实现在 `scripts/openclaw-guard-launcher.ts`。在 OpenClaw Gateway 启动前执行：
+```bash
+node --import tsx scripts/openclaw-guard-launcher.ts
+```
+有 guarded marker 且 live registry 不可证明时退出码 1，正常启动被拒绝，必须使用 `--maintenance` 模式（仅允许清理操作）。
+
+#### 7.1.1 兼容 OpenClaw Fork 需要提供的能力
+
+固定 `2026.7.2/3edbe19f` 以下能力不可用。兼容 fork 必须提供：
+
+1. **Registrar live contribution 结果** — `plugins list --json` 的 `registry.liveAttestation` 字段为 `true`，证明插件 hook/service/route 已 live registered。
+2. **final `before_tool_call` 顺序证明** — 插件注册的 `before_tool_call` hook 具有最高优先级且不能被其他插件覆盖。
+3. **Trusted Policy 证明** — `agent-guard-admission` 作为唯一的 Trusted Tool Policy 注册。
+4. **Recovery service 证明** — `agent-guard-runtime` service 已注册并可用于 session recovery。
+5. **Post-approval lease recheck** — 审批后、执行前再次验证 lease 仍然 active/未过期。
+6. **JSON-only params provenance** — 工具参数溯源为JSON-only，无二进制/流式/外部引用注入路径。或：原子 approved-snapshot execution — 执行参数必须等于签名批准的参数快照。
+7. **Gateway live registry query** — `openclaw plugins list --json` 稳定输出上述字段。
+
+上述能力就绪后，launcher 可移除维护模式限制，允许完整的 guarded Gateway 启动。
+
 ### 7.2 Detection Sandbox 生命周期 (Task 11-12)
 
 `DetectionSandboxManager` (`backend/src/modules/openclaw/detectionSandboxManager.ts`) 管理 OpenClaw 检测的 Docker 隔离运行时。生命周期在 `e2eRunService` 中编排：

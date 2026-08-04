@@ -2,22 +2,27 @@ import type { FastifyInstance } from "fastify";
 import { success, failure } from "../../response";
 import type { RunE2ERequest } from "../../types";
 import {
-  runE2E,
+  runE2E as runE2EService,
   CaseIdValidationError,
+  DetectionRunConflictError,
   SelectionPlanValidationError,
   PolicyPackReuseError,
   cancelRunGroup,
   createInitialE2ERunGroup,
+  releaseDetectionRunReservation,
+  reserveDetectionRun,
   type SandboxCoordinatorFactory,
 } from "../../../services/e2eRunService";
 import {
   getRunGroup,
   listRunGroups,
-  saveRunGroup,
+  saveRunGroup as saveRunGroupToStore,
 } from "../../../storage/fileRunStore";
 
 export type TestRunRoutesOptions = {
   sandboxCoordinatorFactory?: SandboxCoordinatorFactory;
+  runE2E?: typeof runE2EService;
+  saveRunGroup?: typeof saveRunGroupToStore;
 };
 
 export async function testRunRoutes(
@@ -25,6 +30,8 @@ export async function testRunRoutes(
   opts?: TestRunRoutesOptions,
 ): Promise<void> {
   const sandboxCoordinatorFactory = opts?.sandboxCoordinatorFactory;
+  const runE2E = opts?.runE2E ?? runE2EService;
+  const saveRunGroup = opts?.saveRunGroup ?? saveRunGroupToStore;
   // POST /api/v1/test-runs/e2e
   app.post("/api/v1/test-runs/e2e", async (request, reply) => {
     const body = request.body as RunE2ERequest;
@@ -56,11 +63,33 @@ export async function testRunRoutes(
     }
 
     // P2-B-3: 支持 mock + http_sample + openclaw
+    let detectionRunReservation;
+    if (body.adapterKind === "openclaw" && !body.reusePolicyPackId) {
+      try {
+        detectionRunReservation = reserveDetectionRun();
+      } catch (err) {
+        if (err instanceof DetectionRunConflictError) {
+          reply.code(409);
+          return failure("DETECTION_RUN_CONFLICT", err.message);
+        }
+        throw err;
+      }
+    }
 
     if (query.async === "1" || query.async === "true") {
       const runGroup = createInitialE2ERunGroup(body);
-      await saveRunGroup(runGroup);
-      void runE2E(body, runGroup, sandboxCoordinatorFactory).catch((err) => {
+      try {
+        await saveRunGroup(runGroup);
+      } catch (err) {
+        releaseDetectionRunReservation(detectionRunReservation);
+        throw err;
+      }
+      void runE2E(
+        body,
+        runGroup,
+        sandboxCoordinatorFactory,
+        detectionRunReservation,
+      ).catch((err) => {
         request.log.error({ err, runGroupId: runGroup.runGroupId }, "Async E2E run failed");
       });
       reply.code(202);
@@ -73,10 +102,19 @@ export async function testRunRoutes(
     }
 
     try {
-      const result = await runE2E(body, undefined, sandboxCoordinatorFactory);
+      const result = await runE2E(
+        body,
+        undefined,
+        sandboxCoordinatorFactory,
+        detectionRunReservation,
+      );
       reply.code(201);
       return success(result);
     } catch (err) {
+      if (err instanceof DetectionRunConflictError) {
+        reply.code(409);
+        return failure("DETECTION_RUN_CONFLICT", err.message);
+      }
       if (err instanceof CaseIdValidationError) {
         reply.code(400);
         return failure("INVALID_CASE_IDS", err.message);

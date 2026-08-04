@@ -73,6 +73,8 @@ export type NativeGuardRouteDependencies = {
   >;
   decisionService: NativeToolDecisionService;
   eventStore: Pick<NativeGuardEventStore, "append">;
+  /** Full store shared with guarded E2E readers; never replace with a fallback. */
+  runtimeEventStore: NativeGuardEventStore;
 };
 
 export type NativeGuardRuntimeOptions = {
@@ -121,6 +123,7 @@ export function createNativeGuardRouteDependencies(
     leaseService,
     decisionService,
     eventStore: guardedEventStore,
+    runtimeEventStore: eventStore,
   };
 }
 

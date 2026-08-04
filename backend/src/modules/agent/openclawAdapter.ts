@@ -19,6 +19,7 @@ import type {
   AgentUnderTest,
 } from "@agent-guard/contracts";
 import { runOpenClawSession } from "./openclawSession";
+import { scrubSecrets } from "../../shared/scrubSecrets";
 
 export type OpenClawAdapterOptions = {
   gatewayUrl?: string;
@@ -38,6 +39,35 @@ export type OpenClawAdapterOptions = {
     revoke(leaseId: string): Promise<void>;
   };
 };
+
+type NativeGuardRuntimeStore = NonNullable<
+  OpenClawAdapterOptions["nativeGuardEventStore"]
+>;
+
+export async function drainOpenClawRuntimeEvidence(
+  store: NativeGuardRuntimeStore,
+  runId: string,
+  required: boolean,
+): Promise<{
+  nativeGuardEvents: import("@agent-guard/contracts").NativeGuardEvent[];
+  supervisionRecords: import("@agent-guard/contracts").RuntimeSupervisionRecord[];
+}> {
+  try {
+    const [nativeGuardEvents, supervisionRecords] = await Promise.all([
+      store.listByRun(runId),
+      store.listRecordsByRun(runId),
+    ]);
+    return { nativeGuardEvents, supervisionRecords };
+  } catch (error) {
+    if (required) {
+      const message = scrubSecrets(
+        error instanceof Error ? error.message : String(error),
+      );
+      throw new Error(`NATIVE_GUARD_EVIDENCE_UNAVAILABLE: ${message}`);
+    }
+    return { nativeGuardEvents: [], supervisionRecords: [] };
+  }
+}
 
 export function resolveOpenClawCliPath(preferredCliPath?: string): string {
   if (preferredCliPath?.trim()) {
@@ -293,20 +323,26 @@ export class OpenClawSession implements AgentSession {
     revokeError?: string;
   }> {
     if (!this.nativeGuardEventStore || !this.lastRunMeta) {
+      if (this.nativeGuardRequired) {
+        throw new Error(
+          "NATIVE_GUARD_EVIDENCE_UNAVAILABLE: runtime event store or run metadata is missing.",
+        );
+      }
       return { nativeGuardEvents: [], supervisionRecords: [] };
     }
     const runId = this.lastRunMeta.runId;
-    try {
-      const [events, records] = await Promise.all([
-        this.nativeGuardEventStore.listByRun(runId).catch(() => [] as import("@agent-guard/contracts").NativeGuardEvent[]),
-        this.nativeGuardEventStore.listRecordsByRun(runId).catch(() => [] as import("@agent-guard/contracts").RuntimeSupervisionRecord[]),
-      ]);
-      const revokeError = this.lastRevokeError;
-      this.lastRevokeError = undefined;
-      return { nativeGuardEvents: events, supervisionRecords: records, reconciliation: this.lastReconciliation, revokeError };
-    } catch {
-      return { nativeGuardEvents: [], supervisionRecords: [] };
-    }
+    const evidence = await drainOpenClawRuntimeEvidence(
+      this.nativeGuardEventStore,
+      runId,
+      this.nativeGuardRequired,
+    );
+    const revokeError = this.lastRevokeError;
+    this.lastRevokeError = undefined;
+    return {
+      ...evidence,
+      reconciliation: this.lastReconciliation,
+      revokeError,
+    };
   }
 }
 

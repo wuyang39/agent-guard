@@ -11,5 +11,6 @@ export type TestRunResult = {
     events: import("@agent-guard/contracts").NativeGuardEvent[];
     reconciliation?: { reconciled: boolean; coverageBreachCount: number };
     revokeError?: string;
+    evidenceError?: string;
   };
 };

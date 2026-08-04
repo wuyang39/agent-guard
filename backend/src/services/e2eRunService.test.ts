@@ -1,0 +1,77 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+  DetectionRunConflictError,
+  classifyDetectionError,
+  finalizeDetectionRunReservation,
+  releaseDetectionRunReservation,
+  reserveDetectionRun,
+  type DetectionRunReservation,
+} from "./e2eRunService";
+
+const OPENCLAW_REQUEST = {
+  adapterKind: "openclaw",
+  agent: { name: "Native guard test" },
+  generateDefenseReport: false,
+} as const;
+
+test("a conflicting detection run cannot release the active owner's reservation", () => {
+  const owner = reserveDetectionRun();
+  let contender: DetectionRunReservation | undefined;
+
+  try {
+    assert.throws(
+      () => {
+        contender = reserveDetectionRun();
+      },
+      DetectionRunConflictError,
+    );
+
+    assert.equal(releaseDetectionRunReservation(contender), false);
+    assert.throws(() => reserveDetectionRun(), DetectionRunConflictError);
+  } finally {
+    assert.equal(releaseDetectionRunReservation(owner), true);
+  }
+
+  const nextOwner = reserveDetectionRun();
+  assert.equal(releaseDetectionRunReservation(nextOwner), true);
+});
+
+test("a detection reservation remains active until sandbox cleanup finishes", async () => {
+  const owner = reserveDetectionRun();
+
+  await finalizeDetectionRunReservation(owner, async () => {
+    assert.throws(() => reserveDetectionRun(), DetectionRunConflictError);
+  });
+
+  const nextOwner = reserveDetectionRun();
+  assert.equal(releaseDetectionRunReservation(nextOwner), true);
+});
+
+test("native guard evidence failures are fatal and use a stable category", () => {
+  assert.deepEqual(
+    classifyDetectionError(
+      "NATIVE_GUARD_EVIDENCE_UNAVAILABLE: event store unavailable",
+      OPENCLAW_REQUEST,
+    ),
+    {
+      category: "native_guard_evidence_unavailable",
+      retryable: false,
+      skipAllowed: false,
+    },
+  );
+});
+
+test("native guard revoke failures are fatal and use a stable category", () => {
+  assert.deepEqual(
+    classifyDetectionError(
+      "NATIVE_GUARD_REVOKE_FAILED: plugin did not acknowledge revoke",
+      OPENCLAW_REQUEST,
+    ),
+    {
+      category: "native_guard_revoke_failed",
+      retryable: false,
+      skipAllowed: false,
+    },
+  );
+});

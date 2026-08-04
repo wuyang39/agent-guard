@@ -73,9 +73,16 @@ runTest("Plugin (lease registry, control routes, runtime, event spool)", [
   "plugins/agent-guard-supervision/src/eventSpool.test.ts",
 ]);
 
-runTest("Backend (coordinator, control client, event store, trace projector, sandbox)", [
+runTest("Backend (coordinator, routes, runtime evidence, event store, trace projector, sandbox)", [
+  "backend/src/app.test.ts",
+  "backend/src/api/v1/openclaw/native-guard-handlers.test.ts",
+  "backend/src/api/v1/test-runs/handlers.test.ts",
+  "backend/src/modules/agent/openclawAdapter.test.ts",
+  "backend/src/modules/agent/openclawSession.test.ts",
   "backend/src/modules/openclaw/nativeGuardCoordinator.test.ts",
   "backend/src/modules/openclaw/openclawControlClient.test.ts",
+  "backend/src/modules/runner/testRunner.test.ts",
+  "backend/src/services/e2eRunService.test.ts",
   "backend/src/storage/nativeGuardEventStore.test.ts",
   "backend/src/modules/openclaw/nativeGuardTraceProjector.test.ts",
   "backend/src/modules/openclaw/detectionSandboxManager.test.ts",

@@ -76,20 +76,66 @@ const activeRunControllers = new Map<string, AbortController>();
 // Only one OpenClaw sandbox detection run at a time. The app
 // coordinator supports a single active lease; concurrent runs
 // would fail with NATIVE_GUARD_ALREADY_ACTIVE.
-let detectionRunActive = false;
+const detectionRunReservationBrand: unique symbol = Symbol("detectionRunReservation");
 
-function acquireDetectionLock(): void {
-  if (detectionRunActive) {
-    throw new Error(
-      "CONFLICT: Another OpenClaw detection run is already in progress. " +
+export type DetectionRunReservation = Readonly<{
+  [detectionRunReservationBrand]: true;
+}>;
+
+let activeDetectionRunReservation: DetectionRunReservation | undefined;
+
+export class DetectionRunConflictError extends Error {
+  constructor() {
+    super(
+      "Another OpenClaw detection run is already in progress. " +
       "Wait for it to complete or cancel it before starting a new run.",
     );
+    this.name = "DetectionRunConflictError";
   }
-  detectionRunActive = true;
 }
 
-function releaseDetectionLock(): void {
-  detectionRunActive = false;
+export function reserveDetectionRun(): DetectionRunReservation {
+  if (activeDetectionRunReservation) {
+    throw new DetectionRunConflictError();
+  }
+  const reservation = Object.freeze({
+    [detectionRunReservationBrand]: true as const,
+  });
+  activeDetectionRunReservation = reservation;
+  return reservation;
+}
+
+export function releaseDetectionRunReservation(
+  reservation: DetectionRunReservation | undefined,
+): boolean {
+  if (!reservation || activeDetectionRunReservation !== reservation) {
+    return false;
+  }
+  activeDetectionRunReservation = undefined;
+  return true;
+}
+
+export async function finalizeDetectionRunReservation(
+  reservation: DetectionRunReservation | undefined,
+  cleanup: () => Promise<void>,
+): Promise<void> {
+  try {
+    await cleanup();
+  } finally {
+    releaseDetectionRunReservation(reservation);
+  }
+}
+
+function claimDetectionRunReservation(
+  reservation: DetectionRunReservation | undefined,
+): DetectionRunReservation {
+  if (!reservation) {
+    return reserveDetectionRun();
+  }
+  if (activeDetectionRunReservation !== reservation) {
+    throw new DetectionRunConflictError();
+  }
+  return reservation;
 }
 
 // ---- Task 14: native-guard lease dependencies ----
@@ -238,6 +284,7 @@ export async function runE2E(
   request: RunE2ERequest,
   existingRunGroup?: P2RunGroup,
   sandboxCoordinatorFactory?: SandboxCoordinatorFactory,
+  reservedDetectionRun?: DetectionRunReservation,
 ): Promise<RunE2EResult> {
   // P2 adapterKind 映射到 contracts adapterType + 自定义 adapter。
   const adapterType = mapAdapterKind(request.adapterKind);
@@ -252,6 +299,7 @@ export async function runE2E(
   let sandboxManager: DetectionSandboxManager | undefined;
   let eventStore: ReturnType<typeof createNativeGuardEventStore> | undefined;
   let isOpenClaw = false;
+  let detectionRunReservation = reservedDetectionRun;
 
   try {
     throwIfRunCancelled(controller.signal);
@@ -469,7 +517,7 @@ export async function runE2E(
     if (isOpenClaw) {
       // OpenClaw detection requires Docker isolation. Only one detection
       // run at a time — the app coordinator supports a single active lease.
-      acquireDetectionLock();
+      detectionRunReservation = claimDetectionRunReservation(detectionRunReservation);
 
       // OpenClaw detection requires Docker isolation. Without an immutable
       // image the sandbox cannot be provisioned. Fail immediately —
@@ -487,7 +535,6 @@ export async function runE2E(
         };
         updateRunProgress(runGroup, { phase: "failed", runningCaseIds: [], retryingCaseIds: [] });
         await saveRunGroup(runGroup);
-        releaseDetectionLock();
         throw new Error(message);
       }
 
@@ -817,35 +864,39 @@ export async function runE2E(
     }
     throw err;
   } finally {
-    if (isOpenClaw) releaseDetectionLock();
-    if (sandboxManager) {
-      try {
-        await sandboxManager.cleanup();
-      } catch (cleanupError) {
-        const message = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
-        appendDetectionFailure(runGroup, {
-          caseId: "sandbox_cleanup",
-          phase: "detecting",
-          reason: `Sandbox cleanup failed: ${message}`,
-          category: "sandbox_cleanup_failed",
-          attempts: 1, retryable: true, skipped: false,
-          occurredAt: nowIso(),
-        });
-        if (runGroup.nativeGuardCoverage) {
-          runGroup.nativeGuardCoverage.reconciled = false;
+    try {
+      await finalizeDetectionRunReservation(detectionRunReservation, async () => {
+        if (sandboxManager) {
+          try {
+            await sandboxManager.cleanup();
+          } catch (cleanupError) {
+            const message = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+            appendDetectionFailure(runGroup, {
+              caseId: "sandbox_cleanup",
+              phase: "detecting",
+              reason: `Sandbox cleanup failed: ${message}`,
+              category: "sandbox_cleanup_failed",
+              attempts: 1, retryable: true, skipped: false,
+              occurredAt: nowIso(),
+            });
+            if (runGroup.nativeGuardCoverage) {
+              runGroup.nativeGuardCoverage.reconciled = false;
+            }
+            // Persist cleanup failure with consistent phase and status.
+            runGroup.status = "failed";
+            runGroup.phase = "failed";
+            if (!runGroup.error) {
+              runGroup.error = `Sandbox cleanup failed: ${message}`;
+            }
+            runGroup.endedAt = nowIso();
+            await saveRunGroup(runGroup);
+          }
         }
-        // Persist cleanup failure with consistent phase and status.
-        runGroup.status = "failed";
-        runGroup.phase = "failed";
-        if (!runGroup.error) {
-          runGroup.error = `Sandbox cleanup failed: ${message}`;
-        }
-        runGroup.endedAt = nowIso();
-        await saveRunGroup(runGroup);
+      });
+    } finally {
+      if (activeRunControllers.get(runGroup.runGroupId) === controller) {
+        activeRunControllers.delete(runGroup.runGroupId);
       }
-    }
-    if (activeRunControllers.get(runGroup.runGroupId) === controller) {
-      activeRunControllers.delete(runGroup.runGroupId);
     }
   }
 }
@@ -1169,6 +1220,7 @@ async function runSingleDetectionAttempt(input: {
     customAdapter,
     selectionPlanId: runGroup.selectionPlanId,
     signal,
+    requireNativeGuardRuntimeEvidence: Boolean(runGroup.nativeGuardCoverage),
   });
   throwIfRunCancelled(signal);
 
@@ -1182,16 +1234,6 @@ async function runSingleDetectionAttempt(input: {
       const rec = nativeGuardRuntime.reconciliation;
       runGroup.nativeGuardCoverage.coverageBreachCount += rec.coverageBreachCount;
       if (!rec.reconciled) runGroup.nativeGuardCoverage.reconciled = false;
-    }
-    if (nativeGuardRuntime.revokeError) {
-      appendDetectionFailure(runGroup, {
-        caseId: context.caseId,
-        phase: "detecting",
-        reason: `Native guard revoke failed: ${nativeGuardRuntime.revokeError}`,
-        category: "sandbox_cleanup_failed",
-        attempts: 1, retryable: false, skipped: false,
-        occurredAt: nowIso(),
-      });
     }
   }
 
@@ -1468,7 +1510,7 @@ function getMinimumSuccessfulDetectionCases(
   return Math.min(totalCases, Math.max(absolute, Math.ceil(totalCases * ratio)));
 }
 
-function classifyDetectionError(
+export function classifyDetectionError(
   message: string,
   request: RunE2ERequest,
 ): {
@@ -1485,6 +1527,20 @@ function classifyDetectionError(
   }
 
   const normalized = message.toLowerCase();
+  if (normalized.includes("native_guard_evidence_unavailable")) {
+    return {
+      category: "native_guard_evidence_unavailable",
+      retryable: false,
+      skipAllowed: false,
+    };
+  }
+  if (normalized.includes("native_guard_revoke_failed")) {
+    return {
+      category: "native_guard_revoke_failed",
+      retryable: false,
+      skipAllowed: false,
+    };
+  }
   // Coverage breach: Hook missed tool calls. Fatal per spec —
   // coverage breach must cause the run to fail.
   if (

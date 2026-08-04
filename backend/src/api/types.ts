@@ -54,6 +54,8 @@ export type P2RunCaseFailure = {
     | "sandbox_attestation_failed"
     | "sandbox_cleanup_failed"
     | "native_guard_unavailable"
+    | "native_guard_evidence_unavailable"
+    | "native_guard_revoke_failed"
     | "native_guard_coverage_breach";
   attempts: number;
   retryable: boolean;

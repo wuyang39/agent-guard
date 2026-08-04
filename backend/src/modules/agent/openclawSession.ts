@@ -200,6 +200,7 @@ export async function runOpenClawSession(
     const nativeGuardEvents = await drainNativeGuardEvidence(
       options.nativeGuardEventStore,
       runMeta.runId,
+      options.nativeGuardRequired ?? false,
     );
     const jsonlCallIds = session.toolCalls.map((tc) => tc.callId);
 
@@ -546,16 +547,23 @@ async function saveJsonlArtifact(
   return dest;
 }
 
-async function drainNativeGuardEvidence(
+export async function drainNativeGuardEvidence(
   store: NonNullable<OpenClawRunOptions["nativeGuardEventStore"]>,
   runId: string,
+  required = false,
 ): Promise<NativeGuardEvent[]> {
   try {
     const byRun = await store.listByRun(runId);
     if (byRun.length > 0) return byRun;
     // 回退到 session key 等价于 runId 的查询
     return store.listBySession(runId);
-  } catch {
+  } catch (error) {
+    if (required) {
+      const message = scrubSecrets(
+        error instanceof Error ? error.message : String(error),
+      );
+      throw new Error(`NATIVE_GUARD_EVIDENCE_UNAVAILABLE: ${message}`);
+    }
     return [];
   }
 }

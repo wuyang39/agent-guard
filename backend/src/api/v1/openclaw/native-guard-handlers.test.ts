@@ -2497,6 +2497,7 @@ function createFixture() {
         return true;
       },
     },
+    runtimeEventStore: {} as never,
   };
   return { calls, dependencies };
 }

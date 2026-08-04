@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import path from "node:path";
-import { resolveOpenClawDataDirs, spawnOpenClawAgent } from "./openclawSession";
+import {
+  drainNativeGuardEvidence,
+  resolveOpenClawDataDirs,
+  spawnOpenClawAgent,
+} from "./openclawSession";
 import { scrubSecrets } from "../../shared/scrubSecrets";
 
 test("isolated OpenClaw env resolves artifacts inside the supplied state directory", () => {
@@ -65,6 +69,29 @@ test("OFF child runs with an explicit native guard disabled marker", async () =>
     if (previous === undefined) delete process.env.AGENT_GUARD_NATIVE_REQUIRED;
     else process.env.AGENT_GUARD_NATIVE_REQUIRED = previous;
   }
+});
+
+test("guarded session evidence reads fail closed", async () => {
+  const store = {
+    async listByRun() {
+      throw new Error("event store unavailable");
+    },
+  } as never;
+
+  await assert.rejects(
+    drainNativeGuardEvidence(store, "run-1", true),
+    /event store unavailable/,
+  );
+});
+
+test("optional session evidence reads retain fail-open compatibility", async () => {
+  const store = {
+    async listByRun() {
+      throw new Error("event store unavailable");
+    },
+  } as never;
+
+  assert.deepEqual(await drainNativeGuardEvidence(store, "run-1", false), []);
 });
 
 // ---- scrubSecrets / safeStderr validation ----

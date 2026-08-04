@@ -16,12 +16,15 @@ import { ApiAgentAdapter } from "../agent/apiAgentSession";
 import { MockAgentAdapter } from "../agent/mockAgentSession";
 import { createSupervisionBridge } from "../supervisor/supervisionBridge";
 import { createAgentSupervisor } from "../supervisor/agentSupervisor";
+import { scrubSecrets } from "../../shared/scrubSecrets";
 
 export type RunTestCaseOptions = {
   supervisionPolicyPack?: SupervisionPolicyPack;
   runtimeSessionId?: string;
   selectionPlanId?: string;
   signal?: AbortSignal;
+  /** Guarded detection must fail closed when runtime evidence cannot be proven. */
+  requireNativeGuardRuntimeEvidence?: boolean;
   /** 自定义 adapter（如 http_sample / openclaw）。不传则默认 Api + Mock adapters。 */
   customAdapter?: AgentAdapter;
 };
@@ -160,12 +163,61 @@ export async function runTestCase(
     if (typeof session.drainRuntimeEvidence === "function") {
       try {
         const evidence = await session.drainRuntimeEvidence();
+        const revokeError = evidence.revokeError
+          ? scrubSecrets(evidence.revokeError)
+          : undefined;
         nativeGuardRuntime = {
           events: evidence.nativeGuardEvents,
           reconciliation: evidence.reconciliation,
-          revokeError: evidence.revokeError,
+          revokeError,
         };
-      } catch { /* drain failure is non-fatal */ }
+      } catch (error) {
+        if (options?.requireNativeGuardRuntimeEvidence) {
+          const evidenceError = scrubSecrets(
+            error instanceof Error ? error.message : String(error),
+          );
+          nativeGuardRuntime = { events: [], evidenceError };
+          failTestRun(
+            testRun,
+            "NATIVE_GUARD_EVIDENCE_UNAVAILABLE",
+            evidenceError,
+          );
+        }
+      }
+    } else if (options?.requireNativeGuardRuntimeEvidence) {
+      const evidenceError = "Agent session does not expose runtime evidence.";
+      nativeGuardRuntime = { events: [], evidenceError };
+      failTestRun(
+        testRun,
+        "NATIVE_GUARD_EVIDENCE_UNAVAILABLE",
+        evidenceError,
+      );
+    }
+
+    if (
+      options?.requireNativeGuardRuntimeEvidence &&
+      nativeGuardRuntime &&
+      !nativeGuardRuntime.evidenceError &&
+      !nativeGuardRuntime.reconciliation
+    ) {
+      const evidenceError = "Native guard reconciliation evidence is missing.";
+      nativeGuardRuntime.evidenceError = evidenceError;
+      failTestRun(
+        testRun,
+        "NATIVE_GUARD_EVIDENCE_UNAVAILABLE",
+        evidenceError,
+      );
+    }
+
+    if (
+      options?.requireNativeGuardRuntimeEvidence &&
+      nativeGuardRuntime?.revokeError
+    ) {
+      failTestRun(
+        testRun,
+        "NATIVE_GUARD_REVOKE_FAILED",
+        nativeGuardRuntime.revokeError,
+      );
     }
     await session.close?.();
     testRun.endedAt = nowIso();
@@ -194,4 +246,10 @@ export async function runTestCase(
 
     return { testRun, trace, supervisionRecords, nativeGuardRuntime };
   }
+}
+
+function failTestRun(testRun: TestRun, code: string, message: string): void {
+  const failure = `${code}: ${message}`;
+  testRun.status = "failed";
+  testRun.error = testRun.error ? `${testRun.error}; ${failure}` : failure;
 }

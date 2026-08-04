@@ -201,6 +201,21 @@ docker push openclaw-sandbox:agentguard
 docker image inspect openclaw-sandbox:agentguard --format '{{.RepoDigests}}'
 ```
 
+## 本地测试（隔离模式）
+
+```powershell
+# 构建产物直接调用，不覆盖全局 openclaw
+node .\dist\cli.js --version
+node .\dist\cli.js plugins list --json
+
+# 通过 OPENCLAW_CLI 让 agent-guard 使用 fork
+$env:OPENCLAW_CLI = "E:\Projects\openclaw-agentguard\openclaw.cmd"
+# 或直接指向 .js（需配合包装脚本）
+```
+
+`resolveOpenClawCliPath()` 优先检查 `OPENCLAW_CLI` 环境变量，
+因此无需 `npm link` 即可在 agent-guard 项目中测试 fork。
+
 ## 构建与验证
 
 ```bash

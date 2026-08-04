@@ -12,6 +12,34 @@ Task 14 P0-3 — 真实 Docker 环境验收操作手册。
 | 不可变镜像 | sha256 digest pinned | `docker image inspect <image>` |
 | Node.js | ≥ 20 | `node --version` |
 
+## 第〇步：Fork 开发隔离
+
+宿主机全局 `openclaw` 保留官方版本不动。Fork 通过 `OPENCLAW_CLI` 环境变量指向。
+
+```powershell
+# 克隆 fork 到独立目录
+git clone <fork-url> E:\Projects\openclaw-agentguard
+cd E:\Projects\openclaw-agentguard
+
+# 实现 7 项变更（见 docs/C/openclaw-fork-implementation-guide.md）
+# 构建
+npm ci
+npm run build
+
+# 创建包装脚本（Windows .cmd）
+@'
+@echo off
+node "%~dp0dist\cli.js" %*
+'@ | Set-Content openclaw.cmd
+
+# 宿主机手动测试（不影响全局安装）
+$env:OPENCLAW_CLI = "E:\Projects\openclaw-agentguard\openclaw.cmd"
+openclaw --version
+# 预期: openclaw 2026.7.1-agentguard.1
+```
+
+Agent Guard 代码已原生支持 `OPENCLAW_CLI`：`resolveOpenClawCliPath()` 优先使用该环境变量。无需 `npm link` 或覆盖全局安装。
+
 ## 第一步：构建插件
 
 ```powershell

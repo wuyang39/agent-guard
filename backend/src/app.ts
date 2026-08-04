@@ -20,6 +20,7 @@ import { reportRoutes, artifactRoutes, policyRoutes } from "./api/v1/reports/han
 import { openClawRealtimeMcpRoutes } from "./api/v1/openclaw/realtime-mcp-handlers";
 import { runtimeConfigRoutes } from "./api/v1/runtime-config/handlers";
 import { openClawPyritOpenAiRoutes } from "./api/v1/openclaw/pyrit-openai-handlers";
+import { randomBytes } from "node:crypto";
 import {
   createNativeGuardRouteDependencies,
   openClawNativeGuardRoutes,
@@ -103,8 +104,14 @@ export async function buildApp(opts?: {
   await app.register(agentRoutes);
   await app.register(testSelectionRoutes);
   // Wire native-guard lease activate/revoke into the e2e detection run.
+  // Targets the sandbox Gateway (not host) by accepting gatewayUrl/token
+  // from the e2eRunService. The coordinator handles policy resolution
+  // and lease tracking; sandbox Gateway identity is passed per-request.
   const guardLease = {
-    activate: async (input: { rootSessionKey: string; runGroupId: string }) => {
+    activate: async (input: {
+      rootSessionKey: string; runGroupId: string;
+      gatewayUrl: string; gatewayToken: string;
+    }) => {
       const status = await nativeGuardDependencies.coordinator.activate({
         rootSessionKey: input.rootSessionKey,
         mode: "detection",
@@ -113,7 +120,7 @@ export async function buildApp(opts?: {
       if (!lease) throw new Error("Native guard activation returned no active lease.");
       return { leaseId: lease.leaseId, leaseEpoch: lease.leaseEpoch };
     },
-    revoke: async (leaseId: string) => {
+    revoke: async (leaseId: string, _gatewayUrl: string, _gatewayToken: string) => {
       await nativeGuardDependencies.coordinator.revoke(leaseId);
     },
   };

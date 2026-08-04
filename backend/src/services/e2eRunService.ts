@@ -78,8 +78,10 @@ export type GuardLeaseDeps = {
   activate: (input: {
     rootSessionKey: string;
     runGroupId: string;
+    gatewayUrl: string;
+    gatewayToken: string;
   }) => Promise<{ leaseId: string; leaseEpoch: number }>;
-  revoke: (leaseId: string) => Promise<void>;
+  revoke: (leaseId: string, gatewayUrl: string, gatewayToken: string) => Promise<void>;
 };
 
 export class CaseIdValidationError extends Error {

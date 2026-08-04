@@ -30,12 +30,14 @@ export type OpenClawAdapterOptions = {
   /** Task 12: Native guard event store for draining runtime evidence. */
   nativeGuardEventStore?: import("./openclawSession").OpenClawRunOptions["nativeGuardEventStore"];
   /** Task 14: Lease activation per-session. Called before CLI with the
-   *  actual OpenClaw session key (= runMeta.runId). */
+   *  actual OpenClaw session key (= runMeta.runId). Sandbox Gateway
+   *  identity is passed so the coordinator targets the correct plugin. */
   guardLease?: {
     activate(input: {
       rootSessionKey: string; runGroupId: string;
+      gatewayUrl: string; gatewayToken: string;
     }): Promise<{ leaseId: string; leaseEpoch: number }>;
-    revoke(leaseId: string): Promise<void>;
+    revoke(leaseId: string, gatewayUrl: string, gatewayToken: string): Promise<void>;
   };
 };
 
@@ -176,11 +178,15 @@ export class OpenClawSession implements AgentSession {
     const sessionKey = runMeta?.runId ?? "unknown";
 
     // Activate native-guard lease for this session before tool execution.
-    if (this.guardLease && this.nativeGuardRequired) {
+    // Passes sandbox Gateway identity so the coordinator targets the
+    // correct isolated Gateway, not the host Gateway.
+    if (this.guardLease && this.nativeGuardRequired && this.gatewayUrl && this.gatewayToken) {
       try {
         const lease = await this.guardLease.activate({
           rootSessionKey: sessionKey,
           runGroupId: runMeta?.runId ?? sessionKey,
+          gatewayUrl: this.gatewayUrl,
+          gatewayToken: this.gatewayToken,
         });
         this.activatedLeaseId = lease.leaseId;
       } catch (error) {
@@ -246,8 +252,12 @@ export class OpenClawSession implements AgentSession {
         endedAt: nowIso(),
       };
     } finally {
-      if (this.guardLease && this.activatedLeaseId) {
-        await this.guardLease.revoke(this.activatedLeaseId).catch(() => undefined);
+      if (this.guardLease && this.activatedLeaseId && this.gatewayUrl && this.gatewayToken) {
+        await this.guardLease.revoke(
+          this.activatedLeaseId,
+          this.gatewayUrl,
+          this.gatewayToken,
+        ).catch(() => undefined);
         this.activatedLeaseId = undefined;
       }
     }

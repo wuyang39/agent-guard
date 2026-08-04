@@ -63,6 +63,9 @@ import {
 import { createNativeGuardEventStore } from "../storage/nativeGuardEventStore";
 import type { NativeGuardEvent, RuntimeSupervisionRecord } from "@agent-guard/contracts";
 import type { SandboxEvidenceSummary, NativeGuardCoverageSummary } from "../api/types";
+import { createOpenClawControlClient } from "../modules/openclaw/openclawControlClient";
+import { createNativeGuardLeaseService } from "../modules/openclaw/nativeGuardLeaseService";
+import { createNativeGuardCoordinator } from "../modules/openclaw/nativeGuardCoordinator";
 
 const CONFIGS_DIR = path.resolve(process.cwd(), "configs");
 const P2_DEMO_CASES_FILE = path.join(CONFIGS_DIR, "p2_demo_cases.json");
@@ -460,8 +463,10 @@ export async function runE2E(
         const evidence = await sandboxManager.preflight();
         await sandboxManager.start();
 
-        // Wire sandbox Gateway credentials and shared event store into the
-        // adapter. Guard lease is required — fail if not provided.
+        // Wire sandbox Gateway credentials and shared event store into
+        // the adapter. Creates a run-scoped NativeGuardCoordinator that
+        // targets the sandbox Gateway (not the host Gateway) for all
+        // lease activate/revoke operations during this detection run.
         const sandboxCreds = sandboxManager.getGatewayCredentials();
         if (!sandboxCreds) {
           throw new Error("Sandbox started but no Gateway credentials returned.");
@@ -469,12 +474,31 @@ export async function runE2E(
         if (!(customAdapter instanceof OpenClawAdapter)) {
           throw new Error("Sandbox requires an OpenClaw adapter.");
         }
-        if (!guardLease) {
-          throw new Error(
-            "Sandbox detection requires guardLease deps (activate/revoke). " +
-            "Wire NativeGuardCoordinator through the API handler.",
-          );
-        }
+        // Run-scoped coordinator: controlClient uses the sandbox Gateway
+        // token so all activate/revoke calls target the correct plugin.
+        const sandboxCoordinator = createNativeGuardCoordinator({
+          leaseService: createNativeGuardLeaseService(),
+          controlClient: createOpenClawControlClient({
+            gatewayToken: sandboxCreds.gatewayToken,
+          }),
+          gatewayUrl: sandboxCreds.gatewayUrl,
+          backendUrl: sandboxCreds.gatewayUrl, // loopback, same host
+          capabilityInput: { isolatedProfile: true },
+        });
+        const runGuardLease: GuardLeaseDeps = {
+          activate: async (input) => {
+            const status = await sandboxCoordinator.activate({
+              rootSessionKey: input.rootSessionKey,
+              mode: "detection",
+            });
+            const lease = status.activeLease;
+            if (!lease) throw new Error("Sandbox guard activation returned no active lease.");
+            return { leaseId: lease.leaseId, leaseEpoch: lease.leaseEpoch };
+          },
+          revoke: async (leaseId, _gwUrl, _gwToken) => {
+            await sandboxCoordinator.revoke(leaseId);
+          },
+        };
         eventStore = createNativeGuardEventStore({});
         customAdapter = new OpenClawAdapter({
           gatewayUrl: sandboxCreds.gatewayUrl,
@@ -483,7 +507,7 @@ export async function runE2E(
           timeoutMs: request.connection?.timeoutMs ?? 300_000,
           nativeGuardRequired: true,
           nativeGuardEventStore: eventStore,
-          guardLease,
+          guardLease: runGuardLease,
         });
 
         runGroup.sandboxEvidence = buildSandboxEvidenceSummary(evidence, undefined);

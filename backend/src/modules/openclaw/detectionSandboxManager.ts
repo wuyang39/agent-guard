@@ -760,7 +760,7 @@ async function launchGateway(input: Parameters<DetectionGatewayLauncher>[0]): Pr
   const gatewayUrl = new URL(input.gatewayUrl);
   const port = Number(gatewayUrl.port);
   const child = spawn(input.cliPath, ["gateway", "run", "--bind", "127.0.0.1", "--port", String(port), "--token", input.token], {
-    cwd: input.profileRoot, env: input.env, windowsHide: true, shell: false, detached: process.platform !== "win32",
+    cwd: input.profileRoot, env: input.env, windowsHide: true, shell: process.platform === "win32", detached: process.platform !== "win32",
     stdio: "ignore",
   });
   const onAbort = (): void => { child.kill(); };

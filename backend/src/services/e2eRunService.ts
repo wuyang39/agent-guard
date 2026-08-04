@@ -623,14 +623,13 @@ export async function runE2E(
           } catch { /* store unavailable — leave coverage as-is */ }
         }
         runGroup.nativeGuardCoverage.eventsTotal = totalEvents;
-        // Active only if guard produced decisions AND no session failed
-        // due to coverage breach (checked in OpenClawSession.sendTask).
-        const hasCoverageBreaches = (detectionResult.failedCases ?? 0) > 0
-          ? runGroup.progress?.caseFailures?.some(
-              (f) => f.category === "native_guard_coverage_breach",
-            )
-          : false;
-        runGroup.nativeGuardCoverage.coverage = (anyDecisions && !hasCoverageBreaches)
+        // Count coverage breaches from skipped/failed cases.
+        const breachFailures = (runGroup.progress?.caseFailures ?? [])
+          .filter((f) => f.category === "native_guard_coverage_breach");
+        runGroup.nativeGuardCoverage.coverageBreachCount = breachFailures.length;
+        runGroup.nativeGuardCoverage.reconciled = breachFailures.length === 0;
+        // Active only if guard produced decisions AND all sessions reconciled.
+        runGroup.nativeGuardCoverage.coverage = (anyDecisions && breachFailures.length === 0)
           ? "active" : "conditional";
       }
     }
@@ -1442,6 +1441,18 @@ function classifyDetectionError(
   }
 
   const normalized = message.toLowerCase();
+  // Coverage breach: Hook missed tool calls. Not retryable but the
+  // run can skip this case and continue to aggregate breach counts.
+  if (
+    normalized.includes("native_guard_coverage_breach") ||
+    normalized.includes("coverage breach")
+  ) {
+    return {
+      category: "native_guard_coverage_breach",
+      retryable: false,
+      skipAllowed: true,
+    };
+  }
   if (
     normalized.includes("cooldown") ||
     normalized.includes("suspending lanes")

@@ -192,25 +192,30 @@ export async function runOpenClawSession(
 
   // 4. 有原生 guard 事件时，从真实 Hook 决策/outcome 投影 Trace 事件
   //    JSONL 仅用于交叉校验，不做事后 replay。
+  // 4. Reconcile Hook events against JSONL tool calls regardless of
+  //    whether Hook events exist — zero events with JSONL calls IS a
+  //    coverage breach (Guard OFF/empty while tools were executing).
   let reconciliation: OpenClawRunResult["reconciliation"];
   if (options.nativeGuardEventStore) {
     const nativeGuardEvents = await drainNativeGuardEvidence(
       options.nativeGuardEventStore,
       runMeta.runId,
     );
+    const jsonlCallIds = session.toolCalls.map((tc) => tc.callId);
 
+    // Always reconcile: zero Hook events + JSONL calls = coverage breach.
+    const segment = projectNativeGuardTrace(
+      { traceId: runMeta.runId, runId: runMeta.runId, caseId: runMeta.caseId, sandboxId: "openclaw" },
+      nativeGuardEvents,
+      jsonlCallIds,
+    );
+
+    // Project trace events to bridge only when events are available.
     if (nativeGuardEvents.length > 0 && bridge) {
-      const segment = projectNativeGuardTrace(
-        { traceId: runMeta.runId, runId: runMeta.runId, caseId: runMeta.caseId, sandboxId: "openclaw" },
-        nativeGuardEvents,
-        session.toolCalls.map((tc) => tc.callId),
-      );
-
       const traceEvents = finalizeProjectedTrace(segment, {
         traceId: runMeta.runId, runId: runMeta.runId, caseId: runMeta.caseId, sandboxId: "openclaw",
       }, new Date().toISOString());
 
-      // 记录投影的 tool_call / tool_result / system_error 到 bridge
       for (const event of traceEvents) {
         try {
           if (event.type === "tool_call") {
@@ -224,21 +229,14 @@ export async function runOpenClawSession(
           // 投影事件不通过 sandbox 执行，仅做记录
         }
       }
-
-      // Propagate reconciliation result to caller for run-group aggregation.
-      reconciliation = {
-        reconciled: segment.reconciliation.reconciled,
-        coverageBreachCount: segment.reconciliation.coverageBreachCount,
-      };
-      if (!segment.reconciliation.reconciled) {
-        // Coverage breach — JSONL has calls without Hook before events.
-        // The reconciliation detail is returned so the caller can fail the run.
-      }
     }
-  } else {
-    // 无原生 guard 事件 store 时，不回放 JSONL 到 Trace。
-    // Trace 中只保留非 tool 事件（task_sent、agent_message 等）。
+
+    reconciliation = {
+      reconciled: segment.reconciliation.reconciled,
+      coverageBreachCount: segment.reconciliation.coverageBreachCount,
+    };
   }
+  // No event store: reconciliation not available.
 
   return { session, output, jsonlPath, reconciliation };
 }

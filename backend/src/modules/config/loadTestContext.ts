@@ -208,7 +208,6 @@ async function appendGeneratedALineCorpus(
     repository.testOracles = mergeById(repository.testOracles, testOracles, "caseId");
     repository.redTeamScenarioSet = {
       ...repository.redTeamScenarioSet,
-      ...redTeamScenarios,
       scenarios: mergeScenarios(
         repository.redTeamScenarioSet.scenarios,
         redTeamScenarios.scenarios,
@@ -271,6 +270,7 @@ function mergeScenarios(
         ...existing,
         ...s,
         caseIds: [...new Set([...existing.caseIds, ...s.caseIds])],
+        sampleIds: [...new Set([...existing.sampleIds, ...s.sampleIds])],
         expectedWeaknessCategories: [
           ...new Set([...existing.expectedWeaknessCategories, ...s.expectedWeaknessCategories]),
         ],

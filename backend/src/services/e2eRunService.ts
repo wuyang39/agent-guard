@@ -1684,7 +1684,8 @@ function appendDetectionFailure(
   // Extract precise breach count from structured error messages.
   if (failure.category === "native_guard_coverage_breach" && runGroup.nativeGuardCoverage) {
     const parsed = /NATIVE_GUARD_COVERAGE_BREACH:(\d+):/.exec(failure.reason);
-    const count = parsed ? Number(parsed[1]) : 1;
+    const raw = parsed ? Number(parsed[1]) : 1;
+    const count = Number.isSafeInteger(raw) ? Math.min(raw, 10_000) : 1;
     runGroup.nativeGuardCoverage.coverageBreachCount += count;
     runGroup.nativeGuardCoverage.reconciled = false;
   }

@@ -1,20 +1,27 @@
-import { randomBytes, createHash } from "node:crypto";
+import { createHash, createPublicKey, randomBytes, type KeyObject } from "node:crypto";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import type { Readable } from "node:stream";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import net from "node:net";
+import type { NativeGuardStatus } from "@agent-guard/contracts";
+import { resolveOpenClawCliInvocation } from "../agent/openclawAdapter";
 import { generateDetectionOpenClawConfig, detectionConfigDigest, type DetectionOpenClawConfig } from "./detectionOpenClawConfig";
 import { createOpenClawControlClient, type NativeGuardCapability } from "./openclawControlClient";
+import {
+  isCompatibleNativeGuardVersion,
+  parseNativeGuardGatewayAttestation,
+} from "./nativeGuardLiveCapability";
 
-const REQUIRED_OPENCLAW = [2026, 7, 1] as const;
-// Fork identifier: version strings containing "agentguard" are accepted
-// at the base version even without the official 2026.7.2+ release.
-const FORK_IDENTIFIER = "agentguard";
 const RUN_LABEL_KEY = "agent-guard.run-group";
 const RUN_ROLE_LABEL_KEY = "agent-guard.role";
 const COMMAND_TIMEOUT_MS = 30_000;
 const MAX_COMMAND_OUTPUT_BYTES = 256 * 1024;
+const MAX_GATEWAY_BOOTSTRAP_BYTES = 8 * 1024;
+const GATEWAY_BOOTSTRAP_TIMEOUT_MS = 2_000;
+const MAX_GATEWAY_READINESS_BYTES = 64 * 1024;
+const RESPONSE_CANCEL_TIMEOUT_MS = 25;
 
 export type DetectionCommandInput = {
   command: string;
@@ -36,7 +43,12 @@ export type DetectionCommandRunner = (input: DetectionCommandInput) => Promise<D
 export type DetectionGatewayProcess = {
   url: string;
   token: string;
-  process?: { kill(signal?: NodeJS.Signals): void; forceKill?: () => void; waitForExit?: () => Promise<void> };
+  attestationPublicKey: KeyObject;
+  process: {
+    kill(signal?: NodeJS.Signals): void;
+    forceKill?: () => void;
+    waitForExit(): Promise<void>;
+  };
 };
 
 export type DetectionGatewayLauncher = (input: {
@@ -62,7 +74,24 @@ export type DetectionSandboxManagerOptions = {
   signal?: AbortSignal;
   onCleanup?: () => void;
   networkCase?: boolean;
-  capabilityProbe?: (input: { cliPath?: string; env: Record<string, string>; isolatedProfile: true }) => Promise<NativeGuardCapability>;
+  capabilityProbe?: (input: {
+    cliPath?: string;
+    env: Record<string, string>;
+    isolatedProfile: true;
+  }) => Promise<NativeGuardCapability>;
+  runtimeStatusProbe?: (input: {
+    gatewayUrl: string;
+    gatewayToken: string;
+  }) => Promise<NativeGuardStatus>;
+  gatewayAttestationProbe?: (input: {
+    gatewayUrl: string;
+    gatewayToken: string;
+    challenge: string;
+  }) => Promise<unknown>;
+  gatewayShutdownTimeoutMs?: {
+    graceful: number;
+    forced: number;
+  };
 };
 
 export type DetectionSandboxEvidence = {
@@ -111,6 +140,14 @@ export class DetectionSandboxManager {
   private imageId?: string;
   private config?: DetectionOpenClawConfig;
   private gateway?: DetectionGatewayProcess;
+  private gatewayGeneration = 0;
+  private activeGatewayGeneration?: number;
+  private expectedGatewayShutdownGeneration?: number;
+  private gatewayLifetimeFailure?: Promise<SandboxPreflightError>;
+  private resolveGatewayLifetimeFailure?: (error: SandboxPreflightError) => void;
+  private gatewayFailure?: SandboxPreflightError;
+  private startPromise?: Promise<DetectionSandboxEvidence>;
+  private liveValidated = false;
   private cleaned = false;
   private cleanupNotified = false;
   private cleanupPromise?: Promise<void>;
@@ -126,13 +163,22 @@ export class DetectionSandboxManager {
       throw new TypeError("runGroupId is invalid");
     }
     if (!options.image.trim()) throw new TypeError("image is required");
+    if (
+      options.gatewayShutdownTimeoutMs !== undefined &&
+      (!Number.isSafeInteger(options.gatewayShutdownTimeoutMs.graceful) ||
+        options.gatewayShutdownTimeoutMs.graceful < 1 ||
+        !Number.isSafeInteger(options.gatewayShutdownTimeoutMs.forced) ||
+        options.gatewayShutdownTimeoutMs.forced < 1)
+    ) {
+      throw new TypeError("gatewayShutdownTimeoutMs is invalid");
+    }
     this.options = { ...options, runGroupId: options.runGroupId, image: options.image };
     this.run = options.commandRunner ?? runCommand;
     if (options.signal) {
-      const abort = (): void => this.abortController.abort();
+      const abort = (): void => this.requestCancellation();
       this.externalAbortListener = abort;
       options.signal.addEventListener("abort", abort, { once: true });
-      if (options.signal.aborted) this.abortController.abort();
+      if (options.signal.aborted) this.requestCancellation();
     }
   }
 
@@ -141,10 +187,22 @@ export class DetectionSandboxManager {
   getCapturedSinkLogs(): string | undefined { return this.sinkLogs; }
 
   getGatewayCredentials(): { gatewayUrl: string; gatewayToken: string } | undefined {
-    return this.gateway ? { gatewayUrl: this.gateway.url, gatewayToken: this.gateway.token } : undefined;
+    return this.liveValidated && this.gateway && !this.gatewayFailure
+      ? { gatewayUrl: this.gateway.url, gatewayToken: this.gateway.token }
+      : undefined;
   }
 
-  cancel(): void { this.abortController.abort(); }
+  waitForGatewayFailure(): Promise<SandboxPreflightError> {
+    return this.gatewayLifetimeFailure ?? new Promise<SandboxPreflightError>(() => undefined);
+  }
+
+  runWhileGatewayAlive<T>(
+    operation: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
+    return this.raceGatewayLifetime(operation, true);
+  }
+
+  cancel(): void { this.requestCancellation(); }
 
   getCleanupErrors(): readonly { operation: string; error: unknown }[] {
     return this.cleanupErrors;
@@ -196,25 +254,7 @@ export class DetectionSandboxManager {
 
     try {
       await this.createProfile();
-      const capability = await this.probeOpenClawCapability();
-      const version = capability.openclawVersion;
-      if (!version || !versionAtLeast(version, REQUIRED_OPENCLAW)) {
-        throw new SandboxPreflightError("OPENCLAW_UNSUPPORTED", "OpenClaw detection runtime is unsupported.");
-      }
-      // Fork builds identify with the "agentguard" marker in the version
-      // string. They are accepted at 2026.7.1 base; official builds
-      // require 2026.7.2+.
-      const isFork = version.toLowerCase().includes(FORK_IDENTIFIER);
-      const minVersion = isFork ? REQUIRED_OPENCLAW : ([2026, 7, 2] as const);
-      if (!versionAtLeast(version, minVersion)) {
-        throw new SandboxPreflightError(
-          "OPENCLAW_UNSUPPORTED",
-          `OpenClaw ${version} is below the minimum ${isFork ? "2026.7.1 (fork)" : "2026.7.2"}.`,
-        );
-      }
-      if (!capability.supportsNativeGuard || capability.finalizerAssurance !== "isolated_profile") {
-        throw new SandboxPreflightError("OPENCLAW_CAPABILITY_UNAVAILABLE", "OpenClaw native guard capability is unavailable.");
-      }
+      const version = await this.probeOpenClawVersion();
       this.resolvedOpenClawVersion = version;
       if (this.options.networkCase) await this.createNetworkSink();
       return {
@@ -235,8 +275,26 @@ export class DetectionSandboxManager {
     }
   }
 
-  async start(): Promise<DetectionSandboxEvidence> {
-    if (this.gateway) return { ...(await this.currentEvidence()), gatewayUrl: this.gateway.url };
+  start(): Promise<DetectionSandboxEvidence> {
+    if (this.gatewayFailure) return Promise.reject(this.gatewayFailure);
+    if (this.liveValidated && this.gateway) {
+      this.assertGatewayAlive(this.gateway, this.activeGatewayGeneration, true);
+      return this.currentEvidence().then((evidence) => ({
+        ...evidence,
+        gatewayUrl: this.gateway!.url,
+      }));
+    }
+    if (this.startPromise) return this.startPromise;
+    const started = this.startOnce();
+    this.startPromise = started;
+    const clear = (): void => {
+      if (this.startPromise === started) this.startPromise = undefined;
+    };
+    void started.then(clear, clear);
+    return started;
+  }
+
+  private async startOnce(): Promise<DetectionSandboxEvidence> {
     const evidence = this.profileRoot ? await this.currentEvidence() : await this.preflight();
     this.throwIfAborted();
     const token = randomBytes(32).toString("base64url");
@@ -256,21 +314,72 @@ export class DetectionSandboxManager {
       OPENCLAW_GATEWAY_URL: gatewayUrl,
       HTTP_PROXY: "", HTTPS_PROXY: "", ALL_PROXY: "", NO_PROXY: "*",
     };
-    this.gateway = this.options.gatewayLauncher
-      ? await this.options.gatewayLauncher({
-          cliPath, profileRoot: this.profileRoot!, configPath: this.configPath!,
-          stateDir: path.join(this.profileRoot!, "state"), workspaceDir: path.join(this.profileRoot!, "workspace"),
-          token, gatewayUrl, signal: this.signal, env,
-        })
-      : await launchGateway({
-          cliPath, profileRoot: this.profileRoot!, configPath: this.configPath!,
-          stateDir: path.join(this.profileRoot!, "state"), workspaceDir: path.join(this.profileRoot!, "workspace"),
-          token, gatewayUrl, signal: this.signal, env,
-        });
-    return { ...evidence, gatewayUrl: this.gateway.url };
+    try {
+      const launchedGateway = this.options.gatewayLauncher
+        ? await this.options.gatewayLauncher({
+            cliPath, profileRoot: this.profileRoot!, configPath: this.configPath!,
+            stateDir: path.join(this.profileRoot!, "state"), workspaceDir: path.join(this.profileRoot!, "workspace"),
+            token, gatewayUrl, signal: this.signal, env,
+          })
+        : await launchGateway({
+            cliPath, profileRoot: this.profileRoot!, configPath: this.configPath!,
+            stateDir: path.join(this.profileRoot!, "state"), workspaceDir: path.join(this.profileRoot!, "workspace"),
+            token, gatewayUrl, signal: this.signal, env,
+          });
+      this.gateway = launchedGateway;
+      const generation = this.armGatewayLifetime(launchedGateway);
+      await this.raceGatewayLifetime(async () => {
+        const runtimeStatus = await this.probeRuntimeStatus();
+        if (
+          (runtimeStatus.coverage !== "off" && runtimeStatus.coverage !== "ready") ||
+          runtimeStatus.activeLeaseCount !== 0
+        ) {
+          throw new SandboxPreflightError(
+            "OPENCLAW_CAPABILITY_UNAVAILABLE",
+            "The started OpenClaw Gateway runtime is not ready for isolated native guard activation.",
+          );
+        }
+        const gatewayAttestation = await this.probeGatewayAttestation(
+          randomBytes(24).toString("base64url"),
+        );
+        const capability = await this.probeOpenClawCapability();
+        if (
+          gatewayAttestation.openclawVersion !== this.resolvedOpenClawVersion ||
+          capability.openclawVersion !== this.resolvedOpenClawVersion ||
+          !capability.supportsNativeGuard ||
+          capability.finalizerAssurance !== "isolated_profile"
+        ) {
+          throw new SandboxPreflightError(
+            "OPENCLAW_CAPABILITY_UNAVAILABLE",
+            "The started OpenClaw Gateway did not provide the required live native guard capability.",
+          );
+        }
+        this.assertGatewayAlive(launchedGateway, generation, false);
+        this.liveValidated = true;
+      }, false);
+      return { ...evidence, gatewayUrl: this.gateway.url };
+    } catch (error) {
+      const gatewayStarted = this.gateway !== undefined;
+      await this.cleanup();
+      if (!gatewayStarted) throw error;
+      if (error instanceof DetectionSandboxError) throw error;
+      throw new SandboxPreflightError(
+        "OPENCLAW_CAPABILITY_UNAVAILABLE",
+        "OpenClaw live capability inspection failed after Gateway startup.",
+      );
+    }
   }
 
   async attestSession(sessionKey: string, phase: "before" | "after" = "after"): Promise<DetectionSandboxEvidence> {
+    return this.runWhileGatewayAlive(
+      async () => this.attestSessionWhileAlive(sessionKey, phase),
+    );
+  }
+
+  private async attestSessionWhileAlive(
+    sessionKey: string,
+    phase: "before" | "after",
+  ): Promise<DetectionSandboxEvidence> {
     if (!sessionKey.trim()) throw new SandboxAttestationError("INVALID_SESSION_KEY", "Session key is required.");
     if (!this.profileRoot || !this.config || !this.imageId) {
       throw new SandboxAttestationError("NOT_STARTED", "Detection sandbox has not passed preflight.");
@@ -301,10 +410,12 @@ export class DetectionSandboxManager {
   async runSession<T>(sessionKey: string, operation: () => Promise<T>): Promise<T> {
     try {
       await this.start();
-      await this.attestSession(sessionKey, "before");
-      const value = await operation();
-      await this.attestSession(sessionKey, "after");
-      return value;
+      return await this.runWhileGatewayAlive(async () => {
+        await this.attestSessionWhileAlive(sessionKey, "before");
+        const value = await operation();
+        await this.attestSessionWhileAlive(sessionKey, "after");
+        return value;
+      });
     } finally {
       await this.cleanup();
     }
@@ -313,6 +424,8 @@ export class DetectionSandboxManager {
   async cleanup(): Promise<void> {
     if (this.cleaned) return;
     if (this.cleanupPromise) return this.cleanupPromise;
+    this.liveValidated = false;
+    this.expectedGatewayShutdownGeneration = this.activeGatewayGeneration;
     this.cleanupPromise = this.performCleanupWithRetry();
     try {
       await this.cleanupPromise;
@@ -324,6 +437,7 @@ export class DetectionSandboxManager {
       this.networkName = undefined;
       this.sinkContainerId = undefined;
       this.gateway = undefined;
+      this.activeGatewayGeneration = undefined;
       if (this.options.signal && this.externalAbortListener) {
         this.options.signal.removeEventListener("abort", this.externalAbortListener);
         this.externalAbortListener = undefined;
@@ -356,6 +470,25 @@ export class DetectionSandboxManager {
       const logs = await this.cleanupCommand("docker", ["logs", "--tail", "8192", this.sinkContainerId]);
       this.sinkLogs = `${logs.stdout}${logs.stderr}`.slice(0, 65_536);
     });
+    await attempt("gateway-terminate", async () => {
+      const gatewayProcess = this.gateway?.process;
+      if (!gatewayProcess) return;
+      gatewayProcess.kill("SIGTERM");
+      if (typeof gatewayProcess.waitForExit !== "function") return;
+      const shutdownTimeouts = this.options.gatewayShutdownTimeoutMs ?? {
+        graceful: 2_000,
+        forced: 1_000,
+      };
+      if (!await waitForExitBounded(
+        gatewayProcess.waitForExit,
+        shutdownTimeouts.graceful,
+      )) {
+        gatewayProcess.forceKill?.();
+        if (!await waitForExitBounded(gatewayProcess.waitForExit, shutdownTimeouts.forced)) {
+          throw new Error("Detection Gateway did not exit after force termination.");
+        }
+      }
+    });
     await attempt("container-cleanup", async () => {
       const containers = await this.cleanupCommand("docker", ["ps", "-aq", "--filter", `label=${RUN_LABEL_KEY}=${this.options.runGroupId}`]);
       if (containers.exitCode !== 0) throw new Error("Detection container inventory cleanup failed.");
@@ -371,14 +504,6 @@ export class DetectionSandboxManager {
       if (!networkIds.length) return;
       const removed = await this.cleanupCommand("docker", ["network", "rm", ...networkIds]);
       if (removed.exitCode !== 0) throw new Error("Detection network cleanup failed.");
-    });
-    await attempt("gateway-terminate", async () => {
-      const gatewayProcess = this.gateway?.process;
-      gatewayProcess?.kill("SIGTERM");
-      if (gatewayProcess?.waitForExit && !await waitForExitBounded(gatewayProcess.waitForExit, 2_000)) {
-        gatewayProcess.forceKill?.();
-        await waitForExitBounded(gatewayProcess.waitForExit, 1_000);
-      }
     });
     await attempt("profile-remove", async () => {
       if (!this.profileRoot || !isSafeTempRoot(this.profileRoot)) return;
@@ -469,7 +594,11 @@ export class DetectionSandboxManager {
   private async probeOpenClawCapability(): Promise<NativeGuardCapability> {
     const env = stringEnv(this.profileEnv());
     if (this.options.capabilityProbe) {
-      return this.options.capabilityProbe({ cliPath: this.options.cliPath, env, isolatedProfile: true });
+      return this.options.capabilityProbe({
+        cliPath: this.options.cliPath,
+        env,
+        isolatedProfile: true,
+      });
     }
     const client = createOpenClawControlClient({
       gatewayToken: "detection-capability-probe",
@@ -493,6 +622,97 @@ export class DetectionSandboxManager {
       if (this.signal.aborted) throw new SandboxPreflightError("CANCELLED", "Detection sandbox operation was cancelled.");
       throw new SandboxPreflightError("OPENCLAW_CAPABILITY_UNAVAILABLE", "OpenClaw capability inventory is unavailable.");
     }
+  }
+
+  private async probeGatewayAttestation(challenge: string) {
+    const gateway = this.gateway;
+    if (!gateway) {
+      throw new SandboxPreflightError(
+        "OPENCLAW_CAPABILITY_UNAVAILABLE",
+        "OpenClaw Gateway credentials are unavailable for runtime attestation.",
+      );
+    }
+    const client = createOpenClawControlClient({ gatewayToken: gateway.token });
+    try {
+      if (this.options.gatewayAttestationProbe) {
+        const value = await this.options.gatewayAttestationProbe({
+          gatewayUrl: gateway.url,
+          gatewayToken: gateway.token,
+          challenge,
+        });
+        const attestation = parseNativeGuardGatewayAttestation(value, {
+          gatewayUrl: gateway.url,
+          challenge,
+          attestationPublicKey: gateway.attestationPublicKey,
+        });
+        if (!attestation) throw new Error("Invalid injected Gateway attestation.");
+        return attestation;
+      }
+      return await client.attestGateway({
+        signal: this.signal,
+        gatewayUrl: gateway.url,
+        challenge,
+        attestationPublicKey: gateway.attestationPublicKey,
+      });
+    } catch {
+      if (this.signal.aborted) {
+        throw new SandboxPreflightError("CANCELLED", "Detection sandbox operation was cancelled.");
+      }
+      throw new SandboxPreflightError(
+        "OPENCLAW_CAPABILITY_UNAVAILABLE",
+        "OpenClaw Gateway runtime attestation is unavailable.",
+      );
+    }
+  }
+
+  private async probeRuntimeStatus(): Promise<NativeGuardStatus> {
+    const gateway = this.gateway;
+    if (!gateway) {
+      throw new SandboxPreflightError(
+        "OPENCLAW_CAPABILITY_UNAVAILABLE",
+        "OpenClaw Gateway credentials are unavailable for runtime inspection.",
+      );
+    }
+    if (this.options.runtimeStatusProbe) {
+      return this.options.runtimeStatusProbe({
+        gatewayUrl: gateway.url,
+        gatewayToken: gateway.token,
+      });
+    }
+    const client = createOpenClawControlClient({ gatewayToken: gateway.token });
+    try {
+      return await client.status(gateway.url);
+    } catch {
+      throw new SandboxPreflightError(
+        "OPENCLAW_CAPABILITY_UNAVAILABLE",
+        "OpenClaw Gateway runtime status is unavailable.",
+      );
+    }
+  }
+
+  private async probeOpenClawVersion(): Promise<string> {
+    const cli = resolveOpenClawCliInvocation(this.options.cliPath);
+    const result = await this.command(
+      cli.command,
+      [...cli.argsPrefix, "--version"],
+      { ...cli.env, ...this.profileEnv() },
+    );
+    if (result.exitCode !== 0) {
+      throw new SandboxPreflightError(
+        "OPENCLAW_UNSUPPORTED",
+        "OpenClaw detection runtime version is unavailable.",
+      );
+    }
+    const version = result.stdout.match(
+      /(?:^|\D)(\d{4}\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)(?:\s|$)/,
+    )?.[1];
+    if (!version || !isCompatibleNativeGuardVersion(version)) {
+      throw new SandboxPreflightError(
+        "OPENCLAW_UNSUPPORTED",
+        "OpenClaw detection runtime is unsupported.",
+      );
+    }
+    return version;
   }
 
   private profileEnv(): NodeJS.ProcessEnv {
@@ -656,7 +876,137 @@ export class DetectionSandboxManager {
   }
 
   private throwIfAborted(): void {
+    if (this.gatewayFailure) throw this.gatewayFailure;
     if (this.signal.aborted) throw new SandboxPreflightError("CANCELLED", "Detection sandbox operation was cancelled.");
+  }
+
+  private requestCancellation(): void {
+    if (this.activeGatewayGeneration !== undefined) {
+      this.expectedGatewayShutdownGeneration = this.activeGatewayGeneration;
+    }
+    this.abortController.abort();
+  }
+
+  private armGatewayLifetime(gateway: DetectionGatewayProcess): number {
+    const processHandle = gateway.process;
+    if (
+      !processHandle ||
+      typeof processHandle.kill !== "function" ||
+      typeof processHandle.waitForExit !== "function"
+    ) {
+      throw new SandboxPreflightError(
+        "GATEWAY_LIFETIME_UNAVAILABLE",
+        "Detection Gateway process lifetime is unavailable.",
+      );
+    }
+    let exit: Promise<void>;
+    try {
+      exit = processHandle.waitForExit();
+      if (!exit || typeof exit.then !== "function") throw new Error("Invalid exit promise.");
+    } catch {
+      throw new SandboxPreflightError(
+        "GATEWAY_LIFETIME_UNAVAILABLE",
+        "Detection Gateway process lifetime is unavailable.",
+      );
+    }
+
+    const generation = ++this.gatewayGeneration;
+    this.activeGatewayGeneration = generation;
+    this.expectedGatewayShutdownGeneration = undefined;
+    this.gatewayFailure = undefined;
+    this.gatewayLifetimeFailure = new Promise<SandboxPreflightError>((resolve) => {
+      this.resolveGatewayLifetimeFailure = resolve;
+    });
+    void exit.then(
+      () => this.handleGatewayExit(gateway, generation),
+      () => this.handleGatewayExit(gateway, generation),
+    );
+    return generation;
+  }
+
+  private handleGatewayExit(
+    gateway: DetectionGatewayProcess,
+    generation: number,
+  ): void {
+    if (
+      this.gateway !== gateway ||
+      this.activeGatewayGeneration !== generation ||
+      this.expectedGatewayShutdownGeneration === generation
+    ) {
+      return;
+    }
+    const error = new SandboxPreflightError(
+      "GATEWAY_EXITED",
+      "Detection Gateway exited unexpectedly.",
+    );
+    this.gatewayFailure = error;
+    this.liveValidated = false;
+    this.gateway = undefined;
+    this.resolveGatewayLifetimeFailure?.(error);
+    this.resolveGatewayLifetimeFailure = undefined;
+    this.abortController.abort();
+  }
+
+  private assertGatewayAlive(
+    gateway: DetectionGatewayProcess | undefined,
+    generation: number | undefined,
+    requireValidated: boolean,
+  ): void {
+    if (this.gatewayFailure) throw this.gatewayFailure;
+    if (
+      !gateway ||
+      this.gateway !== gateway ||
+      generation === undefined ||
+      this.activeGatewayGeneration !== generation ||
+      (requireValidated && !this.liveValidated)
+    ) {
+      throw new SandboxPreflightError(
+        "GATEWAY_LIFETIME_UNAVAILABLE",
+        "Detection Gateway process lifetime is unavailable.",
+      );
+    }
+  }
+
+  private async raceGatewayLifetime<T>(
+    operation: (signal: AbortSignal) => Promise<T>,
+    requireValidated: boolean,
+  ): Promise<T> {
+    const gateway = this.gateway;
+    const generation = this.activeGatewayGeneration;
+    const failure = this.gatewayLifetimeFailure;
+    this.assertGatewayAlive(gateway, generation, requireValidated);
+    if (!failure) {
+      throw new SandboxPreflightError(
+        "GATEWAY_LIFETIME_UNAVAILABLE",
+        "Detection Gateway process lifetime is unavailable.",
+      );
+    }
+    const operationPromise = Promise.resolve().then(() => operation(this.signal));
+    const operationOutcome = operationPromise.then(
+      (value) => ({ kind: "value" as const, value }),
+      (error: unknown) => ({ kind: "operation_error" as const, error }),
+    );
+    const outcome = await Promise.race([
+      operationOutcome,
+      failure.then((error) => ({ kind: "gateway_error" as const, error })),
+    ]);
+    if (outcome.kind === "gateway_error") {
+      await operationOutcome;
+      throw outcome.error;
+    }
+    if (outcome.kind === "operation_error") {
+      if (this.gatewayFailure) throw this.gatewayFailure;
+      if (this.signal.aborted) {
+        throw new SandboxPreflightError(
+          "CANCELLED",
+          "Detection sandbox operation was cancelled.",
+        );
+      }
+      throw outcome.error;
+    }
+    this.throwIfAborted();
+    this.assertGatewayAlive(gateway, generation, requireValidated);
+    return outcome.value;
   }
 }
 
@@ -688,17 +1038,6 @@ function parseInspectRecords(raw: string): Record<string, unknown>[] {
     }
     return values.every(isRecord) ? values : [];
   }
-}
-
-function versionAtLeast(value: string, expected: readonly number[]): boolean {
-  const match = value.match(/(\d+)\.(\d+)\.(\d+)/);
-  if (!match) return false;
-  const actual = match.slice(1).map(Number);
-  for (let index = 0; index < expected.length; index += 1) {
-    if (actual[index] > expected[index]) return true;
-    if (actual[index] < expected[index]) return false;
-  }
-  return true;
 }
 
 function matchesSandboxExplain(raw: string, network: string): boolean {
@@ -770,19 +1109,213 @@ function stringEnv(env: NodeJS.ProcessEnv): Record<string, string> {
   return Object.fromEntries(Object.entries(env).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
 }
 
+export async function readGatewayBootstrap(
+  stream: Readable,
+  options: {
+    signal: AbortSignal;
+    childExit: Promise<void>;
+    timeoutMs?: number;
+  },
+): Promise<KeyObject> {
+  const timeoutMs = options.timeoutMs ?? GATEWAY_BOOTSTRAP_TIMEOUT_MS;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > GATEWAY_BOOTSTRAP_TIMEOUT_MS) {
+    throw new TypeError("Gateway bootstrap timeout is invalid.");
+  }
+
+  return new Promise<KeyObject>((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    let settled = false;
+    let ended = false;
+    const timer = setTimeout(
+      () => fail("Gateway bootstrap timed out."),
+      timeoutMs,
+    );
+    const cleanup = (): void => {
+      clearTimeout(timer);
+      options.signal.removeEventListener("abort", onAbort);
+      stream.removeListener("data", onData);
+      stream.removeListener("end", onEnd);
+      stream.removeListener("error", onError);
+      stream.removeListener("close", onClose);
+    };
+    const fail = (message: string): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      stream.destroy();
+      reject(new SandboxPreflightError("GATEWAY_BOOTSTRAP_INVALID", message));
+    };
+    const succeed = (key: KeyObject): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(key);
+    };
+    const onAbort = (): void => fail("Gateway bootstrap was cancelled.");
+    const onError = (): void => fail("Gateway bootstrap pipe failed.");
+    const onClose = (): void => {
+      if (!ended) fail("Gateway bootstrap pipe closed before EOF.");
+    };
+    const onData = (chunk: Buffer | string): void => {
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      if (bytes.length > MAX_GATEWAY_BOOTSTRAP_BYTES - size) {
+        fail("Gateway bootstrap exceeded the size limit.");
+        return;
+      }
+      size += bytes.length;
+      chunks.push(bytes);
+    };
+    const onEnd = (): void => {
+      ended = true;
+      try {
+        succeed(parseGatewayBootstrap(Buffer.concat(chunks, size)));
+      } catch {
+        fail("Gateway bootstrap was invalid.");
+      }
+    };
+
+    options.signal.addEventListener("abort", onAbort, { once: true });
+    stream.on("data", onData);
+    stream.once("end", onEnd);
+    stream.once("error", onError);
+    stream.once("close", onClose);
+    void options.childExit.then(
+      () => fail("Gateway exited before bootstrap completed."),
+      (error: unknown) => {
+        if (error instanceof DetectionSandboxError) {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          stream.destroy();
+          reject(error);
+          return;
+        }
+        fail("Gateway exited before bootstrap completed.");
+      },
+    );
+    if (options.signal.aborted) onAbort();
+  });
+}
+
+function parseGatewayBootstrap(bytes: Buffer): KeyObject {
+  if (
+    bytes.length === 0 ||
+    bytes[bytes.length - 1] !== 0x0a ||
+    bytes.subarray(0, bytes.length - 1).includes(0x0a) ||
+    bytes.subarray(0, bytes.length - 1).includes(0x0d)
+  ) {
+    throw new Error("Invalid bootstrap framing.");
+  }
+  const raw = new TextDecoder("utf-8", { fatal: true }).decode(
+    bytes.subarray(0, bytes.length - 1),
+  );
+  const value = JSON.parse(raw) as unknown;
+  if (
+    !isRecord(value) ||
+    Object.keys(value).length !== 2 ||
+    !Object.hasOwn(value, "contractVersion") ||
+    !Object.hasOwn(value, "attestationPublicKey") ||
+    value.contractVersion !== "native-guard-bootstrap-1" ||
+    typeof value.attestationPublicKey !== "string"
+  ) {
+    throw new Error("Invalid bootstrap schema.");
+  }
+  const encoded = value.attestationPublicKey;
+  const der = Buffer.from(encoded, "base64");
+  if (der.length === 0 || der.toString("base64") !== encoded) {
+    throw new Error("Invalid bootstrap public key encoding.");
+  }
+  const key = createPublicKey({ key: der, format: "der", type: "spki" });
+  if (
+    key.type !== "public" ||
+    key.asymmetricKeyType !== "ed25519" ||
+    key.export({ format: "der", type: "spki" }).toString("base64") !== encoded
+  ) {
+    throw new Error("Invalid bootstrap public key.");
+  }
+  return key;
+}
+
 async function launchGateway(input: Parameters<DetectionGatewayLauncher>[0]): Promise<DetectionGatewayProcess> {
   const gatewayUrl = new URL(input.gatewayUrl);
   const port = Number(gatewayUrl.port);
-  const child = spawn(input.cliPath, ["gateway", "run", "--bind", "127.0.0.1", "--port", String(port), "--token", input.token], {
-    cwd: input.profileRoot, env: input.env, windowsHide: true, shell: process.platform === "win32", detached: process.platform !== "win32",
-    stdio: "ignore",
+  const cli = resolveOpenClawCliInvocation(input.cliPath);
+  let child: ChildProcess;
+  try {
+    child = spawn(cli.command, [...cli.argsPrefix, "gateway", "run", "--bind", "127.0.0.1", "--port", String(port), "--token", input.token], {
+      cwd: input.profileRoot,
+      env: {
+        ...cli.env,
+        ...input.env,
+        OPENCLAW_NATIVE_GUARD_BOOTSTRAP_FD: "3",
+        OPENCLAW_NATIVE_GUARD_BOOTSTRAP_CONTRACT: "native-guard-bootstrap-1",
+      },
+      windowsHide: true,
+      shell: false,
+      detached: process.platform !== "win32",
+      stdio: ["ignore", "ignore", "ignore", "pipe"],
+    });
+  } catch {
+    throw gatewayStartFailed();
+  }
+  type ChildCompletion = { kind: "close" } | { kind: "error" };
+  const completion = new Promise<ChildCompletion>((resolve) => {
+    let settled = false;
+    const finish = (result: ChildCompletion): void => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+    child.once("error", () => finish({ kind: "error" }));
+    child.once("close", () => finish({ kind: "close" }));
   });
   const onAbort = (): void => { child.kill(); };
   input.signal.addEventListener("abort", onAbort, { once: true });
-  const exited = new Promise<void>((resolve) => child.once("close", () => resolve()));
-  child.once("close", () => input.signal.removeEventListener("abort", onAbort));
+  const exited = completion.then(() => undefined);
+  const startupExit = completion.then((result) => {
+    if (result.kind === "error") throw gatewayStartFailed();
+  });
+  void completion.then(() => input.signal.removeEventListener("abort", onAbort));
   try {
-    await waitForGateway(input.gatewayUrl, input.token, child, input.signal);
+    const bootstrapStream = child.stdio[3] as Readable | null;
+    if (!bootstrapStream) {
+      throw new SandboxPreflightError(
+        "GATEWAY_BOOTSTRAP_INVALID",
+        "Gateway bootstrap pipe was unavailable.",
+      );
+    }
+    const attestationPublicKey = await readGatewayBootstrap(bootstrapStream, {
+      signal: input.signal,
+      childExit: startupExit,
+    });
+    const readinessExit = completion.then((result) => {
+      if (input.signal.aborted) {
+        throw new SandboxPreflightError(
+          "CANCELLED",
+          "Detection sandbox operation was cancelled.",
+        );
+      }
+      if (result.kind === "error") throw gatewayStartFailed();
+      throw new SandboxPreflightError(
+        "GATEWAY_START_FAILED",
+        "Detection Gateway exited before readiness.",
+      );
+    });
+    await Promise.race([
+      waitForGateway(input.gatewayUrl, input.token, child, input.signal),
+      readinessExit,
+    ]);
+    return {
+      url: input.gatewayUrl,
+      token: input.token,
+      attestationPublicKey,
+      process: {
+        kill: (signal) => { child.kill(signal); },
+        forceKill: () => { terminateGatewayProcessTree(child); },
+        waitForExit: () => exited,
+      },
+    };
   } catch (error) {
     child.kill("SIGTERM");
     const graceful = await waitForExitBounded(() => exited, 2_000);
@@ -792,15 +1325,13 @@ async function launchGateway(input: Parameters<DetectionGatewayLauncher>[0]): Pr
     }
     throw error;
   }
-  return {
-    url: input.gatewayUrl,
-    token: input.token,
-    process: {
-      kill: (signal) => { child.kill(signal); },
-      forceKill: () => { terminateGatewayProcessTree(child); },
-      waitForExit: () => exited,
-    },
-  };
+}
+
+function gatewayStartFailed(): SandboxPreflightError {
+  return new SandboxPreflightError(
+    "GATEWAY_START_FAILED",
+    "Detection Gateway could not be started.",
+  );
 }
 
 function terminateGatewayProcessTree(child: ChildProcess): void {
@@ -850,7 +1381,7 @@ export async function waitForGateway(
         signal: attemptController.signal,
       });
       const enforcesAuth = unauthed.status === 401 || unauthed.status === 403;
-      await cancelBodyBounded(unauthed);
+      await cancelResponseBodyBounded(unauthed);
       if (!enforcesAuth) {
         clearTimeout(attemptTimer);
         await new Promise((resolve) => setTimeout(resolve, delayMs));
@@ -864,7 +1395,7 @@ export async function waitForGateway(
         signal: attemptController.signal,
       });
       const rootOk = authed.status >= 200 && authed.status < 300;
-      await cancelBodyBounded(authed);
+      await cancelResponseBodyBounded(authed);
       if (!rootOk) {
         clearTimeout(attemptTimer);
         await new Promise((resolve) => setTimeout(resolve, delayMs));
@@ -884,9 +1415,12 @@ export async function waitForGateway(
       });
       let statusBody: unknown;
       try {
-        statusBody = await statusResponse.json();
+        statusBody = await readBoundedJsonResponse(
+          statusResponse,
+          attemptController.signal,
+        );
       } catch {
-        await cancelBodyBounded(statusResponse);
+        await cancelResponseBodyBounded(statusResponse);
         clearTimeout(attemptTimer);
         await new Promise((resolve) => setTimeout(resolve, delayMs));
         continue;
@@ -897,7 +1431,8 @@ export async function waitForGateway(
         isRecord(statusBody) &&
         typeof statusBody._readyNonce === "string" &&
         statusBody._readyNonce === nonce &&
-        typeof statusBody.coverage === "string"
+        (statusBody.coverage === "off" || statusBody.coverage === "ready") &&
+        statusBody.activeLeaseCount === 0
       ) {
         return;
       }
@@ -914,16 +1449,99 @@ export async function waitForGateway(
  * Cancel a response body with a bounded deadline — body cancellation must never
  * hang the readiness poll, even when a malicious server never closes the stream.
  */
-async function cancelBodyBounded(response: Response): Promise<void> {
-  if (!response.body) return;
+export async function cancelResponseBodyBounded(response: Response): Promise<void> {
+  const body = response.body;
+  if (!body) return;
+  await cancelOperationBounded(() => body.cancel());
+}
+
+export async function readBoundedJsonResponse(
+  response: Response,
+  signal: AbortSignal,
+  maxBytes = MAX_GATEWAY_READINESS_BYTES,
+): Promise<unknown> {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) {
+    throw new TypeError("JSON response size limit is invalid.");
+  }
+  if (response.headers.get("content-encoding") !== null) {
+    await cancelResponseBodyBounded(response);
+    throw new Error("Encoded Gateway readiness responses are not accepted.");
+  }
+  const contentType = response.headers.get("content-type") ?? "";
+  if (contentType.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
+    await cancelResponseBodyBounded(response);
+    throw new Error("Gateway readiness response was not JSON.");
+  }
+  const contentLength = response.headers.get("content-length");
+  if (contentLength !== null) {
+    const length = Number(contentLength);
+    if (
+      !Number.isSafeInteger(length) ||
+      length < 0 ||
+      length > maxBytes
+    ) {
+      await cancelResponseBodyBounded(response);
+      throw new Error("Gateway readiness response exceeded the size limit.");
+    }
+  }
+
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  const reader = response.body?.getReader();
+  if (reader) {
+    while (true) {
+      const { done, value } = await readBoundedResponseChunk(reader, signal);
+      if (done) break;
+      if (value.byteLength > maxBytes - size) {
+        await cancelOperationBounded(() => reader.cancel());
+        throw new Error("Gateway readiness response exceeded the size limit.");
+      }
+      size += value.byteLength;
+      chunks.push(value);
+    }
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
+}
+
+async function readBoundedResponseChunk(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  signal: AbortSignal,
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  if (signal.aborted) throw new Error("Gateway readiness attempt was cancelled.");
+  return new Promise((resolve, reject) => {
+    const onAbort = (): void => {
+      void cancelOperationBounded(() => reader.cancel());
+      reject(new Error("Gateway readiness attempt was cancelled."));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    reader.read().then(
+      (result) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(result);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
+async function cancelOperationBounded(operation: () => Promise<unknown>): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([
-      response.body.cancel(),
-      new Promise<void>((resolve) => { timer = setTimeout(resolve, 2_000); }),
+      Promise.resolve().then(operation).catch(() => undefined),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, RESPONSE_CANCEL_TIMEOUT_MS);
+      }),
     ]);
-  } catch {
-    // Body cancellation is best effort.
   } finally {
     if (timer) clearTimeout(timer);
   }

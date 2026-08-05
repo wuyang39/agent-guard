@@ -6,6 +6,7 @@ import {
   finalizeDetectionRunReservation,
   releaseDetectionRunReservation,
   reserveDetectionRun,
+  runDetectionWithSandboxLifetime,
   type DetectionRunReservation,
 } from "./e2eRunService";
 
@@ -74,4 +75,29 @@ test("native guard revoke failures are fatal and use a stable category", () => {
       skipAllowed: false,
     },
   );
+});
+
+test("OpenClaw detection batch is wrapped by the sandbox lifetime and uses its signal", async () => {
+  const controller = new AbortController();
+  let wrapped = false;
+  let observedSignal: AbortSignal | undefined;
+  const sandbox = {
+    signal: controller.signal,
+    async runWhileGatewayAlive<T>(operation: (signal: AbortSignal) => Promise<T>) {
+      wrapped = true;
+      return operation(controller.signal);
+    },
+  };
+
+  const value = await runDetectionWithSandboxLifetime(
+    sandbox,
+    async (signal) => {
+      observedSignal = signal;
+      return "completed";
+    },
+  );
+
+  assert.equal(value, "completed");
+  assert.equal(wrapped, true);
+  assert.equal(observedSignal, controller.signal);
 });

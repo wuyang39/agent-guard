@@ -27,6 +27,7 @@ export type OpenClawAdapterOptions = {
   cliPath?: string;
   timeoutMs?: number;
   env?: Record<string, string | undefined>;
+  signal?: AbortSignal;
   nativeGuardRequired?: boolean;
   /** Task 12: Native guard event store for draining runtime evidence. */
   nativeGuardEventStore?: import("./openclawSession").OpenClawRunOptions["nativeGuardEventStore"];
@@ -121,14 +122,15 @@ function minimalProcessEnv(): NodeJS.ProcessEnv {
 
 export function resolveOpenClawCliInvocation(preferredCliPath?: string): OpenClawCliInvocation {
   const cliPath = resolveOpenClawCliPath(preferredCliPath);
-  const npmShimTarget = resolveWindowsNpmShimTarget(cliPath);
-  if (npmShimTarget) {
+  const nodeTarget = resolveWindowsNpmShimTarget(cliPath) ??
+    resolveControlledWindowsCmdTarget(cliPath);
+  if (nodeTarget) {
     return {
       command: process.execPath,
-      argsPrefix: [npmShimTarget.target],
+      argsPrefix: [nodeTarget.target],
       displayPath: cliPath,
       shell: false,
-      env: npmShimTarget.env,
+      env: nodeTarget.env,
     };
   }
   return {
@@ -164,6 +166,7 @@ export class OpenClawSession implements AgentSession {
   private readonly cliPath?: string;
   private readonly timeoutMs?: number;
   private readonly env?: Record<string, string | undefined>;
+  private readonly signal?: AbortSignal;
   private readonly nativeGuardRequired: boolean;
   private readonly nativeGuardEventStore?: OpenClawAdapterOptions["nativeGuardEventStore"];
   private readonly guardLease?: OpenClawAdapterOptions["guardLease"];
@@ -186,6 +189,7 @@ export class OpenClawSession implements AgentSession {
     this.cliPath = options.cliPath;
     this.timeoutMs = options.timeoutMs;
     this.env = options.env;
+    this.signal = options.signal;
     this.nativeGuardRequired = options.nativeGuardRequired ?? false;
     this.nativeGuardEventStore = options.nativeGuardEventStore;
     this.guardLease = options.guardLease;
@@ -246,6 +250,7 @@ export class OpenClawSession implements AgentSession {
           cliPath: this.cliPath,
           timeoutMs: this.timeoutMs,
           env: this.env,
+          signal: this.signal,
           gatewayUrl: this.gatewayUrl,
           gatewayToken: this.gatewayToken,
           nativeGuardRequired: this.nativeGuardRequired,
@@ -423,6 +428,47 @@ function resolveWindowsNpmShimTarget(commandPath: string): {
     },
   ];
   return candidateTargets.find((candidate) => fs.existsSync(candidate.target));
+}
+
+function resolveControlledWindowsCmdTarget(commandPath: string): {
+  target: string;
+  env?: Record<string, string>;
+} | undefined {
+  if (process.platform !== "win32" || !/\.cmd$/i.test(commandPath)) {
+    return undefined;
+  }
+
+  try {
+    const lines = fs.readFileSync(commandPath, "utf8")
+      .replace(/^\uFEFF/, "")
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    if (lines[0]?.toLowerCase() === "@echo off") lines.shift();
+    if (lines.length !== 1) return undefined;
+    const match = lines[0].match(
+      /^node(?:\.exe)?\s+"%~dp0([^"%]+\.(?:cjs|mjs|js))"\s+%\*$/i,
+    );
+    if (!match) return undefined;
+
+    const wrapperDir = fs.realpathSync(path.dirname(commandPath));
+    const target = fs.realpathSync(path.resolve(wrapperDir, match[1]));
+    const relativeTarget = path.relative(wrapperDir, target);
+    if (
+      relativeTarget === "" ||
+      relativeTarget === ".." ||
+      relativeTarget.startsWith(`..${path.sep}`) ||
+      path.isAbsolute(relativeTarget)
+    ) {
+      return undefined;
+    }
+    return {
+      target,
+      env: resolveOpenClawLocalEnv(wrapperDir),
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 function resolveOpenClawLocalEnv(rootDir: string): Record<string, string> | undefined {

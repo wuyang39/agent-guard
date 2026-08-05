@@ -152,6 +152,7 @@ export type NativeGuardStatus = {
   finalizerAssurance: "isolated_profile" | "exclusive_before_hook" | "unverified";
   pluginVersion?: string;
   openclawVersion?: string;
+  gatewayInstanceId?: string;
   activeLeaseCount: number;
   conflictingPluginIds?: string[];
   activeLease?: {

@@ -1002,6 +1002,24 @@ function coordinatorFixture(options: {
       statusCalls += 1;
       return pluginStatus;
     },
+    attestGateway: async (input: { gatewayUrl: string; challenge: string }) => ({
+      contractVersion: "native-guard-gateway-1" as const,
+      signatureContext: "native_guard.gateway_attestation.v1" as const,
+      challenge: input.challenge,
+      gatewayUrl: input.gatewayUrl,
+      gatewayInstanceId: "gateway.instance.test.1",
+      openclawVersion: "2026.7.2",
+      nativeGuard: {
+        contractVersion: "native-guard-1" as const,
+        registrarStatus: "live" as const,
+        finalBeforeToolCall: { pluginId: "agent-guard-supervision" as const, exclusive: true as const },
+        trustedToolPolicy: { policyId: "agent-guard-admission" as const, exclusive: true as const },
+        recoveryService: { serviceId: "agent-guard-runtime" as const, live: true as const },
+        postApprovalLeaseRecheck: true as const,
+        paramsProvenance: "json-only" as const,
+      },
+      signature: "test-signature",
+    }),
     activate: async (_gatewayUrl: string, activation: NativeGuardLeaseActivation) => {
       activationCalls.push(activation);
       if (options.activateError) throw options.activateError;

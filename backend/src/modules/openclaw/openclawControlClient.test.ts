@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { generateKeyPairSync } from "node:crypto";
 import test from "node:test";
 import type { NativeGuardLeaseActivation, NativeGuardStatus } from "@agent-guard/contracts";
+import { signNativeGuardPayload } from "@agent-guard/native-guard-protocol";
 import {
   OpenClawControlClientError,
   createOpenClawControlClient,
@@ -8,6 +10,7 @@ import {
 } from "./openclawControlClient";
 
 const TOKEN = "gateway-token-that-must-stay-secret";
+const TEST_ATTESTATION_KEYS = generateKeyPairSync("ed25519");
 
 test("rejects non-loopback and ambiguous gateway URLs before making a request", async () => {
   let calls = 0;
@@ -224,13 +227,284 @@ test("accepts the exact Agent Guard admission contract from a nested plugin mani
   };
   const client = createOpenClawControlClient({
     gatewayToken: TOKEN,
-    commandRunner: commandRunner([result("2026.7.2"), result(JSON.stringify([plugin]))]),
+    commandRunner: commandRunner([
+      result("2026.7.2"),
+      result(JSON.stringify(liveInventory([plugin]))),
+    ]),
   });
 
   const capability = await client.inspectCapabilities({ isolatedProfile: false });
 
   assert.equal(capability.supportsNativeGuard, true);
   assert.equal(capability.finalizerAssurance, "exclusive_before_hook");
+});
+
+test("does not accept an agentguard version marker with only a boolean attestation", async () => {
+  const client = createOpenClawControlClient({
+    gatewayToken: TOKEN,
+    commandRunner: commandRunner([
+      result("2026.7.1-agentguard.1"),
+      result(JSON.stringify({
+        plugins: [agentGuardPlugin()],
+        registry: { liveAttestation: true },
+      })),
+    ]),
+  });
+
+  const capability = await client.inspectCapabilities({ isolatedProfile: true });
+
+  assert.equal(capability.supportsNativeGuard, false);
+  assert.equal(capability.finalizerAssurance, "unverified");
+});
+
+test("accepts a compatible fork only with complete host live capability proof", async () => {
+  const client = createOpenClawControlClient({
+    gatewayToken: TOKEN,
+    commandRunner: commandRunner([
+      result("2026.7.1-agentguard.1"),
+      result(JSON.stringify(liveInventory([agentGuardPlugin()]))),
+    ]),
+  });
+
+  const capability = await client.inspectCapabilities({ isolatedProfile: true });
+
+  assert.equal(capability.supportsNativeGuard, true);
+  assert.equal(capability.finalizerAssurance, "isolated_profile");
+});
+
+test("binds live Gateway identity through the direct authenticated core HTTP route", async () => {
+  const challenge = "A".repeat(32);
+  const gatewayUrl = "http://127.0.0.1:18789";
+  let request: { url: string; init?: RequestInit } | undefined;
+  const client = createOpenClawControlClient({
+    gatewayToken: TOKEN,
+    fetch: async (input, init) => {
+      request = { url: String(input), init };
+      return jsonResponse(gatewayAttestation(gatewayUrl, challenge));
+    },
+    commandRunner: async () => { throw new Error("CLI must not run for Gateway attestation"); },
+  });
+
+  const attestation = await client.attestGateway({
+    gatewayUrl,
+    challenge,
+    attestationPublicKey: TEST_ATTESTATION_KEYS.publicKey,
+  });
+
+  assert.equal(attestation.gatewayInstanceId, "gateway.instance.1");
+  assert.equal(
+    request?.url,
+    `${gatewayUrl}/agent-guard/native-guard/v1/gateway-attestation`,
+  );
+  assert.equal(request?.init?.method, "POST");
+  assert.equal(request?.init?.redirect, "error");
+  assert.equal(new Headers(request?.init?.headers).get("authorization"), `Bearer ${TOKEN}`);
+  assert.equal(new Headers(request?.init?.headers).get("content-type"), "application/json");
+  assert.deepEqual(JSON.parse(String(request?.init?.body)), { challenge });
+});
+
+test("Gateway attestation rejects transport and exact-schema failures", async (t) => {
+  const challenge = "A".repeat(32);
+  const gatewayUrl = "http://127.0.0.1:18789";
+  const cases: Array<{
+    name: string;
+    token?: string;
+    response: () => Response;
+    code: string;
+  }> = [
+    {
+      name: "redirect",
+      response: () => new Response("", {
+        status: 302,
+        headers: { location: "http://127.0.0.1:19999/elsewhere" },
+      }),
+      code: "OPENCLAW_CONTROL_HTTP_ERROR",
+    },
+    {
+      name: "wrong auth",
+      token: "wrong-gateway-token",
+      response: () => jsonResponse({ error: "unauthorized" }, 401),
+      code: "OPENCLAW_CONTROL_HTTP_ERROR",
+    },
+    {
+      name: "oversize",
+      response: () => new Response("{}", {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+          "content-length": "65537",
+        },
+      }),
+      code: "OPENCLAW_CONTROL_RESPONSE_TOO_LARGE",
+    },
+    {
+      name: "malformed JSON",
+      response: () => new Response("{", {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+      code: "OPENCLAW_CONTROL_INVALID_RESPONSE",
+    },
+    {
+      name: "extra schema key",
+      response: () => jsonResponse({
+        ...gatewayAttestation(gatewayUrl, challenge),
+        extra: true,
+      }),
+      code: "OPENCLAW_CONTROL_INVALID_RESPONSE",
+    },
+    {
+      name: "challenge mismatch",
+      response: () => jsonResponse(gatewayAttestation(gatewayUrl, "B".repeat(32))),
+      code: "OPENCLAW_CONTROL_INVALID_RESPONSE",
+    },
+  ];
+  for (const entry of cases) {
+    await t.test(entry.name, async () => {
+      const client = createOpenClawControlClient({
+        gatewayToken: entry.token ?? TOKEN,
+        fetch: async (_input, init) => {
+          if (entry.name === "wrong auth") {
+            assert.equal(
+              new Headers(init?.headers).get("authorization"),
+              "Bearer wrong-gateway-token",
+            );
+          }
+          return entry.response();
+        },
+        commandRunner: async () => { throw new Error("CLI must not run"); },
+      });
+      await assert.rejects(
+        () => client.attestGateway({
+          gatewayUrl,
+          challenge,
+          attestationPublicKey: TEST_ATTESTATION_KEYS.publicKey,
+        }),
+        hasCode(entry.code),
+      );
+    });
+  }
+});
+
+test("rejects application/jsonp as a control response media type", async () => {
+  const client = createOpenClawControlClient({
+    gatewayToken: TOKEN,
+    fetch: async () => new Response(JSON.stringify(readyStatus()), {
+      status: 200,
+      headers: { "content-type": "application/jsonp; charset=utf-8" },
+    }),
+  });
+  await assert.rejects(
+    () => client.status("http://localhost"),
+    hasCode("OPENCLAW_CONTROL_INVALID_RESPONSE"),
+  );
+});
+
+test("Gateway attestation bounds cancellation without replacing the original rejection", async (t) => {
+  const challenge = "A".repeat(32);
+  const gatewayUrl = "http://127.0.0.1:18789";
+  const cases: Array<{
+    name: string;
+    status: number;
+    headers: Record<string, string>;
+    body?: Uint8Array;
+    code: string;
+  }> = [
+    {
+      name: "non-2xx",
+      status: 500,
+      headers: { "content-type": "application/json" },
+      code: "OPENCLAW_CONTROL_HTTP_ERROR",
+    },
+    {
+      name: "declared oversize",
+      status: 200,
+      headers: {
+        "content-type": "application/json",
+        "content-length": "65537",
+      },
+      code: "OPENCLAW_CONTROL_RESPONSE_TOO_LARGE",
+    },
+    {
+      name: "streaming oversize",
+      status: 200,
+      headers: { "content-type": "application/json" },
+      body: new Uint8Array(65537),
+      code: "OPENCLAW_CONTROL_RESPONSE_TOO_LARGE",
+    },
+  ];
+
+  for (const entry of cases) {
+    await t.test(entry.name, async () => {
+      const response = neverSettlingCancelResponse({
+        status: entry.status,
+        headers: entry.headers,
+        body: entry.body,
+      });
+      const client = createOpenClawControlClient({
+        gatewayToken: TOKEN,
+        timeoutMs: 5,
+        fetch: async () => response.value,
+      });
+
+      await assert.rejects(
+        () => settleWithin(
+          client.attestGateway({
+            gatewayUrl,
+            challenge,
+            attestationPublicKey: TEST_ATTESTATION_KEYS.publicKey,
+          }),
+          250,
+        ),
+        hasCode(entry.code),
+      );
+      assert.equal(response.cancelled(), 1);
+    });
+  }
+});
+
+test("Gateway attestation rejects every Content-Encoding before reading the body", async (t) => {
+  const challenge = "A".repeat(32);
+  const gatewayUrl = "http://127.0.0.1:18789";
+
+  for (const encoding of ["gzip", "identity"]) {
+    await t.test(encoding, async () => {
+      let cancelCount = 0;
+      let readerCount = 0;
+      const response = {
+        ok: true,
+        status: 200,
+        headers: new Headers({
+          "content-type": "application/json",
+          "content-encoding": encoding,
+        }),
+        body: {
+          async cancel() {
+            cancelCount += 1;
+          },
+          getReader() {
+            readerCount += 1;
+            throw new Error("Encoded response body must not be read.");
+          },
+        },
+      } as unknown as Response;
+      const client = createOpenClawControlClient({
+        gatewayToken: TOKEN,
+        fetch: async () => response,
+      });
+
+      await assert.rejects(
+        () => client.attestGateway({
+          gatewayUrl,
+          challenge,
+          attestationPublicKey: TEST_ATTESTATION_KEYS.publicKey,
+        }),
+        hasCode("OPENCLAW_CONTROL_INVALID_RESPONSE"),
+      );
+      assert.equal(cancelCount, 1);
+      assert.equal(readerCount, 0);
+    });
+  }
 });
 
 test("fails closed on Agent Guard error status and equivalent failure metadata", async (t) => {
@@ -529,10 +803,10 @@ test("rejects hooks alias-only Agent Guard declarations and ignores alias-only c
     gatewayToken: TOKEN,
     commandRunner: commandRunner([
       result("2026.7.2"),
-      result(JSON.stringify([
+      result(JSON.stringify(liveInventory([
         agentGuardPlugin(),
         { id: "alias-only-other", enabled: true, hooks: ["before_tool_call"] },
-      ])),
+      ]))),
     ]),
   });
   assert.deepEqual(await aliasConflict.inspectCapabilities({ isolatedProfile: false }), {
@@ -611,7 +885,10 @@ test("requires version 2026.7.2 or newer even when the plugin contract is presen
 test("reports an exclusive hook and detects a second enabled before_tool_call plugin", async () => {
   const exclusive = createOpenClawControlClient({
     gatewayToken: TOKEN,
-    commandRunner: commandRunner([result("2026.7.3"), result(JSON.stringify([agentGuardPlugin()]))]),
+    commandRunner: commandRunner([
+      result("2026.7.3"),
+      result(JSON.stringify(liveInventory([agentGuardPlugin()]))),
+    ]),
   });
   assert.deepEqual(await exclusive.inspectCapabilities({ isolatedProfile: false }), {
     openclawVersion: "2026.7.3",
@@ -624,7 +901,10 @@ test("reports an exclusive hook and detects a second enabled before_tool_call pl
     gatewayToken: TOKEN,
     commandRunner: commandRunner([
       result("2026.7.3"),
-      result(JSON.stringify([agentGuardPlugin(), { id: "other-guard", enabled: true, hookNames: ["before_tool_call"] }])),
+      result(JSON.stringify(liveInventory([
+        agentGuardPlugin(),
+        { id: "other-guard", enabled: true, hookNames: ["before_tool_call"] },
+      ]))),
     ]),
   });
   const capability = await conflicting.inspectCapabilities({ isolatedProfile: false });
@@ -635,7 +915,10 @@ test("reports an exclusive hook and detects a second enabled before_tool_call pl
 test("grants isolated assurance only for the exact enabled Agent Guard allowlist", async () => {
   const exact = createOpenClawControlClient({
     gatewayToken: TOKEN,
-    commandRunner: commandRunner([result("2026.8.0"), result(JSON.stringify({ plugins: [agentGuardPlugin()] }))]),
+    commandRunner: commandRunner([
+      result("2026.8.0"),
+      result(JSON.stringify(liveInventory([agentGuardPlugin()]))),
+    ]),
   });
   assert.equal(
     (await exact.inspectCapabilities({ isolatedProfile: true })).finalizerAssurance,
@@ -646,7 +929,10 @@ test("grants isolated assurance only for the exact enabled Agent Guard allowlist
     gatewayToken: TOKEN,
     commandRunner: commandRunner([
       result("2026.8.0"),
-      result(JSON.stringify({ plugins: [agentGuardPlugin(), { id: "unrelated", enabled: true, hookNames: [] }] })),
+      result(JSON.stringify(liveInventory([
+        agentGuardPlugin(),
+        { id: "unrelated", enabled: true, hookNames: [] },
+      ]))),
     ]),
   });
   assert.equal(
@@ -737,15 +1023,64 @@ function agentGuardPlugin(): Record<string, unknown> {
   };
 }
 
+function liveInventory(plugins: Record<string, unknown>[]): Record<string, unknown> {
+  return {
+    plugins,
+    registry: {
+      liveAttestation: true,
+      nativeGuard: {
+        contractVersion: "native-guard-1",
+        registrarStatus: "live",
+        finalBeforeToolCall: {
+          pluginId: "agent-guard-supervision",
+          exclusive: true,
+        },
+        trustedToolPolicy: {
+          policyId: "agent-guard-admission",
+          exclusive: true,
+        },
+        recoveryService: {
+          serviceId: "agent-guard-runtime",
+          live: true,
+        },
+        postApprovalLeaseRecheck: true,
+        paramsProvenance: "json-only",
+      },
+    },
+  };
+}
+
 async function inspectInventory(inventory: unknown) {
   const client = createOpenClawControlClient({
     gatewayToken: TOKEN,
     commandRunner: commandRunner([
       result("2026.7.2"),
-      result(JSON.stringify(inventory)),
+      result(JSON.stringify(withLiveCapability(inventory))),
     ]),
   });
   return client.inspectCapabilities({ isolatedProfile: false });
+}
+
+function withLiveCapability(inventory: unknown): unknown {
+  if (Array.isArray(inventory)) return liveInventory(inventory);
+  if (typeof inventory !== "object" || inventory === null) return inventory;
+  const record = inventory as Record<string, unknown>;
+  if (
+    record.registry !== undefined &&
+    (typeof record.registry !== "object" ||
+      record.registry === null ||
+      Array.isArray(record.registry))
+  ) {
+    return inventory;
+  }
+  const live = liveInventory([]).registry as Record<string, unknown>;
+  return {
+    ...record,
+    registry: {
+      ...((record.registry as Record<string, unknown> | undefined) ?? {}),
+      ...live,
+    },
+  };
 }
 
 function commandRunner(results: Array<{ exitCode: number; stdout: string; stderr: string }>): OpenClawCommandRunner {
@@ -757,11 +1092,27 @@ function result(stdout: string, exitCode = 0): { exitCode: number; stdout: strin
   return { exitCode, stdout, stderr: "" };
 }
 
-function jsonResponse(value: unknown): Response {
+function jsonResponse(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
-    status: 200,
+    status,
     headers: { "content-type": "application/json" },
   });
+}
+
+function gatewayAttestation(gatewayUrl: string, challenge: string): Record<string, unknown> {
+  const unsigned = {
+    contractVersion: "native-guard-gateway-1",
+    signatureContext: "native_guard.gateway_attestation.v1",
+    challenge,
+    gatewayUrl,
+    gatewayInstanceId: "gateway.instance.1",
+    openclawVersion: "2026.7.1-agentguard.1",
+    nativeGuard: (liveInventory([]).registry as Record<string, unknown>).nativeGuard,
+  };
+  return {
+    ...unsigned,
+    signature: signNativeGuardPayload(unsigned, TEST_ATTESTATION_KEYS.privateKey),
+  };
 }
 
 function cancellableResponse(options: {
@@ -785,6 +1136,44 @@ function cancellableResponse(options: {
     },
   });
   return { value, cancelled: () => cancelCount };
+}
+
+function neverSettlingCancelResponse(options: {
+  status: number;
+  headers: Record<string, string>;
+  body?: Uint8Array;
+}): { value: Response; cancelled: () => number } {
+  let cancelCount = 0;
+  const value = new Response(new ReadableStream({
+    start(controller) {
+      controller.enqueue(options.body ?? new TextEncoder().encode("{}"));
+    },
+    cancel() {
+      cancelCount += 1;
+      return new Promise<void>(() => undefined);
+    },
+  }), {
+    status: options.status,
+    headers: options.headers,
+  });
+  return { value, cancelled: () => cancelCount };
+}
+
+async function settleWithin<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error("OpenClaw control request did not settle in time.")),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 function hasCode(code: string): (error: unknown) => boolean {

@@ -624,6 +624,9 @@ function projectStatus(status: NativeGuardStatus): NativeGuardStatus {
     activeLeaseCount: status.activeLeaseCount,
     ...(status.pluginVersion === undefined ? {} : { pluginVersion: status.pluginVersion }),
     ...(status.openclawVersion === undefined ? {} : { openclawVersion: status.openclawVersion }),
+    ...(status.gatewayInstanceId === undefined
+      ? {}
+      : { gatewayInstanceId: status.gatewayInstanceId }),
     ...(status.conflictingPluginIds === undefined
       ? {}
       : { conflictingPluginIds: [...status.conflictingPluginIds] }),

@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, type KeyObject } from "node:crypto";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import path from "node:path";
 import type {
@@ -9,13 +9,21 @@ import {
   buildOpenClawProcessEnv,
   resolveOpenClawCliInvocation,
 } from "../agent/openclawAdapter";
+import {
+  isCompatibleNativeGuardVersion,
+  parseNativeGuardGatewayAttestation,
+  parseNativeGuardLiveCapability,
+  type NativeGuardGatewayAttestation,
+} from "./nativeGuardLiveCapability";
 
 const STATUS_PATH = "/agent-guard/native-guard/v1/status";
+const GATEWAY_ATTESTATION_PATH = "/agent-guard/native-guard/v1/gateway-attestation";
 const ACTIVATE_PATH = "/agent-guard/native-guard/v1/leases/activate";
 const RENEW_PATH = "/agent-guard/native-guard/v1/leases/renew";
 const REVOKE_PATH = "/agent-guard/native-guard/v1/leases/revoke";
 const DEFAULT_TIMEOUT_MS = 2_000;
 const MAX_RESPONSE_BYTES = 64 * 1024;
+const RESPONSE_CANCEL_TIMEOUT_MS = 25;
 const AGENT_GUARD_PLUGIN_ID = "agent-guard-supervision";
 const TRUSTED_TOOL_POLICY_ID = "agent-guard-admission";
 const AGENT_GUARD_SERVICE_ID = "agent-guard-runtime";
@@ -41,6 +49,7 @@ export type NativeGuardCapability = {
   supportsNativeGuard: boolean;
   finalizerAssurance: NativeGuardFinalizerAssurance;
   conflictingPluginIds: string[];
+  gatewayInstanceId?: string;
 };
 
 export type InspectOpenClawCapabilitiesInput = {
@@ -49,6 +58,13 @@ export type InspectOpenClawCapabilitiesInput = {
   isolatedProfile: boolean;
   inheritProcessEnv?: boolean;
   signal?: AbortSignal;
+};
+
+export type AttestOpenClawGatewayInput = {
+  signal?: AbortSignal;
+  gatewayUrl: string;
+  challenge: string;
+  attestationPublicKey: KeyObject;
 };
 
 export type OpenClawCommandInput = {
@@ -74,6 +90,7 @@ export type OpenClawCommandRunner = (
 export type OpenClawControlClient = {
   status(gatewayUrl: string): Promise<NativeGuardStatus>;
   inspectCapabilities(input: InspectOpenClawCapabilitiesInput): Promise<NativeGuardCapability>;
+  attestGateway(input: AttestOpenClawGatewayInput): Promise<NativeGuardGatewayAttestation>;
   activate(gatewayUrl: string, activation: NativeGuardLeaseActivation): Promise<NativeGuardStatus>;
   renew(gatewayUrl: string, activation: NativeGuardLeaseActivation): Promise<NativeGuardStatus>;
   revoke(gatewayUrl: string, leaseId: string): Promise<NativeGuardStatus>;
@@ -199,6 +216,7 @@ export function createOpenClawControlClient(
       );
       const openclawVersion = parseVersion(versionResult.stdout);
       const inventory = parsePluginList(pluginResult.stdout);
+      const liveCapability = parseNativeGuardLiveCapability(inventory.raw);
       const plugins = inventory.plugins;
       const agentGuard = plugins.find((plugin) => plugin.id === AGENT_GUARD_PLUGIN_ID);
       const agentGuardHasBeforeHook = Boolean(
@@ -220,7 +238,9 @@ export function createOpenClawControlClient(
         .sort();
       const enabledIds = plugins.filter((plugin) => plugin.enabled).map((plugin) => plugin.id);
       const supportsNativeGuard =
-        versionAtLeast(openclawVersion, [2026, 7, 2]) && agentGuardReady;
+        isCompatibleNativeGuardVersion(openclawVersion) &&
+        liveCapability !== undefined &&
+        agentGuardReady;
 
       let finalizerAssurance: NativeGuardFinalizerAssurance = "unverified";
       if (supportsNativeGuard && agentGuardHasBeforeHook) {
@@ -241,6 +261,77 @@ export function createOpenClawControlClient(
         finalizerAssurance,
         conflictingPluginIds: conflicts,
       };
+    },
+
+    async attestGateway(
+      input: AttestOpenClawGatewayInput,
+    ): Promise<NativeGuardGatewayAttestation> {
+      if (!/^[A-Za-z0-9_-]{32}$/.test(input.challenge)) {
+        throw controlError(
+          "OPENCLAW_CONTROL_INVALID_CHALLENGE",
+          "OpenClaw Gateway attestation challenge is invalid.",
+        );
+      }
+      const gatewayUrl = controlUrl(input.gatewayUrl, "");
+      const url = controlUrl(gatewayUrl, GATEWAY_ATTESTATION_PATH);
+      const controller = new AbortController();
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, timeoutMs);
+      const onParentAbort = (): void => controller.abort();
+      input.signal?.addEventListener("abort", onParentAbort, { once: true });
+      try {
+        if (input.signal?.aborted) controller.abort();
+        const response = await fetchImpl(url, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${resolveGatewayToken(options)}`,
+            "cache-control": "no-store",
+            accept: "application/json",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ challenge: input.challenge }),
+          redirect: "error",
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          controller.abort();
+          await cancelResponseBody(response);
+          throw controlError(
+            "OPENCLAW_CONTROL_HTTP_ERROR",
+            `OpenClaw control endpoint returned HTTP ${String(response.status)}.`,
+          );
+        }
+        const value = await readLimitedJson(response, controller.signal);
+        const attestation = parseNativeGuardGatewayAttestation(value, {
+          gatewayUrl,
+          challenge: input.challenge,
+          attestationPublicKey: input.attestationPublicKey,
+        });
+        if (!attestation) {
+          throw controlError(
+            "OPENCLAW_CONTROL_INVALID_RESPONSE",
+            "OpenClaw Gateway attestation was invalid.",
+          );
+        }
+        return attestation;
+      } catch (error) {
+        if (error instanceof OpenClawControlClientError) {
+          throw controlError(error.code, safeControlErrorMessage(error.code));
+        }
+        if (timedOut) {
+          throw controlError("OPENCLAW_CONTROL_TIMEOUT", "OpenClaw control request timed out.");
+        }
+        if (input.signal?.aborted) {
+          throw controlError("OPENCLAW_CONTROL_CANCELLED", "OpenClaw control request was cancelled.");
+        }
+        throw controlError("OPENCLAW_CONTROL_UNAVAILABLE", "OpenClaw control endpoint is unavailable.");
+      } finally {
+        clearTimeout(timer);
+        input.signal?.removeEventListener("abort", onParentAbort);
+      }
     },
 
     activate(
@@ -316,6 +407,13 @@ function idempotencyKey(operation: string, leaseId: string, epoch: number): stri
 }
 
 async function readLimitedJson(response: Response, signal: AbortSignal): Promise<unknown> {
+  if (response.headers.get("content-encoding") !== null) {
+    await cancelResponseBody(response);
+    throw controlError(
+      "OPENCLAW_CONTROL_INVALID_RESPONSE",
+      "OpenClaw control response used an unsupported content encoding.",
+    );
+  }
   const contentLength = response.headers.get("content-length");
   if (contentLength !== null) {
     const length = Number(contentLength);
@@ -328,7 +426,8 @@ async function readLimitedJson(response: Response, signal: AbortSignal): Promise
     }
   }
   const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
-  if (!contentType.includes("application/json")) {
+  const mediaType = contentType.split(";", 1)[0]?.trim();
+  if (mediaType !== "application/json") {
     await cancelResponseBody(response);
     throw controlError("OPENCLAW_CONTROL_INVALID_RESPONSE", "OpenClaw control response was not JSON.");
   }
@@ -342,7 +441,7 @@ async function readLimitedJson(response: Response, signal: AbortSignal): Promise
       if (done) break;
       size += value.byteLength;
       if (size > MAX_RESPONSE_BYTES) {
-        await reader.cancel().catch(() => undefined);
+        await boundedBestEffort(() => reader.cancel());
         throw controlError(
           "OPENCLAW_CONTROL_RESPONSE_TOO_LARGE",
           "OpenClaw control response exceeded the size limit.",
@@ -405,6 +504,7 @@ function parseNativeGuardStatus(value: unknown): NativeGuardStatus {
     (value.activeLeaseCount as number) < 0 ||
     !optionalString(value.pluginVersion) ||
     !optionalString(value.openclawVersion) ||
+    !optionalString(value.gatewayInstanceId) ||
     !optionalString(value.reasonCode) ||
     !optionalString(value.detail) ||
     !optionalStringArray(value.conflictingPluginIds) ||
@@ -418,6 +518,9 @@ function parseNativeGuardStatus(value: unknown): NativeGuardStatus {
     activeLeaseCount: value.activeLeaseCount as number,
     ...(typeof value.pluginVersion === "string" ? { pluginVersion: value.pluginVersion } : {}),
     ...(typeof value.openclawVersion === "string" ? { openclawVersion: value.openclawVersion } : {}),
+    ...(typeof value.gatewayInstanceId === "string"
+      ? { gatewayInstanceId: value.gatewayInstanceId }
+      : {}),
     ...(Array.isArray(value.conflictingPluginIds)
       ? { conflictingPluginIds: [...value.conflictingPluginIds] as string[] }
       : {}),
@@ -460,6 +563,7 @@ type ParsedPluginDiagnostic = {
 type ParsedPluginInventory = {
   plugins: ParsedPlugin[];
   diagnostics: ParsedPluginDiagnostic[];
+  raw: unknown;
 };
 
 function parsePluginList(stdout: string): ParsedPluginInventory {
@@ -508,6 +612,7 @@ function parsePluginList(stdout: string): ParsedPluginInventory {
       raw: entry,
     })),
     diagnostics,
+    raw: value,
   };
 }
 
@@ -583,16 +688,6 @@ function parseVersion(stdout: string): string {
     throw controlError("OPENCLAW_CLI_INVALID_OUTPUT", "OpenClaw version output was invalid.");
   }
   return match[1];
-}
-
-function versionAtLeast(version: string, minimum: readonly [number, number, number]): boolean {
-  const [core, prerelease] = version.split("-", 2);
-  const parts = core.split(".").map(Number);
-  for (let index = 0; index < minimum.length; index += 1) {
-    if (parts[index] > minimum[index]) return true;
-    if (parts[index] < minimum[index]) return false;
-  }
-  return prerelease === undefined;
 }
 
 function hasBeforeToolCallHook(plugin: Record<string, unknown>): boolean {
@@ -780,10 +875,22 @@ function controlError(code: string, message: string): OpenClawControlClientError
 }
 
 async function cancelResponseBody(response: Response): Promise<void> {
+  const body = response.body;
+  if (!body) return;
+  await boundedBestEffort(() => body.cancel());
+}
+
+async function boundedBestEffort(operation: () => Promise<unknown>): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    await response.body?.cancel();
-  } catch {
-    // Rejection paths never surface body cancellation failures.
+    await Promise.race([
+      Promise.resolve().then(operation).catch(() => undefined),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, RESPONSE_CANCEL_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
 }
 

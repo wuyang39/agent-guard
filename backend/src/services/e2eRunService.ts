@@ -241,6 +241,18 @@ export type RunE2EResult = {
   links: EntityLink[];
 };
 
+export type DetectionSandboxLifetime = Pick<
+  DetectionSandboxManager,
+  "signal" | "runWhileGatewayAlive"
+>;
+
+export function runDetectionWithSandboxLifetime<T>(
+  sandbox: DetectionSandboxLifetime,
+  operation: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  return sandbox.runWhileGatewayAlive(operation);
+}
+
 export function createInitialE2ERunGroup(request: RunE2ERequest): P2RunGroup {
   return buildInitialRunGroup(
     request,
@@ -588,6 +600,7 @@ export async function runE2E(
           cliPath: request.connection?.cliPath,
           timeoutMs: request.connection?.timeoutMs ?? 300_000,
           env: profileEnv,
+          signal: sandboxManager.signal,
           nativeGuardRequired: true,
           nativeGuardEventStore: eventStore,
           guardLease: { activate: runGuard.activate, revoke: runGuard.revoke },
@@ -633,15 +646,18 @@ export async function runE2E(
       }
     }
 
-    const detectionResult = await runDetectionCasesConcurrently({
+    const runDetection = (signal: AbortSignal) => runDetectionCasesConcurrently({
       targetCases,
       agent,
       adapterConfig,
       customAdapter,
       runGroup,
       request,
-      signal: controller.signal,
+      signal,
     });
+    const detectionResult = sandboxManager
+      ? await runDetectionWithSandboxLifetime(sandboxManager, runDetection)
+      : await runDetection(controller.signal);
 
     // Attest sandbox integrity after all cases. Reconciliation of Hook
     // events against JSONL is performed per-session inside

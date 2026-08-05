@@ -153,19 +153,81 @@ Agent Guard 插件需要在 `registerAgentGuardPlugin()` 中调用
 `api.registerService("agent-guard-runtime", { start, stop })`。
 插件已实现此逻辑（见 `plugins/agent-guard-supervision/src/index.ts`）。
 
+## 8. Gateway Core 进程身份与签名证明
+
+这部分必须在 OpenClaw Gateway core 实现，不能由插件注册、自报或覆盖。Bearer token 只证明调用者知道 Gateway 凭据，不能证明监听该端口的进程就是刚刚启动的 OpenClaw child。
+
+### 8.1 fd3 bootstrap
+
+Agent Guard 启动 Gateway 时会设置：
+
+```text
+OPENCLAW_NATIVE_GUARD_BOOTSTRAP_FD=3
+OPENCLAW_NATIVE_GUARD_BOOTSTRAP_CONTRACT=native-guard-bootstrap-1
+```
+
+并将 child fd3 配置为专用 pipe。每次 `startGatewayServer` 必须：
+
+1. 生成新的 Ed25519 keypair，不得跨 Gateway 实例或重启复用。
+2. 在加载插件、监听端口或报告 ready 之前，向 fd3 写入且只写入一行 JSON，然后关闭 fd3。
+3. private key 只保留在当前 server 实例内存，不能写入环境变量、配置、日志、插件上下文或磁盘。
+
+```json
+{"contractVersion":"native-guard-bootstrap-1","attestationPublicKey":"<canonical base64 DER SPKI>"}
+```
+
+约束：完整输出不超过 8 KiB；必须单行、以 `\n` 结束并立即 EOF；字段必须 exact；`attestationPublicKey` 必须是规范 base64 DER SPKI，解析后必须是 Ed25519 public key。缺少 fd3 或写入失败时 Gateway 必须启动失败。
+
+### 8.2 reserved core route
+
+Gateway core 保留以下路径，插件 registrar 必须拒绝任何相同 exact/prefix route：
+
+```text
+POST /agent-guard/native-guard/v1/gateway-attestation
+```
+
+该 route 使用正常 Gateway bearer auth，拒绝 redirect、`Content-Encoding`、非 JSON body、超限 body 和非 32 字符 base64url challenge。响应 exact schema：
+
+```json
+{
+  "contractVersion": "native-guard-gateway-1",
+  "signatureContext": "native_guard.gateway_attestation.v1",
+  "challenge": "<request challenge>",
+  "gatewayUrl": "http://127.0.0.1:<actual-port>",
+  "gatewayInstanceId": "<fresh per-server id>",
+  "openclawVersion": "<build VERSION>",
+  "nativeGuard": { "contractVersion": "native-guard-1" },
+  "signature": "<Ed25519 base64url signature>"
+}
+```
+
+签名 payload 是除 `signature` 外的全部字段，使用 `@agent-guard/native-guard-protocol` 的 canonical JSON 与 Ed25519 规则，或实现逐字节兼容算法。`openclawVersion` 必须来自构建产物 `VERSION`，不能来自插件或请求；`gatewayInstanceId` 必须由当前 server 创建；`nativeGuard` 必须来自当前进程的 active live registry 快照。
+
+端口上的进程即使获得 bearer token 和 fresh challenge，只要没有 fd3 对应的 private key，其 unsigned、wrong-key 或篡改响应都必须被 Agent Guard 拒绝。
+
+### 8.3 检测期进程生命周期
+
+bootstrap 与签名证明绑定的是一个具体 Gateway server generation，不是对端口的永久授权。该 child 必须在整个检测、lease 操作、样本执行和事后 attestation 期间持续存活：
+
+- launcher 必须为实际 spawn 的 child 暴露唯一、稳定的 completion promise；`close`、`exit`、spawn error 或 promise rejection 都必须可观察。
+- Agent Guard 在签名 attestation 通过后仍持续监听该 promise。非 cleanup 阶段的任何结束都会立即撤销内存中的 Gateway credentials、abort 当前检测 signal，并以稳定的 `GATEWAY_EXITED` 失败整个 run。
+- 当前样本必须等待 abort 后收敛，后续样本不得启动；端口随后被知道 bearer token 的进程接管也不能恢复信任。
+- cleanup 在发送 `SIGTERM` 前将当前 generation 标记为 expected shutdown。旧 generation 的迟到 exit 不得污染后来创建的新 generation。
+- 每个新 generation 必须重新生成 keypair 和 `gatewayInstanceId`，重新完成 fd3 bootstrap 与 signed HTTP attestation。
+
 ## 信任模型
 
-Agent Guard 对 fork 的信任由三重证明共同建立：
+Agent Guard 对 fork 的信任由四项证明共同建立：
 
 | 证明 | 来源 | 验证点 |
 |---|---|---|
 | **Fork 标识** | `openclaw --version` 含 `agentguard` | `detectionSandboxManager.preflight()` |
 | **Live attestation** | `plugins list --json` 中 `registry.liveAttestation: true` | Launcher + capability probe |
+| **进程身份** | fd3 bootstrap 公钥 + core route Ed25519 签名 | `detectionSandboxManager.start()` |
 | **不可变镜像 digest** | `AGENT_GUARD_DETECTION_IMAGE=...@sha256:...` | `detectionSandboxManager.preflight()` |
 
 **SemVer 注意事项**：`2026.7.1-agentguard.1` 是 SemVer prerelease。
-`versionAtLeast()` 只提取 `(\d+)\.(\d+)\.(\d+)` 前缀进行数值比较，
-fork 标识符 `agentguard` 单独检查。因此：
+版本解析要求规范且安全的数字段；受控 fork 只接受精确标识。因此：
 
 - `2026.7.1-agentguard.1` → base `2026.7.1` → 接受（fork）
 - `2026.7.1` 正式版 → base `2026.7.1` → 拒绝（无 fork 标识，需 ≥2026.7.2）
@@ -239,6 +301,8 @@ openclaw plugins list --json | jq '.registry.liveAttestation'
 - [ ] Agent Guard 插件版本: `_________`
 - [ ] 镜像 digest: `sha256:_________`
 - [ ] `registry.liveAttestation === true`
+- [ ] fd3 bootstrap 使用每实例 Ed25519 key，core attestation 的正确签名与 wrong-key 负例均通过
+- [ ] attestation route 是不可被插件覆盖的 reserved core route
 - [ ] `verify:native-guard:docker` 通过
 - [ ] SBOM 生成并归档
 
@@ -267,4 +331,6 @@ const REQUIRED_OPENCLAW = [2026, 7, 1] as const;
 - Fork 只改变 plugin SDK 返回值和 registry 输出格式。
 - 不改变 tool dispatch、message routing、auth、session 管理等核心路径。
 - `liveAttestation` 字段仅由 registrar 在插件注册时设置，不可由插件自身伪造。
+- Gateway attestation route 由 core 保留，插件不能注册、替换或提供其签名私钥。
+- Bearer token 不作为 Gateway 身份证明；身份由 fd3 bootstrap 与每实例 Ed25519 签名双向绑定。
 - Agent Guard 在启动时（launcher）和检测前（capability probe）双重验证 live attestation。

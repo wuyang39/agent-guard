@@ -16,14 +16,20 @@
  *   1 — 只允许 maintenance cleanup 模式
  *   2 — 内部错误（无法查询 registry）
  *
- * 固定 OpenClaw 2026.7.2 的 registrar 返回 void，live attestation 始终不可用。
- * Launcher 会正确拒绝正常启动，要求 maintenance 模式。
+ * Launcher 接受精确匹配的受控 fork 或兼容的官方稳定版，但两条路线都必须
+ * 提供完整的 live attestation；否则 guarded 启动会被拒绝，仅允许 maintenance 清理。
  */
 
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { fileURLToPath } from "node:url";
+import { resolveOpenClawCliInvocation } from "../backend/src/modules/agent/openclawAdapter";
+import {
+  isCompatibleNativeGuardVersion,
+  parseNativeGuardLiveCapability,
+} from "../backend/src/modules/openclaw/nativeGuardLiveCapability";
 
 // ---- Configuration ----
 const MARKER_DIR = process.env.AGENT_GUARD_MARKER_DIR ??
@@ -33,6 +39,7 @@ const PLUGIN_ID = "agent-guard-supervision";
 const REQUIRED_HOOK = "before_tool_call";
 const REQUIRED_SERVICE = "agent-guard-runtime";
 const REQUIRED_POLICY = "agent-guard-admission";
+const CLI_MAX_BUFFER_BYTES = 256 * 1024;
 
 // ---- Helpers ----
 
@@ -45,14 +52,29 @@ function die(code: number, message: string): never {
   process.exit(code);
 }
 
-function runCli(args: string[]): { exitCode: number; stdout: string; stderr: string } {
-  const cliPath = process.env.OPENCLAW_CLI ?? "openclaw";
-  const result = spawnSync(cliPath, args, {
+export function runCli(
+  args: string[],
+  cliPath = process.env.OPENCLAW_CLI ?? "openclaw",
+): { exitCode: number; stdout: string; stderr: string } {
+  const cli = resolveOpenClawCliInvocation(cliPath);
+  const result = spawnSync(cli.command, [...cli.argsPrefix, ...args], {
     windowsHide: true,
-    shell: false,
+    shell: cli.shell,
     timeout: 15_000,
     encoding: "utf-8",
+    maxBuffer: CLI_MAX_BUFFER_BYTES,
+    env: { ...cli.env, ...process.env },
   });
+  if (result.error) {
+    const code = (result.error as NodeJS.ErrnoException).code;
+    return {
+      exitCode: 1,
+      stdout: "",
+      stderr: code === "ENOBUFS"
+        ? `CLI output exceeded the ${String(CLI_MAX_BUFFER_BYTES)} byte limit.`
+        : `CLI execution failed: ${result.error.message.slice(0, 160)}`,
+    };
+  }
   return {
     exitCode: result.status ?? 1,
     stdout: (result.stdout ?? "").trim(),
@@ -60,17 +82,50 @@ function runCli(args: string[]): { exitCode: number; stdout: string; stderr: str
   };
 }
 
-function hasGuardedMarkers(): boolean {
+export function inspectGuardedMarkers(
+  markerDir: string,
+  readDirectory: (directory: string) => string[] = (directory) =>
+    fs.readdirSync(directory),
+): "none" | "guarded" {
   try {
-    if (!fs.existsSync(MARKER_DIR)) return false;
-    const entries = fs.readdirSync(MARKER_DIR);
-    // Guarded markers are JSON files, not temporary or quarantine files
+    const entries = readDirectory(markerDir);
     return entries.some((entry) =>
       entry.endsWith(".json") && !entry.includes(".tmp") && !entry.includes(".corrupt"),
-    );
-  } catch {
-    return false;
+    ) ? "guarded" : "none";
+  } catch (error) {
+    if (isRecord(error) && error.code === "ENOENT") return "none";
+    throw error;
   }
+}
+
+export function hasLiveGuardRegistry(
+  inventory: unknown,
+  versionOutput: string,
+): boolean {
+  const version = versionOutput.match(
+    /(?:^|\D)(\d{4}\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)(?:\s|$)/,
+  )?.[1];
+  if (!version || !isCompatibleNativeGuardVersion(version)) return false;
+  if (!parseNativeGuardLiveCapability(inventory)) return false;
+  if (!isRecord(inventory) || !Array.isArray(inventory.plugins)) return false;
+  const plugin = inventory.plugins.find((entry) =>
+    isRecord(entry) &&
+    entry.id === PLUGIN_ID &&
+    entry.enabled === true &&
+    entry.status === "loaded"
+  );
+  if (!isRecord(plugin)) return false;
+  const hookNames = Array.isArray(plugin.hookNames) ? plugin.hookNames : [];
+  const services = Array.isArray(plugin.services) ? plugin.services : [];
+  const manifest = isRecord(plugin.manifest) ? plugin.manifest : {};
+  const contracts = isRecord(manifest.contracts) ? manifest.contracts : {};
+  const policies = Array.isArray(contracts.trustedToolPolicies)
+    ? contracts.trustedToolPolicies
+    : [];
+  return hookNames.includes(REQUIRED_HOOK) &&
+    services.includes(REQUIRED_SERVICE) &&
+    policies.length === 1 &&
+    policies[0] === REQUIRED_POLICY;
 }
 
 // ---- Main ----
@@ -83,8 +138,13 @@ function main(): void {
   log(`Marker directory: ${MARKER_DIR}`);
 
   // Step 1: Check for guarded markers
-  const markersExist = hasGuardedMarkers();
-  if (!markersExist) {
+  let markerState: ReturnType<typeof inspectGuardedMarkers>;
+  try {
+    markerState = inspectGuardedMarkers(MARKER_DIR);
+  } catch {
+    die(2, "Guarded marker inventory is unavailable; refusing normal startup.");
+  }
+  if (markerState === "none") {
     log("No guarded markers found — normal Gateway startup allowed.");
     process.exit(0);
   }
@@ -104,60 +164,25 @@ function main(): void {
   try {
     registry = JSON.parse(pluginsResult.stdout);
   } catch {
+    if (maintenanceMode) {
+      log("Live registry JSON is invalid but --maintenance mode is active — allowing maintenance cleanup.");
+      process.exit(0);
+    }
     die(1, "Live registry output is not valid JSON. Use --maintenance for cleanup-only mode.");
   }
 
-  // Step 3: Verify plugin presence
-  const plugins = isRecord(registry) && Array.isArray(registry.plugins)
-    ? registry.plugins : [];
-  const agPlugin = plugins.find((p: Record<string, unknown>) =>
-    isRecord(p) && p.id === PLUGIN_ID && p.enabled === true,
-  );
-
-  if (!agPlugin) {
-    die(1, `Plugin '${PLUGIN_ID}' is not enabled. Use --maintenance for cleanup-only mode.`);
-  }
-
-  // Step 4: Verify live contributions (before_tool_call hook, recovery service, trusted policy)
-  const hookNames = Array.isArray(agPlugin.hookNames) ? agPlugin.hookNames : [];
-  const services = Array.isArray(agPlugin.services) ? agPlugin.services : [];
-  const manifest = isRecord(agPlugin.manifest) ? agPlugin.manifest : {};
-  const contracts = isRecord(manifest.contracts) ? manifest.contracts : {};
-  const policies = Array.isArray(contracts.trustedToolPolicies)
-    ? contracts.trustedToolPolicies : [];
-
-  const hasFinalHook = hookNames.includes(REQUIRED_HOOK);
-  const hasRecoveryService = services.includes(REQUIRED_SERVICE);
-  const hasTrustedPolicy = policies.length === 1 && policies[0] === REQUIRED_POLICY;
-
-  if (!hasFinalHook || !hasRecoveryService || !hasTrustedPolicy) {
-    const missing = [
-      !hasFinalHook ? REQUIRED_HOOK : null,
-      !hasRecoveryService ? REQUIRED_SERVICE : null,
-      !hasTrustedPolicy ? REQUIRED_POLICY : null,
-    ].filter(Boolean).join(", ");
-    die(1, `Live contributions incomplete (missing: ${missing}). Use --maintenance for cleanup-only mode.`);
-  }
-
-  // Step 5: Check for live attestation capability.
-  // The official registrar returns void. The agent-guard fork provides
-  // `registry.liveAttestation: true` in `plugins list --json`.
   const versionResult = runCli(["--version"]);
-  const isAgentGuardFork = versionResult.stdout.toLowerCase().includes("agentguard");
-
-  const hasLiveAttestation = isRecord(registry) &&
-    isRecord(registry.registry) &&
-    registry.registry.liveAttestation === true;
-
-  if (!hasLiveAttestation || !isAgentGuardFork) {
-    log(`Live attestation: ${String(hasLiveAttestation)}, fork: ${String(isAgentGuardFork)}`);
+  const hasLiveAttestation = versionResult.exitCode === 0 &&
+    hasLiveGuardRegistry(registry, versionResult.stdout);
+  if (!hasLiveAttestation) {
     if (maintenanceMode) {
       log("--maintenance mode active — allowing maintenance cleanup.");
       process.exit(0);
     }
     die(1,
       "Live attestation is not available. " +
-      "Install the agent-guard OpenClaw fork (2026.7.1-agentguard.1) " +
+      "Use exact fork 2026.7.1-agentguard.1 or an official stable >=2026.7.2 " +
+      "that passes live attestation " +
       "for guarded Gateway startup. Use --maintenance for cleanup-only mode.",
     );
   }
@@ -167,7 +192,10 @@ function main(): void {
   process.exit(0);
 }
 
-main();
+const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : undefined;
+if (invokedPath === path.resolve(fileURLToPath(import.meta.url))) {
+  main();
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);

@@ -1553,6 +1553,7 @@ test("late root outcome drains through the in-memory evidence tombstone", async 
   const evidenceKeys = generateKeyPairSync("ed25519");
   const uploaded: NativeGuardEvent[] = [];
   let proofVerified = false;
+  let eventSpool: EventSpool | undefined;
   const lease = activation(
     decisionKeys.publicKey.export({ type: "spki", format: "pem" }).toString(),
     {
@@ -1567,6 +1568,10 @@ test("late root outcome drains through the in-memory evidence tombstone", async 
     markerStore: memoryMarkerStore(),
     now: () => new Date(NOW),
     spoolDir: directory,
+    createEventSpool: (options) => {
+      eventSpool = createEventSpool(options);
+      return eventSpool;
+    },
     decisionClient: {
       async decide({ request }) {
         return {
@@ -1641,7 +1646,9 @@ test("late root outcome drains through the in-memory evidence tombstone", async 
   assert.equal(proofVerified, true);
   const outcome = uploaded.find(({ type }) => type === "tool_outcome");
   assert.equal(outcome?.leaseEpoch, lease.leaseEpoch);
-  await waitFor(async () => (await readFile(join(directory, "events.jsonl"), "utf8")) === "");
+  assert.ok(eventSpool);
+  await eventSpool.flushNow();
+  assert.equal(await readFile(join(directory, "events.jsonl"), "utf8"), "");
 });
 
 test("revoke before lazy spool creation leaves no upload or retry", async (t) => {
@@ -1649,10 +1656,28 @@ test("revoke before lazy spool creation leaves no upload or retry", async (t) =>
   const { publicKey } = generateKeyPairSync("ed25519");
   let fetchCalls = 0;
   const scheduled: Array<() => void> = [];
+  let eventSpool: EventSpool | undefined;
+  const revokeEventEnqueued = deferred<void>();
   const runtime = new AgentGuardRuntime({
     markerStore: memoryMarkerStore(),
     now: () => new Date(NOW),
     spoolDir: directory,
+    createEventSpool: (options) => {
+      const spool = createEventSpool(options);
+      eventSpool = {
+        acquire: () => spool.acquire(),
+        enqueue: async (event) => {
+          const accepted = await spool.enqueue(event);
+          if (event.toolCallId === "call-revoke") revokeEventEnqueued.resolve();
+          return accepted;
+        },
+        flushNow: () => spool.flushNow(),
+        leaseRenewed: (leaseId) => spool.leaseRenewed(leaseId),
+        cancelLease: (leaseId, leaseEpoch) => spool.cancelLease(leaseId, leaseEpoch),
+        stop: () => spool.stop(),
+      };
+      return eventSpool;
+    },
     fetch: async () => {
       fetchCalls += 1;
       throw new Error("revoked evidence must not upload");
@@ -1688,9 +1713,10 @@ test("revoke before lazy spool creation leaves no upload or retry", async (t) =>
   await entered.promise;
   assert.equal(await runtime.revoke("lease-1"), true);
   release.resolve();
-  await waitFor(async () => (
-    await readFile(join(directory, "events.jsonl"), "utf8").catch(() => "")
-  ).includes("call-revoke"));
+  await revokeEventEnqueued.promise;
+  assert.ok(eventSpool);
+  await eventSpool.flushNow();
+  assert.match(await readFile(join(directory, "events.jsonl"), "utf8"), /call-revoke/);
 
   assert.equal(fetchCalls, 0);
   assert.equal(scheduled.length, 0);

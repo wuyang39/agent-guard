@@ -44,6 +44,7 @@ test("generates a Docker-only detection profile with destructive features disabl
     enabled: true,
     allow: ["agent-guard-supervision"],
     load: { paths: [PLUGIN_ROOT] },
+    slots: { memory: "none" },
     entries: {
       "agent-guard-supervision": {
         enabled: true,
@@ -87,6 +88,7 @@ test("does not copy user tools, plugins, binds, browser, or elevated settings", 
   });
   assert.deepEqual(config.plugins.allow, ["agent-guard-supervision"]);
   assert.deepEqual(config.plugins.load.paths, [PLUGIN_ROOT]);
+  assert.deepEqual(config.plugins.slots, { memory: "none" });
   assert.deepEqual(Object.keys(config.plugins.entries), ["agent-guard-supervision"]);
   assert.deepEqual(config.tools, { elevated: { enabled: false } });
   assert.deepEqual(config.agents.defaults.sandbox.docker.binds, []);

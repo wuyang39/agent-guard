@@ -38,6 +38,7 @@ export type DetectionOpenClawConfig = {
     enabled: true;
     allow: ["agent-guard-supervision"];
     load: { paths: [string] };
+    slots: { memory: "none" };
     entries: {
       "agent-guard-supervision": {
         enabled: true;
@@ -136,6 +137,7 @@ export function generateDetectionOpenClawConfig(
       enabled: true,
       allow: ["agent-guard-supervision"],
       load: { paths: [options.pluginRoot] },
+      slots: { memory: "none" },
       entries: {
         "agent-guard-supervision": {
           enabled: true,

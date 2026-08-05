@@ -223,7 +223,6 @@ export function createOpenClawControlClient(
       const agentGuardReady = Boolean(
         agentGuard?.enabled &&
         hasHealthyPluginStatus(agentGuard.raw) &&
-        agentGuardHasBeforeHook &&
         hasTrustedToolPolicyContract(agentGuard.raw) &&
         !inventory.diagnostics.some(isAgentGuardErrorDiagnostic),
       );
@@ -237,17 +236,22 @@ export function createOpenClawControlClient(
       const enabledIds = plugins.filter((plugin) => plugin.enabled).map((plugin) => plugin.id);
       const supportsNativeGuard =
         isCompatibleNativeGuardVersion(openclawVersion) &&
-        agentGuardReady;
+        agentGuardReady &&
+        (input.isolatedProfile || agentGuardHasBeforeHook);
 
       let finalizerAssurance: NativeGuardFinalizerAssurance = "unverified";
-      if (supportsNativeGuard && agentGuardHasBeforeHook) {
+      if (supportsNativeGuard) {
         if (
           input.isolatedProfile &&
           enabledIds.length === 1 &&
           enabledIds[0] === AGENT_GUARD_PLUGIN_ID
         ) {
           finalizerAssurance = "isolated_profile";
-        } else if (!input.isolatedProfile && conflicts.length === 0) {
+        } else if (
+          !input.isolatedProfile &&
+          agentGuardHasBeforeHook &&
+          conflicts.length === 0
+        ) {
           finalizerAssurance = "exclusive_before_hook";
         }
       }

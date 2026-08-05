@@ -244,7 +244,7 @@ test("accepts a healthy isolated cold plugin inventory without runtime registry 
     gatewayToken: TOKEN,
     commandRunner: commandRunner([
       result("2026.7.1-agentguard.1"),
-      result(JSON.stringify({ plugins: [agentGuardPlugin()], diagnostics: [] })),
+      result(JSON.stringify({ plugins: [coldForkAgentGuardPlugin()], diagnostics: [] })),
     ]),
   });
 
@@ -1037,6 +1037,18 @@ function agentGuardPlugin(): Record<string, unknown> {
     enabled: true,
     hookNames: ["before_tool_call"],
     contracts: { trustedToolPolicies: ["agent-guard-admission"] },
+  };
+}
+
+function coldForkAgentGuardPlugin(): Record<string, unknown> {
+  return {
+    id: "agent-guard-supervision",
+    enabled: true,
+    status: "loaded",
+    hookNames: [],
+    manifest: {
+      contracts: { trustedToolPolicies: ["agent-guard-admission"] },
+    },
   };
 }
 

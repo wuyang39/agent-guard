@@ -116,6 +116,7 @@ test("writes the canonical isolated plugin profile with run-scoped marker and sp
       enabled: true,
       allow: ["agent-guard-supervision"],
       load: { paths: [path.resolve(pluginRoot)] },
+      slots: { memory: "none" },
       entries: {
         "agent-guard-supervision": {
           enabled: true,

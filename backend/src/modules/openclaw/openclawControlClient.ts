@@ -12,6 +12,7 @@ import {
 import {
   isCompatibleNativeGuardVersion,
   parseNativeGuardGatewayAttestation,
+  parseNativeGuardLiveCapability,
   type NativeGuardGatewayAttestation,
 } from "./nativeGuardLiveCapability";
 
@@ -215,12 +216,13 @@ export function createOpenClawControlClient(
       );
       const openclawVersion = parseVersion(versionResult.stdout);
       const inventory = parsePluginList(pluginResult.stdout);
+      const liveCapability = parseNativeGuardLiveCapability(inventory.raw);
       const plugins = inventory.plugins;
       const agentGuard = plugins.find((plugin) => plugin.id === AGENT_GUARD_PLUGIN_ID);
       const agentGuardHasBeforeHook = Boolean(
         agentGuard?.enabled && hasBeforeToolCallHook(agentGuard.raw),
       );
-      const agentGuardReady = Boolean(
+      const staticAgentGuardReady = Boolean(
         agentGuard?.enabled &&
         hasHealthyPluginStatus(agentGuard.raw) &&
         hasTrustedToolPolicyContract(agentGuard.raw) &&
@@ -234,24 +236,20 @@ export function createOpenClawControlClient(
         .map((plugin) => plugin.id)
         .sort();
       const enabledIds = plugins.filter((plugin) => plugin.enabled).map((plugin) => plugin.id);
+      const isolatedInventoryReady =
+        enabledIds.length === 1 && enabledIds[0] === AGENT_GUARD_PLUGIN_ID;
+      const hostInventoryReady =
+        liveCapability !== undefined && agentGuardHasBeforeHook;
       const supportsNativeGuard =
         isCompatibleNativeGuardVersion(openclawVersion) &&
-        agentGuardReady &&
-        (input.isolatedProfile || agentGuardHasBeforeHook);
+        staticAgentGuardReady &&
+        (input.isolatedProfile ? isolatedInventoryReady : hostInventoryReady);
 
       let finalizerAssurance: NativeGuardFinalizerAssurance = "unverified";
       if (supportsNativeGuard) {
-        if (
-          input.isolatedProfile &&
-          enabledIds.length === 1 &&
-          enabledIds[0] === AGENT_GUARD_PLUGIN_ID
-        ) {
+        if (input.isolatedProfile) {
           finalizerAssurance = "isolated_profile";
-        } else if (
-          !input.isolatedProfile &&
-          agentGuardHasBeforeHook &&
-          conflicts.length === 0
-        ) {
+        } else if (conflicts.length === 0) {
           finalizerAssurance = "exclusive_before_hook";
         }
       }
@@ -557,7 +555,7 @@ function validActiveLease(value: unknown): boolean {
 
 type ParsedPlugin = { id: string; enabled: boolean; raw: Record<string, unknown> };
 type ParsedPluginDiagnostic = {
-  level: "warn" | "error";
+  level: "info" | "warn" | "error";
   message: string;
   pluginId?: string;
 };
@@ -622,7 +620,7 @@ function parsePluginDiagnostics(value: unknown): ParsedPluginDiagnostic[] {
     throw controlError("OPENCLAW_CLI_INVALID_OUTPUT", "OpenClaw plugin inventory was invalid.");
   }
   return value.map((diagnostic) => ({
-    level: diagnostic.level as "warn" | "error",
+    level: diagnostic.level as ParsedPluginDiagnostic["level"],
     message: diagnostic.message as string,
     ...(typeof diagnostic.pluginId === "string" ? { pluginId: diagnostic.pluginId } : {}),
   }));
@@ -630,7 +628,7 @@ function parsePluginDiagnostics(value: unknown): ParsedPluginDiagnostic[] {
 
 function validPluginDiagnostic(value: unknown): value is Record<string, unknown> {
   return isRecord(value) &&
-    (value.level === "warn" || value.level === "error") &&
+    (value.level === "info" || value.level === "warn" || value.level === "error") &&
     typeof value.message === "string" &&
     optionalString(value.pluginId) &&
     optionalString(value.source) &&

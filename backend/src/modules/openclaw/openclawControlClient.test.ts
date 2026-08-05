@@ -239,12 +239,62 @@ test("accepts the exact Agent Guard admission contract from a nested plugin mani
   assert.equal(capability.finalizerAssurance, "exclusive_before_hook");
 });
 
+test("requires complete live registry proof outside an isolated profile", async () => {
+  const client = createOpenClawControlClient({
+    gatewayToken: TOKEN,
+    commandRunner: commandRunner([
+      result("2026.7.2"),
+      result(JSON.stringify({
+        plugins: [agentGuardPlugin()],
+        diagnostics: [],
+        registry: { diagnostics: [] },
+      })),
+    ]),
+  });
+
+  assert.deepEqual(await client.inspectCapabilities({ isolatedProfile: false }), {
+    openclawVersion: "2026.7.2",
+    supportsNativeGuard: false,
+    finalizerAssurance: "unverified",
+    conflictingPluginIds: [],
+  });
+});
+
 test("accepts a healthy isolated cold plugin inventory without runtime registry attestation", async () => {
   const client = createOpenClawControlClient({
     gatewayToken: TOKEN,
     commandRunner: commandRunner([
       result("2026.7.1-agentguard.1"),
       result(JSON.stringify({ plugins: [coldForkAgentGuardPlugin()], diagnostics: [] })),
+    ]),
+  });
+
+  assert.deepEqual(await client.inspectCapabilities({ isolatedProfile: true }), {
+    openclawVersion: "2026.7.1-agentguard.1",
+    supportsNativeGuard: true,
+    finalizerAssurance: "isolated_profile",
+    conflictingPluginIds: [],
+  });
+});
+
+test("accepts the real cold inventory shape with an informational registry diagnostic", async () => {
+  const client = createOpenClawControlClient({
+    gatewayToken: TOKEN,
+    commandRunner: commandRunner([
+      result("2026.7.1-agentguard.1"),
+      result(JSON.stringify({
+        workspaceDir: "C:\\openclaw\\workspace",
+        registry: {
+          source: "derived",
+          diagnostics: [{
+            level: "info",
+            code: "persisted-registry-missing",
+            message: "Persisted plugin registry is missing or invalid; using derived plugin index.",
+          }],
+        },
+        plugins: [coldForkAgentGuardPlugin()],
+        diagnostics: [],
+      })),
     ]),
   });
 
@@ -952,10 +1002,9 @@ test("grants isolated assurance only for the exact enabled Agent Guard allowlist
       ]))),
     ]),
   });
-  assert.equal(
-    (await extra.inspectCapabilities({ isolatedProfile: true })).finalizerAssurance,
-    "unverified",
-  );
+  const extraCapability = await extra.inspectCapabilities({ isolatedProfile: true });
+  assert.equal(extraCapability.supportsNativeGuard, false);
+  assert.equal(extraCapability.finalizerAssurance, "unverified");
 });
 
 test("bounds injected CLI runners and reports malformed, oversized, and failed output stably", async () => {

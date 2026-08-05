@@ -14,11 +14,22 @@
 
 import { randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import http from "node:http";
 import net from "node:net";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import type { NativeGuardStatus } from "@agent-guard/contracts";
+import {
+  buildOpenClawProcessEnv,
+  resolveOpenClawCliInvocation,
+} from "../backend/src/modules/agent/openclawAdapter";
 import {
   DetectionSandboxManager,
   SandboxPreflightError,
+  cancelResponseBodyBounded,
+  readBoundedJsonResponse,
+  type DetectionCommandRunner,
+  type DetectionGatewayLauncher,
+  type DetectionSandboxEvidence,
 } from "../backend/src/modules/openclaw/detectionSandboxManager";
 
 // ---------------------------------------------------------------------------
@@ -39,11 +50,247 @@ function log(message: string): void {
 function run(cmd: string, args: string[], timeoutMs = 15_000): { exitCode: number; stdout: string; stderr: string } {
   const r = spawnSync(cmd, args, {
     windowsHide: true,
-    shell: process.platform === "win32",
+    shell: false,
     timeout: timeoutMs,
     encoding: "utf-8",
+    maxBuffer: 256 * 1024,
   });
   return { exitCode: r.status ?? 1, stdout: (r.stdout ?? "").trim(), stderr: (r.stderr ?? "").trim() };
+}
+
+export type LiveDetectionSandboxOptions = {
+  runGroupId: string;
+  image: string;
+  signal?: AbortSignal;
+  env?: NodeJS.ProcessEnv;
+  outputRoot?: string;
+  commandRunner?: DetectionCommandRunner;
+  gatewayLauncher?: DetectionGatewayLauncher;
+  runtimeStatusProbe?: (input: {
+    gatewayUrl: string;
+    gatewayToken: string;
+  }) => Promise<NativeGuardStatus>;
+};
+
+export function resolveLiveOpenClawCli(env: NodeJS.ProcessEnv = process.env): string {
+  return env.OPENCLAW_CLI?.trim() || "openclaw";
+}
+
+export function createLiveDetectionSandbox(
+  options: LiveDetectionSandboxOptions,
+): DetectionSandboxManager {
+  return new DetectionSandboxManager({
+    runGroupId: options.runGroupId,
+    image: options.image,
+    cliPath: resolveLiveOpenClawCli(options.env),
+    signal: options.signal,
+    outputRoot: options.outputRoot,
+    commandRunner: options.commandRunner,
+    gatewayLauncher: options.gatewayLauncher,
+    runtimeStatusProbe: options.runtimeStatusProbe,
+  });
+}
+
+export async function runBenignSandboxProbe(options: {
+  cliPath: string;
+  gatewayUrl: string;
+  gatewayToken: string;
+  sessionKey: string;
+  env?: NodeJS.ProcessEnv;
+  commandRunner?: DetectionCommandRunner;
+}): Promise<void> {
+  if (!/^[A-Za-z0-9._-]{1,120}$/.test(options.sessionKey)) {
+    throw new TypeError("Benign sandbox probe session key is invalid.");
+  }
+  const gateway = new URL(options.gatewayUrl);
+  if (!/^(?:127\.0\.0\.1|localhost|\[::1\])$/i.test(gateway.hostname)) {
+    throw new TypeError("Benign sandbox probe Gateway must be loopback.");
+  }
+  gateway.protocol = gateway.protocol === "https:" ? "wss:" : "ws:";
+  const cli = resolveOpenClawCliInvocation(options.cliPath);
+  const env = buildOpenClawProcessEnv({
+    ...cli.env,
+    ...options.env,
+    OPENCLAW_GATEWAY_URL: options.gatewayUrl,
+    OPENCLAW_GATEWAY_TOKEN: options.gatewayToken,
+  }, false);
+  const args = [
+    ...cli.argsPrefix,
+    "gateway",
+    "call",
+    "nativeGuard.sandboxProbe",
+    "--json",
+    "--url",
+    gateway.toString(),
+    "--params",
+    JSON.stringify({ sessionKey: options.sessionKey }),
+  ];
+  const runner = options.commandRunner ?? (async (input) => {
+    const result = spawnSync(input.command, input.args, {
+      windowsHide: true,
+      shell: false,
+      timeout: input.timeoutMs,
+      encoding: "utf8",
+      maxBuffer: 256 * 1024,
+      env: input.env,
+    });
+    return {
+      exitCode: result.status ?? 1,
+      stdout: result.stdout ?? "",
+      stderr: result.stderr ?? "",
+    };
+  });
+  const result = await runner({
+    command: cli.command,
+    args,
+    env,
+    timeoutMs: 30_000,
+  });
+  if (result.exitCode !== 0) {
+    throw new Error("OpenClaw benign sandbox probe failed.");
+  }
+  let output: unknown;
+  try {
+    output = JSON.parse(result.stdout) as unknown;
+  } catch {
+    throw new Error("OpenClaw benign sandbox probe returned invalid JSON.");
+  }
+  if (!isRecord(output) || output.ok !== true) {
+    throw new Error("OpenClaw benign sandbox probe was not acknowledged.");
+  }
+}
+
+export async function startSandboxWithBenignProbe(options: {
+  sandbox: {
+    start(): Promise<DetectionSandboxEvidence>;
+    getGatewayCredentials(): {
+      gatewayUrl: string;
+      gatewayToken: string;
+    } | undefined;
+  };
+  cliPath: string;
+  sessionKey: string;
+  env?: NodeJS.ProcessEnv;
+  runProbe?: typeof runBenignSandboxProbe;
+}): Promise<{
+  evidence: DetectionSandboxEvidence;
+  credentials: { gatewayUrl: string; gatewayToken: string };
+}> {
+  const evidence = await options.sandbox.start();
+  const credentials = options.sandbox.getGatewayCredentials();
+  if (!credentials) throw new Error("No Gateway credentials after sandbox.start().");
+  const runProbe = options.runProbe ?? runBenignSandboxProbe;
+  await runProbe({
+    cliPath: options.cliPath,
+    gatewayUrl: credentials.gatewayUrl,
+    gatewayToken: credentials.gatewayToken,
+    sessionKey: options.sessionKey,
+    env: {
+      ...options.env,
+      OPENCLAW_CONFIG_PATH: evidence.configPath,
+      OPENCLAW_CONFIG_DIR: evidence.profileRoot,
+      OPENCLAW_HOME: evidence.profileRoot,
+      OPENCLAW_STATE_DIR: path.join(evidence.profileRoot, "state"),
+      OPENCLAW_WORKSPACE_DIR: path.join(evidence.profileRoot, "workspace"),
+      OPENCLAW_WORKSPACE: path.join(evidence.profileRoot, "workspace"),
+    },
+  });
+  return { evidence, credentials };
+}
+
+export async function verifyGatewayAuthentication(options: {
+  gatewayUrl: string;
+  gatewayToken: string;
+  nonce?: string;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+}): Promise<Record<string, unknown>> {
+  const gateway = new URL(options.gatewayUrl);
+  if (!/^(?:127\.0\.0\.1|localhost|\[::1\])$/i.test(gateway.hostname)) {
+    throw new TypeError("Gateway authentication verification requires loopback.");
+  }
+  const timeoutMs = options.timeoutMs ?? 3_000;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30_000) {
+    throw new TypeError("Gateway authentication timeout is invalid.");
+  }
+
+  await withRequestDeadline(timeoutMs, options.signal, async (signal) => {
+    const response = await fetch(new URL("/", gateway), {
+      method: "GET",
+      redirect: "error",
+      signal,
+    });
+    const enforcesAuth = response.status === 401 || response.status === 403;
+    await cancelResponseBodyBounded(response);
+    if (!enforcesAuth) {
+      throw new Error(
+        `Gateway did not enforce auth: got ${String(response.status)} on unauthenticated request.`,
+      );
+    }
+  });
+
+  const nonce = options.nonce ?? randomBytes(24).toString("base64url");
+  const statusBody = await withRequestDeadline(
+    timeoutMs,
+    options.signal,
+    async (signal) => {
+      const response = await fetch(
+        new URL("/agent-guard/native-guard/v1/status", gateway),
+        {
+          method: "GET",
+          headers: {
+            authorization: `Bearer ${options.gatewayToken}`,
+            "x-agent-guard-ready-nonce": nonce,
+          },
+          redirect: "error",
+          signal,
+        },
+      );
+      if (response.status !== 200) {
+        await cancelResponseBodyBounded(response);
+        throw new Error(`Gateway status returned ${String(response.status)}.`);
+      }
+      return readBoundedJsonResponse(response, signal, 64 * 1024);
+    },
+  );
+  if (!isRecord(statusBody)) {
+    throw new Error("Gateway status JSON must be an object.");
+  }
+  if (statusBody._readyNonce !== nonce) {
+    throw new Error("Gateway nonce challenge failed.");
+  }
+  return statusBody;
+}
+
+async function withRequestDeadline<T>(
+  timeoutMs: number,
+  parentSignal: AbortSignal | undefined,
+  operation: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const controller = new AbortController();
+  let timedOut = false;
+  const abort = (): void => controller.abort();
+  parentSignal?.addEventListener("abort", abort, { once: true });
+  if (parentSignal?.aborted) controller.abort();
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  try {
+    return await operation(controller.signal);
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(
+        timedOut
+          ? "Gateway authentication request timeout."
+          : "Gateway authentication request was cancelled.",
+      );
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    parentSignal?.removeEventListener("abort", abort);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -63,16 +310,6 @@ async function main(): Promise<void> {
   const dockerVersion = run("docker", ["version", "--format", "{{.Server.Version}}"]);
   if (dockerVersion.exitCode !== 0) die("Docker daemon unavailable.");
   log(`Docker ${dockerVersion.stdout}`);
-
-  const openclawVersion = run("openclaw", ["--version"]);
-  if (openclawVersion.exitCode !== 0) die("OpenClaw CLI unavailable.");
-  const versionMatch = openclawVersion.stdout.match(/(\d+)\.(\d+)\.(\d+)/);
-  if (!versionMatch) die(`Cannot parse OpenClaw version: ${openclawVersion.stdout}`);
-  const [major, minor, patch] = versionMatch.slice(1).map(Number);
-  if (major < 2026 || (major === 2026 && minor < 7) || (major === 2026 && minor === 7 && patch < 2)) {
-    log(`WARNING: OpenClaw ${versionMatch[0]} is below minimum 2026.7.2. Live attestation will be unavailable.`);
-  }
-  log(`OpenClaw ${versionMatch[0]}`);
 
   const image = process.env.AGENT_GUARD_DETECTION_IMAGE;
   if (!image) die("AGENT_GUARD_DETECTION_IMAGE not set.");
@@ -111,19 +348,11 @@ async function main(): Promise<void> {
   // ---- 2. DetectionSandboxManager lifecycle ----
   log("\n[2] Sandbox manager lifecycle...");
   const controller = new AbortController();
-  const sandbox = new DetectionSandboxManager({
+  const sandbox = createLiveDetectionSandbox({
     runGroupId: TEST_RUN_GROUP,
     image,
     signal: controller.signal,
-    // Use a mock capability probe: the isolated sandbox profile does not
-    // have the host's plugins installed. The guard lifecycle is tested
-    // separately (verify:native-guard).
-    capabilityProbe: async () => ({
-      supportsNativeGuard: true,
-      finalizerAssurance: "isolated_profile" as const,
-      openclawVersion: "2026.7.2",
-      pluginVersion: "1.0.0",
-    }),
+    env: process.env,
   });
 
   let gatewayUrl = "";
@@ -133,32 +362,25 @@ async function main(): Promise<void> {
     const evidence = await sandbox.preflight();
     log(`  Preflight: image=${evidence.imageId.slice(0, 19)}, version=${evidence.openclawVersion}, network=${evidence.networkMode}`);
 
-    const started = await sandbox.start();
-    const creds = sandbox.getGatewayCredentials();
-    if (!creds) die("No Gateway credentials after sandbox.start().");
+    log("\n[3] Benign sandbox probe...");
+    const { credentials: creds } = await startSandboxWithBenignProbe({
+      sandbox,
+      cliPath: resolveLiveOpenClawCli(process.env),
+      sessionKey: `${TEST_RUN_GROUP}.benign`,
+    });
     gatewayUrl = creds.gatewayUrl;
     gatewayToken = creds.gatewayToken;
     log(`  Gateway started: ${gatewayUrl}`);
+    log("  Authenticated benign sandbox probe completed ✓");
 
     // ---- 3. Gateway auth enforcement ----
     log("\n[3] Gateway auth enforcement...");
-    const unauthRes = await fetch(gatewayUrl, { method: "GET", redirect: "error" });
-    if (unauthRes.status !== 401 && unauthRes.status !== 403) {
-      die(`Gateway did not enforce auth: got ${String(unauthRes.status)} on unauthenticated request.`);
-    }
-    await unauthRes.body?.cancel().catch(() => undefined);
-    log("  Unauthenticated → 401/403 ✓");
-
-    const nonce = randomBytes(24).toString("base64url");
-    const statusUrl = `${gatewayUrl}/agent-guard/native-guard/v1/status`;
-    const authRes = await fetch(statusUrl, {
-      method: "GET",
-      headers: { authorization: `Bearer ${gatewayToken}`, "x-agent-guard-ready-nonce": nonce },
-      redirect: "error",
+    const statusBody = await verifyGatewayAuthentication({
+      gatewayUrl,
+      gatewayToken,
+      signal: controller.signal,
     });
-    if (authRes.status !== 200) die(`Gateway status returned ${String(authRes.status)}.`);
-    const statusBody = await authRes.json() as Record<string, unknown>;
-    if (statusBody._readyNonce !== nonce) die("Gateway nonce challenge failed.");
+    log("  Unauthenticated → 401/403 ✓");
     log(`  Nonce challenge passed, coverage=${String(statusBody.coverage)}`);
 
     // ---- 4. Container isolation ----
@@ -274,4 +496,11 @@ async function main(): Promise<void> {
   process.exit(0);
 }
 
-main().catch((error) => die(error instanceof Error ? error.message : String(error)));
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : undefined;
+if (invokedPath === path.resolve(fileURLToPath(import.meta.url))) {
+  main().catch((error) => die(error instanceof Error ? error.message : String(error)));
+}

@@ -80,12 +80,19 @@ runTest("Backend (coordinator, routes, runtime evidence, event store, trace proj
   "backend/src/modules/agent/openclawAdapter.test.ts",
   "backend/src/modules/agent/openclawSession.test.ts",
   "backend/src/modules/openclaw/nativeGuardCoordinator.test.ts",
+  "backend/src/modules/openclaw/nativeGuardLiveCapability.test.ts",
   "backend/src/modules/openclaw/openclawControlClient.test.ts",
   "backend/src/modules/runner/testRunner.test.ts",
   "backend/src/services/e2eRunService.test.ts",
   "backend/src/storage/nativeGuardEventStore.test.ts",
   "backend/src/modules/openclaw/nativeGuardTraceProjector.test.ts",
   "backend/src/modules/openclaw/detectionSandboxManager.test.ts",
+]);
+
+runTest("Acceptance gates (launcher, installer, live Docker verifier)", [
+  "scripts/openclaw-guard-launcher.test.ts",
+  "scripts/install-openclaw-native-guard.test.ts",
+  "scripts/verify-openclaw-detection-sandbox.test.ts",
 ]);
 
 runTypecheck("Backend typecheck", "typecheck");

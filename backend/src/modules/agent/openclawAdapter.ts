@@ -122,6 +122,15 @@ function minimalProcessEnv(): NodeJS.ProcessEnv {
 
 export function resolveOpenClawCliInvocation(preferredCliPath?: string): OpenClawCliInvocation {
   const cliPath = resolveOpenClawCliPath(preferredCliPath);
+  const javaScriptTarget = resolveJavaScriptCliTarget(cliPath);
+  if (javaScriptTarget) {
+    return {
+      command: process.execPath,
+      argsPrefix: [javaScriptTarget],
+      displayPath: cliPath,
+      shell: false,
+    };
+  }
   const nodeTarget = resolveWindowsNpmShimTarget(cliPath) ??
     resolveControlledWindowsCmdTarget(cliPath);
   if (nodeTarget) {
@@ -140,6 +149,16 @@ export function resolveOpenClawCliInvocation(preferredCliPath?: string): OpenCla
     // Never route untrusted session/message arguments through a shell.
     shell: false,
   };
+}
+
+function resolveJavaScriptCliTarget(commandPath: string): string | undefined {
+  if (!/\.(?:cjs|mjs|js)$/i.test(commandPath)) return undefined;
+  try {
+    if (!fs.statSync(commandPath).isFile()) return undefined;
+    return path.resolve(commandPath);
+  } catch {
+    return undefined;
+  }
 }
 
 const DEFAULT_GATEWAY =

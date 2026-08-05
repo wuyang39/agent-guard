@@ -239,7 +239,24 @@ test("accepts the exact Agent Guard admission contract from a nested plugin mani
   assert.equal(capability.finalizerAssurance, "exclusive_before_hook");
 });
 
-test("does not accept an agentguard version marker with only a boolean attestation", async () => {
+test("accepts a healthy isolated cold plugin inventory without runtime registry attestation", async () => {
+  const client = createOpenClawControlClient({
+    gatewayToken: TOKEN,
+    commandRunner: commandRunner([
+      result("2026.7.1-agentguard.1"),
+      result(JSON.stringify({ plugins: [agentGuardPlugin()], diagnostics: [] })),
+    ]),
+  });
+
+  assert.deepEqual(await client.inspectCapabilities({ isolatedProfile: true }), {
+    openclawVersion: "2026.7.1-agentguard.1",
+    supportsNativeGuard: true,
+    finalizerAssurance: "isolated_profile",
+    conflictingPluginIds: [],
+  });
+});
+
+test("ignores a spoofed cold registry marker and relies on the static plugin contract", async () => {
   const client = createOpenClawControlClient({
     gatewayToken: TOKEN,
     commandRunner: commandRunner([
@@ -253,11 +270,11 @@ test("does not accept an agentguard version marker with only a boolean attestati
 
   const capability = await client.inspectCapabilities({ isolatedProfile: true });
 
-  assert.equal(capability.supportsNativeGuard, false);
-  assert.equal(capability.finalizerAssurance, "unverified");
+  assert.equal(capability.supportsNativeGuard, true);
+  assert.equal(capability.finalizerAssurance, "isolated_profile");
 });
 
-test("accepts a compatible fork only with complete host live capability proof", async () => {
+test("accepts a compatible fork with the complete static plugin contract", async () => {
   const client = createOpenClawControlClient({
     gatewayToken: TOKEN,
     commandRunner: commandRunner([

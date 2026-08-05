@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 export type SecretRef = { SecretRef: string };
 
 export type DetectionOpenClawConfig = {
+  gateway: { mode: "local" };
   agents: {
     defaults: {
       sandbox: {
@@ -33,7 +34,20 @@ export type DetectionOpenClawConfig = {
     };
   };
   tools: { elevated: { enabled: false } };
-  plugins: ["agent-guard-supervision"];
+  plugins: {
+    enabled: true;
+    allow: ["agent-guard-supervision"];
+    load: { paths: [string] };
+    entries: {
+      "agent-guard-supervision": {
+        enabled: true;
+        config: {
+          markerDir: string;
+          spoolDir: string;
+        };
+      };
+    };
+  };
 };
 
 export class DetectionConfigError extends Error {
@@ -66,13 +80,16 @@ export function scrubDetectionOpenClawConfig(input: unknown): Record<string, unk
 }
 
 export type GenerateDetectionConfigOptions = {
+  pluginRoot: string;
+  markerDir: string;
+  spoolDir: string;
   userConfig?: unknown;
   model?: unknown;
   provider?: unknown;
 };
 
 export function generateDetectionOpenClawConfig(
-  options: GenerateDetectionConfigOptions = {},
+  options: GenerateDetectionConfigOptions,
 ): DetectionOpenClawConfig {
   const source = isRecord(options.userConfig) ? options.userConfig : {};
   const sourceAgents = readDataProperty(source, "agents");
@@ -88,6 +105,7 @@ export function generateDetectionOpenClawConfig(
   const provider = providerInput === undefined ? undefined : scrubValue(providerInput, "provider", 0);
 
   const generated: DetectionOpenClawConfig = {
+    gateway: { mode: "local" },
     agents: {
       defaults: {
         sandbox: {
@@ -114,7 +132,20 @@ export function generateDetectionOpenClawConfig(
       },
     },
     tools: { elevated: { enabled: false } },
-    plugins: ["agent-guard-supervision"],
+    plugins: {
+      enabled: true,
+      allow: ["agent-guard-supervision"],
+      load: { paths: [options.pluginRoot] },
+      entries: {
+        "agent-guard-supervision": {
+          enabled: true,
+          config: {
+            markerDir: options.markerDir,
+            spoolDir: options.spoolDir,
+          },
+        },
+      },
+    },
   };
   if (model !== undefined) generated.agents.defaults.model = model;
   if (provider !== undefined) generated.agents.defaults.provider = provider;

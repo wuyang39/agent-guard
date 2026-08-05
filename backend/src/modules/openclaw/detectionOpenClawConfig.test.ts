@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import path from "node:path";
 import test from "node:test";
 import {
   DetectionConfigError,
@@ -6,8 +7,20 @@ import {
   scrubDetectionOpenClawConfig,
 } from "./detectionOpenClawConfig";
 
+const PROFILE_ROOT = path.resolve("tmp", "detection-profile");
+const PLUGIN_ROOT = path.resolve("plugins", "agent-guard-supervision");
+
+function detectionPaths() {
+  return {
+    pluginRoot: PLUGIN_ROOT,
+    markerDir: path.join(PROFILE_ROOT, "agent-guard", "markers"),
+    spoolDir: path.join(PROFILE_ROOT, "agent-guard", "spool"),
+  };
+}
+
 test("generates a Docker-only detection profile with destructive features disabled", () => {
   const config = generateDetectionOpenClawConfig({
+    ...detectionPaths(),
     userConfig: {
       agents: { defaults: { model: "openai:gpt-4.1", sandbox: { mode: "host" } } },
       tools: { elevated: { enabled: true } },
@@ -26,7 +39,21 @@ test("generates a Docker-only detection profile with destructive features disabl
   assert.deepEqual(config.agents.defaults.sandbox.docker.securityOpt, ["no-new-privileges:true"]);
   assert.equal(config.agents.defaults.sandbox.browser.enabled, false);
   assert.equal(config.tools.elevated.enabled, false);
-  assert.deepEqual(config.plugins, ["agent-guard-supervision"]);
+  assert.deepEqual(config.gateway, { mode: "local" });
+  assert.deepEqual(config.plugins, {
+    enabled: true,
+    allow: ["agent-guard-supervision"],
+    load: { paths: [PLUGIN_ROOT] },
+    entries: {
+      "agent-guard-supervision": {
+        enabled: true,
+        config: {
+          markerDir: path.join(PROFILE_ROOT, "agent-guard", "markers"),
+          spoolDir: path.join(PROFILE_ROOT, "agent-guard", "spool"),
+        },
+      },
+    },
+  });
 });
 
 test("preserves references and SecretRefs without copying inline secret values", () => {
@@ -51,13 +78,16 @@ test("preserves references and SecretRefs without copying inline secret values",
 
 test("does not copy user tools, plugins, binds, browser, or elevated settings", () => {
   const config = generateDetectionOpenClawConfig({
+    ...detectionPaths(),
     userConfig: {
       tools: { elevated: { enabled: true }, custom: { enabled: true } },
       plugins: ["evil"],
       agents: { defaults: { sandbox: { docker: { binds: ["C:/secret:/secret"] }, browser: { enabled: true } } } },
     },
   });
-  assert.deepEqual(config.plugins, ["agent-guard-supervision"]);
+  assert.deepEqual(config.plugins.allow, ["agent-guard-supervision"]);
+  assert.deepEqual(config.plugins.load.paths, [PLUGIN_ROOT]);
+  assert.deepEqual(Object.keys(config.plugins.entries), ["agent-guard-supervision"]);
   assert.deepEqual(config.tools, { elevated: { enabled: false } });
   assert.deepEqual(config.agents.defaults.sandbox.docker.binds, []);
   assert.equal(config.agents.defaults.sandbox.browser.enabled, false);

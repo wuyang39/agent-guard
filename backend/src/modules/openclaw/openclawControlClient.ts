@@ -12,7 +12,6 @@ import {
 import {
   isCompatibleNativeGuardVersion,
   parseNativeGuardGatewayAttestation,
-  parseNativeGuardLiveCapability,
   type NativeGuardGatewayAttestation,
 } from "./nativeGuardLiveCapability";
 
@@ -216,7 +215,6 @@ export function createOpenClawControlClient(
       );
       const openclawVersion = parseVersion(versionResult.stdout);
       const inventory = parsePluginList(pluginResult.stdout);
-      const liveCapability = parseNativeGuardLiveCapability(inventory.raw);
       const plugins = inventory.plugins;
       const agentGuard = plugins.find((plugin) => plugin.id === AGENT_GUARD_PLUGIN_ID);
       const agentGuardHasBeforeHook = Boolean(
@@ -239,7 +237,6 @@ export function createOpenClawControlClient(
       const enabledIds = plugins.filter((plugin) => plugin.enabled).map((plugin) => plugin.id);
       const supportsNativeGuard =
         isCompatibleNativeGuardVersion(openclawVersion) &&
-        liveCapability !== undefined &&
         agentGuardReady;
 
       let finalizerAssurance: NativeGuardFinalizerAssurance = "unverified";

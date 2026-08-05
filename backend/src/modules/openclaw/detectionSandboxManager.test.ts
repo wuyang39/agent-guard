@@ -93,6 +93,82 @@ function runnerFor(result: Partial<DetectionCommandResult> = {}) {
   return { runner, calls };
 }
 
+test("writes the canonical isolated plugin profile with run-scoped marker and spool directories", async () => {
+  const fixtureRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-plugin-profile-"));
+  const pluginRoot = path.join(fixtureRoot, "plugin");
+  const outputRoot = path.join(fixtureRoot, "evidence");
+  await fs.mkdir(path.join(pluginRoot, "dist"), { recursive: true });
+  await fs.writeFile(path.join(pluginRoot, "openclaw.plugin.json"), "{}", "utf8");
+  await fs.writeFile(path.join(pluginRoot, "dist", "index.js"), "export {};\n", "utf8");
+  const { runner } = runnerFor();
+  const manager = new DetectionSandboxManager({
+    runGroupId: "run-plugin-profile",
+    image: `openclaw@sha256:${"a".repeat(64)}`,
+    pluginRoot,
+    outputRoot,
+    commandRunner: runner,
+  });
+
+  try {
+    const evidence = await manager.preflight();
+    const config = JSON.parse(await fs.readFile(evidence.configPath, "utf8")) as Record<string, any>;
+    assert.deepEqual(config.plugins, {
+      enabled: true,
+      allow: ["agent-guard-supervision"],
+      load: { paths: [path.resolve(pluginRoot)] },
+      entries: {
+        "agent-guard-supervision": {
+          enabled: true,
+          config: {
+            markerDir: path.join(evidence.profileRoot, "agent-guard", "markers"),
+            spoolDir: path.join(evidence.profileRoot, "agent-guard", "spool"),
+          },
+        },
+      },
+    });
+    await manager.cleanup();
+    assert.equal((await fs.stat(pluginRoot)).isDirectory(), true, "plugin package must remain outside cleanup");
+  } finally {
+    await manager.cleanup().catch(() => undefined);
+    await fs.rm(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+test("fails preflight clearly when the configured plugin package is incomplete", async () => {
+  for (const missing of ["openclaw.plugin.json", path.join("dist", "index.js")]) {
+    const fixtureRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-plugin-missing-"));
+    const pluginRoot = path.join(fixtureRoot, "plugin");
+    await fs.mkdir(path.join(pluginRoot, "dist"), { recursive: true });
+    if (missing !== "openclaw.plugin.json") {
+      await fs.writeFile(path.join(pluginRoot, "openclaw.plugin.json"), "{}", "utf8");
+    }
+    if (missing !== path.join("dist", "index.js")) {
+      await fs.writeFile(path.join(pluginRoot, "dist", "index.js"), "export {};\n", "utf8");
+    }
+    const { runner } = runnerFor();
+    const manager = new DetectionSandboxManager({
+      runGroupId: `run-plugin-missing-${path.basename(missing).replace(/\W/g, "-")}`,
+      image: `openclaw@sha256:${"a".repeat(64)}`,
+      pluginRoot,
+      outputRoot: path.join(fixtureRoot, "evidence"),
+      commandRunner: runner,
+    });
+
+    try {
+      await assert.rejects(
+        manager.preflight(),
+        (error: unknown) =>
+          error instanceof SandboxPreflightError &&
+          error.code === "OPENCLAW_PLUGIN_UNAVAILABLE" &&
+          error.message.includes(missing),
+      );
+    } finally {
+      await manager.cleanup().catch(() => undefined);
+      await fs.rm(fixtureRoot, { recursive: true, force: true });
+    }
+  }
+});
+
 test("reads one exact Ed25519 bootstrap record from the dedicated pipe", async () => {
   const { publicKey } = generateKeyPairSync("ed25519");
   const encoded = publicKey.export({ format: "der", type: "spki" }).toString("base64");
@@ -1101,6 +1177,41 @@ test("retains the resolved OpenClaw version and starts an isolated gateway", asy
   await manager.cleanup();
 });
 
+test("uses the resolved JavaScript CLI invocation for sandbox attestation", async () => {
+  const fixtureRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-js-attestation-"));
+  const cliPath = path.join(fixtureRoot, "openclaw.mjs");
+  await fs.writeFile(cliPath, "export {};\n", "utf8");
+  const { runner } = runnerFor();
+  const calls: DetectionCommandInput[] = [];
+  const manager = new DetectionSandboxManager({
+    runGroupId: "run-js-attestation",
+    image: `openclaw@sha256:${"a".repeat(64)}`,
+    cliPath,
+    outputRoot: path.join(fixtureRoot, "evidence"),
+    commandRunner: async (input) => {
+      calls.push(input);
+      return runner(input);
+    },
+    ...readyGatewayTestOptions(),
+  });
+
+  try {
+    await manager.start();
+    await manager.attestSession("session-js", "before");
+    const explain = calls.find((call) => call.args.includes("explain"));
+    assert.equal(explain?.command, process.execPath);
+    assert.deepEqual(explain?.args.slice(0, 4), [
+      path.resolve(cliPath),
+      "sandbox",
+      "explain",
+      "--session",
+    ]);
+  } finally {
+    await manager.cleanup().catch(() => undefined);
+    await fs.rm(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
 test("concurrent starts share the live capability barrier", async () => {
   const { runner } = runnerFor();
   const probeEntered = deferred<void>();
@@ -1575,6 +1686,9 @@ if (
 }
 const args = process.argv.slice(2);
 const valueAfter = (name) => args[args.indexOf(name) + 1];
+if (valueAfter("--bind") !== "loopback") {
+  process.exit(79);
+}
 const port = Number(valueAfter("--port"));
 const token = valueAfter("--token");
 const gatewayUrl = "http://127.0.0.1:" + String(port);

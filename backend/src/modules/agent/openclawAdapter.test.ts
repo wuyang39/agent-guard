@@ -91,6 +91,25 @@ test("executes a controlled Windows cmd wrapper outside an npm layout without a 
   }
 });
 
+test("executes explicit JavaScript OpenClaw CLI entrypoints through Node without a shell", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "openclaw-js-entrypoint-"));
+  try {
+    for (const extension of ["mjs", "js", "cjs"]) {
+      const entry = path.join(root, `openclaw.${extension}`);
+      await writeFile(entry, "process.stdout.write(JSON.stringify(process.argv.slice(2)));\n", "utf8");
+
+      const invocation = resolveOpenClawCliInvocation(entry);
+
+      assert.equal(invocation.command, process.execPath);
+      assert.deepEqual(invocation.argsPrefix, [path.resolve(entry)]);
+      assert.equal(invocation.displayPath, entry);
+      assert.equal(invocation.shell, false);
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("adapter abort signal terminates an in-flight OpenClaw CLI run", async () => {
   const fixture = await createBlockingCliFixture();
   const controller = new AbortController();

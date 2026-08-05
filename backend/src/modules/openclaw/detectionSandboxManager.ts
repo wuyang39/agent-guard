@@ -67,6 +67,7 @@ export type DetectionSandboxManagerOptions = {
   runGroupId: string;
   image: string;
   cliPath?: string;
+  pluginRoot?: string;
   userConfig?: unknown;
   outputRoot?: string;
   commandRunner?: DetectionCommandRunner;
@@ -132,6 +133,7 @@ export class SandboxAttestationError extends DetectionSandboxError {
 
 export class DetectionSandboxManager {
   private readonly options: DetectionSandboxManagerOptions;
+  private readonly pluginRoot: string;
   private readonly run: DetectionCommandRunner;
   private readonly abortController = new AbortController();
   private profileRoot?: string;
@@ -163,6 +165,9 @@ export class DetectionSandboxManager {
       throw new TypeError("runGroupId is invalid");
     }
     if (!options.image.trim()) throw new TypeError("image is required");
+    if (options.pluginRoot !== undefined && !options.pluginRoot.trim()) {
+      throw new TypeError("pluginRoot is invalid");
+    }
     if (
       options.gatewayShutdownTimeoutMs !== undefined &&
       (!Number.isSafeInteger(options.gatewayShutdownTimeoutMs.graceful) ||
@@ -173,6 +178,9 @@ export class DetectionSandboxManager {
       throw new TypeError("gatewayShutdownTimeoutMs is invalid");
     }
     this.options = { ...options, runGroupId: options.runGroupId, image: options.image };
+    this.pluginRoot = path.resolve(
+      options.pluginRoot ?? path.resolve(process.cwd(), "plugins", "agent-guard-supervision"),
+    );
     this.run = options.commandRunner ?? runCommand;
     if (options.signal) {
       const abort = (): void => this.requestCancellation();
@@ -385,7 +393,12 @@ export class DetectionSandboxManager {
       throw new SandboxAttestationError("NOT_STARTED", "Detection sandbox has not passed preflight.");
     }
     const env = this.profileEnv();
-    const explain = await this.command(this.options.cliPath ?? "openclaw", ["sandbox", "explain", "--session", sessionKey, "--json"], env);
+    const cli = resolveOpenClawCliInvocation(this.options.cliPath);
+    const explain = await this.command(
+      cli.command,
+      [...cli.argsPrefix, "sandbox", "explain", "--session", sessionKey, "--json"],
+      { ...cli.env, ...env },
+    );
     if (explain.exitCode !== 0 || !matchesSandboxExplain(explain.stdout, this.options.networkCase ? (this.networkName ?? "internal") : "none")) {
       throw new SandboxAttestationError("SANDBOX_EXPLAIN_MISMATCH", "OpenClaw sandbox explain did not match the detection profile.");
     }
@@ -522,14 +535,24 @@ export class DetectionSandboxManager {
   }
 
   private async createProfile(): Promise<void> {
+    await this.assertPluginPackageAvailable();
     const root = await fs.mkdtemp(path.join(os.tmpdir(), `agent-guard-${this.options.runGroupId}-`));
     await fs.chmod(root, 0o700);
     this.profileRoot = root;
+    const markerDir = path.join(root, "agent-guard", "markers");
+    const spoolDir = path.join(root, "agent-guard", "spool");
     await Promise.all([
       fs.mkdir(path.join(root, "state"), { mode: 0o700 }),
       fs.mkdir(path.join(root, "workspace"), { mode: 0o700 }),
+      fs.mkdir(markerDir, { recursive: true, mode: 0o700 }),
+      fs.mkdir(spoolDir, { recursive: true, mode: 0o700 }),
     ]);
-    this.config = generateDetectionOpenClawConfig({ userConfig: this.options.userConfig });
+    this.config = generateDetectionOpenClawConfig({
+      userConfig: this.options.userConfig,
+      pluginRoot: this.pluginRoot,
+      markerDir,
+      spoolDir,
+    });
     this.config.agents.defaults.sandbox.docker.image = this.imageId;
     this.config.agents.defaults.sandbox.docker.labels = {
       [RUN_LABEL_KEY]: this.options.runGroupId,
@@ -562,6 +585,19 @@ export class DetectionSandboxManager {
       configSha256: createHash("sha256").update(JSON.stringify(this.config), "utf8").digest("hex"),
       imageId: this.imageId,
     });
+  }
+
+  private async assertPluginPackageAvailable(): Promise<void> {
+    for (const relativePath of ["openclaw.plugin.json", path.join("dist", "index.js")]) {
+      const packagePath = path.join(this.pluginRoot, relativePath);
+      const stat = await fs.stat(packagePath).catch(() => undefined);
+      if (!stat?.isFile()) {
+        throw new SandboxPreflightError(
+          "OPENCLAW_PLUGIN_UNAVAILABLE",
+          `Agent Guard OpenClaw plugin package is incomplete: missing ${relativePath} under ${this.pluginRoot}. Build it with npm run build:openclaw-plugin.`,
+        );
+      }
+    }
   }
 
   private async createNetworkSink(): Promise<void> {
@@ -1243,7 +1279,7 @@ async function launchGateway(input: Parameters<DetectionGatewayLauncher>[0]): Pr
   const cli = resolveOpenClawCliInvocation(input.cliPath);
   let child: ChildProcess;
   try {
-    child = spawn(cli.command, [...cli.argsPrefix, "gateway", "run", "--bind", "127.0.0.1", "--port", String(port), "--token", input.token], {
+    child = spawn(cli.command, [...cli.argsPrefix, "gateway", "run", "--bind", "loopback", "--port", String(port), "--token", input.token], {
       cwd: input.profileRoot,
       env: {
         ...cli.env,

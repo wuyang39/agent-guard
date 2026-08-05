@@ -7,6 +7,17 @@ import test from "node:test";
 
 const SCRIPT = path.resolve("scripts", "install-openclaw-native-guard.ps1");
 
+test("plugin package metadata accepts the exact Agent Guard fork or official compatible hosts", async () => {
+  const pluginPackage = JSON.parse(
+    await readFile(path.resolve("plugins", "agent-guard-supervision", "package.json"), "utf8"),
+  ) as Record<string, any>;
+  const supportedRange = "2026.7.1-agentguard.1 || >=2026.7.2";
+
+  assert.equal(pluginPackage.peerDependencies?.openclaw, supportedRange);
+  assert.equal(pluginPackage.openclaw?.install?.minHostVersion, supportedRange);
+  assert.equal(pluginPackage.openclaw?.compat?.pluginApi, supportedRange);
+});
+
 test("installer uses the explicit compatible fork CLI and writes only the isolated profile", {
   skip: process.platform !== "win32",
 }, async () => {

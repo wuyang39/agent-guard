@@ -49,6 +49,7 @@ import { getReportEntry, indexReport, indexArtifact } from "../storage/fileRepor
 import type { AgentAdapter } from "../modules/agent/agentAdapter";
 import { HttpAgentAdapter } from "../modules/agent/httpAgentAdapter";
 import { OpenClawAdapter } from "../modules/agent/openclawAdapter";
+import { canonicalizeOpenClawSessionKey } from "../modules/agent/openclawSessionIdentity";
 import { buildRuleBasedToolCapabilityProfile } from "../modules/gateway/toolCapabilityProfiler";
 import {
   getRequiredSelectionPlan,
@@ -251,6 +252,15 @@ export function runDetectionWithSandboxLifetime<T>(
   operation: (signal: AbortSignal) => Promise<T>,
 ): Promise<T> {
   return sandbox.runWhileGatewayAlive(operation);
+}
+
+export function resolveNativeGuardSessionKeys(
+  runGroup: Pick<P2RunGroup, "testRunIds" | "runGroupId">,
+): string[] {
+  const runIds = runGroup.testRunIds.length > 0
+    ? runGroup.testRunIds
+    : [runGroup.runGroupId];
+  return runIds.map(canonicalizeOpenClawSessionKey);
 }
 
 export function createInitialE2ERunGroup(request: RunE2ERequest): P2RunGroup {
@@ -663,9 +673,7 @@ export async function runE2E(
     // events against JSONL is performed per-session inside
     // runOpenClawSession via the native guard trace projector.
     if (sandboxManager && !controller.signal.aborted) {
-      const sessionKeys = runGroup.testRunIds.length > 0
-        ? runGroup.testRunIds
-        : [runGroup.runGroupId];
+      const sessionKeys = resolveNativeGuardSessionKeys(runGroup);
 
       for (const sessionKey of sessionKeys) {
         try {

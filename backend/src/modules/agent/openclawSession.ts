@@ -65,6 +65,9 @@ export type OpenClawRunOptions = {
   gatewayUrl?: string;
   gatewayToken?: string;
   nativeGuardRequired?: boolean;
+  /** Runtime identity understood by the OpenClaw host and Hook. Artifact,
+   * trace, and product run ids continue to use runMeta.runId. */
+  runtimeSessionKey?: string;
   signal?: AbortSignal;
   /** Task 12: Native guard event store for draining runtime evidence into
    *  formal Trace events. When present, tool calls are projected from real
@@ -73,6 +76,7 @@ export type OpenClawRunOptions = {
     listBySession(sessionKey: string): Promise<NativeGuardEvent[]>;
     listByRun(runId: string): Promise<NativeGuardEvent[]>;
     listRecordsByRun(runId: string): Promise<RuntimeSupervisionRecord[]>;
+    listRecordsBySession(sessionKey: string): Promise<RuntimeSupervisionRecord[]>;
   };
 };
 
@@ -166,7 +170,7 @@ export async function runOpenClawSession(
   },
   options: OpenClawRunOptions = {},
 ): Promise<OpenClawRunResult> {
-  const sessionKey = runMeta.runId;
+  const sessionKey = options.runtimeSessionKey ?? runMeta.runId;
   const messageText = buildOpenClawMessage(task, sandboxInfo);
   const cli = resolveOpenClawCliInvocation(options.cliPath);
 
@@ -199,7 +203,7 @@ export async function runOpenClawSession(
   if (options.nativeGuardEventStore) {
     const nativeGuardEvents = await drainNativeGuardEvidence(
       options.nativeGuardEventStore,
-      runMeta.runId,
+      sessionKey,
       options.nativeGuardRequired ?? false,
     );
     const jsonlCallIds = session.toolCalls.map((tc) => tc.callId);
@@ -549,14 +553,11 @@ async function saveJsonlArtifact(
 
 export async function drainNativeGuardEvidence(
   store: NonNullable<OpenClawRunOptions["nativeGuardEventStore"]>,
-  runId: string,
+  sessionKey: string,
   required = false,
 ): Promise<NativeGuardEvent[]> {
   try {
-    const byRun = await store.listByRun(runId);
-    if (byRun.length > 0) return byRun;
-    // 回退到 session key 等价于 runId 的查询
-    return store.listBySession(runId);
+    return await store.listBySession(sessionKey);
   } catch (error) {
     if (required) {
       const message = scrubSecrets(

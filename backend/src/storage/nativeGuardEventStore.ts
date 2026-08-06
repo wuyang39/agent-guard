@@ -188,6 +188,7 @@ export type NativeGuardEventStore = {
   listByRun(runId: string): Promise<NativeGuardEvent[]>;
   listRecordsByRun(runId: string): Promise<RuntimeSupervisionRecord[]>;
   listBySession(sessionKey: string): Promise<NativeGuardEvent[]>;
+  listRecordsBySession(sessionKey: string): Promise<RuntimeSupervisionRecord[]>;
   subscribe(listener: NativeGuardEventListener): () => void;
 };
 
@@ -346,6 +347,16 @@ export function createNativeGuardEventStore(
         return envelopes
           .filter(({ event }) => event.sessionKey === sessionKey)
           .map(({ event }) => clone(event));
+      });
+    },
+
+    async listRecordsBySession(sessionKey: string): Promise<RuntimeSupervisionRecord[]> {
+      return coordination.mutex.run(async () => {
+        await ensureLoaded();
+        return envelopes
+          .filter(({ event, record }) =>
+            event.sessionKey === sessionKey && record !== undefined)
+          .map(({ record }) => clone(record!));
       });
     },
 

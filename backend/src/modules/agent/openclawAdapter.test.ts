@@ -13,10 +13,10 @@ import {
 
 test("guarded runtime evidence drain fails when the event store is unavailable", async () => {
   const store = {
-    async listByRun() {
+    async listBySession() {
       throw new Error("OPENCLAW_GATEWAY_TOKEN=super-secret store unavailable");
     },
-    async listRecordsByRun() {
+    async listRecordsBySession() {
       return [];
     },
   } as never;
@@ -33,10 +33,10 @@ test("guarded runtime evidence drain fails when the event store is unavailable",
 
 test("optional runtime evidence drain retains fail-open compatibility", async () => {
   const store = {
-    async listByRun() {
+    async listBySession() {
       throw new Error("store unavailable");
     },
-    async listRecordsByRun() {
+    async listRecordsBySession() {
       return [];
     },
   } as never;
@@ -45,6 +45,111 @@ test("optional runtime evidence drain retains fail-open compatibility", async ()
     await drainOpenClawRuntimeEvidence(store, "run-1", false),
     { nativeGuardEvents: [], supervisionRecords: [] },
   );
+});
+
+test("Guard ON uses one canonical session for lease, CLI, and evidence while preserving the raw run id", async () => {
+  const fixture = await createCompletingCliFixture("guard-on");
+  const rawRunId = "run.guard-on.canonical";
+  const canonicalSessionKey = `agent:main:${rawRunId}`;
+  const activations: Array<{ rootSessionKey: string; runGroupId: string }> = [];
+  const revoked: string[] = [];
+  const eventQueries: string[] = [];
+  const recordQueries: string[] = [];
+
+  try {
+    const adapter = new OpenClawAdapter({
+      cliPath: fixture.cliPath,
+      env: fixture.env,
+      nativeGuardRequired: true,
+      guardLease: {
+        async activate(input) {
+          activations.push(input);
+          return { leaseId: "lease.canonical", leaseEpoch: 1 };
+        },
+        async revoke(leaseId) {
+          revoked.push(leaseId);
+        },
+      },
+      nativeGuardEventStore: {
+        async listByRun() {
+          throw new Error("legacy run-id event query must not be used");
+        },
+        async listRecordsByRun() {
+          throw new Error("legacy run-id record query must not be used");
+        },
+        async listBySession(sessionKey: string) {
+          eventQueries.push(sessionKey);
+          return [];
+        },
+        async listRecordsBySession(sessionKey: string) {
+          recordQueries.push(sessionKey);
+          return [];
+        },
+      } as never,
+    });
+    const session = await adapter.createSession(testAgent(), testAdapterConfig());
+    const result = await session.sendTask(
+      testTask("guard-on"),
+      undefined,
+      { runId: rawRunId, caseId: "case.guard-on", agentId: "agent.fixture" },
+    );
+    const evidence = await session.drainRuntimeEvidence?.();
+    const args = JSON.parse(await readFile(fixture.argsPath, "utf8")) as string[];
+    const sessionKeyIndex = args.indexOf("--session-key");
+
+    assert.deepEqual(activations, [{
+      rootSessionKey: canonicalSessionKey,
+      runGroupId: rawRunId,
+    }]);
+    assert.equal(args[sessionKeyIndex + 1], canonicalSessionKey);
+    assert.equal(result.runId, rawRunId);
+    assert.equal(result.status, "completed");
+    assert.deepEqual(eventQueries, [canonicalSessionKey, canonicalSessionKey]);
+    assert.deepEqual(recordQueries, [canonicalSessionKey]);
+    assert.deepEqual(revoked, ["lease.canonical"]);
+    assert.deepEqual(evidence?.reconciliation, {
+      reconciled: true,
+      coverageBreachCount: 0,
+    });
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("Guard OFF keeps the raw CLI session key and never activates a lease", async () => {
+  const fixture = await createCompletingCliFixture("guard-off");
+  const rawRunId = "run.guard-off.raw";
+  let activationCount = 0;
+
+  try {
+    const adapter = new OpenClawAdapter({
+      cliPath: fixture.cliPath,
+      env: fixture.env,
+      nativeGuardRequired: false,
+      guardLease: {
+        async activate() {
+          activationCount += 1;
+          return { leaseId: "lease.unexpected", leaseEpoch: 1 };
+        },
+        async revoke() {},
+      },
+    });
+    const session = await adapter.createSession(testAgent(), testAdapterConfig());
+    const result = await session.sendTask(
+      testTask("guard-off"),
+      undefined,
+      { runId: rawRunId, caseId: "case.guard-off", agentId: "agent.fixture" },
+    );
+    const args = JSON.parse(await readFile(fixture.argsPath, "utf8")) as string[];
+    const sessionKeyIndex = args.indexOf("--session-key");
+
+    assert.equal(args[sessionKeyIndex + 1], rawRunId);
+    assert.equal(activationCount, 0);
+    assert.equal(result.runId, rawRunId);
+    assert.equal(result.status, "completed");
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
 });
 
 test("executes a controlled Windows cmd wrapper outside an npm layout without a shell", {
@@ -192,6 +297,76 @@ async function createBlockingCliFixture(): Promise<{
     "utf8",
   );
   return { root, cliPath, pidPath };
+}
+
+async function createCompletingCliFixture(name: string): Promise<{
+  root: string;
+  cliPath: string;
+  argsPath: string;
+  env: Record<string, string>;
+}> {
+  const root = await mkdtemp(path.join(os.tmpdir(), `openclaw-adapter-${name}-`));
+  const stateDir = path.join(root, "state");
+  const sessionFile = path.join(stateDir, "session.jsonl");
+  const argsPath = path.join(root, "args.json");
+  const cliPath = path.join(root, "cli.mjs");
+  await mkdir(stateDir, { recursive: true });
+  await writeFile(sessionFile, `${JSON.stringify({
+    type: "message",
+    timestamp: "2026-08-07T00:00:00.000Z",
+    message: { role: "assistant", content: [{ type: "text", text: "done" }] },
+  })}\n`, "utf8");
+  await writeFile(cliPath, [
+    "import fs from 'node:fs';",
+    "fs.writeFileSync(process.env.OPENCLAW_TEST_ARGS_PATH, JSON.stringify(process.argv.slice(2)));",
+    "const output = {",
+    "  status: 'ok',",
+    "  result: {",
+    "    payloads: [{ text: 'done', mediaUrl: null }],",
+    "    meta: { agentMeta: { sessionFile: process.env.OPENCLAW_TEST_SESSION_FILE, sessionId: 'session.fixture' } },",
+    "  },",
+    "};",
+    "process.stdout.write(JSON.stringify(output));",
+  ].join("\n"), "utf8");
+  return {
+    root,
+    cliPath,
+    argsPath,
+    env: {
+      OPENCLAW_STATE_DIR: stateDir,
+      OPENCLAW_TEST_SESSION_FILE: sessionFile,
+      OPENCLAW_TEST_ARGS_PATH: argsPath,
+    },
+  };
+}
+
+function testAgent() {
+  return {
+    schemaVersion: "mvp-1",
+    agentId: "agent.fixture",
+    name: "OpenClaw fixture",
+    adapterType: "openclaw",
+  } as never;
+}
+
+function testAdapterConfig() {
+  return {
+    schemaVersion: "mvp-1",
+    adapterId: "adapter.fixture",
+    agentId: "agent.fixture",
+    adapterType: "openclaw",
+    timeoutMs: 10_000,
+  } as never;
+}
+
+function testTask(name: string) {
+  return {
+    taskId: `task.${name}`,
+    caseId: `case.${name}`,
+    instruction: "return done",
+    promptIds: [],
+    resourceIds: [],
+  };
 }
 
 async function waitForFixturePid(pidPath: string): Promise<number> {

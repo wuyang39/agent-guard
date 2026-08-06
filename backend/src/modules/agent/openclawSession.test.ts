@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import path from "node:path";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import {
   drainNativeGuardEvidence,
   resolveOpenClawDataDirs,
+  runOpenClawSession,
   spawnOpenClawAgent,
 } from "./openclawSession";
 import { scrubSecrets } from "../../shared/scrubSecrets";
@@ -73,7 +76,7 @@ test("OFF child runs with an explicit native guard disabled marker", async () =>
 
 test("guarded session evidence reads fail closed", async () => {
   const store = {
-    async listByRun() {
+    async listBySession() {
       throw new Error("event store unavailable");
     },
   } as never;
@@ -86,12 +89,101 @@ test("guarded session evidence reads fail closed", async () => {
 
 test("optional session evidence reads retain fail-open compatibility", async () => {
   const store = {
-    async listByRun() {
+    async listBySession() {
       throw new Error("event store unavailable");
     },
   } as never;
 
   assert.deepEqual(await drainNativeGuardEvidence(store, "run-1", false), []);
+});
+
+test("guard reconciliation selects canonical session events and treats zero events as a breach", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "openclaw-canonical-reconcile-"));
+  const stateDir = path.join(root, "state");
+  const sessionFile = path.join(stateDir, "session.jsonl");
+  const cliPath = path.join(root, "cli.mjs");
+  const rawRunId = "run.canonical.reconcile";
+  const canonicalSessionKey = `agent:main:${rawRunId}`;
+  const legacyRunQueries: string[] = [];
+  const sessionQueries: string[] = [];
+  await mkdir(stateDir, { recursive: true });
+  await writeFile(sessionFile, `${JSON.stringify({
+    type: "message",
+    timestamp: "2026-08-07T00:00:00.000Z",
+    message: {
+      role: "assistant",
+      content: [{
+        type: "toolCall",
+        id: "call.canonical.1",
+        name: "read",
+        arguments: { path: "README.md" },
+      }],
+    },
+  })}\n`, "utf8");
+  await writeFile(cliPath, [
+    "const output = {",
+    "  status: 'ok',",
+    "  result: {",
+    "    payloads: [{ text: 'done', mediaUrl: null }],",
+    "    meta: { agentMeta: { sessionFile: process.env.OPENCLAW_TEST_SESSION_FILE, sessionId: 'session.fixture' } },",
+    "  },",
+    "};",
+    "process.stdout.write(JSON.stringify(output));",
+  ].join("\n"), "utf8");
+
+  try {
+    const result = await runOpenClawSession(
+      {
+        taskId: "task.canonical.reconcile",
+        caseId: "case.canonical.reconcile",
+        instruction: "read README",
+        promptIds: [],
+        resourceIds: [],
+      },
+      undefined,
+      {
+        runId: rawRunId,
+        caseId: "case.canonical.reconcile",
+        agentId: "agent.canonical",
+      },
+      { tools: [], resources: [] },
+      {
+        cliPath,
+        env: {
+          OPENCLAW_STATE_DIR: stateDir,
+          OPENCLAW_TEST_SESSION_FILE: sessionFile,
+        },
+        nativeGuardRequired: true,
+        runtimeSessionKey: canonicalSessionKey,
+        nativeGuardEventStore: {
+          async listByRun(runId: string) {
+            legacyRunQueries.push(runId);
+            return [];
+          },
+          async listBySession(sessionKey: string) {
+            sessionQueries.push(sessionKey);
+            return [];
+          },
+          async listRecordsByRun() {
+            return [];
+          },
+          async listRecordsBySession() {
+            return [];
+          },
+        },
+      },
+    );
+
+    assert.deepEqual(legacyRunQueries, []);
+    assert.deepEqual(sessionQueries, [canonicalSessionKey]);
+    assert.equal(result.session.sessionKey, canonicalSessionKey);
+    assert.deepEqual(result.reconciliation, {
+      reconciled: false,
+      coverageBreachCount: 1,
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 // ---- scrubSecrets / safeStderr validation ----

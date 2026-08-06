@@ -33,6 +33,38 @@ test("persists events and paired records in append order", async () => {
   });
 });
 
+test("lists paired supervision records by the event session identity", async () => {
+  await withStore(async ({ store }) => {
+    const canonicalSession = "agent:main:run.1";
+    const first = buildEvent({
+      eventId: "event.session.1",
+      sessionKey: canonicalSession,
+      runId: "hook.run.shared",
+    });
+    const second = buildEvent({
+      eventId: "event.session.2",
+      sessionKey: "agent:main:run.2",
+      runId: "hook.run.shared",
+    });
+    const firstRecord = buildRecord({
+      recordId: "supervision_record.session.1",
+      inputEventId: first.eventId,
+    });
+    const secondRecord = buildRecord({
+      recordId: "supervision_record.session.2",
+      inputEventId: second.eventId,
+    });
+
+    await store.append(first, firstRecord);
+    await store.append(second, secondRecord);
+
+    assert.deepEqual(
+      await store.listRecordsBySession(canonicalSession),
+      [firstRecord],
+    );
+  });
+});
+
 test("requires and preserves the top-level lease epoch on new native events", async () => {
   await withStore(async ({ store }) => {
     const event = buildEvent({ eventId: "event.epoch", leaseEpoch: 7 });

@@ -20,6 +20,7 @@ import type {
 } from "@agent-guard/contracts";
 import { runOpenClawSession } from "./openclawSession";
 import { scrubSecrets } from "../../shared/scrubSecrets";
+import { canonicalizeOpenClawSessionKey } from "./openclawSessionIdentity";
 
 export type OpenClawAdapterOptions = {
   gatewayUrl?: string;
@@ -47,7 +48,7 @@ type NativeGuardRuntimeStore = NonNullable<
 
 export async function drainOpenClawRuntimeEvidence(
   store: NativeGuardRuntimeStore,
-  runId: string,
+  sessionKey: string,
   required: boolean,
 ): Promise<{
   nativeGuardEvents: import("@agent-guard/contracts").NativeGuardEvent[];
@@ -55,8 +56,8 @@ export async function drainOpenClawRuntimeEvidence(
 }> {
   try {
     const [nativeGuardEvents, supervisionRecords] = await Promise.all([
-      store.listByRun(runId),
-      store.listRecordsByRun(runId),
+      store.listBySession(sessionKey),
+      store.listRecordsBySession(sessionKey),
     ]);
     return { nativeGuardEvents, supervisionRecords };
   } catch (error) {
@@ -192,6 +193,7 @@ export class OpenClawSession implements AgentSession {
   private sandboxTools: { toolId: string; toolName?: string; description?: string }[] = [];
   private sandboxResources: { resourceId: string; path?: string; sensitivity?: string; description?: string }[] = [];
   private lastRunMeta?: import("./agentAdapter").AgentRunMeta;
+  private lastRuntimeSessionKey?: string;
   private activatedLeaseId?: string;
   private lastReconciliation?: { reconciled: boolean; coverageBreachCount: number };
   private lastRevokeError?: string;
@@ -228,21 +230,40 @@ export class OpenClawSession implements AgentSession {
     runMeta?: AgentRunMeta,
   ): Promise<AgentRunResult> {
     const startedAt = nowIso();
-    const sessionKey = runMeta?.runId ?? "unknown";
+    const runId = runMeta?.runId ?? "unknown";
+    let runtimeSessionKey = runId;
+    if (this.nativeGuardRequired) {
+      try {
+        runtimeSessionKey = canonicalizeOpenClawSessionKey(runId);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return {
+          schemaVersion: "mvp-1",
+          runId,
+          agentId: runMeta?.agentId ?? this.agent.agentId,
+          caseId: runMeta?.caseId ?? task.caseId,
+          status: "failed",
+          error: message,
+          finalMessage: `[OpenClaw Error] ${message}`,
+          startedAt,
+          endedAt: nowIso(),
+        };
+      }
+    }
 
     // Activate native-guard lease for this session before tool execution.
     if (this.guardLease && this.nativeGuardRequired) {
       try {
         const lease = await this.guardLease.activate({
-          rootSessionKey: sessionKey,
-          runGroupId: runMeta?.runId ?? sessionKey,
+          rootSessionKey: runtimeSessionKey,
+          runGroupId: runId,
         });
         this.activatedLeaseId = lease.leaseId;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return {
           schemaVersion: "mvp-1",
-          runId: sessionKey,
+          runId,
           agentId: runMeta?.agentId ?? this.agent.agentId,
           caseId: runMeta?.caseId ?? task.caseId,
           status: "failed",
@@ -256,6 +277,7 @@ export class OpenClawSession implements AgentSession {
 
     try {
       this.lastRunMeta = runMeta;
+      this.lastRuntimeSessionKey = runtimeSessionKey;
       const result = await runOpenClawSession(
         task,
         bridge,
@@ -273,6 +295,7 @@ export class OpenClawSession implements AgentSession {
           gatewayUrl: this.gatewayUrl,
           gatewayToken: this.gatewayToken,
           nativeGuardRequired: this.nativeGuardRequired,
+          runtimeSessionKey,
           nativeGuardEventStore: this.nativeGuardEventStore,
         },
       );
@@ -346,7 +369,7 @@ export class OpenClawSession implements AgentSession {
     reconciliation?: { reconciled: boolean; coverageBreachCount: number };
     revokeError?: string;
   }> {
-    if (!this.nativeGuardEventStore || !this.lastRunMeta) {
+    if (!this.nativeGuardEventStore || !this.lastRunMeta || !this.lastRuntimeSessionKey) {
       if (this.nativeGuardRequired) {
         throw new Error(
           "NATIVE_GUARD_EVIDENCE_UNAVAILABLE: runtime event store or run metadata is missing.",
@@ -354,10 +377,9 @@ export class OpenClawSession implements AgentSession {
       }
       return { nativeGuardEvents: [], supervisionRecords: [] };
     }
-    const runId = this.lastRunMeta.runId;
     const evidence = await drainOpenClawRuntimeEvidence(
       this.nativeGuardEventStore,
-      runId,
+      this.lastRuntimeSessionKey,
       this.nativeGuardRequired,
     );
     const revokeError = this.lastRevokeError;

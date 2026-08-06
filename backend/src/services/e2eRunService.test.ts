@@ -6,6 +6,7 @@ import {
   finalizeDetectionRunReservation,
   releaseDetectionRunReservation,
   reserveDetectionRun,
+  resolveNativeGuardSessionKeys,
   runDetectionWithSandboxLifetime,
   type DetectionRunReservation,
 } from "./e2eRunService";
@@ -100,4 +101,20 @@ test("OpenClaw detection batch is wrapped by the sandbox lifetime and uses its s
   assert.equal(value, "completed");
   assert.equal(wrapped, true);
   assert.equal(observedSignal, controller.signal);
+});
+
+test("E2E native guard boundaries use canonical session keys without changing stored test run ids", () => {
+  const runGroup = {
+    testRunIds: ["run.one", "agent:main:run.two"],
+    runGroupId: "run_group.fallback",
+  };
+  assert.deepEqual(resolveNativeGuardSessionKeys(runGroup), [
+    "agent:main:run.one",
+    "agent:main:run.two",
+  ]);
+  assert.deepEqual(runGroup.testRunIds, ["run.one", "agent:main:run.two"]);
+  assert.deepEqual(resolveNativeGuardSessionKeys({
+    testRunIds: [],
+    runGroupId: "run_group.fallback",
+  }), ["agent:main:run_group.fallback"]);
 });

@@ -869,6 +869,42 @@ test("default launcher binds signed Gateway proof to the child fd3 bootstrap key
   }
 });
 
+test("default launcher keeps the bootstrap pipe attached across the OpenClaw compile-cache launcher", async (t) => {
+  const fixture = await createGatewayCliFixture("valid");
+  t.after(() => fs.rm(fixture.root, { recursive: true, force: true }));
+  const wrapperPath = path.join(fixture.root, "compile-cache-launcher.mjs");
+  await fs.writeFile(wrapperPath, `
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
+const target = new URL("./gateway-fixture.mjs", import.meta.url);
+if (process.env.NODE_DISABLE_COMPILE_CACHE === "1") {
+  await import(target.href);
+} else {
+  const child = spawn(process.execPath, [fileURLToPath(target), ...process.argv.slice(2)], {
+    env: process.env,
+    stdio: "inherit",
+  });
+  child.once("error", () => process.exit(1));
+  child.once("exit", (code) => process.exit(code ?? 1));
+}
+`, { encoding: "utf8", mode: 0o700 });
+  const { runner } = runnerFor();
+  const manager = new DetectionSandboxManager({
+    runGroupId: "run-bootstrap-compile-cache-launcher",
+    image: `openclaw@sha256:${"a".repeat(64)}`,
+    cliPath: wrapperPath,
+    commandRunner: runner,
+  });
+
+  try {
+    const evidence = await settleWithin(manager.start(), 3_000);
+    assert.match(evidence.gatewayUrl ?? "", /^http:\/\/127\.0\.0\.1:\d+$/);
+  } finally {
+    await manager.cleanup().catch(() => undefined);
+  }
+});
+
 test("Windows wrapper-local env cannot replace the run-scoped isolated profile", {
   skip: process.platform !== "win32",
 }, async (t) => {

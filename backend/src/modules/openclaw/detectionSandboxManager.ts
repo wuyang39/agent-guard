@@ -1383,6 +1383,7 @@ async function launchGateway(input: Parameters<DetectionGatewayLauncher>[0]): Pr
       env: {
         ...cli.env,
         ...input.env,
+        NODE_DISABLE_COMPILE_CACHE: "1",
         OPENCLAW_NATIVE_GUARD_BOOTSTRAP_FD: "3",
         OPENCLAW_NATIVE_GUARD_BOOTSTRAP_CONTRACT: "native-guard-bootstrap-1",
       },

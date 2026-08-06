@@ -835,9 +835,7 @@ export class DetectionSandboxManager {
     const config = isRecord(record.Config) ? record.Config : {};
     const labels = isRecord(config.Labels) ? config.Labels : {};
     const expectedNetwork = this.options.networkCase ? this.networkName : "none";
-    const mounts = Array.isArray(record.Mounts) ? record.Mounts : [];
-    const allowedTmpfsMounts = new Set(["/tmp", "/var/tmp", "/run"]);
-    const mountsSafe = mounts.every((mount) => isRecord(mount) && mount.Type === "tmpfs" && typeof mount.Destination === "string" && allowedTmpfsMounts.has(mount.Destination));
+    const mountsSafe = this.agentMountsMatch(host, record);
     const securityOpt = Array.isArray(host.SecurityOpt) ? host.SecurityOpt.map(String) : [];
     const tmpfs = isRecord(host.Tmpfs) ? host.Tmpfs : {};
     const ulimits = Array.isArray(host.Ulimits) ? host.Ulimits : [];
@@ -851,9 +849,64 @@ export class DetectionSandboxManager {
       (host.CapAdd === undefined || host.CapAdd === null || (Array.isArray(host.CapAdd) && host.CapAdd.length === 0)) &&
       Number(host.PidsLimit) === 128 && Number(host.Memory) === 536870912 &&
       Number(host.MemorySwap) === 536870912 && Number(host.NanoCpus) === 1_000_000_000 &&
-      (host.Binds === undefined || host.Binds === null || (Array.isArray(host.Binds) && host.Binds.length === 0)) && mountsSafe &&
+      mountsSafe &&
       ["/tmp", "/var/tmp", "/run"].every((mount) => Object.prototype.hasOwnProperty.call(tmpfs, mount)) &&
       isRecord(nofile) && Number(nofile.Soft) === 1024 && Number(nofile.Hard) === 1024;
+  }
+
+  private agentMountsMatch(
+    host: Record<string, unknown>,
+    record: Record<string, unknown>,
+  ): boolean {
+    if (!this.profileRoot || !Array.isArray(record.Mounts) || record.Mounts.length !== 2) {
+      return false;
+    }
+    const mounts = record.Mounts;
+    if (mounts.some((mount) => !isRecord(mount) || mount.Type !== "bind" || mount.RW !== false)) {
+      return false;
+    }
+    const workspaceMount = mounts.find(
+      (mount) => isRecord(mount) && mount.Destination === "/workspace",
+    );
+    const agentMount = mounts.find(
+      (mount) => isRecord(mount) && mount.Destination === "/agent",
+    );
+    if (
+      !isRecord(workspaceMount) ||
+      !isRecord(agentMount) ||
+      typeof workspaceMount.Source !== "string" ||
+      typeof agentMount.Source !== "string"
+    ) {
+      return false;
+    }
+    const sandboxParent = path.resolve(this.profileRoot, "state", "sandboxes");
+    if (
+      !isDirectChildPath(workspaceMount.Source, sandboxParent) ||
+      !sameHostPath(agentMount.Source, path.resolve(this.profileRoot, "workspace"))
+    ) {
+      return false;
+    }
+    if (host.Binds === undefined || host.Binds === null) return true;
+    if (!Array.isArray(host.Binds) || host.Binds.length !== mounts.length) return false;
+    const structuredSources = new Map([
+      ["/workspace", workspaceMount.Source],
+      ["/agent", agentMount.Source],
+    ]);
+    const bindDestinations = new Set<string>();
+    for (const bind of host.Binds) {
+      const parsed = parseReadOnlyDockerBind(bind);
+      const structuredSource = parsed && structuredSources.get(parsed.destination);
+      if (
+        !parsed ||
+        !structuredSource ||
+        bindDestinations.has(parsed.destination) ||
+        !sameHostPath(parsed.source, structuredSource)
+      ) {
+        return false;
+      }
+      bindDestinations.add(parsed.destination);
+    }
+    return bindDestinations.size === structuredSources.size;
   }
 
   private sinkMatches(record: Record<string, unknown>): boolean {
@@ -1096,6 +1149,39 @@ function parseInspectRecords(raw: string): Record<string, unknown>[] {
     }
     return values.every(isRecord) ? values : [];
   }
+}
+
+function parseReadOnlyDockerBind(value: unknown): {
+  source: string;
+  destination: "/workspace" | "/agent";
+} | undefined {
+  if (typeof value !== "string") return undefined;
+  const match = /^(.+):(\/(?:workspace|agent)):([^:]+)$/.exec(value);
+  if (!match) return undefined;
+  const options = match[3].split(",");
+  if (!options.includes("ro") || options.includes("rw")) return undefined;
+  return {
+    source: match[1],
+    destination: match[2] as "/workspace" | "/agent",
+  };
+}
+
+function sameHostPath(left: string, right: string): boolean {
+  const normalize = (value: string): string => {
+    const resolved = path.normalize(path.resolve(value));
+    return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  };
+  return left.length > 0 && right.length > 0 && normalize(left) === normalize(right);
+}
+
+function isDirectChildPath(candidate: string, parent: string): boolean {
+  if (!candidate.length) return false;
+  const relative = path.relative(path.resolve(parent), path.resolve(candidate));
+  return relative.length > 0 &&
+    !path.isAbsolute(relative) &&
+    relative !== ".." &&
+    !relative.startsWith(`..${path.sep}`) &&
+    path.dirname(relative) === ".";
 }
 
 function matchesSandboxExplain(raw: string): boolean {

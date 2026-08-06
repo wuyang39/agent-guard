@@ -124,6 +124,57 @@ function realSandboxExplain() {
   };
 }
 
+function realAgentContainerInspect(profileRoot: string, runGroupId: string) {
+  const sandboxRoot = path.join(profileRoot, "state", "sandboxes", "session-1");
+  const agentRoot = path.join(profileRoot, "workspace");
+  return {
+    Id: "agent-1",
+    Image: `sha256:${"a".repeat(64)}`,
+    Config: {
+      User: "65532:65532",
+      Labels: {
+        "agent-guard.run-group": runGroupId,
+        "agent-guard.role": "agent",
+      },
+    },
+    HostConfig: {
+      NetworkMode: "none",
+      ReadonlyRootfs: true,
+      Privileged: false,
+      CapDrop: ["ALL"],
+      PidsLimit: 128,
+      Memory: 536870912,
+      MemorySwap: 536870912,
+      NanoCpus: 1000000000,
+      Binds: [
+        `${sandboxRoot}:/workspace:ro,z`,
+        `${agentRoot}:/agent:ro,z`,
+      ],
+      SecurityOpt: ["no-new-privileges:true"],
+      Tmpfs: { "/tmp": "", "/var/tmp": "", "/run": "" },
+      Ulimits: [{ Name: "nofile", Soft: 1024, Hard: 1024 }],
+    },
+    Mounts: [
+      {
+        Type: "bind",
+        Source: sandboxRoot,
+        Destination: "/workspace",
+        Mode: "ro,z",
+        RW: false,
+        Propagation: "rprivate",
+      },
+      {
+        Type: "bind",
+        Source: agentRoot,
+        Destination: "/agent",
+        Mode: "ro,z",
+        RW: false,
+        Propagation: "rprivate",
+      },
+    ],
+  };
+}
+
 test("writes the canonical isolated plugin profile with run-scoped marker and spool directories", async () => {
   const fixtureRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-plugin-profile-"));
   const pluginRoot = path.join(fixtureRoot, "plugin");
@@ -1625,6 +1676,101 @@ test("network cases create a labeled internal sink and remove it during cleanup"
   assert.ok(calls.some((call) => call.args[0] === "run" && call.args.includes("http.server")));
   assert.ok(calls.some((call) => call.args[0] === "rm"));
   assert.ok(calls.some((call) => call.args[0] === "network" && call.args[1] === "rm"));
+});
+
+test("accepts the two read-only OpenClaw profile bind mounts during container attestation", async () => {
+  const { runner } = runnerFor();
+  const runGroupId = "run-real-container-mounts";
+  let profileRoot: string | undefined;
+  const manager = new DetectionSandboxManager({
+    ...readyGatewayTestOptions(),
+    runGroupId,
+    image: `openclaw@sha256:${"a".repeat(64)}`,
+    commandRunner: async (input) => {
+      const result = await runner(input);
+      if (input.args[0] === "inspect" && profileRoot) {
+        return {
+          ...result,
+          stdout: JSON.stringify([realAgentContainerInspect(profileRoot, runGroupId)]),
+        };
+      }
+      return result;
+    },
+  });
+
+  try {
+    profileRoot = (await manager.start()).profileRoot;
+    const evidence = await manager.attestSession("session-1", "after");
+    assert.equal(evidence.status, "attested");
+    assert.equal(evidence.containerId, "agent-1");
+  } finally {
+    await manager.cleanup().catch(() => undefined);
+  }
+});
+
+test("rejects writable, extra, or outside OpenClaw profile bind mounts", async (t) => {
+  const cases = [
+    {
+      name: "writable workspace bind",
+      mutate(record: ReturnType<typeof realAgentContainerInspect>) {
+        record.Mounts[0].RW = true;
+      },
+    },
+    {
+      name: "extra bind",
+      mutate(record: ReturnType<typeof realAgentContainerInspect>) {
+        record.HostConfig.Binds.push(`${record.Mounts[0].Source}:/extra:ro,z`);
+        record.Mounts.push({
+          Type: "bind",
+          Source: record.Mounts[0].Source,
+          Destination: "/extra",
+          Mode: "ro,z",
+          RW: false,
+          Propagation: "rprivate",
+        });
+      },
+    },
+    {
+      name: "workspace source outside the profile sandbox root",
+      mutate(record: ReturnType<typeof realAgentContainerInspect>) {
+        record.Mounts[0].Source = path.resolve(record.Mounts[0].Source, "..", "..", "outside");
+      },
+    },
+  ];
+
+  for (const [index, fixture] of cases.entries()) {
+    await t.test(fixture.name, async () => {
+      const { runner } = runnerFor();
+      const runGroupId = `run-container-mount-mismatch-${index}`;
+      let profileRoot: string | undefined;
+      const manager = new DetectionSandboxManager({
+        ...readyGatewayTestOptions(),
+        runGroupId,
+        image: `openclaw@sha256:${"a".repeat(64)}`,
+        commandRunner: async (input) => {
+          const result = await runner(input);
+          if (input.args[0] === "inspect" && profileRoot) {
+            const record = realAgentContainerInspect(profileRoot, runGroupId);
+            fixture.mutate(record);
+            return { ...result, stdout: JSON.stringify([record]) };
+          }
+          return result;
+        },
+      });
+
+      try {
+        profileRoot = (await manager.start()).profileRoot;
+        await assert.rejects(
+          manager.attestSession("session-1", "after"),
+          (error: unknown) =>
+            error instanceof SandboxAttestationError &&
+            error.code === "CONTAINER_ATTESTATION_MISMATCH",
+        );
+      } finally {
+        await manager.cleanup().catch(() => undefined);
+      }
+    });
+  }
 });
 
 test("fails after-run attestation when Docker resource limits do not match", async () => {

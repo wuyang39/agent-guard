@@ -61,11 +61,10 @@ test("benign sandbox probe uses the isolated Gateway without exposing its token 
     "call",
     "nativeGuard.sandboxProbe",
     "--json",
-    "--url",
-    "ws://127.0.0.1:18789/",
     "--params",
     JSON.stringify({ sessionKey: "verify-benign-session" }),
   ]);
+  assert.equal(observed.args.includes("--url"), false);
   assert.equal(observed.args.join(" ").includes("sandbox-secret-token"), false);
   assert.equal(observed.env?.OPENCLAW_GATEWAY_TOKEN, "sandbox-secret-token");
   assert.equal(observed.env?.OPENCLAW_GATEWAY_URL, "http://127.0.0.1:18789");

@@ -106,7 +106,6 @@ export async function runBenignSandboxProbe(options: {
   if (!/^(?:127\.0\.0\.1|localhost|\[::1\])$/i.test(gateway.hostname)) {
     throw new TypeError("Benign sandbox probe Gateway must be loopback.");
   }
-  gateway.protocol = gateway.protocol === "https:" ? "wss:" : "ws:";
   const cli = resolveOpenClawCliInvocation(options.cliPath);
   const env = buildOpenClawProcessEnv({
     ...cli.env,
@@ -120,8 +119,6 @@ export async function runBenignSandboxProbe(options: {
     "call",
     "nativeGuard.sandboxProbe",
     "--json",
-    "--url",
-    gateway.toString(),
     "--params",
     JSON.stringify({ sessionKey: options.sessionKey }),
   ];

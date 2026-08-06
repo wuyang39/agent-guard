@@ -213,9 +213,10 @@ export async function verifyGatewayAuthentication(options: {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30_000) {
     throw new TypeError("Gateway authentication timeout is invalid.");
   }
+  const statusUrl = new URL("/agent-guard/native-guard/v1/status", gateway);
 
   await withRequestDeadline(timeoutMs, options.signal, async (signal) => {
-    const response = await fetch(new URL("/", gateway), {
+    const response = await fetch(statusUrl, {
       method: "GET",
       redirect: "error",
       signal,
@@ -224,7 +225,7 @@ export async function verifyGatewayAuthentication(options: {
     await cancelResponseBodyBounded(response);
     if (!enforcesAuth) {
       throw new Error(
-        `Gateway did not enforce auth: got ${String(response.status)} on unauthenticated request.`,
+        `Gateway status did not enforce auth: got ${String(response.status)} on unauthenticated request.`,
       );
     }
   });
@@ -235,7 +236,7 @@ export async function verifyGatewayAuthentication(options: {
     options.signal,
     async (signal) => {
       const response = await fetch(
-        new URL("/agent-guard/native-guard/v1/status", gateway),
+        statusUrl,
         {
           method: "GET",
           headers: {

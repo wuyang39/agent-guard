@@ -122,6 +122,55 @@ test("live verifier inspects a compatible fork through OPENCLAW_CLI in an isolat
   assert.equal(result.runtimeIdentityBound, true);
 });
 
+test("live verifier accepts a public Control UI when protected status enforces auth", async (t) => {
+  let rootRequests = 0;
+  const server = http.createServer((request, response) => {
+    if (request.url === "/") {
+      rootRequests += 1;
+      response.statusCode = 200;
+      response.setHeader("content-type", "text/html");
+      response.end("<html>OpenClaw Control UI</html>");
+      return;
+    }
+    if (request.url !== "/agent-guard/native-guard/v1/status") {
+      response.statusCode = 404;
+      response.end("not found");
+      return;
+    }
+    if (request.headers.authorization !== "Bearer test-token") {
+      response.statusCode = 401;
+      response.end("unauthorized");
+      return;
+    }
+    const nonce = request.headers["x-agent-guard-ready-nonce"];
+    response.statusCode = 200;
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify({
+      coverage: "off",
+      finalizerAssurance: "unverified",
+      activeLeaseCount: 0,
+      _readyNonce: nonce,
+    }));
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+
+  const status = await verifyGatewayAuthentication({
+    gatewayUrl: `http://127.0.0.1:${String(address.port)}`,
+    gatewayToken: "test-token",
+    nonce: "nonce.test",
+  });
+
+  assert.equal(status.coverage, "off");
+  assert.equal(status._readyNonce, "nonce.test");
+  assert.equal(rootRequests, 0);
+});
+
 test("live verifier bounds and validates authenticated Gateway status JSON", async (t) => {
   for (const mode of ["stalled", "oversized", "encoded", "malformed"] as const) {
     await t.test(mode, async () => {

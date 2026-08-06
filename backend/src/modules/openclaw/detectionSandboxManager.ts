@@ -1411,8 +1411,9 @@ export async function waitForGateway(
     const attemptController = new AbortController();
     const attemptTimer = setTimeout(() => attemptController.abort(), 500);
     try {
-      // Step 1: Unauthenticated probe — the gateway must reject.
-      const unauthed = await fetch(url, {
+      const statusUrl = new URL("/agent-guard/native-guard/v1/status", url).toString();
+      // Step 1: The protected status route must reject an unauthenticated probe.
+      const unauthed = await fetch(statusUrl, {
         method: "GET",
         redirect: "error",
         signal: attemptController.signal,
@@ -1424,23 +1425,8 @@ export async function waitForGateway(
         await new Promise((resolve) => setTimeout(resolve, delayMs));
         continue;
       }
-      // Step 2: Authenticated root probe — the gateway must accept.
-      const authed = await fetch(url, {
-        method: "GET",
-        headers: { authorization: `Bearer ${token}` },
-        redirect: "error",
-        signal: attemptController.signal,
-      });
-      const rootOk = authed.status >= 200 && authed.status < 300;
-      await cancelResponseBodyBounded(authed);
-      if (!rootOk) {
-        clearTimeout(attemptTimer);
-        await new Promise((resolve) => setTimeout(resolve, delayMs));
-        continue;
-      }
-      // Step 3: Authenticated status endpoint with random nonce challenge.
+      // Step 2: Authenticate to the same route with a random nonce challenge.
       const nonce = randomBytes(24).toString("base64url");
-      const statusUrl = new URL("/agent-guard/native-guard/v1/status", url).toString();
       const statusResponse = await fetch(statusUrl, {
         method: "GET",
         headers: {

@@ -326,9 +326,21 @@ test("rejects a gateway that authenticates but fails nonce echo challenge", asyn
   await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
 });
 
-test("accepts a gateway that completes all three readiness checks", async () => {
-  // Simulate a full OpenClaw gateway: 401 on unauth, 200 authed root, correct nonce on status.
+test("accepts a public Control UI when the protected status route enforces auth", async (t) => {
+  let rootRequests = 0;
   const server = http.createServer((request, response) => {
+    if (request.url === "/") {
+      rootRequests += 1;
+      response.statusCode = 200;
+      response.setHeader("content-type", "text/html");
+      response.end("<html>OpenClaw Control UI</html>");
+      return;
+    }
+    if (request.url !== "/agent-guard/native-guard/v1/status") {
+      response.statusCode = 404;
+      response.end("not found");
+      return;
+    }
     const authed = request.headers.authorization === "Bearer token";
     if (!authed) {
       response.statusCode = 401;
@@ -348,12 +360,15 @@ test("accepts a gateway that completes all three readiness checks", async () => 
     }));
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  t.after(() => {
+    server.closeAllConnections();
+    return new Promise<void>((resolve) => server.close(() => resolve()));
+  });
   const address = server.address();
   const url = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
   const child = { exitCode: null as number | null, kill: () => { child.exitCode = 1; } };
-  // Should NOT reject — gateway is valid.
   await waitForGateway(url, "token", child, new AbortController().signal, 2, 1);
-  await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  assert.equal(rootRequests, 0);
 });
 
 test("default readiness budget reaches a healthy forty-first attempt", async () => {

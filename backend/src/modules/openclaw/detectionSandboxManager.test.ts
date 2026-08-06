@@ -1158,9 +1158,10 @@ test("missing Gateway lifetime handle fails closed before samples", async () => 
   assert.equal(sampleRuns, 0);
 });
 
-test("a late exit from an old Gateway generation cannot invalidate the replacement", async () => {
+test("failed cleanup cold-reprobes without old Gateway credentials and ignores its late exit", async () => {
   const { runner } = runnerFor();
   const exits = [deferred<void>(), deferred<void>()];
+  const capabilityEnvs: Array<Record<string, string>> = [];
   let launches = 0;
   const manager = new DetectionSandboxManager({
     runGroupId: "run-gateway-generation",
@@ -1184,7 +1185,10 @@ test("a late exit from an old Gateway generation cannot invalidate the replaceme
     },
     runtimeStatusProbe: async () => readyRuntimeStatus(),
     gatewayAttestationProbe: async (input) => readyGatewayAttestation(input),
-    capabilityProbe: async () => readyCapability(),
+    capabilityProbe: async (input) => {
+      capabilityEnvs.push(input.env);
+      return readyCapability();
+    },
   });
 
   try {
@@ -1193,6 +1197,9 @@ test("a late exit from an old Gateway generation cannot invalidate the replaceme
     await assert.rejects(manager.cleanup(), /gateway-terminate/);
 
     await manager.start();
+    assert.equal(capabilityEnvs.length, 2);
+    assert.equal(capabilityEnvs[1]?.OPENCLAW_GATEWAY_URL, undefined);
+    assert.equal(capabilityEnvs[1]?.OPENCLAW_GATEWAY_TOKEN, undefined);
     const replacementCredentials = manager.getGatewayCredentials();
     assert.ok(replacementCredentials);
     assert.notEqual(replacementCredentials?.gatewayToken, firstCredentials?.gatewayToken);

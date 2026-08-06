@@ -648,6 +648,8 @@ export class DetectionSandboxManager {
 
   private async probeOpenClawCapability(): Promise<NativeGuardCapability> {
     const env = stringEnv(this.profileEnv());
+    delete env.OPENCLAW_GATEWAY_TOKEN;
+    delete env.OPENCLAW_GATEWAY_URL;
     if (this.options.capabilityProbe) {
       return this.options.capabilityProbe({
         cliPath: this.options.cliPath,

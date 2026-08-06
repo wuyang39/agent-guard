@@ -70,6 +70,22 @@ test("benign sandbox probe uses the isolated Gateway without exposing its token 
   assert.equal(observed.env?.OPENCLAW_GATEWAY_URL, "http://127.0.0.1:18789");
 });
 
+test("benign sandbox probe gives a cold local CLI a bounded startup budget", async () => {
+  let observedTimeoutMs: number | undefined;
+  await runBenignSandboxProbe({
+    cliPath: "C:\\isolated\\openclaw-agentguard.exe",
+    gatewayUrl: "http://127.0.0.1:18789",
+    gatewayToken: "sandbox-secret-token",
+    sessionKey: "verify-cold-start-budget",
+    commandRunner: async (input) => {
+      observedTimeoutMs = input.timeoutMs;
+      return { exitCode: 0, stdout: JSON.stringify({ ok: true }), stderr: "" };
+    },
+  });
+
+  assert.equal(observedTimeoutMs, 60_000);
+});
+
 test("sandbox start failure executes zero benign probes", async () => {
   let probeCalls = 0;
   await assert.rejects(

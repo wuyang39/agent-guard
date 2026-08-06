@@ -141,7 +141,7 @@ export async function runBenignSandboxProbe(options: {
     command: cli.command,
     args,
     env,
-    timeoutMs: 30_000,
+    timeoutMs: 60_000,
   });
   if (result.exitCode !== 0) {
     throw new Error("OpenClaw benign sandbox probe failed.");

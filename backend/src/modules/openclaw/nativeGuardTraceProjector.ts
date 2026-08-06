@@ -25,7 +25,7 @@ export type ProjectedTraceContext = {
 export type ReconciliationIssue = {
   toolCallId: string;
   reason: string;
-  kind: "coverage_breach" | "mismatch" | "duplicate_outcome";
+  kind: "coverage_breach" | "mismatch" | "duplicate_decision" | "duplicate_outcome";
 };
 
 export type ReconciliationResult = {
@@ -52,13 +52,49 @@ export function projectNativeGuardTrace(
   jsonlToolCallIds: string[],
 ): ProjectedTraceSegment {
   const events: Omit<TraceEvent, "sequence" | "timestamp">[] = [];
-  const seenCallIds = new Set<string>();
+  const observedDecisionCallIds = new Set<string>();
   const outcomeByCallId = new Map<string, NativeGuardEvent[]>();
   const issues: ReconciliationIssue[] = [];
 
   // ---- Index Hook events ----
-  const decisions = nativeGuardEvents.filter((e) => e.type === "decision");
+  const rawDecisions = nativeGuardEvents.filter((e) => e.type === "decision");
   const outcomes = nativeGuardEvents.filter((e) => e.type === "tool_outcome");
+  const decisions: NativeGuardEvent[] = [];
+  const firstDecisionById = new Map<string, DecisionIdentity>();
+  const firstDecisionByCallId = new Map<string, DecisionIdentity>();
+
+  for (const decision of rawDecisions) {
+    const identity = decisionIdentity(decision);
+    observedDecisionCallIds.add(identity.toolCallId);
+
+    if (identity.decisionId) {
+      const firstWithDecisionId = firstDecisionById.get(identity.decisionId);
+      if (firstWithDecisionId) {
+        if (!sameToolCallIdentity(firstWithDecisionId, identity)) {
+          issues.push({
+            toolCallId: identity.toolCallId,
+            reason: `Decision ${identity.decisionId} conflicts with an earlier event for the same decision id.`,
+            kind: "duplicate_decision",
+          });
+        }
+        continue;
+      }
+      firstDecisionById.set(identity.decisionId, identity);
+    }
+
+    const firstForCall = firstDecisionByCallId.get(identity.toolCallId);
+    if (firstForCall) {
+      issues.push({
+        toolCallId: identity.toolCallId,
+        reason: `Tool call ${identity.toolCallId} has multiple decision ids.`,
+        kind: "duplicate_decision",
+      });
+      continue;
+    }
+
+    firstDecisionByCallId.set(identity.toolCallId, identity);
+    decisions.push(decision);
+  }
 
   for (const outcome of outcomes) {
     const callId = outcome.toolCallId;
@@ -85,8 +121,6 @@ export function projectNativeGuardTrace(
     const callId = typeof detail.toolCallId === "string" && detail.toolCallId
       ? detail.toolCallId
       : decision.toolCallId ?? decision.eventId;
-
-    seenCallIds.add(callId);
 
     const toolName = typeof detail.toolName === "string" ? detail.toolName : "unknown";
     const action = typeof detail.action === "string" ? detail.action : "allow";
@@ -137,7 +171,7 @@ export function projectNativeGuardTrace(
     });
 
     // If the result is an error and there's no corresponding decision, flag it as system_error
-    if (isError && !seenCallIds.has(callId)) {
+    if (isError && !observedDecisionCallIds.has(callId)) {
       const sysDetail: JsonObject = { callId };
       const toolNameValue = typeof detail.toolName === "string" ? detail.toolName : undefined;
       if (toolNameValue !== undefined) (sysDetail as Record<string, unknown>).toolName = toolNameValue;
@@ -160,7 +194,7 @@ export function projectNativeGuardTrace(
 
   // ---- Coverage breach: JSONL has call but Hook has no corresponding before event ----
   for (const jsonlCallId of jsonlToolCallIds) {
-    if (!seenCallIds.has(jsonlCallId)) {
+    if (!observedDecisionCallIds.has(jsonlCallId)) {
       issues.push({
         toolCallId: jsonlCallId,
         reason: "JSONL has tool call but no corresponding Hook before event.",
@@ -186,6 +220,37 @@ export function projectNativeGuardTrace(
       },
     },
   };
+}
+
+type DecisionIdentity = {
+  decisionId: string | undefined;
+  requestId: string | undefined;
+  toolCallId: string;
+  action: string | undefined;
+  toolName: string | undefined;
+  paramsDigest: string | undefined;
+};
+
+function decisionIdentity(decision: NativeGuardEvent): DecisionIdentity {
+  const detail = decision.detail;
+  return {
+    decisionId: decision.decisionId,
+    requestId: typeof detail.requestId === "string" ? detail.requestId : undefined,
+    toolCallId: typeof detail.toolCallId === "string" && detail.toolCallId
+      ? detail.toolCallId
+      : decision.toolCallId ?? decision.eventId,
+    action: typeof detail.action === "string" ? detail.action : undefined,
+    toolName: typeof detail.toolName === "string" ? detail.toolName : undefined,
+    paramsDigest: typeof detail.paramsDigest === "string" ? detail.paramsDigest : undefined,
+  };
+}
+
+function sameToolCallIdentity(left: DecisionIdentity, right: DecisionIdentity): boolean {
+  return left.requestId === right.requestId &&
+    left.toolCallId === right.toolCallId &&
+    left.action === right.action &&
+    left.toolName === right.toolName &&
+    left.paramsDigest === right.paramsDigest;
 }
 
 /**

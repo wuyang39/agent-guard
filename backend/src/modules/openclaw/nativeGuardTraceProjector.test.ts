@@ -31,9 +31,187 @@ function buildEvent(overrides: Partial<NativeGuardEvent> = {}): NativeGuardEvent
   };
 }
 
+function buildDecisionSourcePair(input: {
+  decisionId: string;
+  requestId: string;
+  toolCallId: string;
+  action: "allow" | "deny";
+  toolName: string;
+  paramsDigest: string;
+  params?: Record<string, unknown>;
+}): [NativeGuardEvent, NativeGuardEvent] {
+  const commonDetail = {
+    reasonCode: input.action === "allow" ? "policy_allow" : "policy_deny",
+    requestId: input.requestId,
+    action: input.action,
+    toolName: input.toolName,
+    paramsDigest: input.paramsDigest,
+  };
+  const backendDecision = buildEvent({
+    eventId: `pdp.${input.decisionId}`,
+    toolCallId: input.toolCallId,
+    decisionId: input.decisionId,
+    timestamp: "2026-08-01T00:00:01.000Z",
+    detail: {
+      ...commonDetail,
+      policyId: `policy.${input.action}`,
+      targetType: input.action === "deny" ? "code_execution" : "tool_call",
+      riskTags: input.action === "deny" ? ["code_execution"] : [],
+      ...(input.params ? { params: input.params } : {}),
+    },
+  });
+  const pluginDecision = buildEvent({
+    eventId: `plugin.${input.decisionId}`,
+    toolCallId: input.toolCallId,
+    decisionId: input.decisionId,
+    timestamp: "2026-08-01T00:00:01.010Z",
+    detail: {
+      ...commonDetail,
+      targetType: "tool_call",
+    },
+  });
+  return [backendDecision, pluginDecision];
+}
+
 // ---------------------------------------------------------------------------
 // Reconciliation scenarios
 // ---------------------------------------------------------------------------
+
+test("dual-source PDP and plugin events for one decision project one tool call", () => {
+  const [backendDecision, pluginDecision] = buildDecisionSourcePair({
+    decisionId: "decision.dual",
+    requestId: "request.dual",
+    toolCallId: "call.dual",
+    action: "allow",
+    toolName: "read",
+    paramsDigest: "a".repeat(64),
+    params: { path: "/workspace/README.md" },
+  });
+
+  const result = projectNativeGuardTrace(
+    CTX,
+    [backendDecision, pluginDecision],
+    ["call.dual"],
+  );
+
+  assert.equal(result.reconciliation.reconciled, true);
+  assert.equal(result.reconciliation.mismatchCount, 0);
+  assert.equal(result.reconciliation.projected.tool_call, 1);
+  assert.deepEqual(
+    (result.events[0].payload as { parameters: Record<string, unknown> }).parameters,
+    { path: "/workspace/README.md" },
+  );
+});
+
+test("two tool calls with PDP and plugin evidence each project two tool calls", () => {
+  const readPair = buildDecisionSourcePair({
+    decisionId: "decision.read",
+    requestId: "request.read",
+    toolCallId: "call.read",
+    action: "allow",
+    toolName: "read",
+    paramsDigest: "a".repeat(64),
+  });
+  const execPair = buildDecisionSourcePair({
+    decisionId: "decision.exec",
+    requestId: "request.exec",
+    toolCallId: "call.exec",
+    action: "deny",
+    toolName: "exec",
+    paramsDigest: "b".repeat(64),
+  });
+
+  const result = projectNativeGuardTrace(
+    CTX,
+    [...readPair, ...execPair],
+    ["call.read", "call.exec"],
+  );
+
+  assert.equal(result.reconciliation.reconciled, true);
+  assert.equal(result.reconciliation.mismatchCount, 0);
+  assert.equal(result.reconciliation.projected.tool_call, 2);
+});
+
+test("same decisionId with conflicting tool-call identity is a mismatch", async (t) => {
+  const [first] = buildDecisionSourcePair({
+    decisionId: "decision.conflict",
+    requestId: "request.first",
+    toolCallId: "call.first",
+    action: "allow",
+    toolName: "read",
+    paramsDigest: "a".repeat(64),
+  });
+  const cases: Array<{
+    name: string;
+    event: NativeGuardEvent;
+    jsonlCallIds: string[];
+  }> = [
+    {
+      name: "requestId",
+      event: { ...structuredClone(first), eventId: "conflict.request", detail: { ...first.detail, requestId: "request.other" } },
+      jsonlCallIds: ["call.first"],
+    },
+    {
+      name: "toolCallId",
+      event: { ...structuredClone(first), eventId: "conflict.call", toolCallId: "call.other", detail: { ...first.detail } },
+      jsonlCallIds: ["call.first", "call.other"],
+    },
+    {
+      name: "action",
+      event: { ...structuredClone(first), eventId: "conflict.action", detail: { ...first.detail, action: "deny" } },
+      jsonlCallIds: ["call.first"],
+    },
+    {
+      name: "toolName",
+      event: { ...structuredClone(first), eventId: "conflict.tool", detail: { ...first.detail, toolName: "exec" } },
+      jsonlCallIds: ["call.first"],
+    },
+    {
+      name: "paramsDigest",
+      event: { ...structuredClone(first), eventId: "conflict.params", detail: { ...first.detail, paramsDigest: "f".repeat(64) } },
+      jsonlCallIds: ["call.first"],
+    },
+  ];
+
+  for (const fixture of cases) {
+    await t.test(fixture.name, () => {
+      const result = projectNativeGuardTrace(CTX, [first, fixture.event], fixture.jsonlCallIds);
+
+      assert.equal(result.reconciliation.reconciled, false);
+      assert.equal(result.reconciliation.mismatchCount, 1);
+      assert.equal(result.reconciliation.projected.tool_call, 1);
+      assert.ok(result.reconciliation.issues.some((issue) =>
+        issue.kind === "duplicate_decision"
+      ));
+      assert.equal((result.events[0].payload as { callId: string }).callId, "call.first");
+    });
+  }
+});
+
+test("same tool call with different decisionIds is a mismatch and retains the first", () => {
+  const [first] = buildDecisionSourcePair({
+    decisionId: "decision.first",
+    requestId: "request.shared",
+    toolCallId: "call.shared",
+    action: "allow",
+    toolName: "read",
+    paramsDigest: "a".repeat(64),
+  });
+  const second = {
+    ...structuredClone(first),
+    eventId: "pdp.decision.second",
+    decisionId: "decision.second",
+  };
+
+  const result = projectNativeGuardTrace(CTX, [first, second], ["call.shared"]);
+
+  assert.equal(result.reconciliation.reconciled, false);
+  assert.equal(result.reconciliation.mismatchCount, 1);
+  assert.equal(result.reconciliation.projected.tool_call, 1);
+  assert.ok(result.reconciliation.issues.some((issue) =>
+    issue.kind === "duplicate_decision" && issue.toolCallId === "call.shared"
+  ));
+});
 
 test("allow+outcome: projects tool_call and tool_result, reconciled clean", () => {
   const decision = buildEvent({
@@ -177,9 +355,9 @@ test("system_error: error outcome without prior decision projects system_error",
 });
 
 test("mixed: multiple calls reconciled correctly", () => {
-  const decision1 = buildEvent({ eventId: "d1", toolCallId: "c1", detail: { action: "allow", reasonCode: "ok", toolName: "read", toolCallId: "c1", params: {} } });
+  const decision1 = buildEvent({ eventId: "d1", decisionId: "decision.c1", toolCallId: "c1", detail: { action: "allow", reasonCode: "ok", toolName: "read", toolCallId: "c1", params: {} } });
   const outcome1 = buildEvent({ eventId: "o1", type: "tool_outcome", toolCallId: "c1", decisionId: undefined, detail: { finalParamsDigest: "a".repeat(64), durationMs: 1, durationSource: "host", resultDigest: "b".repeat(64), resultPreview: "ok" } });
-  const decision2 = buildEvent({ eventId: "d2", toolCallId: "c2", detail: { action: "deny", reasonCode: "blocked", toolName: "exec", toolCallId: "c2", params: {} } });
+  const decision2 = buildEvent({ eventId: "d2", decisionId: "decision.c2", toolCallId: "c2", detail: { action: "deny", reasonCode: "blocked", toolName: "exec", toolCallId: "c2", params: {} } });
 
   const result = projectNativeGuardTrace(CTX, [decision1, outcome1, decision2], ["c1", "c2"]);
 

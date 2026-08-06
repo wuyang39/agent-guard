@@ -64,23 +64,53 @@ test("generates a Docker-only detection profile with destructive features disabl
 });
 
 test("preserves references and SecretRefs without copying inline secret values", () => {
+  const envRef = { source: "env", provider: "default", id: "ANTHROPIC_API_KEY" };
+  const fileRef = { source: "file", provider: "mounted-json", id: "/providers/deepseek/apiKey" };
+  const execRef = { source: "exec", provider: "vault", id: "providers/deepseek/api-key" };
   const config = scrubDetectionOpenClawConfig({
     model: "anthropic:claude-sonnet",
-    provider: { id: "anthropic", apiKey: { SecretRef: "env:ANTHROPIC_API_KEY" } },
+    providers: {
+      anthropic: { apiKey: envRef },
+      deepseek: { apiKey: fileRef },
+      privateProxy: { apiKey: execRef },
+    },
   });
   assert.equal(config.model, "anthropic:claude-sonnet");
-  assert.deepEqual(config.provider, { id: "anthropic", apiKey: { SecretRef: "env:ANTHROPIC_API_KEY" } });
+  assert.deepEqual(config.providers, {
+    anthropic: { apiKey: envRef },
+    deepseek: { apiKey: fileRef },
+    privateProxy: { apiKey: execRef },
+  });
   assert.throws(
-    () => scrubDetectionOpenClawConfig({ provider: { apiKey: "sk-inline-secret" } }),
+    () => scrubDetectionOpenClawConfig({ providers: { anthropic: { apiKey: "sk-inline-secret" } } }),
     (error: unknown) => error instanceof DetectionConfigError && error.code === "INLINE_SECRET_UNSAFE",
   );
   assert.throws(
-    () => scrubDetectionOpenClawConfig({ provider: { apiKey: { value: "sk-nested-secret" } } }),
+    () => scrubDetectionOpenClawConfig({ providers: { anthropic: { apiKey: { value: "sk-nested-secret" } } } }),
     (error: unknown) => error instanceof DetectionConfigError && error.code === "INLINE_SECRET_UNSAFE",
   );
-  const accessor = {} as { provider?: unknown };
-  Object.defineProperty(accessor, "provider", { get: () => ({ apiKey: "must-not-read" }), enumerable: true });
+  const accessor = {} as { providers?: unknown };
+  Object.defineProperty(accessor, "providers", { get: () => ({ apiKey: "must-not-read" }), enumerable: true });
   assert.throws(() => scrubDetectionOpenClawConfig(accessor), /accessors|INLINE_SECRET_UNSAFE/i);
+});
+
+test("rejects pseudo and non-exact OpenClaw SecretRefs", () => {
+  const rejected = [
+    { SecretRef: "env:ANTHROPIC_API_KEY" },
+    { source: "env", provider: "default", id: "ANTHROPIC_API_KEY", extra: true },
+    { source: "remote", provider: "default", id: "ANTHROPIC_API_KEY" },
+    { source: "env", provider: "Default", id: "ANTHROPIC_API_KEY" },
+    { source: "env", provider: "default", id: "anthropic_api_key" },
+    { source: "file", provider: "mounted-json", id: "providers/deepseek/apiKey" },
+    { source: "file", provider: "mounted-json", id: "/providers/~2invalid" },
+    { source: "exec", provider: "vault", id: "providers/../api-key" },
+  ];
+  for (const apiKey of rejected) {
+    assert.throws(
+      () => scrubDetectionOpenClawConfig({ providers: { anthropic: { apiKey } } }),
+      (error: unknown) => error instanceof DetectionConfigError && error.code === "INVALID_SECRET_REF",
+    );
+  }
 });
 
 test("does not copy user tools, plugins, binds, browser, or elevated settings", () => {
@@ -102,11 +132,11 @@ test("does not copy user tools, plugins, binds, browser, or elevated settings", 
   assert.deepEqual(scrubDetectionOpenClawConfig({ tools: { elevated: { enabled: true } }, model: "openai:gpt" }), { model: "openai:gpt" });
 });
 
-test("preserves all four model allowlist keys at their real OpenClaw schema locations", () => {
+test("generated model config passes the equivalent strict OpenClaw AgentDefaults schema", () => {
   const providers = {
     deepseek: {
       api: "openai-completions",
-      apiKey: { SecretRef: "env:DEEPSEEK_API_KEY" },
+      apiKey: { source: "env", provider: "default", id: "DEEPSEEK_API_KEY" },
       models: [{ id: "deepseek-v4-flash", name: "DeepSeek V4 Flash" }],
     },
   };
@@ -123,13 +153,14 @@ test("preserves all four model allowlist keys at their real OpenClaw schema loca
   });
 
   assert.deepEqual(config.agents.defaults.model, { primary: "deepseek/deepseek-v4-flash" });
-  assert.equal(config.agents.defaults.provider, "deepseek");
+  assert.equal(Object.hasOwn(config.agents.defaults, "provider"), false);
   assert.deepEqual(config.agents.defaults.models, {
     "deepseek/deepseek-v4-flash": { alias: "DeepSeek" },
   });
   assert.deepEqual(config.models, { providers });
   assert.deepEqual(config.tools, { elevated: { enabled: false } });
   assert.deepEqual(Object.keys(config.plugins.entries), ["agent-guard-supervision"]);
+  assertEquivalentStrictAgentDefaultsModelSchema(config.agents.defaults);
 });
 
 test("scrubs the real top-level provider catalog and rejects its inline secrets", () => {
@@ -143,7 +174,7 @@ test("scrubs the real top-level provider catalog and rejects its inline secrets"
     models: {
       providers: {
         deepseek: {
-          apiKey: { SecretRef: "env:DEEPSEEK_API_KEY" },
+          apiKey: { source: "env", provider: "default", id: "DEEPSEEK_API_KEY" },
           models: [{ id: "deepseek-v4-flash" }],
         },
       },
@@ -152,7 +183,7 @@ test("scrubs the real top-level provider catalog and rejects its inline secrets"
   assert.deepEqual(Object.keys(scrubbed).sort(), ["model", "models", "providers"]);
   assert.deepEqual(scrubbed.providers, {
     deepseek: {
-      apiKey: { SecretRef: "env:DEEPSEEK_API_KEY" },
+      apiKey: { source: "env", provider: "default", id: "DEEPSEEK_API_KEY" },
       models: [{ id: "deepseek-v4-flash" }],
     },
   });
@@ -208,30 +239,37 @@ test("profile seed rejects configuration without an explicit default model", asy
   );
 });
 
-test("profile seed rejects a last-known-good config outside the trusted OpenClaw state root", async (t) => {
+test("profile seed accepts an explicit config path outside OpenClaw home and state roots", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-config-seed-outside-"));
-  const stateDir = path.join(root, "state");
-  const outsideDir = path.join(root, "outside");
-  const configPath = path.join(outsideDir, "openclaw.json");
+  const openClawHome = path.join(root, "home");
+  const stateDir = path.join(openClawHome, ".openclaw");
+  const configDir = path.join(root, "independent-config");
+  const configPath = path.join(configDir, "openclaw.json");
   await fs.mkdir(stateDir, { recursive: true });
-  await fs.mkdir(outsideDir, { recursive: true });
+  await fs.mkdir(configDir, { recursive: true });
   await fs.writeFile(`${configPath}.last-good`, JSON.stringify({
-    agents: { defaults: { model: { primary: "deepseek/deepseek-v4-flash" } } },
+    agents: {
+      defaults: {
+        model: { primary: "deepseek/deepseek-v4-flash" },
+        models: { "deepseek/deepseek-v4-flash": { alias: "DeepSeek" } },
+      },
+    },
   }));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
 
-  await assert.rejects(
-    resolveDetectionProfileSeed({
-      env: {
-        OPENCLAW_CONFIG_PATH: configPath,
-        OPENCLAW_STATE_DIR: stateDir,
-      },
-    }),
-    (error: unknown) =>
-      error instanceof DetectionProfileSeedError &&
-      error.code === "MODEL_PROFILE_SEED_INVALID" &&
-      /trusted OpenClaw root/i.test(error.message),
-  );
+  const seed = await resolveDetectionProfileSeed({
+    env: {
+      OPENCLAW_HOME: openClawHome,
+      OPENCLAW_CONFIG_PATH: configPath,
+      OPENCLAW_STATE_DIR: stateDir,
+    },
+  });
+
+  assert.deepEqual(seed.userConfig, {
+    model: { primary: "deepseek/deepseek-v4-flash" },
+    models: { "deepseek/deepseek-v4-flash": { alias: "DeepSeek" } },
+  });
+  assert.equal(seed.agentStateDir, path.join(stateDir, "agents", "main", "agent"));
 });
 
 test("profile seed rejects a junction in the last-known-good config ancestry", async (t) => {
@@ -275,4 +313,22 @@ test("profile seed rejects a junction in the last-known-good config ancestry", a
 function isSymlinkPrivilegeError(error: unknown): boolean {
   return error instanceof Error && "code" in error &&
     ((error as NodeJS.ErrnoException).code === "EPERM" || (error as NodeJS.ErrnoException).code === "EACCES");
+}
+
+function assertEquivalentStrictAgentDefaultsModelSchema(defaults: Record<string, unknown>): void {
+  assert.deepEqual(Object.keys(defaults).sort(), ["model", "models", "sandbox"]);
+  const model = defaults.model;
+  assert.ok(typeof model === "string" || (isPlainRecord(model) &&
+    Object.keys(model).every((key) => key === "primary" || key === "fallbacks") &&
+    (model.primary === undefined || typeof model.primary === "string") &&
+    (model.fallbacks === undefined || (Array.isArray(model.fallbacks) && model.fallbacks.every((entry) => typeof entry === "string")))));
+  assert.ok(isPlainRecord(defaults.models));
+  for (const entry of Object.values(defaults.models)) {
+    assert.ok(isPlainRecord(entry));
+    assert.ok(Object.keys(entry).every((key) => key === "alias" || key === "params" || key === "agentRuntime" || key === "streaming"));
+  }
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

@@ -251,7 +251,7 @@ test("profile seed snapshots only allowlisted main-agent model state files", asy
         models: { "deepseek/deepseek-v4-flash": { alias: "DeepSeek" } },
         providers: {
           deepseek: {
-            apiKey: { SecretRef: "env:DEEPSEEK_API_KEY" },
+            apiKey: { source: "env", provider: "default", id: "DEEPSEEK_API_KEY" },
             models: [{ id: "deepseek-v4-flash" }],
           },
         },
@@ -277,10 +277,11 @@ test("profile seed snapshots only allowlisted main-agent model state files", asy
   assert.deepEqual(isolatedConfig.agents?.defaults?.models, {
     "deepseek/deepseek-v4-flash": { alias: "DeepSeek" },
   });
+  assert.equal(Object.hasOwn(isolatedConfig.agents?.defaults ?? {}, "provider"), false);
   assert.deepEqual(isolatedConfig.models, {
     providers: {
       deepseek: {
-        apiKey: { SecretRef: "env:DEEPSEEK_API_KEY" },
+        apiKey: { source: "env", provider: "default", id: "DEEPSEEK_API_KEY" },
         models: [{ id: "deepseek-v4-flash" }],
       },
     },

@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 
-export type SecretRef = { SecretRef: string };
+export type SecretRef = {
+  source: "env" | "file" | "exec";
+  provider: string;
+  id: string;
+};
 
 export type DetectionOpenClawConfig = {
   gateway: { mode: "local" };
@@ -30,7 +34,6 @@ export type DetectionOpenClawConfig = {
         };
       };
       model?: unknown;
-      provider?: unknown;
       models?: unknown;
     };
   };
@@ -63,6 +66,10 @@ export class DetectionConfigError extends Error {
 const SENSITIVE_KEY = /^(?:authorization|bearer|cookie|api|access|auth|client|private|secret|credential|password|passwd)?[_-]?(?:key|token|secret|password|passwd|credential|authorization|cookie)$/i;
 const FORBIDDEN_KEY = new Set(["__proto__", "prototype", "constructor"]);
 const MAX_CONFIG_DEPTH = 32;
+const SECRET_PROVIDER_ALIAS_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
+const ENV_SECRET_REF_ID_PATTERN = /^[A-Z][A-Z0-9_]{0,127}$/;
+const FILE_SECRET_REF_SEGMENT_PATTERN = /^(?:[^~]|~0|~1)*$/;
+const EXEC_SECRET_REF_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/#-]{0,255}$/;
 
 /**
  * Copy only a model/provider reference subtree. The input is deliberately
@@ -76,7 +83,7 @@ export function scrubDetectionOpenClawConfig(input: unknown): Record<string, unk
   const hasDefaults = isRecord(inputAgents.value) && isRecord(inputDefaults.value);
   const source = hasDefaults ? inputDefaults.value as Record<string, unknown> : input;
   const output: Record<string, unknown> = {};
-  for (const key of ["model", "provider", "models"] as const) {
+  for (const key of ["model", "models"] as const) {
     const property = readDataProperty(source, key);
     if (property.present) output[key] = scrubValue(property.value, key, 0);
   }
@@ -96,7 +103,6 @@ export type GenerateDetectionConfigOptions = {
   spoolDir: string;
   userConfig?: unknown;
   model?: unknown;
-  provider?: unknown;
 };
 
 export function generateDetectionOpenClawConfig(
@@ -104,9 +110,7 @@ export function generateDetectionOpenClawConfig(
 ): DetectionOpenClawConfig {
   const scrubbed = scrubDetectionOpenClawConfig(options.userConfig);
   const modelInput = options.model ?? scrubbed.model;
-  const providerInput = options.provider ?? scrubbed.provider;
   const model = modelInput === undefined ? undefined : scrubValue(modelInput, "model", 0);
-  const provider = providerInput === undefined ? undefined : scrubValue(providerInput, "provider", 0);
   const models = scrubbed.models;
   const providers = scrubbed.providers;
 
@@ -155,7 +159,6 @@ export function generateDetectionOpenClawConfig(
     },
   };
   if (model !== undefined) generated.agents.defaults.model = model;
-  if (provider !== undefined) generated.agents.defaults.provider = provider;
   if (models !== undefined) generated.agents.defaults.models = models;
   if (providers !== undefined) generated.models = { providers };
   return generated;
@@ -183,11 +186,7 @@ function scrubValue(value: unknown, parentKey: string, depth: number): unknown {
   if (!isRecord(value)) return undefined;
 
   if (Object.prototype.hasOwnProperty.call(value, "SecretRef")) {
-    const refDescriptor = Object.getOwnPropertyDescriptor(value, "SecretRef");
-    if (!refDescriptor || refDescriptor.get || refDescriptor.set || Object.keys(value).length !== 1 || typeof refDescriptor.value !== "string" || !refDescriptor.value.trim()) {
-      throw new DetectionConfigError("INVALID_SECRET_REF", "SecretRef must contain one non-empty reference.");
-    }
-    return { SecretRef: refDescriptor.value } satisfies SecretRef;
+    throw new DetectionConfigError("INVALID_SECRET_REF", "Legacy pseudo SecretRef objects are not valid OpenClaw SecretRefs.");
   }
 
   const output: Record<string, unknown> = {};
@@ -200,16 +199,49 @@ function scrubValue(value: unknown, parentKey: string, depth: number): unknown {
       throw new DetectionConfigError("INLINE_SECRET_UNSAFE", "Detection configuration cannot contain accessors.");
     }
     const entry = descriptor.value;
-    if (
-      SENSITIVE_KEY.test(key) &&
-      !(isRecord(entry) && Object.prototype.hasOwnProperty.call(entry, "SecretRef"))
-    ) {
-      throw new DetectionConfigError("INLINE_SECRET_UNSAFE", "Secret-bearing fields must use a SecretRef.");
+    if (SENSITIVE_KEY.test(key)) {
+      if (!isRecord(entry)) {
+        throw new DetectionConfigError("INLINE_SECRET_UNSAFE", "Secret-bearing fields must use a SecretRef.");
+      }
+      output[key] = scrubSecretRef(entry);
+      continue;
     }
     const scrubbed = scrubValue(entry, key, depth + 1);
     if (scrubbed !== undefined) output[key] = scrubbed;
   }
   return output;
+}
+
+function scrubSecretRef(value: Record<string, unknown>): SecretRef {
+  const keys = Object.keys(value);
+  const looksLikeRef = keys.some((key) => key === "source" || key === "provider" || key === "id" || key === "SecretRef");
+  if (!looksLikeRef) {
+    throw new DetectionConfigError("INLINE_SECRET_UNSAFE", "Secret-bearing fields must use a SecretRef.");
+  }
+  if (keys.length !== 3 || !keys.every((key) => key === "source" || key === "provider" || key === "id")) {
+    throw new DetectionConfigError("INVALID_SECRET_REF", "OpenClaw SecretRefs must contain exactly source, provider, and id.");
+  }
+  const source = readDataProperty(value, "source").value;
+  const provider = readDataProperty(value, "provider").value;
+  const id = readDataProperty(value, "id").value;
+  if (
+    (source !== "env" && source !== "file" && source !== "exec") ||
+    typeof provider !== "string" ||
+    !SECRET_PROVIDER_ALIAS_PATTERN.test(provider) ||
+    typeof id !== "string" ||
+    !isValidSecretRefId(source, id)
+  ) {
+    throw new DetectionConfigError("INVALID_SECRET_REF", "OpenClaw SecretRef source, provider, or id is invalid.");
+  }
+  return { source, provider, id };
+}
+
+function isValidSecretRefId(source: SecretRef["source"], id: string): boolean {
+  if (source === "env") return ENV_SECRET_REF_ID_PATTERN.test(id);
+  if (source === "file") {
+    return id === "value" || (id.startsWith("/") && id.slice(1).split("/").every((segment) => FILE_SECRET_REF_SEGMENT_PATTERN.test(segment)));
+  }
+  return EXEC_SECRET_REF_ID_PATTERN.test(id) && id.split("/").every((segment) => segment !== "." && segment !== "..");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

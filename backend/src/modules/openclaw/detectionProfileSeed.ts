@@ -38,29 +38,15 @@ export async function resolveDetectionProfileSeed(
   const stateDir = env.OPENCLAW_STATE_DIR?.trim()
     ? resolveProfilePath(env.OPENCLAW_STATE_DIR, homeDir)
     : path.join(homeDir, ".openclaw");
-  const configPath = env.OPENCLAW_CONFIG_PATH?.trim()
-    ? resolveProfilePath(env.OPENCLAW_CONFIG_PATH, homeDir)
+  const explicitConfigPath = env.OPENCLAW_CONFIG_PATH?.trim();
+  const configPath = explicitConfigPath
+    ? resolveProfilePath(explicitConfigPath, homeDir)
     : path.join(stateDir, "openclaw.json");
   const lastGoodPath = `${configPath}.last-good`;
   const canonicalStateRoot = await assertTrustedDirectory(stateDir, "OpenClaw state root");
-  let trustedConfigRoot = canonicalStateRoot;
-  if (!isPathInsideDirectory(lastGoodPath, stateDir)) {
-    const configuredHome = env.OPENCLAW_HOME?.trim();
-    if (!configuredHome) {
-      throw new DetectionProfileSeedError(
-        "MODEL_PROFILE_SEED_INVALID",
-        `Detection last-known-good model configuration is outside the trusted OpenClaw root: ${lastGoodPath}.`,
-      );
-    }
-    const openClawRoot = resolveProfilePath(configuredHome, homeDir);
-    if (!isPathInsideDirectory(stateDir, openClawRoot) || !isPathInsideDirectory(lastGoodPath, openClawRoot)) {
-      throw new DetectionProfileSeedError(
-        "MODEL_PROFILE_SEED_INVALID",
-        `Detection last-known-good model configuration is outside the trusted OpenClaw root: ${lastGoodPath}.`,
-      );
-    }
-    trustedConfigRoot = await assertTrustedDirectory(openClawRoot, "OpenClaw root");
-  }
+  const trustedConfigRoot = explicitConfigPath
+    ? await assertTrustedDirectory(path.dirname(configPath), "OpenClaw config root")
+    : canonicalStateRoot;
 
   let raw: string;
   try {

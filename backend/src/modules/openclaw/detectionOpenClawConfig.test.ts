@@ -1,11 +1,17 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
+import fs from "node:fs/promises";
+import os from "node:os";
 import {
   DetectionConfigError,
   generateDetectionOpenClawConfig,
   scrubDetectionOpenClawConfig,
 } from "./detectionOpenClawConfig";
+import {
+  DetectionProfileSeedError,
+  resolveDetectionProfileSeed,
+} from "./detectionProfileSeed";
 
 const PROFILE_ROOT = path.resolve("tmp", "detection-profile");
 const PLUGIN_ROOT = path.resolve("plugins", "agent-guard-supervision");
@@ -94,4 +100,47 @@ test("does not copy user tools, plugins, binds, browser, or elevated settings", 
   assert.deepEqual(config.agents.defaults.sandbox.docker.binds, []);
   assert.equal(config.agents.defaults.sandbox.browser.enabled, false);
   assert.deepEqual(scrubDetectionOpenClawConfig({ tools: { elevated: { enabled: true } }, model: "openai:gpt" }), { model: "openai:gpt" });
+});
+
+test("profile seed rejects malformed last-known-good configuration", async (t) => {
+  const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-config-seed-invalid-"));
+  const configPath = path.join(stateDir, "openclaw.json");
+  await fs.writeFile(`${configPath}.last-good`, "{not-json", "utf8");
+  t.after(() => fs.rm(stateDir, { recursive: true, force: true }));
+
+  await assert.rejects(
+    resolveDetectionProfileSeed({
+      env: {
+        OPENCLAW_CONFIG_PATH: configPath,
+        OPENCLAW_STATE_DIR: stateDir,
+      },
+    }),
+    (error: unknown) =>
+      error instanceof DetectionProfileSeedError &&
+      error.code === "MODEL_PROFILE_SEED_INVALID" &&
+      /not valid JSON/i.test(error.message),
+  );
+});
+
+test("profile seed rejects configuration without an explicit default model", async (t) => {
+  const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-config-seed-model-"));
+  const configPath = path.join(stateDir, "openclaw.json");
+  await fs.writeFile(`${configPath}.last-good`, JSON.stringify({
+    agents: { defaults: { workspace: "ignored" } },
+    models: { providers: { deepseek: {} } },
+  }));
+  t.after(() => fs.rm(stateDir, { recursive: true, force: true }));
+
+  await assert.rejects(
+    resolveDetectionProfileSeed({
+      env: {
+        OPENCLAW_CONFIG_PATH: configPath,
+        OPENCLAW_STATE_DIR: stateDir,
+      },
+    }),
+    (error: unknown) =>
+      error instanceof DetectionProfileSeedError &&
+      error.code === "MODEL_PROFILE_SEED_INVALID" &&
+      /default model/i.test(error.message),
+  );
 });

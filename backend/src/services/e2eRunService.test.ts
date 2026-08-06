@@ -1,14 +1,20 @@
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
+import type { DetectionSandboxManager } from "../modules/openclaw/detectionSandboxManager";
 import {
   DetectionRunConflictError,
   classifyDetectionError,
+  createInitialE2ERunGroup,
   finalizeDetectionRunReservation,
   releaseDetectionRunReservation,
   reserveDetectionRun,
   resolveNativeGuardSessionKeys,
   runDetectionWithSandboxLifetime,
   type DetectionRunReservation,
+  runE2E,
 } from "./e2eRunService";
 
 const OPENCLAW_REQUEST = {
@@ -118,3 +124,108 @@ test("E2E native guard boundaries use canonical session keys without changing st
     runGroupId: "run_group.fallback",
   }), ["agent:main:run_group.fallback"]);
 });
+
+test("formal OpenClaw runE2E resolves a scrubbed host profile seed for the sandbox manager", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-e2e-seed-"));
+  const stateDir = path.join(root, "state");
+  const configPath = path.join(stateDir, "openclaw.json");
+  const agentStateDir = path.join(stateDir, "agents", "main", "agent");
+  await fs.mkdir(agentStateDir, { recursive: true });
+  await fs.writeFile(`${configPath}.last-good`, JSON.stringify({
+    agents: {
+      defaults: {
+        model: { primary: "deepseek/deepseek-v4-flash" },
+        models: { "deepseek/deepseek-v4-flash": { alias: "DeepSeek" } },
+      },
+    },
+    tools: { elevated: { enabled: true } },
+    plugins: { entries: { arbitrary: { enabled: true } } },
+  }));
+
+  const previousImage = process.env.AGENT_GUARD_DETECTION_IMAGE;
+  const previousConfigPath = process.env.OPENCLAW_CONFIG_PATH;
+  const previousStateDir = process.env.OPENCLAW_STATE_DIR;
+  process.env.AGENT_GUARD_DETECTION_IMAGE = `openclaw@sha256:${"a".repeat(64)}`;
+  process.env.OPENCLAW_CONFIG_PATH = configPath;
+  process.env.OPENCLAW_STATE_DIR = stateDir;
+  t.after(async () => {
+    restoreEnv("AGENT_GUARD_DETECTION_IMAGE", previousImage);
+    restoreEnv("OPENCLAW_CONFIG_PATH", previousConfigPath);
+    restoreEnv("OPENCLAW_STATE_DIR", previousStateDir);
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  const request = {
+    ...OPENCLAW_REQUEST,
+    caseIds: ["case.resource_injection"],
+  };
+  const runGroup = createInitialE2ERunGroup(request);
+  let receivedOptions: Record<string, unknown> | undefined;
+  const stopped = new Error("stop after sandbox manager construction");
+
+  await assert.rejects(
+    runE2E(request, runGroup, undefined, undefined, {
+      createDetectionSandboxManager(options: Record<string, unknown>) {
+        receivedOptions = options;
+        return {
+          signal: new AbortController().signal,
+          async preflight() { throw stopped; },
+          async cleanup() {},
+        } as unknown as DetectionSandboxManager;
+      },
+    }),
+    stopped,
+  );
+
+  assert.ok(receivedOptions);
+  assert.deepEqual(receivedOptions.profileSeed, {
+    userConfig: {
+      model: { primary: "deepseek/deepseek-v4-flash" },
+      models: { "deepseek/deepseek-v4-flash": { alias: "DeepSeek" } },
+    },
+    agentStateDir,
+  });
+  assert.deepEqual(runGroup.testRunIds, []);
+});
+
+test("formal OpenClaw runE2E fails before manager construction when the host seed is missing", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-e2e-missing-seed-"));
+  const previousImage = process.env.AGENT_GUARD_DETECTION_IMAGE;
+  const previousConfigPath = process.env.OPENCLAW_CONFIG_PATH;
+  const previousStateDir = process.env.OPENCLAW_STATE_DIR;
+  process.env.AGENT_GUARD_DETECTION_IMAGE = `openclaw@sha256:${"a".repeat(64)}`;
+  process.env.OPENCLAW_CONFIG_PATH = path.join(root, "missing.json");
+  process.env.OPENCLAW_STATE_DIR = path.join(root, "state");
+  t.after(async () => {
+    restoreEnv("AGENT_GUARD_DETECTION_IMAGE", previousImage);
+    restoreEnv("OPENCLAW_CONFIG_PATH", previousConfigPath);
+    restoreEnv("OPENCLAW_STATE_DIR", previousStateDir);
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  const request = {
+    ...OPENCLAW_REQUEST,
+    caseIds: ["case.resource_injection"],
+  };
+  const runGroup = createInitialE2ERunGroup(request);
+  let managerConstructions = 0;
+
+  await assert.rejects(
+    runE2E(request, runGroup, undefined, undefined, {
+      createDetectionSandboxManager() {
+        managerConstructions += 1;
+        throw new Error("manager must not be constructed");
+      },
+    }),
+    /last-known-good model configuration is unavailable/i,
+  );
+
+  assert.equal(managerConstructions, 0);
+  assert.deepEqual(runGroup.testRunIds, []);
+  assert.equal(runGroup.progress?.caseFailures?.[0]?.caseId, "sandbox_preflight");
+});
+
+function restoreEnv(name: string, value: string | undefined): void {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+}

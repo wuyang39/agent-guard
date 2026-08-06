@@ -59,8 +59,14 @@ import { updateSelectionPlanStatus } from "../modules/runner/selectionPlanStore"
 import { resolveInsideDirectory } from "../storage/pathSafety";
 import {
   DetectionSandboxManager,
+  createDetectionSandboxManager,
   type DetectionSandboxEvidence,
+  type DetectionSandboxManagerOptions,
 } from "../modules/openclaw/detectionSandboxManager";
+import {
+  resolveDetectionProfileSeed,
+  type ResolveDetectionProfileSeedOptions,
+} from "../modules/openclaw/detectionProfileSeed";
 import { createNativeGuardEventStore } from "../storage/nativeGuardEventStore";
 import type { NativeGuardEvent, RuntimeSupervisionRecord } from "@agent-guard/contracts";
 import type { SandboxEvidenceSummary, NativeGuardCoverageSummary } from "../api/types";
@@ -165,6 +171,15 @@ export type SandboxCoordinatorFactory = (input: {
   revoke(leaseId: string): Promise<void>;
   /** The event store shared with the API's decision/event handlers. */
   eventStore: ReturnType<typeof createNativeGuardEventStore>;
+};
+
+export type E2ERunDependencies = {
+  resolveDetectionProfileSeed?: (
+    options: ResolveDetectionProfileSeedOptions,
+  ) => ReturnType<typeof resolveDetectionProfileSeed>;
+  createDetectionSandboxManager?: (
+    options: DetectionSandboxManagerOptions,
+  ) => DetectionSandboxManager;
 };
 
 export class CaseIdValidationError extends Error {
@@ -307,6 +322,7 @@ export async function runE2E(
   existingRunGroup?: P2RunGroup,
   sandboxCoordinatorFactory?: SandboxCoordinatorFactory,
   reservedDetectionRun?: DetectionRunReservation,
+  dependencies: E2ERunDependencies = {},
 ): Promise<RunE2EResult> {
   // P2 adapterKind 映射到 contracts adapterType + 自定义 adapter。
   const adapterType = mapAdapterKind(request.adapterKind);
@@ -561,12 +577,20 @@ export async function runE2E(
       }
 
       try {
-        sandboxManager = new DetectionSandboxManager({
+        const profileSeed = await (
+          dependencies.resolveDetectionProfileSeed ?? resolveDetectionProfileSeed
+        )({
+          cliPath: request.connection?.cliPath,
+        });
+        sandboxManager = (
+          dependencies.createDetectionSandboxManager ?? createDetectionSandboxManager
+        )({
           runGroupId: runGroup.runGroupId,
           image: detectionImage,
           cliPath: request.connection?.cliPath,
           signal: controller.signal,
           commandRunner: undefined, // use real Docker
+          profileSeed,
         });
         const evidence = await sandboxManager.preflight();
         await sandboxManager.start();

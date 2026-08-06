@@ -13,6 +13,7 @@ import {
   isCompatibleNativeGuardVersion,
   parseNativeGuardGatewayAttestation,
 } from "./nativeGuardLiveCapability";
+import type { DetectionProfileSeed } from "./detectionProfileSeed";
 
 const RUN_LABEL_KEY = "agent-guard.run-group";
 const RUN_ROLE_LABEL_KEY = "agent-guard.role";
@@ -70,6 +71,7 @@ export type DetectionSandboxManagerOptions = {
   cliPath?: string;
   pluginRoot?: string;
   userConfig?: unknown;
+  profileSeed?: DetectionProfileSeed;
   outputRoot?: string;
   commandRunner?: DetectionCommandRunner;
   gatewayLauncher?: DetectionGatewayLauncher;
@@ -566,8 +568,11 @@ export class DetectionSandboxManager {
       fs.mkdir(markerDir, { recursive: true, mode: 0o700 }),
       fs.mkdir(spoolDir, { recursive: true, mode: 0o700 }),
     ]);
+    if (this.options.profileSeed) {
+      await this.snapshotAgentModelState(root, this.options.profileSeed.agentStateDir);
+    }
     this.config = generateDetectionOpenClawConfig({
-      userConfig: this.options.userConfig,
+      userConfig: this.options.profileSeed?.userConfig ?? this.options.userConfig,
       pluginRoot: this.pluginRoot,
       markerDir,
       spoolDir,
@@ -604,6 +609,83 @@ export class DetectionSandboxManager {
       configSha256: createHash("sha256").update(JSON.stringify(this.config), "utf8").digest("hex"),
       imageId: this.imageId,
     });
+  }
+
+  private async snapshotAgentModelState(profileRoot: string, sourceAgentDir: string): Promise<void> {
+    const sourceStat = await fs.lstat(sourceAgentDir).catch(() => undefined);
+    if (!sourceStat?.isDirectory() || sourceStat.isSymbolicLink()) {
+      throw new SandboxPreflightError(
+        "MODEL_PROFILE_SEED_INVALID",
+        `Detection model state directory is unavailable or invalid: ${sourceAgentDir}.`,
+      );
+    }
+
+    const entries = await fs.readdir(sourceAgentDir, { withFileTypes: true });
+    const allowed = entries
+      .filter((entry) => entry.name === "models.json" || entry.name.startsWith("openclaw-agent.sqlite"))
+      .sort((left, right) => left.name.localeCompare(right.name));
+    for (const required of ["models.json", "openclaw-agent.sqlite"]) {
+      if (!allowed.some((entry) => entry.name === required && entry.isFile() && !entry.isSymbolicLink())) {
+        throw new SandboxPreflightError(
+          "MODEL_PROFILE_SEED_INVALID",
+          `Detection model state is incomplete: required ${required} is unavailable in ${sourceAgentDir}.`,
+        );
+      }
+    }
+    if (allowed.some((entry) => !entry.isFile() || entry.isSymbolicLink())) {
+      throw new SandboxPreflightError(
+        "MODEL_PROFILE_SEED_INVALID",
+        `Detection model state contains an invalid allowlisted entry under ${sourceAgentDir}.`,
+      );
+    }
+
+    let modelCatalog: unknown;
+    try {
+      modelCatalog = JSON.parse(await fs.readFile(path.join(sourceAgentDir, "models.json"), "utf8")) as unknown;
+    } catch {
+      throw new SandboxPreflightError(
+        "MODEL_PROFILE_SEED_INVALID",
+        `Detection model state models.json is not valid JSON under ${sourceAgentDir}.`,
+      );
+    }
+    if (
+      !isRecord(modelCatalog) ||
+      !isRecord(modelCatalog.providers) ||
+      Object.keys(modelCatalog.providers).length === 0
+    ) {
+      throw new SandboxPreflightError(
+        "MODEL_PROFILE_SEED_INVALID",
+        `Detection model state models.json does not contain a provider catalog under ${sourceAgentDir}.`,
+      );
+    }
+    const sqlitePath = path.join(sourceAgentDir, "openclaw-agent.sqlite");
+    const expectedHeader = Buffer.from("SQLite format 3\0", "utf8");
+    const actualHeader = Buffer.alloc(expectedHeader.length);
+    let bytesRead = 0;
+    try {
+      const handle = await fs.open(sqlitePath, "r");
+      try {
+        ({ bytesRead } = await handle.read(actualHeader, 0, actualHeader.length, 0));
+      } finally {
+        await handle.close();
+      }
+    } catch {
+      bytesRead = 0;
+    }
+    if (bytesRead !== expectedHeader.length || !actualHeader.equals(expectedHeader)) {
+      throw new SandboxPreflightError(
+        "MODEL_PROFILE_SEED_INVALID",
+        `Detection model state openclaw-agent.sqlite is not a valid SQLite database under ${sourceAgentDir}.`,
+      );
+    }
+
+    const destination = path.join(profileRoot, "state", "agents", "main", "agent");
+    await fs.mkdir(destination, { recursive: true, mode: 0o700 });
+    for (const entry of allowed) {
+      const target = path.join(destination, entry.name);
+      await fs.copyFile(path.join(sourceAgentDir, entry.name), target);
+      await fs.chmod(target, 0o600);
+    }
   }
 
   private async assertPluginPackageAvailable(): Promise<void> {

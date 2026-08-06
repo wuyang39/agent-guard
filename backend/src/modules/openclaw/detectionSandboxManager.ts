@@ -21,6 +21,7 @@ const MAX_COMMAND_OUTPUT_BYTES = 256 * 1024;
 const MAX_GATEWAY_BOOTSTRAP_BYTES = 8 * 1024;
 const GATEWAY_BOOTSTRAP_TIMEOUT_MS = 60_000;
 const MAX_GATEWAY_READINESS_BYTES = 64 * 1024;
+const GATEWAY_READINESS_MAX_ATTEMPTS = 240;
 const RESPONSE_CANCEL_TIMEOUT_MS = 25;
 
 export type DetectionCommandInput = {
@@ -1402,7 +1403,7 @@ export async function waitForGateway(
   token: string,
   child: { exitCode: number | null; kill(): void },
   signal: AbortSignal,
-  maxAttempts = 40,
+  maxAttempts = GATEWAY_READINESS_MAX_ATTEMPTS,
   delayMs = 50,
 ): Promise<void> {
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {

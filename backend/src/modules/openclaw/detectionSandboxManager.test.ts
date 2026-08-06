@@ -356,6 +356,42 @@ test("accepts a gateway that completes all three readiness checks", async () => 
   await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
 });
 
+test("default readiness budget reaches a healthy forty-first attempt", async () => {
+  let unauthenticatedAttempts = 0;
+  const server = http.createServer((request, response) => {
+    const authed = request.headers.authorization === "Bearer token";
+    if (!authed) {
+      unauthenticatedAttempts += 1;
+      response.statusCode = unauthenticatedAttempts <= 40 ? 503 : 401;
+      response.end("not ready");
+      return;
+    }
+    const nonce = request.headers["x-agent-guard-ready-nonce"] as string | undefined;
+    response.statusCode = 200;
+    response.setHeader("content-type", "application/json");
+    response.end(
+      JSON.stringify({
+        coverage: "ready",
+        finalizerAssurance: "isolated_profile",
+        activeLeaseCount: 0,
+        openclawVersion: "2026.7.2",
+        ...(nonce ? { _readyNonce: nonce } : {}),
+      }),
+    );
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  const url = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
+  const child = { exitCode: null as number | null, kill: () => { child.exitCode = 1; } };
+
+  try {
+    await waitForGateway(url, "token", child, new AbortController().signal, undefined, 0);
+    assert.equal(unauthenticatedAttempts, 41);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
 test("readiness rejects encoded, non-JSON, oversized, and stalled status bodies", async (t) => {
   const modes = [
     "wrong-content-type",

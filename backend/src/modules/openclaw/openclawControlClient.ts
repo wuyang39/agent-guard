@@ -209,7 +209,7 @@ export function createOpenClawControlClient(
       const pluginResult = await executeCli(
         commandRunner,
         cli,
-        ["plugins", "list", "--json"],
+        ["plugins", "list", "--enabled", "--json"],
         env,
         timeoutMs,
         input.signal,

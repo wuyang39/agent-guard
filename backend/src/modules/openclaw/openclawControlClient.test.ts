@@ -1036,6 +1036,35 @@ test("bounds injected CLI runners and reports malformed, oversized, and failed o
   }
 });
 
+test("limits capability inventory to enabled plugins before bounded parsing", async () => {
+  const calls: string[][] = [];
+  const runner: OpenClawCommandRunner = async (input) => {
+    calls.push(input.args);
+    if (input.args.length === 1 && input.args[0] === "--version") {
+      return result("2026.7.2");
+    }
+    if (input.args.join(" ") === "plugins list --enabled --json") {
+      return result(JSON.stringify(liveInventory([agentGuardPlugin()])));
+    }
+    if (input.args.join(" ") === "plugins list --json") {
+      return result("x".repeat(65_537));
+    }
+    return result("", 1);
+  };
+  const client = createOpenClawControlClient({ gatewayToken: TOKEN, commandRunner: runner });
+
+  const capability = await client.inspectCapabilities({
+    cliPath: process.execPath,
+    isolatedProfile: false,
+  });
+
+  assert.equal(capability.supportsNativeGuard, true);
+  assert.deepEqual(calls, [
+    ["--version"],
+    ["plugins", "list", "--enabled", "--json"],
+  ]);
+});
+
 test("passes CLI arguments separately and preserves the resolver's no-shell invocation", async () => {
   const calls: Parameters<OpenClawCommandRunner>[0][] = [];
   const runner: OpenClawCommandRunner = async (input) => {
@@ -1052,7 +1081,7 @@ test("passes CLI arguments separately and preserves the resolver's no-shell invo
 
   assert.equal(calls[0].shell, false);
   assert.deepEqual(calls[0].args, ["--version"]);
-  assert.deepEqual(calls[1].args, ["plugins", "list", "--json"]);
+  assert.deepEqual(calls[1].args, ["plugins", "list", "--enabled", "--json"]);
   assert.equal(calls[0].env.INSPECTION_MARKER, "separate-value");
 });
 

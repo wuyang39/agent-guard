@@ -117,7 +117,7 @@ test("live verifier inspects a compatible fork through OPENCLAW_CLI in an isolat
   ]);
   assert.equal(result.cliArgs?.[0], "--version");
   assert.equal(result.cliArgs?.[1], "--version");
-  assert.equal(result.cliArgs?.[2], "plugins list --json");
+  assert.equal(result.cliArgs?.[2], "plugins list --enabled --json");
   assert.equal(result.profileIsIsolated, true);
   assert.equal(result.runtimeIdentityBound, true);
 });
@@ -273,7 +273,7 @@ async function runPreflightCase(version: string, inventory: unknown): Promise<Pr
         if (input.args.join(" ") === "--version") {
           return { exitCode: 0, stdout: process.env.TEST_VERSION, stderr: "" };
         }
-        if (input.args.join(" ") === "plugins list --json") {
+        if (input.args.join(" ") === "plugins list --enabled --json") {
           return { exitCode: 0, stdout: process.env.TEST_INVENTORY, stderr: "" };
         }
         return { exitCode: 1, stdout: "", stderr: "unexpected command" };

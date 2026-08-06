@@ -152,6 +152,69 @@ test("Guard OFF keeps the raw CLI session key and never activates a lease", asyn
   }
 });
 
+test("Guard OFF ignores an injected native event store even when JSONL contains a tool call", async () => {
+  const fixture = await createCompletingCliFixture("guard-off-store", {
+    toolCall: true,
+  });
+  const rawRunId = "run.guard-off.store";
+  let activationCount = 0;
+  let eventStoreQueryCount = 0;
+
+  try {
+    const adapter = new OpenClawAdapter({
+      cliPath: fixture.cliPath,
+      env: fixture.env,
+      nativeGuardRequired: false,
+      guardLease: {
+        async activate() {
+          activationCount += 1;
+          return { leaseId: "lease.unexpected", leaseEpoch: 1 };
+        },
+        async revoke() {},
+      },
+      nativeGuardEventStore: {
+        async listByRun() {
+          eventStoreQueryCount += 1;
+          return [];
+        },
+        async listRecordsByRun() {
+          eventStoreQueryCount += 1;
+          return [];
+        },
+        async listBySession() {
+          eventStoreQueryCount += 1;
+          return [];
+        },
+        async listRecordsBySession() {
+          eventStoreQueryCount += 1;
+          return [];
+        },
+      },
+    });
+    const session = await adapter.createSession(testAgent(), testAdapterConfig());
+    const result = await session.sendTask(
+      testTask("guard-off-store"),
+      undefined,
+      { runId: rawRunId, caseId: "case.guard-off-store", agentId: "agent.fixture" },
+    );
+    const evidence = await session.drainRuntimeEvidence?.();
+    const args = JSON.parse(await readFile(fixture.argsPath, "utf8")) as string[];
+    const sessionKeyIndex = args.indexOf("--session-key");
+
+    assert.equal(result.status, "completed");
+    assert.equal(result.runId, rawRunId);
+    assert.equal(args[sessionKeyIndex + 1], rawRunId);
+    assert.equal(activationCount, 0);
+    assert.equal(eventStoreQueryCount, 0);
+    assert.deepEqual(evidence, {
+      nativeGuardEvents: [],
+      supervisionRecords: [],
+    });
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("executes a controlled Windows cmd wrapper outside an npm layout without a shell", {
   skip: process.platform !== "win32",
 }, async () => {
@@ -299,7 +362,10 @@ async function createBlockingCliFixture(): Promise<{
   return { root, cliPath, pidPath };
 }
 
-async function createCompletingCliFixture(name: string): Promise<{
+async function createCompletingCliFixture(
+  name: string,
+  options: { toolCall?: boolean } = {},
+): Promise<{
   root: string;
   cliPath: string;
   argsPath: string;
@@ -311,10 +377,18 @@ async function createCompletingCliFixture(name: string): Promise<{
   const argsPath = path.join(root, "args.json");
   const cliPath = path.join(root, "cli.mjs");
   await mkdir(stateDir, { recursive: true });
+  const content = options.toolCall
+    ? [{
+        type: "toolCall",
+        id: "call.guard-off.1",
+        name: "read",
+        arguments: { path: "README.md" },
+      }]
+    : [{ type: "text", text: "done" }];
   await writeFile(sessionFile, `${JSON.stringify({
     type: "message",
     timestamp: "2026-08-07T00:00:00.000Z",
-    message: { role: "assistant", content: [{ type: "text", text: "done" }] },
+    message: { role: "assistant", content },
   })}\n`, "utf8");
   await writeFile(cliPath, [
     "import fs from 'node:fs';",

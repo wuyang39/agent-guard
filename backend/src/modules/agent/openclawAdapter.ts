@@ -304,7 +304,11 @@ export class OpenClawSession implements AgentSession {
       const endedAt = nowIso();
       // Coverage breach or mismatch: JSONL has tool calls the Hook
       // didn't see, or duplicate outcomes were detected.
-      if (result.reconciliation && !result.reconciliation.reconciled) {
+      if (
+        this.nativeGuardRequired &&
+        result.reconciliation &&
+        !result.reconciliation.reconciled
+      ) {
         const count = result.reconciliation.coverageBreachCount;
         this.lastReconciliation = result.reconciliation;
         const breachMsg = count > 0
@@ -369,6 +373,9 @@ export class OpenClawSession implements AgentSession {
     reconciliation?: { reconciled: boolean; coverageBreachCount: number };
     revokeError?: string;
   }> {
+    if (!this.nativeGuardRequired) {
+      return { nativeGuardEvents: [], supervisionRecords: [] };
+    }
     if (!this.nativeGuardEventStore || !this.lastRunMeta || !this.lastRuntimeSessionKey) {
       if (this.nativeGuardRequired) {
         throw new Error(

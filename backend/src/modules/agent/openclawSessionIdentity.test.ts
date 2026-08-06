@@ -22,9 +22,11 @@ test("rejects empty and clearly invalid OpenClaw session identities", () => {
     "",
     "   ",
     "../escape",
+    "run..escape",
     "run id",
     "agent::run.1",
     "agent:main:",
+    "agent:main:run..escape",
     "agent:main:bad\\path",
   ]) {
     assert.throws(

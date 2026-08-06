@@ -198,9 +198,9 @@ export async function runOpenClawSession(
   //    JSONL 仅用于交叉校验，不做事后 replay。
   // 4. Reconcile Hook events against JSONL tool calls regardless of
   //    whether Hook events exist — zero events with JSONL calls IS a
-  //    coverage breach (Guard OFF/empty while tools were executing).
+  //    coverage breach (Guard ON but the Hook was empty while tools executed).
   let reconciliation: OpenClawRunResult["reconciliation"];
-  if (options.nativeGuardEventStore) {
+  if (options.nativeGuardRequired && options.nativeGuardEventStore) {
     const nativeGuardEvents = await drainNativeGuardEvidence(
       options.nativeGuardEventStore,
       sessionKey,

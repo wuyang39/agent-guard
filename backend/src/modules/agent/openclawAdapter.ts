@@ -229,6 +229,11 @@ export class OpenClawSession implements AgentSession {
     bridge?: AgentMcpBridge,
     runMeta?: AgentRunMeta,
   ): Promise<AgentRunResult> {
+    this.lastRunMeta = undefined;
+    this.lastRuntimeSessionKey = undefined;
+    this.lastReconciliation = undefined;
+    this.lastRevokeError = undefined;
+
     const startedAt = nowIso();
     const runId = runMeta?.runId ?? "unknown";
     let runtimeSessionKey = runId;

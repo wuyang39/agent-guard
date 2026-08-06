@@ -116,6 +116,72 @@ test("Guard ON uses one canonical session for lease, CLI, and evidence while pre
   }
 });
 
+test("a reused guarded session does not drain state from a run before an activation failure", async () => {
+  const fixture = await createCompletingCliFixture("guard-on-reused");
+  let activationCount = 0;
+  let eventStoreQueryCount = 0;
+
+  try {
+    const adapter = new OpenClawAdapter({
+      cliPath: fixture.cliPath,
+      env: fixture.env,
+      nativeGuardRequired: true,
+      guardLease: {
+        async activate() {
+          activationCount += 1;
+          if (activationCount === 1) {
+            return { leaseId: "lease.first", leaseEpoch: 1 };
+          }
+          throw new Error("second activation failed");
+        },
+        async revoke() {
+          throw new Error("first revoke failed");
+        },
+      },
+      nativeGuardEventStore: {
+        async listByRun() {
+          throw new Error("legacy run-id event query must not be used");
+        },
+        async listRecordsByRun() {
+          throw new Error("legacy run-id record query must not be used");
+        },
+        async listBySession() {
+          eventStoreQueryCount += 1;
+          return [];
+        },
+        async listRecordsBySession() {
+          eventStoreQueryCount += 1;
+          return [];
+        },
+      },
+    });
+    const session = await adapter.createSession(testAgent(), testAdapterConfig());
+    const first = await session.sendTask(
+      testTask("guard-on-first"),
+      undefined,
+      { runId: "run.guard-on.first", caseId: "case.guard-on-first", agentId: "agent.fixture" },
+    );
+    const second = await session.sendTask(
+      testTask("guard-on-second"),
+      undefined,
+      { runId: "run.guard-on.second", caseId: "case.guard-on-second", agentId: "agent.fixture" },
+    );
+
+    assert.equal(first.status, "completed");
+    assert.equal(second.status, "failed");
+    assert.match(second.error ?? "", /second activation failed/);
+    assert.equal(eventStoreQueryCount, 1);
+    assert.ok(session.drainRuntimeEvidence);
+    await assert.rejects(
+      () => session.drainRuntimeEvidence!(),
+      /NATIVE_GUARD_EVIDENCE_UNAVAILABLE/,
+    );
+    assert.equal(eventStoreQueryCount, 1);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("Guard OFF keeps the raw CLI session key and never activates a lease", async () => {
   const fixture = await createCompletingCliFixture("guard-off");
   const rawRunId = "run.guard-off.raw";

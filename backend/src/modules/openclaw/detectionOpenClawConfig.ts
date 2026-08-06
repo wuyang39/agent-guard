@@ -31,8 +31,10 @@ export type DetectionOpenClawConfig = {
       };
       model?: unknown;
       provider?: unknown;
+      models?: unknown;
     };
   };
+  models?: { providers: unknown };
   tools: { elevated: { enabled: false } };
   plugins: {
     enabled: true;
@@ -71,11 +73,19 @@ export function scrubDetectionOpenClawConfig(input: unknown): Record<string, unk
   if (!isRecord(input)) return {};
   const inputAgents = readDataProperty(input, "agents");
   const inputDefaults = isRecord(inputAgents.value) ? readDataProperty(inputAgents.value, "defaults") : { present: false, value: undefined };
-  const source = isRecord(inputAgents.value) && isRecord(inputDefaults.value) ? inputDefaults.value : input;
+  const hasDefaults = isRecord(inputAgents.value) && isRecord(inputDefaults.value);
+  const source = hasDefaults ? inputDefaults.value as Record<string, unknown> : input;
   const output: Record<string, unknown> = {};
-  for (const key of ["model", "provider", "models", "providers"] as const) {
+  for (const key of ["model", "provider", "models"] as const) {
     const property = readDataProperty(source, key);
     if (property.present) output[key] = scrubValue(property.value, key, 0);
+  }
+  const topLevelModels = readDataProperty(input, "models");
+  const catalogProviders = hasDefaults && isRecord(topLevelModels.value)
+    ? readDataProperty(topLevelModels.value, "providers")
+    : readDataProperty(source, "providers");
+  if (catalogProviders.present) {
+    output.providers = scrubValue(catalogProviders.value, "providers", 0);
   }
   return output;
 }
@@ -92,18 +102,13 @@ export type GenerateDetectionConfigOptions = {
 export function generateDetectionOpenClawConfig(
   options: GenerateDetectionConfigOptions,
 ): DetectionOpenClawConfig {
-  const source = isRecord(options.userConfig) ? options.userConfig : {};
-  const sourceAgents = readDataProperty(source, "agents");
-  const sourceDefaults = isRecord(sourceAgents.value) ? readDataProperty(sourceAgents.value, "defaults") : { present: false, value: undefined };
-  const defaults = isRecord(sourceDefaults.value) ? sourceDefaults.value : {};
-  const modelRef = readDataProperty(defaults, "model");
-  const providerRef = readDataProperty(defaults, "provider");
-  const sourceModel = readDataProperty(source, "model");
-  const sourceProvider = readDataProperty(source, "provider");
-  const modelInput = options.model ?? (modelRef.present ? modelRef.value : sourceModel.value);
-  const providerInput = options.provider ?? (providerRef.present ? providerRef.value : sourceProvider.value);
+  const scrubbed = scrubDetectionOpenClawConfig(options.userConfig);
+  const modelInput = options.model ?? scrubbed.model;
+  const providerInput = options.provider ?? scrubbed.provider;
   const model = modelInput === undefined ? undefined : scrubValue(modelInput, "model", 0);
   const provider = providerInput === undefined ? undefined : scrubValue(providerInput, "provider", 0);
+  const models = scrubbed.models;
+  const providers = scrubbed.providers;
 
   const generated: DetectionOpenClawConfig = {
     gateway: { mode: "local" },
@@ -151,6 +156,8 @@ export function generateDetectionOpenClawConfig(
   };
   if (model !== undefined) generated.agents.defaults.model = model;
   if (provider !== undefined) generated.agents.defaults.provider = provider;
+  if (models !== undefined) generated.agents.defaults.models = models;
+  if (providers !== undefined) generated.models = { providers };
   return generated;
 }
 

@@ -102,6 +102,69 @@ test("does not copy user tools, plugins, binds, browser, or elevated settings", 
   assert.deepEqual(scrubDetectionOpenClawConfig({ tools: { elevated: { enabled: true } }, model: "openai:gpt" }), { model: "openai:gpt" });
 });
 
+test("preserves all four model allowlist keys at their real OpenClaw schema locations", () => {
+  const providers = {
+    deepseek: {
+      api: "openai-completions",
+      apiKey: { SecretRef: "env:DEEPSEEK_API_KEY" },
+      models: [{ id: "deepseek-v4-flash", name: "DeepSeek V4 Flash" }],
+    },
+  };
+  const config = generateDetectionOpenClawConfig({
+    ...detectionPaths(),
+    userConfig: {
+      model: { primary: "deepseek/deepseek-v4-flash" },
+      provider: "deepseek",
+      models: { "deepseek/deepseek-v4-flash": { alias: "DeepSeek" } },
+      providers,
+      tools: { elevated: { enabled: true } },
+      plugins: { entries: { arbitrary: { enabled: true } } },
+    },
+  });
+
+  assert.deepEqual(config.agents.defaults.model, { primary: "deepseek/deepseek-v4-flash" });
+  assert.equal(config.agents.defaults.provider, "deepseek");
+  assert.deepEqual(config.agents.defaults.models, {
+    "deepseek/deepseek-v4-flash": { alias: "DeepSeek" },
+  });
+  assert.deepEqual(config.models, { providers });
+  assert.deepEqual(config.tools, { elevated: { enabled: false } });
+  assert.deepEqual(Object.keys(config.plugins.entries), ["agent-guard-supervision"]);
+});
+
+test("scrubs the real top-level provider catalog and rejects its inline secrets", () => {
+  const scrubbed = scrubDetectionOpenClawConfig({
+    agents: {
+      defaults: {
+        model: { primary: "deepseek/deepseek-v4-flash" },
+        models: { "deepseek/deepseek-v4-flash": { alias: "DeepSeek" } },
+      },
+    },
+    models: {
+      providers: {
+        deepseek: {
+          apiKey: { SecretRef: "env:DEEPSEEK_API_KEY" },
+          models: [{ id: "deepseek-v4-flash" }],
+        },
+      },
+    },
+  });
+  assert.deepEqual(Object.keys(scrubbed).sort(), ["model", "models", "providers"]);
+  assert.deepEqual(scrubbed.providers, {
+    deepseek: {
+      apiKey: { SecretRef: "env:DEEPSEEK_API_KEY" },
+      models: [{ id: "deepseek-v4-flash" }],
+    },
+  });
+  assert.throws(
+    () => scrubDetectionOpenClawConfig({
+      agents: { defaults: { model: "deepseek/deepseek-v4-flash" } },
+      models: { providers: { deepseek: { apiKey: "inline-secret" } } },
+    }),
+    (error: unknown) => error instanceof DetectionConfigError && error.code === "INLINE_SECRET_UNSAFE",
+  );
+});
+
 test("profile seed rejects malformed last-known-good configuration", async (t) => {
   const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-config-seed-invalid-"));
   const configPath = path.join(stateDir, "openclaw.json");
@@ -144,3 +207,72 @@ test("profile seed rejects configuration without an explicit default model", asy
       /default model/i.test(error.message),
   );
 });
+
+test("profile seed rejects a last-known-good config outside the trusted OpenClaw state root", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-config-seed-outside-"));
+  const stateDir = path.join(root, "state");
+  const outsideDir = path.join(root, "outside");
+  const configPath = path.join(outsideDir, "openclaw.json");
+  await fs.mkdir(stateDir, { recursive: true });
+  await fs.mkdir(outsideDir, { recursive: true });
+  await fs.writeFile(`${configPath}.last-good`, JSON.stringify({
+    agents: { defaults: { model: { primary: "deepseek/deepseek-v4-flash" } } },
+  }));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+
+  await assert.rejects(
+    resolveDetectionProfileSeed({
+      env: {
+        OPENCLAW_CONFIG_PATH: configPath,
+        OPENCLAW_STATE_DIR: stateDir,
+      },
+    }),
+    (error: unknown) =>
+      error instanceof DetectionProfileSeedError &&
+      error.code === "MODEL_PROFILE_SEED_INVALID" &&
+      /trusted OpenClaw root/i.test(error.message),
+  );
+});
+
+test("profile seed rejects a junction in the last-known-good config ancestry", async (t) => {
+  const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-config-seed-symlink-"));
+  const outsideDir = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-config-seed-symlink-target-"));
+  const configDir = path.join(stateDir, "config");
+  const configPath = path.join(configDir, "openclaw.json");
+  await fs.writeFile(path.join(outsideDir, "openclaw.json.last-good"), JSON.stringify({
+    agents: { defaults: { model: { primary: "deepseek/deepseek-v4-flash" } } },
+  }));
+  try {
+    await fs.symlink(outsideDir, configDir, "junction");
+  } catch (error) {
+    if (isSymlinkPrivilegeError(error)) {
+      await fs.rm(stateDir, { recursive: true, force: true });
+      await fs.rm(outsideDir, { recursive: true, force: true });
+      t.skip("Junction creation requires additional privileges on this host");
+      return;
+    }
+    throw error;
+  }
+  t.after(async () => {
+    await fs.rm(stateDir, { recursive: true, force: true });
+    await fs.rm(outsideDir, { recursive: true, force: true });
+  });
+
+  await assert.rejects(
+    resolveDetectionProfileSeed({
+      env: {
+        OPENCLAW_CONFIG_PATH: configPath,
+        OPENCLAW_STATE_DIR: stateDir,
+      },
+    }),
+    (error: unknown) =>
+      error instanceof DetectionProfileSeedError &&
+      error.code === "MODEL_PROFILE_SEED_INVALID" &&
+      /symbolic link/i.test(error.message),
+  );
+});
+
+function isSymlinkPrivilegeError(error: unknown): boolean {
+  return error instanceof Error && "code" in error &&
+    ((error as NodeJS.ErrnoException).code === "EPERM" || (error as NodeJS.ErrnoException).code === "EACCES");
+}

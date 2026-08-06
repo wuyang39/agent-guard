@@ -1,3 +1,4 @@
+import { constants as fsConstants, type Stats } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -41,11 +42,31 @@ export async function resolveDetectionProfileSeed(
     ? resolveProfilePath(env.OPENCLAW_CONFIG_PATH, homeDir)
     : path.join(stateDir, "openclaw.json");
   const lastGoodPath = `${configPath}.last-good`;
+  const canonicalStateRoot = await assertTrustedDirectory(stateDir, "OpenClaw state root");
+  let trustedConfigRoot = canonicalStateRoot;
+  if (!isPathInsideDirectory(lastGoodPath, stateDir)) {
+    const configuredHome = env.OPENCLAW_HOME?.trim();
+    if (!configuredHome) {
+      throw new DetectionProfileSeedError(
+        "MODEL_PROFILE_SEED_INVALID",
+        `Detection last-known-good model configuration is outside the trusted OpenClaw root: ${lastGoodPath}.`,
+      );
+    }
+    const openClawRoot = resolveProfilePath(configuredHome, homeDir);
+    if (!isPathInsideDirectory(stateDir, openClawRoot) || !isPathInsideDirectory(lastGoodPath, openClawRoot)) {
+      throw new DetectionProfileSeedError(
+        "MODEL_PROFILE_SEED_INVALID",
+        `Detection last-known-good model configuration is outside the trusted OpenClaw root: ${lastGoodPath}.`,
+      );
+    }
+    trustedConfigRoot = await assertTrustedDirectory(openClawRoot, "OpenClaw root");
+  }
 
   let raw: string;
   try {
-    raw = await fs.readFile(lastGoodPath, "utf8");
-  } catch {
+    raw = (await readStableTrustedFile(lastGoodPath, trustedConfigRoot)).toString("utf8");
+  } catch (error) {
+    if (error instanceof DetectionProfileSeedError) throw error;
     throw new DetectionProfileSeedError(
       "MODEL_PROFILE_SEED_MISSING",
       `Detection last-known-good model configuration is unavailable at ${lastGoodPath}. Start OpenClaw with a valid model/provider configuration before running detection.`,
@@ -102,4 +123,116 @@ function resolveProfilePath(input: string, homeDir: string): string {
     ? `${homeDir}${trimmed.slice(1)}`
     : trimmed;
   return path.resolve(expanded);
+}
+
+async function assertTrustedDirectory(target: string, label: string): Promise<string> {
+  const resolved = path.resolve(target);
+  try {
+    await assertNoSymlinkPath(resolved);
+    const stat = await fs.lstat(resolved);
+    if (!stat.isDirectory()) {
+      throw new DetectionProfileSeedError(
+        "MODEL_PROFILE_SEED_INVALID",
+        `Detection ${label} is not a regular directory: ${resolved}.`,
+      );
+    }
+    return await fs.realpath(resolved);
+  } catch (error) {
+    if (error instanceof DetectionProfileSeedError) throw error;
+    throw new DetectionProfileSeedError(
+      "MODEL_PROFILE_SEED_INVALID",
+      `Detection ${label} is unavailable or invalid: ${resolved}.`,
+    );
+  }
+}
+
+async function readStableTrustedFile(filePath: string, trustedRoot: string): Promise<Buffer> {
+  const resolved = path.resolve(filePath);
+  await assertNoSymlinkPath(resolved);
+  const canonical = await fs.realpath(resolved);
+  if (!isPathInsideDirectory(canonical, trustedRoot)) {
+    throw new DetectionProfileSeedError(
+      "MODEL_PROFILE_SEED_INVALID",
+      `Detection model configuration is outside the trusted OpenClaw root: ${resolved}.`,
+    );
+  }
+
+  const preOpenStat = await fs.lstat(resolved);
+  if (!preOpenStat.isFile() || preOpenStat.isSymbolicLink()) {
+    throw new DetectionProfileSeedError(
+      "MODEL_PROFILE_SEED_INVALID",
+      `Detection model configuration is not a regular file: ${resolved}.`,
+    );
+  }
+  const handle = await fs.open(resolved, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+  try {
+    const openedStat = await handle.stat();
+    const postOpenStat = await fs.lstat(resolved);
+    if (
+      !openedStat.isFile() ||
+      postOpenStat.isSymbolicLink() ||
+      !sameFileSnapshot(preOpenStat, openedStat) ||
+      !sameFileSnapshot(openedStat, postOpenStat)
+    ) {
+      throw new DetectionProfileSeedError(
+        "MODEL_PROFILE_SEED_INVALID",
+        `Detection model configuration changed during validation: ${resolved}.`,
+      );
+    }
+    const content = await handle.readFile();
+    const postReadHandleStat = await handle.stat();
+    const postReadPathStat = await fs.lstat(resolved);
+    const postReadCanonical = await fs.realpath(resolved);
+    if (
+      postReadPathStat.isSymbolicLink() ||
+      !sameFileSnapshot(openedStat, postReadHandleStat) ||
+      !sameFileSnapshot(postReadHandleStat, postReadPathStat) ||
+      !sameHostPath(canonical, postReadCanonical) ||
+      !isPathInsideDirectory(postReadCanonical, trustedRoot)
+    ) {
+      throw new DetectionProfileSeedError(
+        "MODEL_PROFILE_SEED_INVALID",
+        `Detection model configuration changed while it was read: ${resolved}.`,
+      );
+    }
+    return content;
+  } finally {
+    await handle.close();
+  }
+}
+
+async function assertNoSymlinkPath(target: string): Promise<void> {
+  const resolved = path.resolve(target);
+  const root = path.parse(resolved).root;
+  let current = root;
+  for (const segment of resolved.slice(root.length).split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment);
+    const stat = await fs.lstat(current);
+    if (stat.isSymbolicLink()) {
+      throw new DetectionProfileSeedError(
+        "MODEL_PROFILE_SEED_INVALID",
+        `Detection profile seed path contains a symbolic link or junction: ${current}.`,
+      );
+    }
+  }
+}
+
+function sameFileSnapshot(left: Stats, right: Stats): boolean {
+  const sameIdentity = left.dev !== 0 || left.ino !== 0 || right.dev !== 0 || right.ino !== 0
+    ? left.dev === right.dev && left.ino === right.ino
+    : left.birthtimeMs === right.birthtimeMs;
+  return sameIdentity && left.size === right.size && left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs;
+}
+
+function isPathInsideDirectory(candidate: string, root: string): boolean {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  return relative.length > 0 && relative !== ".." && !path.isAbsolute(relative) && !relative.startsWith(`..${path.sep}`);
+}
+
+function sameHostPath(left: string, right: string): boolean {
+  const normalize = (value: string): string => {
+    const resolved = path.normalize(path.resolve(value));
+    return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  };
+  return normalize(left) === normalize(right);
 }

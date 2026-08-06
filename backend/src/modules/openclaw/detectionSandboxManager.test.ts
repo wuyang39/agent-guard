@@ -222,7 +222,13 @@ test("profile seed snapshots only allowlisted main-agent model state files", asy
   const sourceAgentDir = path.join(sourceRoot, "agents", "main", "agent");
   await fs.mkdir(path.join(sourceAgentDir, "plugins"), { recursive: true });
   const sourceFiles = new Map<string, string | Buffer>([
-    ["models.json", JSON.stringify({ providers: { deepseek: { models: [] } } })],
+    ["models.json", JSON.stringify({
+      providers: {
+        deepseek: {
+          models: [{ id: "deepseek-v4-flash", name: "DeepSeek V4 Flash" }],
+        },
+      },
+    })],
     ["openclaw-agent.sqlite", Buffer.from("SQLite format 3\0seed")],
     ["openclaw-agent.sqlite-wal", "wal-state"],
     ["auth-profiles.json", "must-not-copy"],
@@ -239,7 +245,17 @@ test("profile seed snapshots only allowlisted main-agent model state files", asy
     image: `openclaw@sha256:${"a".repeat(64)}`,
     commandRunner: runner,
     profileSeed: {
-      userConfig: { model: { primary: "deepseek/deepseek-v4-flash" } },
+      userConfig: {
+        model: { primary: "deepseek/deepseek-v4-flash" },
+        provider: "deepseek",
+        models: { "deepseek/deepseek-v4-flash": { alias: "DeepSeek" } },
+        providers: {
+          deepseek: {
+            apiKey: { SecretRef: "env:DEEPSEEK_API_KEY" },
+            models: [{ id: "deepseek-v4-flash" }],
+          },
+        },
+      },
       agentStateDir: sourceAgentDir,
     },
   });
@@ -254,6 +270,21 @@ test("profile seed snapshots only allowlisted main-agent model state files", asy
   ]);
   assert.equal(await fs.readFile(path.join(isolatedAgentDir, "models.json"), "utf8"), sourceFiles.get("models.json"));
   assert.equal(await fs.readFile(path.join(sourceAgentDir, "auth-profiles.json"), "utf8"), "must-not-copy");
+  const isolatedConfig = JSON.parse(await fs.readFile(evidence.configPath, "utf8")) as {
+    agents?: { defaults?: Record<string, unknown> };
+    models?: unknown;
+  };
+  assert.deepEqual(isolatedConfig.agents?.defaults?.models, {
+    "deepseek/deepseek-v4-flash": { alias: "DeepSeek" },
+  });
+  assert.deepEqual(isolatedConfig.models, {
+    providers: {
+      deepseek: {
+        apiKey: { SecretRef: "env:DEEPSEEK_API_KEY" },
+        models: [{ id: "deepseek-v4-flash" }],
+      },
+    },
+  });
 });
 
 test("profile seed fails preflight before capability probing when required model state is missing", async (t) => {
@@ -283,6 +314,76 @@ test("profile seed fails preflight before capability probing when required model
       error instanceof SandboxPreflightError &&
       error.code === "MODEL_PROFILE_SEED_INVALID" &&
       /openclaw-agent\.sqlite/.test(error.message),
+  );
+  assert.equal(capabilityProbed, false);
+});
+
+test("profile seed rejects a default model whose provider is absent from models.json", async (t) => {
+  const sourceAgentDir = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-model-state-provider-missing-"));
+  await fs.writeFile(
+    path.join(sourceAgentDir, "models.json"),
+    JSON.stringify({ providers: { deepseek: { models: [{ id: "deepseek-v4-flash" }] } } }),
+  );
+  await fs.writeFile(path.join(sourceAgentDir, "openclaw-agent.sqlite"), Buffer.from("SQLite format 3\0seed"));
+  t.after(() => fs.rm(sourceAgentDir, { recursive: true, force: true }));
+
+  const { runner } = runnerFor();
+  let capabilityProbed = false;
+  const manager = new DetectionSandboxManager({
+    runGroupId: "run-profile-seed-provider-missing",
+    image: `openclaw@sha256:${"a".repeat(64)}`,
+    commandRunner: runner,
+    capabilityProbe: async () => {
+      capabilityProbed = true;
+      return readyCapability();
+    },
+    profileSeed: {
+      userConfig: { model: { primary: "openai/gpt-5.5" } },
+      agentStateDir: sourceAgentDir,
+    },
+  });
+
+  await assert.rejects(
+    manager.preflight(),
+    (error: unknown) =>
+      error instanceof SandboxPreflightError &&
+      error.code === "MODEL_PROFILE_SEED_INVALID" &&
+      /provider openai/i.test(error.message),
+  );
+  assert.equal(capabilityProbed, false);
+});
+
+test("profile seed rejects a default model absent from its models.json provider catalog", async (t) => {
+  const sourceAgentDir = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-model-state-model-missing-"));
+  await fs.writeFile(
+    path.join(sourceAgentDir, "models.json"),
+    JSON.stringify({ providers: { deepseek: { models: [{ id: "deepseek-chat" }] } } }),
+  );
+  await fs.writeFile(path.join(sourceAgentDir, "openclaw-agent.sqlite"), Buffer.from("SQLite format 3\0seed"));
+  t.after(() => fs.rm(sourceAgentDir, { recursive: true, force: true }));
+
+  const { runner } = runnerFor();
+  let capabilityProbed = false;
+  const manager = new DetectionSandboxManager({
+    runGroupId: "run-profile-seed-model-missing",
+    image: `openclaw@sha256:${"a".repeat(64)}`,
+    commandRunner: runner,
+    capabilityProbe: async () => {
+      capabilityProbed = true;
+      return readyCapability();
+    },
+    profileSeed: {
+      userConfig: { model: { primary: "deepseek/deepseek-v4-flash" } },
+      agentStateDir: sourceAgentDir,
+    },
+  });
+
+  await assert.rejects(
+    manager.preflight(),
+    (error: unknown) =>
+      error instanceof SandboxPreflightError &&
+      error.code === "MODEL_PROFILE_SEED_INVALID" &&
+      /model deepseek-v4-flash/i.test(error.message),
   );
   assert.equal(capabilityProbed, false);
 });
@@ -323,7 +424,7 @@ test("profile seed rejects an invalid main-agent SQLite database before capabili
   const sourceAgentDir = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-model-state-invalid-db-"));
   await fs.writeFile(
     path.join(sourceAgentDir, "models.json"),
-    JSON.stringify({ providers: { deepseek: { models: [] } } }),
+    JSON.stringify({ providers: { deepseek: { models: [{ id: "deepseek-v4-flash" }] } } }),
   );
   await fs.writeFile(path.join(sourceAgentDir, "openclaw-agent.sqlite"), "not-sqlite", "utf8");
   t.after(() => fs.rm(sourceAgentDir, { recursive: true, force: true }));
@@ -350,6 +451,60 @@ test("profile seed rejects an invalid main-agent SQLite database before capabili
       error instanceof SandboxPreflightError &&
       error.code === "MODEL_PROFILE_SEED_INVALID" &&
       /SQLite database/i.test(error.message),
+  );
+  assert.equal(capabilityProbed, false);
+});
+
+test("profile seed rejects a junction in the main-agent state ancestry", async (t) => {
+  const trustedRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-model-state-junction-"));
+  const outsideRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-model-state-junction-target-"));
+  const outsideAgentDir = path.join(outsideRoot, "main", "agent");
+  await fs.mkdir(outsideAgentDir, { recursive: true });
+  await fs.writeFile(
+    path.join(outsideAgentDir, "models.json"),
+    JSON.stringify({ providers: { deepseek: { models: [{ id: "deepseek-v4-flash" }] } } }),
+  );
+  await fs.writeFile(path.join(outsideAgentDir, "openclaw-agent.sqlite"), Buffer.from("SQLite format 3\0seed"));
+  const junctionPath = path.join(trustedRoot, "agents");
+  try {
+    await fs.symlink(outsideRoot, junctionPath, "junction");
+  } catch (error) {
+    await fs.rm(trustedRoot, { recursive: true, force: true });
+    await fs.rm(outsideRoot, { recursive: true, force: true });
+    if (error instanceof Error && "code" in error &&
+      ((error as NodeJS.ErrnoException).code === "EPERM" || (error as NodeJS.ErrnoException).code === "EACCES")) {
+      t.skip("Junction creation requires additional privileges on this host");
+      return;
+    }
+    throw error;
+  }
+  t.after(async () => {
+    await fs.rm(trustedRoot, { recursive: true, force: true });
+    await fs.rm(outsideRoot, { recursive: true, force: true });
+  });
+
+  const { runner } = runnerFor();
+  let capabilityProbed = false;
+  const manager = new DetectionSandboxManager({
+    runGroupId: "run-profile-seed-junction",
+    image: `openclaw@sha256:${"a".repeat(64)}`,
+    commandRunner: runner,
+    capabilityProbe: async () => {
+      capabilityProbed = true;
+      return readyCapability();
+    },
+    profileSeed: {
+      userConfig: { model: { primary: "deepseek/deepseek-v4-flash" } },
+      agentStateDir: path.join(junctionPath, "main", "agent"),
+    },
+  });
+
+  await assert.rejects(
+    manager.preflight(),
+    (error: unknown) =>
+      error instanceof SandboxPreflightError &&
+      error.code === "MODEL_PROFILE_SEED_INVALID" &&
+      /symbolic link|junction/i.test(error.message),
   );
   assert.equal(capabilityProbed, false);
 });

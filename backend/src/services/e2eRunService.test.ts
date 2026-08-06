@@ -138,6 +138,13 @@ test("formal OpenClaw runE2E resolves a scrubbed host profile seed for the sandb
         models: { "deepseek/deepseek-v4-flash": { alias: "DeepSeek" } },
       },
     },
+    models: {
+      providers: {
+        deepseek: {
+          models: [{ id: "deepseek-v4-flash" }],
+        },
+      },
+    },
     tools: { elevated: { enabled: true } },
     plugins: { entries: { arbitrary: { enabled: true } } },
   }));
@@ -182,6 +189,11 @@ test("formal OpenClaw runE2E resolves a scrubbed host profile seed for the sandb
     userConfig: {
       model: { primary: "deepseek/deepseek-v4-flash" },
       models: { "deepseek/deepseek-v4-flash": { alias: "DeepSeek" } },
+      providers: {
+        deepseek: {
+          models: [{ id: "deepseek-v4-flash" }],
+        },
+      },
     },
     agentStateDir,
   });
@@ -190,12 +202,14 @@ test("formal OpenClaw runE2E resolves a scrubbed host profile seed for the sandb
 
 test("formal OpenClaw runE2E fails before manager construction when the host seed is missing", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-e2e-missing-seed-"));
+  const stateDir = path.join(root, "state");
+  await fs.mkdir(stateDir, { recursive: true });
   const previousImage = process.env.AGENT_GUARD_DETECTION_IMAGE;
   const previousConfigPath = process.env.OPENCLAW_CONFIG_PATH;
   const previousStateDir = process.env.OPENCLAW_STATE_DIR;
   process.env.AGENT_GUARD_DETECTION_IMAGE = `openclaw@sha256:${"a".repeat(64)}`;
-  process.env.OPENCLAW_CONFIG_PATH = path.join(root, "missing.json");
-  process.env.OPENCLAW_STATE_DIR = path.join(root, "state");
+  process.env.OPENCLAW_CONFIG_PATH = path.join(stateDir, "missing.json");
+  process.env.OPENCLAW_STATE_DIR = stateDir;
   t.after(async () => {
     restoreEnv("AGENT_GUARD_DETECTION_IMAGE", previousImage);
     restoreEnv("OPENCLAW_CONFIG_PATH", previousConfigPath);

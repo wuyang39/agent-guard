@@ -1708,8 +1708,20 @@ test("accepts the two read-only OpenClaw profile bind mounts during container at
   }
 });
 
-test("rejects writable, extra, or outside OpenClaw profile bind mounts", async (t) => {
+test("rejects missing, writable, extra, or escaped OpenClaw profile bind mounts", async (t) => {
   const cases = [
+    {
+      name: "missing HostConfig binds",
+      mutate(record: ReturnType<typeof realAgentContainerInspect>) {
+        delete (record.HostConfig as Record<string, unknown>).Binds;
+      },
+    },
+    {
+      name: "null HostConfig binds",
+      mutate(record: ReturnType<typeof realAgentContainerInspect>) {
+        (record.HostConfig as Record<string, unknown>).Binds = null;
+      },
+    },
     {
       name: "writable workspace bind",
       mutate(record: ReturnType<typeof realAgentContainerInspect>) {
@@ -1733,7 +1745,17 @@ test("rejects writable, extra, or outside OpenClaw profile bind mounts", async (
     {
       name: "workspace source outside the profile sandbox root",
       mutate(record: ReturnType<typeof realAgentContainerInspect>) {
-        record.Mounts[0].Source = path.resolve(record.Mounts[0].Source, "..", "..", "outside");
+        const outsideSource = path.resolve(record.Mounts[0].Source, "..", "..", "outside");
+        record.Mounts[0].Source = outsideSource;
+        record.HostConfig.Binds[0] = `${outsideSource}:/workspace:ro,z`;
+      },
+    },
+    {
+      name: "workspace source is nested below the session root",
+      mutate(record: ReturnType<typeof realAgentContainerInspect>) {
+        const nestedSource = path.join(record.Mounts[0].Source, "nested");
+        record.Mounts[0].Source = nestedSource;
+        record.HostConfig.Binds[0] = `${nestedSource}:/workspace:ro,z`;
       },
     },
   ];

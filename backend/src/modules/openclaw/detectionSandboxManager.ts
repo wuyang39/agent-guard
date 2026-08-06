@@ -886,7 +886,6 @@ export class DetectionSandboxManager {
     ) {
       return false;
     }
-    if (host.Binds === undefined || host.Binds === null) return true;
     if (!Array.isArray(host.Binds) || host.Binds.length !== mounts.length) return false;
     const structuredSources = new Map([
       ["/workspace", workspaceMount.Source],

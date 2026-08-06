@@ -179,6 +179,10 @@ test("same decisionId with conflicting tool-call identity is a mismatch", async 
 
       assert.equal(result.reconciliation.reconciled, false);
       assert.equal(result.reconciliation.mismatchCount, 1);
+      assert.equal(result.reconciliation.coverageBreachCount, 0);
+      assert.ok(result.reconciliation.issues.every((issue) =>
+        issue.kind !== "coverage_breach"
+      ));
       assert.equal(result.reconciliation.projected.tool_call, 1);
       assert.ok(result.reconciliation.issues.some((issue) =>
         issue.kind === "duplicate_decision"

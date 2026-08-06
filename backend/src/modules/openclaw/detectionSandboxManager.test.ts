@@ -181,12 +181,24 @@ test("reads one exact Ed25519 bootstrap record from the dedicated pipe", async (
   const parsed = await readGatewayBootstrap(Readable.from([`${record}\n`]), {
     signal: new AbortController().signal,
     childExit: new Promise<void>(() => undefined),
-    timeoutMs: 50,
+    timeoutMs: 30_000,
   });
 
   assert.equal(
     parsed.export({ format: "der", type: "spki" }).toString("base64"),
     encoded,
+  );
+});
+
+test("rejects Gateway bootstrap deadlines above the bounded maximum", async () => {
+  await assert.rejects(
+    () =>
+      readGatewayBootstrap(Readable.from([]), {
+        signal: new AbortController().signal,
+        childExit: new Promise<void>(() => undefined),
+        timeoutMs: 60_001,
+      }),
+    TypeError,
   );
 });
 

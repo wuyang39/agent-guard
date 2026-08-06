@@ -204,6 +204,31 @@ test("times out a stalled response stream", async () => {
   );
 });
 
+test("keeps capability CLI and HTTP control timeout budgets independent", async () => {
+  const cliTimeouts: number[] = [];
+  const client = createOpenClawControlClient({
+    gatewayToken: TOKEN,
+    timeoutMs: 5,
+    capabilityTimeoutMs: 30_000,
+    commandRunner: async (input) => {
+      cliTimeouts.push(input.timeoutMs);
+      return cliTimeouts.length === 1
+        ? result("2026.7.2")
+        : result(JSON.stringify([agentGuardPlugin()]));
+    },
+    fetch: async (_input, init) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+    }),
+  });
+
+  await client.inspectCapabilities({ isolatedProfile: true });
+  assert.deepEqual(cliTimeouts, [30_000, 30_000]);
+  await assert.rejects(
+    () => client.status("http://localhost"),
+    hasCode("OPENCLAW_CONTROL_TIMEOUT"),
+  );
+});
+
 test("does not accept a new version without the enabled Trusted Tool Policy contract", async () => {
   const runner = commandRunner([
     result("OpenClaw 2026.7.2\n"),

@@ -21,6 +21,7 @@ import { openClawRealtimeMcpRoutes } from "./api/v1/openclaw/realtime-mcp-handle
 import { runtimeConfigRoutes } from "./api/v1/runtime-config/handlers";
 import { openClawPyritOpenAiRoutes } from "./api/v1/openclaw/pyrit-openai-handlers";
 import { createOpenClawControlClient } from "./modules/openclaw/openclawControlClient";
+import { DETECTION_SANDBOX_COMMAND_TIMEOUT_MS } from "./modules/openclaw/detectionSandboxManager";
 import { createNativeGuardLeaseService } from "./modules/openclaw/nativeGuardLeaseService";
 import { createNativeGuardEventStore } from "./storage/nativeGuardEventStore";
 import type { NativeGuardEventStore } from "./storage/nativeGuardEventStore";
@@ -53,6 +54,7 @@ export function createSandboxCoordinatorFactory(
   return (input) => {
     const sandboxControlClient = createOpenClawControlClient({
       gatewayToken: input.gatewayToken,
+      capabilityTimeoutMs: DETECTION_SANDBOX_COMMAND_TIMEOUT_MS,
     });
     return {
       activate: async (actInput) => {

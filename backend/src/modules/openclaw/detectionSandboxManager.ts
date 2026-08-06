@@ -16,7 +16,7 @@ import {
 
 const RUN_LABEL_KEY = "agent-guard.run-group";
 const RUN_ROLE_LABEL_KEY = "agent-guard.role";
-const COMMAND_TIMEOUT_MS = 30_000;
+export const DETECTION_SANDBOX_COMMAND_TIMEOUT_MS = 30_000;
 const MAX_COMMAND_OUTPUT_BYTES = 256 * 1024;
 const MAX_GATEWAY_BOOTSTRAP_BYTES = 8 * 1024;
 const GATEWAY_BOOTSTRAP_TIMEOUT_MS = 60_000;
@@ -659,7 +659,7 @@ export class DetectionSandboxManager {
     }
     const client = createOpenClawControlClient({
       gatewayToken: "detection-capability-probe",
-      timeoutMs: COMMAND_TIMEOUT_MS,
+      timeoutMs: DETECTION_SANDBOX_COMMAND_TIMEOUT_MS,
       commandRunner: async (input) => this.run({
         command: input.command,
         args: input.args,
@@ -969,7 +969,13 @@ export class DetectionSandboxManager {
 
   private async command(command: string, args: string[], env?: NodeJS.ProcessEnv): Promise<DetectionCommandResult> {
     this.throwIfAborted();
-    const result = await this.run({ command, args, env, signal: this.signal, timeoutMs: COMMAND_TIMEOUT_MS });
+    const result = await this.run({
+      command,
+      args,
+      env,
+      signal: this.signal,
+      timeoutMs: DETECTION_SANDBOX_COMMAND_TIMEOUT_MS,
+    });
     this.throwIfAborted();
     if (Buffer.byteLength(result.stdout, "utf8") > MAX_COMMAND_OUTPUT_BYTES || Buffer.byteLength(result.stderr, "utf8") > MAX_COMMAND_OUTPUT_BYTES) {
       throw new SandboxPreflightError("COMMAND_OUTPUT_TOO_LARGE", "Detection command output exceeded the size limit.");
@@ -978,7 +984,12 @@ export class DetectionSandboxManager {
   }
 
   private async cleanupCommand(command: string, args: string[]): Promise<DetectionCommandResult> {
-    const result = await this.run({ command, args, signal: undefined, timeoutMs: COMMAND_TIMEOUT_MS });
+    const result = await this.run({
+      command,
+      args,
+      signal: undefined,
+      timeoutMs: DETECTION_SANDBOX_COMMAND_TIMEOUT_MS,
+    });
     if (Buffer.byteLength(result.stdout, "utf8") > MAX_COMMAND_OUTPUT_BYTES || Buffer.byteLength(result.stderr, "utf8") > MAX_COMMAND_OUTPUT_BYTES) {
       throw new Error("Detection cleanup command output exceeded the size limit.");
     }
@@ -1692,7 +1703,10 @@ async function runCommand(input: DetectionCommandInput): Promise<DetectionComman
     let settled = false;
     const finish = (result: DetectionCommandResult): void => { if (!settled) { settled = true; cleanup(); resolve(result); } };
     const fail = (error: Error): void => { if (!settled) { settled = true; cleanup(); reject(error); } };
-    const timer = setTimeout(() => { child.kill(); fail(new Error("Detection command timed out.")); }, input.timeoutMs ?? COMMAND_TIMEOUT_MS);
+    const timer = setTimeout(
+      () => { child.kill(); fail(new Error("Detection command timed out.")); },
+      input.timeoutMs ?? DETECTION_SANDBOX_COMMAND_TIMEOUT_MS,
+    );
     const abort = (): void => { child.kill(); fail(new Error("Detection command aborted.")); };
     const cleanup = (): void => { clearTimeout(timer); input.signal?.removeEventListener("abort", abort); };
     input.signal?.addEventListener("abort", abort, { once: true });

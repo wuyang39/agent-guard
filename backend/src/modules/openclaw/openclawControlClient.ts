@@ -101,6 +101,7 @@ export type OpenClawControlClientOptions = {
   env?: Record<string, string | undefined>;
   fetch?: typeof globalThis.fetch;
   timeoutMs?: number;
+  capabilityTimeoutMs?: number;
   commandRunner?: OpenClawCommandRunner;
 };
 
@@ -119,6 +120,10 @@ export function createOpenClawControlClient(
 ): OpenClawControlClient {
   const fetchImpl = options.fetch ?? globalThis.fetch;
   const timeoutMs = positiveInteger(options.timeoutMs ?? DEFAULT_TIMEOUT_MS, "timeoutMs");
+  const capabilityTimeoutMs = positiveInteger(
+    options.capabilityTimeoutMs ?? timeoutMs,
+    "capabilityTimeoutMs",
+  );
   const commandRunner = options.commandRunner ?? runCommand;
 
   async function request(
@@ -203,7 +208,7 @@ export function createOpenClawControlClient(
         cli,
         ["--version"],
         env,
-        timeoutMs,
+        capabilityTimeoutMs,
         input.signal,
       );
       const pluginResult = await executeCli(
@@ -211,7 +216,7 @@ export function createOpenClawControlClient(
         cli,
         ["plugins", "list", "--enabled", "--json"],
         env,
-        timeoutMs,
+        capabilityTimeoutMs,
         input.signal,
       );
       const openclawVersion = parseVersion(versionResult.stdout);

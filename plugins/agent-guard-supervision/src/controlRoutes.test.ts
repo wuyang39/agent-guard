@@ -191,6 +191,10 @@ function createHost(options: {
   pluginConfig?: Record<string, unknown>;
   getSessionEntry?: SessionResolver;
   registrationResult?: (contribution: string) => true | false | undefined;
+  nativeGuard?: {
+    postApprovalLeaseRecheck: boolean;
+    paramsProvenance: "json-only";
+  };
 } = {}): {
   routes: Route[];
   hooks: HookRegistration[];
@@ -252,6 +256,7 @@ function createHost(options: {
         return options.registrationResult?.(contribution);
       },
       runtime: {
+        ...(options.nativeGuard === undefined ? {} : { nativeGuard: options.nativeGuard }),
         agent: {
           session: {
             getSessionEntry: sessionResolver,
@@ -2154,6 +2159,61 @@ test("future true registrars remain conditional without trusted approval recheck
     (response.body as { reasonCode?: string }).reasonCode,
     "NATIVE_APPROVAL_UNATTESTED",
   );
+  assert.equal((await runtime.lookup("agent:guard:run.1")).state, "active");
+});
+
+test("future true registrars remain conditional with false approval recheck attestation", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "agent-guard-false-attestation-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const host = createHost({
+    pluginConfig: { markerDir: join(parent, "markers") },
+    registrationResult: () => true,
+    nativeGuard: {
+      postApprovalLeaseRecheck: false,
+      paramsProvenance: "json-only",
+    },
+  });
+
+  const runtime = registerAgentGuardPlugin(host.api);
+  await host.services[0].start({});
+  const activate = host.routes.find((route) => route.path.endsWith("/activate"));
+  assert.ok(activate);
+
+  const response = await invoke(activate, { body: liveActivation() });
+
+  assert.deepEqual(host.registrations, EXPECTED_REGISTRATIONS);
+  assert.equal(response.statusCode, 200);
+  assert.equal((response.body as { coverage: string }).coverage, "conditional");
+  assert.equal(
+    (response.body as { reasonCode?: string }).reasonCode,
+    "NATIVE_APPROVAL_UNATTESTED",
+  );
+  assert.equal((await runtime.lookup("agent:guard:run.1")).state, "active");
+});
+
+test("future true registrars become active with trusted approval recheck attestation", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "agent-guard-attested-registration-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const host = createHost({
+    pluginConfig: { markerDir: join(parent, "markers") },
+    registrationResult: () => true,
+    nativeGuard: {
+      postApprovalLeaseRecheck: true,
+      paramsProvenance: "json-only",
+    },
+  });
+
+  const runtime = registerAgentGuardPlugin(host.api);
+  await host.services[0].start({});
+  const activate = host.routes.find((route) => route.path.endsWith("/activate"));
+  assert.ok(activate);
+
+  const response = await invoke(activate, { body: liveActivation() });
+
+  assert.deepEqual(host.registrations, EXPECTED_REGISTRATIONS);
+  assert.equal(response.statusCode, 200);
+  assert.equal((response.body as { coverage: string }).coverage, "active");
+  assert.equal((response.body as { reasonCode?: string }).reasonCode, undefined);
   assert.equal((await runtime.lookup("agent:guard:run.1")).state, "active");
 });
 

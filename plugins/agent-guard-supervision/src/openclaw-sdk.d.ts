@@ -160,6 +160,10 @@ declare module "openclaw/plugin-sdk/plugin-entry" {
   };
 
   export type PluginRuntime = {
+    readonly nativeGuard?: Readonly<{
+      postApprovalLeaseRecheck: true;
+      paramsProvenance: "json-only";
+    }>;
     agent: {
       session: {
         getSessionEntry(params: SessionStoreReadParams): SessionEntry | undefined;

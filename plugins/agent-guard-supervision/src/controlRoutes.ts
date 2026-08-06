@@ -70,6 +70,9 @@ export function registerAgentGuardPlugin(
   const runtime = new AgentGuardRuntime({
     ...(markerDir === undefined ? {} : { markerDir }),
     ...(spoolDir === undefined ? {} : { spoolDir }),
+    ...(api.runtime.nativeGuard?.postApprovalLeaseRecheck === true
+      ? { approvalLeaseRecheckAttested: true }
+      : {}),
     sessionResolver: (params) => api.runtime.agent.session.getSessionEntry(params),
   });
   // Only a future explicit `true` means the host guarantees this contribution is live.

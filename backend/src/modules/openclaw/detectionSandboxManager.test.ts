@@ -71,15 +71,7 @@ function runnerFor(result: Partial<DetectionCommandResult> = {}) {
     if (command.includes("sandbox explain")) {
       return {
         exitCode: 0,
-        stdout: JSON.stringify({
-          sandbox: {
-            mode: "all", scope: "session", backend: "docker", workspaceAccess: "ro",
-            docker: { network: "none", user: "65532:65532", readOnlyRoot: true, capDrop: ["ALL"], binds: [],
-              pidsLimit: 128, memory: "512m", memorySwap: "512m", cpus: 1,
-              securityOpt: ["no-new-privileges:true"], tmpfs: ["/tmp", "/var/tmp", "/run"],
-              ulimits: { nofile: "1024:1024" } },
-          },
-        }),
+        stdout: JSON.stringify(realSandboxExplain()),
         stderr: "",
       };
     }
@@ -91,6 +83,45 @@ function runnerFor(result: Partial<DetectionCommandResult> = {}) {
     return { exitCode: 0, stdout: "", stderr: "", ...result };
   };
   return { runner, calls };
+}
+
+function realSandboxExplain() {
+  return {
+    docsUrl: "https://docs.openclaw.ai/sandbox",
+    agentId: "main",
+    sessionKey: "session-1",
+    mainSessionKey: "agent:main:main",
+    sandbox: {
+      mode: "all",
+      scope: "session",
+      backend: "docker",
+      workspaceAccess: "ro",
+      workspaceRoot: "C:\\Temp\\openclaw-sandboxes",
+      effectiveHostWorkspaceRoot: "C:\\Temp\\openclaw-sandboxes\\session-1",
+      runtimeWorkdir: "/workspace",
+      workspaceMounts: [
+        {
+          hostRoot: "C:\\Temp\\openclaw-sandboxes\\session-1",
+          containerRoot: "/workspace",
+          writable: false,
+          source: "workspace",
+        },
+        {
+          hostRoot: "E:\\Projects\\agent-guard",
+          containerRoot: "/agent",
+          writable: false,
+          source: "agent",
+        },
+      ],
+      workspaceSource: "sandbox",
+      sessionIsSandboxed: true,
+      tools: {
+        allow: ["read"],
+        deny: [],
+        sources: {},
+      },
+    },
+  };
 }
 
 test("writes the canonical isolated plugin profile with run-scoped marker and spool directories", async () => {
@@ -1223,6 +1254,74 @@ test("fails preflight for unsupported OpenClaw capability", async () => {
       : runner(input),
   });
   await assert.rejects(manager.preflight(), (error: unknown) => error instanceof SandboxPreflightError && error.code === "OPENCLAW_UNSUPPORTED");
+});
+
+test("accepts the real OpenClaw sandbox explain contract without docker config fields", async () => {
+  const { runner } = runnerFor();
+  const manager = new DetectionSandboxManager({
+    ...readyGatewayTestOptions(),
+    runGroupId: "run-real-explain",
+    image: `openclaw@sha256:${"a".repeat(64)}`,
+    commandRunner: runner,
+  });
+
+  try {
+    await manager.start();
+    const evidence = await manager.attestSession("session-1", "before");
+    assert.equal(evidence.status, "attested");
+  } finally {
+    await manager.cleanup().catch(() => undefined);
+  }
+});
+
+test("rejects writable or incomplete workspace mounts from sandbox explain", async (t) => {
+  const cases = [
+    {
+      name: "writable workspace",
+      mutate(payload: ReturnType<typeof realSandboxExplain>) {
+        payload.sandbox.workspaceMounts[0].writable = true;
+      },
+    },
+    {
+      name: "missing agent mount",
+      mutate(payload: ReturnType<typeof realSandboxExplain>) {
+        payload.sandbox.workspaceMounts = payload.sandbox.workspaceMounts.filter(
+          (mount) => mount.containerRoot !== "/agent",
+        );
+      },
+    },
+  ];
+
+  for (const [index, fixture] of cases.entries()) {
+    await t.test(fixture.name, async () => {
+      const { runner } = runnerFor();
+      const manager = new DetectionSandboxManager({
+        ...readyGatewayTestOptions(),
+        runGroupId: `run-explain-mount-mismatch-${index}`,
+        image: `openclaw@sha256:${"a".repeat(64)}`,
+        commandRunner: async (input) => {
+          if (input.args.includes("sandbox") && input.args.includes("explain")) {
+            const payload = realSandboxExplain();
+            fixture.mutate(payload);
+            return { exitCode: 0, stdout: JSON.stringify(payload), stderr: "" };
+          }
+          return runner(input);
+        },
+      });
+
+      try {
+        await manager.start();
+        await assert.rejects(
+          manager.attestSession("session-1", "before"),
+          (error: unknown) =>
+            error instanceof SandboxAttestationError &&
+            error.code === "SANDBOX_EXPLAIN_MISMATCH",
+        );
+      } finally {
+        await manager.cleanup().catch(() => undefined);
+      }
+    });
+  }
 });
 
 test("rejects a sandbox explain mismatch and cleans only labeled objects", async () => {

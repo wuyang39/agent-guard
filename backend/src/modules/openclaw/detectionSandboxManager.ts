@@ -417,7 +417,7 @@ export class DetectionSandboxManager {
       [...cli.argsPrefix, "sandbox", "explain", "--session", sessionKey, "--json"],
       { ...cli.env, ...env },
     );
-    if (explain.exitCode !== 0 || !matchesSandboxExplain(explain.stdout, this.options.networkCase ? (this.networkName ?? "internal") : "none")) {
+    if (explain.exitCode !== 0 || !matchesSandboxExplain(explain.stdout)) {
       throw new SandboxAttestationError("SANDBOX_EXPLAIN_MISMATCH", "OpenClaw sandbox explain did not match the detection profile.");
     }
     let containerId: string | undefined;
@@ -1098,7 +1098,7 @@ function parseInspectRecords(raw: string): Record<string, unknown>[] {
   }
 }
 
-function matchesSandboxExplain(raw: string, network: string): boolean {
+function matchesSandboxExplain(raw: string): boolean {
   let value: unknown;
   try { value = JSON.parse(raw); } catch { return false; }
   const sandbox = isRecord(value) && isRecord(value.sandbox)
@@ -1106,31 +1106,23 @@ function matchesSandboxExplain(raw: string, network: string): boolean {
     : isRecord(value) && isRecord(value.agents) && isRecord(value.agents.defaults) && isRecord(value.agents.defaults.sandbox)
       ? value.agents.defaults.sandbox
       : value;
-  const docker = isRecord(sandbox) && isRecord(sandbox.docker) ? sandbox.docker : sandbox;
-  if (!isRecord(sandbox) || !isRecord(docker)) return false;
-  const securityOpt = Array.isArray(docker.securityOpt) ? docker.securityOpt.map(String) : [];
-  const tmpfs = Array.isArray(docker.tmpfs) ? docker.tmpfs.map(String) : [];
-  const ulimits = isRecord(docker.ulimits) ? docker.ulimits : {};
+  if (!isRecord(sandbox) || !Array.isArray(sandbox.workspaceMounts)) return false;
+  const mounts = sandbox.workspaceMounts;
+  const mountsAreReadOnly = mounts.every(
+    (mount) => isRecord(mount) && mount.writable === false,
+  );
+  const hasReadOnlyMount = (source: string, containerRoot: string): boolean =>
+    mounts.some(
+      (mount) =>
+        isRecord(mount) &&
+        mount.source === source &&
+        mount.containerRoot === containerRoot &&
+        mount.writable === false,
+    );
   return sandbox.mode === "all" && sandbox.scope === "session" && sandbox.backend === "docker" &&
-    sandbox.workspaceAccess === "ro" && docker.network === network && docker.user === "65532:65532" && docker.readOnlyRoot === true &&
-    securityOpt.some((value) => /no-new-privileges(?::true)?/i.test(value)) &&
-    ["/tmp", "/var/tmp", "/run"].every((mount) => tmpfs.includes(mount)) && ulimits.nofile === "1024:1024" &&
-    Array.isArray(docker.capDrop) && docker.capDrop.length === 1 && docker.capDrop[0] === "ALL" &&
-    Array.isArray(docker.binds) && docker.binds.length === 0 &&
-    Number(docker.pidsLimit) === 128 && memoryMatches(docker.memory, 536870912) && memoryMatches(docker.memorySwap, 536870912) && Number(docker.cpus) === 1;
-}
-
-function memoryMatches(value: unknown, expectedBytes: number): boolean {
-  if (typeof value === "number") return value === expectedBytes;
-  if (typeof value !== "string") return false;
-  const normalized = value.trim().toLowerCase();
-  if (normalized === "512m") return true;
-  const match = normalized.match(/^(\d+)\s*(b|k|kb|m|mb|g|gb)$/);
-  if (!match) return false;
-  const amount = Number(match[1]);
-  const unit = match[2];
-  const multiplier = unit === "b" ? 1 : unit === "k" || unit === "kb" ? 1024 : unit === "m" || unit === "mb" ? 1024 ** 2 : 1024 ** 3;
-  return amount * multiplier === expectedBytes;
+    sandbox.workspaceAccess === "ro" && sandbox.sessionIsSandboxed === true &&
+    sandbox.runtimeWorkdir === "/workspace" && mountsAreReadOnly &&
+    hasReadOnlyMount("workspace", "/workspace") && hasReadOnlyMount("agent", "/agent");
 }
 
 function isSafeTempRoot(root: string): boolean {

@@ -155,6 +155,7 @@ export class DetectionSandboxManager {
   private cleanupNotified = false;
   private cleanupPromise?: Promise<void>;
   private resolvedOpenClawVersion?: string;
+  private staticCapability?: NativeGuardCapability;
   private networkName?: string;
   private sinkContainerId?: string;
   private sinkLogs?: string;
@@ -219,7 +220,7 @@ export class DetectionSandboxManager {
 
   async preflight(): Promise<DetectionSandboxEvidence> {
     if (this.cleaned) throw new SandboxPreflightError("CLEANED", "Detection sandbox has already been cleaned.");
-    if (this.profileRoot && this.imageId) return this.currentEvidence();
+    if (this.profileRoot && this.imageId && this.staticCapability) return this.currentEvidence();
     this.throwIfAborted();
     let dockerVersion: DetectionCommandResult;
     try {
@@ -265,6 +266,18 @@ export class DetectionSandboxManager {
       await this.createProfile();
       const version = await this.probeOpenClawVersion();
       this.resolvedOpenClawVersion = version;
+      const capability = await this.probeOpenClawCapability();
+      if (
+        capability.openclawVersion !== version ||
+        !capability.supportsNativeGuard ||
+        capability.finalizerAssurance !== "isolated_profile"
+      ) {
+        throw new SandboxPreflightError(
+          "OPENCLAW_CAPABILITY_UNAVAILABLE",
+          "OpenClaw static capability inventory does not support isolated native guard activation.",
+        );
+      }
+      this.staticCapability = capability;
       if (this.options.networkCase) await this.createNetworkSink();
       return {
         runGroupId: this.options.runGroupId,
@@ -304,7 +317,10 @@ export class DetectionSandboxManager {
   }
 
   private async startOnce(): Promise<DetectionSandboxEvidence> {
-    const evidence = this.profileRoot ? await this.currentEvidence() : await this.preflight();
+    const evidence =
+      this.profileRoot && this.staticCapability
+        ? await this.currentEvidence()
+        : await this.preflight();
     this.throwIfAborted();
     const token = randomBytes(32).toString("base64url");
     const port = await ephemeralPort();
@@ -338,6 +354,7 @@ export class DetectionSandboxManager {
       this.gateway = launchedGateway;
       const generation = this.armGatewayLifetime(launchedGateway);
       await this.raceGatewayLifetime(async () => {
+        const capability = this.staticCapability;
         const runtimeStatus = await this.probeRuntimeStatus();
         if (
           (runtimeStatus.coverage !== "off" && runtimeStatus.coverage !== "ready") ||
@@ -351,8 +368,8 @@ export class DetectionSandboxManager {
         const gatewayAttestation = await this.probeGatewayAttestation(
           randomBytes(24).toString("base64url"),
         );
-        const capability = await this.probeOpenClawCapability();
         if (
+          !capability ||
           gatewayAttestation.openclawVersion !== this.resolvedOpenClawVersion ||
           capability.openclawVersion !== this.resolvedOpenClawVersion ||
           !capability.supportsNativeGuard ||
@@ -439,6 +456,7 @@ export class DetectionSandboxManager {
     if (this.cleaned) return;
     if (this.cleanupPromise) return this.cleanupPromise;
     this.liveValidated = false;
+    this.staticCapability = undefined;
     this.expectedGatewayShutdownGeneration = this.activeGatewayGeneration;
     this.cleanupPromise = this.performCleanupWithRetry();
     try {
@@ -639,6 +657,7 @@ export class DetectionSandboxManager {
     }
     const client = createOpenClawControlClient({
       gatewayToken: "detection-capability-probe",
+      timeoutMs: COMMAND_TIMEOUT_MS,
       commandRunner: async (input) => this.run({
         command: input.command,
         args: input.args,

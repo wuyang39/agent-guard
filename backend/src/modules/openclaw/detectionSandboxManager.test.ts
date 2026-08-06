@@ -547,53 +547,120 @@ test("rejects a mutable image tag even when Docker returns an id", async () => {
   await assert.rejects(manager.preflight(), (error: unknown) => error instanceof SandboxPreflightError && error.code === "IMAGE_NOT_IMMUTABLE");
 });
 
-test("checks native guard capability against the started sandbox Gateway before detection", async () => {
+test("preflight probes static native guard capability in an isolated profile", async () => {
   const { runner } = runnerFor();
-  const previous = process.env.OPENCLAW_GATEWAY_TOKEN;
+  const previousToken = process.env.OPENCLAW_GATEWAY_TOKEN;
+  const previousUrl = process.env.OPENCLAW_GATEWAY_URL;
   process.env.OPENCLAW_GATEWAY_TOKEN = "host-secret-must-not-pass";
-  let observedEnv: NodeJS.ProcessEnv | undefined;
-  let launchedToken: string | undefined;
-  let launchedUrl: string | undefined;
-  let gatewayKills = 0;
+  process.env.OPENCLAW_GATEWAY_URL = "http://host-gateway.invalid";
+  const probeInputs: Array<{
+    env: Record<string, string>;
+    isolatedProfile: boolean;
+  }> = [];
   const manager = new DetectionSandboxManager({
     runGroupId: "run-capability", image: `openclaw@sha256:${"a".repeat(64)}`,
-    commandRunner: async (input) => {
-      if (input.args.includes("plugins")) observedEnv = input.env;
-      return input.args.includes("plugins")
-        ? { exitCode: 0, stdout: JSON.stringify({ plugins: [], diagnostics: [] }), stderr: "" }
-        : runner(input);
+    commandRunner: runner,
+    capabilityProbe: async (input) => {
+      probeInputs.push(input);
+      return readyCapability();
     },
+  });
+  try {
+    await manager.preflight();
+    assert.equal(probeInputs.length, 1);
+    assert.equal(probeInputs[0]?.isolatedProfile, true);
+    assert.equal(probeInputs[0]?.env.OPENCLAW_GATEWAY_TOKEN, undefined);
+    assert.equal(probeInputs[0]?.env.OPENCLAW_GATEWAY_URL, undefined);
+  } finally {
+    if (previousToken === undefined) delete process.env.OPENCLAW_GATEWAY_TOKEN;
+    else process.env.OPENCLAW_GATEWAY_TOKEN = previousToken;
+    if (previousUrl === undefined) delete process.env.OPENCLAW_GATEWAY_URL;
+    else process.env.OPENCLAW_GATEWAY_URL = previousUrl;
+    await manager.cleanup().catch(() => undefined);
+  }
+});
+
+test("invalid static native guard capability fails before Gateway launch", async () => {
+  const { runner } = runnerFor();
+  let launches = 0;
+  const manager = new DetectionSandboxManager({
+    runGroupId: "run-static-capability-invalid",
+    image: `openclaw@sha256:${"a".repeat(64)}`,
+    commandRunner: runner,
+    capabilityProbe: async () => ({
+      ...readyCapability(),
+      supportsNativeGuard: false,
+    }),
     gatewayLauncher: async (input) => {
-      launchedToken = input.token;
-      launchedUrl = input.gatewayUrl;
+      launches += 1;
       return {
         url: input.gatewayUrl,
         token: input.token,
         attestationPublicKey: TEST_GATEWAY_KEYS.publicKey,
-        process: gatewayLifetimeProcess(() => { gatewayKills += 1; }),
+        process: gatewayLifetimeProcess(),
       };
     },
     runtimeStatusProbe: async () => readyRuntimeStatus(),
     gatewayAttestationProbe: async (input) => readyGatewayAttestation(input),
   });
+
+  await assert.rejects(
+    manager.start(),
+    (error: unknown) =>
+      error instanceof SandboxPreflightError &&
+      error.code === "OPENCLAW_CAPABILITY_UNAVAILABLE",
+  );
+  assert.equal(launches, 0);
+  await manager.cleanup().catch(() => undefined);
+});
+
+test("start reuses healthy static capability and still validates the live Gateway", async () => {
+  const { runner } = runnerFor();
+  let capabilityProbes = 0;
+  let launches = 0;
+  let runtimeStatusProbes = 0;
+  let gatewayAttestations = 0;
+  const manager = new DetectionSandboxManager({
+    runGroupId: "run-static-capability-cached",
+    image: `openclaw@sha256:${"a".repeat(64)}`,
+    commandRunner: runner,
+    capabilityProbe: async () => {
+      capabilityProbes += 1;
+      return readyCapability();
+    },
+    gatewayLauncher: async (input) => {
+      launches += 1;
+      return {
+        url: input.gatewayUrl,
+        token: input.token,
+        attestationPublicKey: TEST_GATEWAY_KEYS.publicKey,
+        process: gatewayLifetimeProcess(),
+      };
+    },
+    runtimeStatusProbe: async () => {
+      runtimeStatusProbes += 1;
+      return readyRuntimeStatus();
+    },
+    gatewayAttestationProbe: async (input) => {
+      gatewayAttestations += 1;
+      return readyGatewayAttestation(input);
+    },
+  });
+
   try {
     await manager.preflight();
-    assert.equal(observedEnv, undefined, "preflight must not claim runtime capability");
-    await assert.rejects(
-      manager.start(),
-      (error: unknown) =>
-        error instanceof SandboxPreflightError &&
-        error.code === "OPENCLAW_CAPABILITY_UNAVAILABLE",
-    );
-    const runtimeEnv = observedEnv as NodeJS.ProcessEnv | undefined;
-    assert.equal(runtimeEnv?.OPENCLAW_GATEWAY_TOKEN, launchedToken);
-    assert.equal(runtimeEnv?.OPENCLAW_GATEWAY_URL, launchedUrl);
-    assert.notEqual(runtimeEnv?.OPENCLAW_GATEWAY_TOKEN, "host-secret-must-not-pass");
-    assert.ok(gatewayKills > 0, "failed live capability must terminate the Gateway");
-    assert.equal(manager.getGatewayCredentials(), undefined);
+    assert.equal(capabilityProbes, 1);
+    assert.equal(launches, 0);
+    assert.equal(runtimeStatusProbes, 0);
+    assert.equal(gatewayAttestations, 0);
+
+    await manager.start();
+    assert.equal(capabilityProbes, 1);
+    assert.equal(launches, 1);
+    assert.equal(runtimeStatusProbes, 1);
+    assert.equal(gatewayAttestations, 1);
+    assert.ok(manager.getGatewayCredentials());
   } finally {
-    if (previous === undefined) delete process.env.OPENCLAW_GATEWAY_TOKEN;
-    else process.env.OPENCLAW_GATEWAY_TOKEN = previous;
     await manager.cleanup().catch(() => undefined);
   }
 });
@@ -1202,11 +1269,11 @@ test("cleans a partial start when the gateway launcher fails", async () => {
 test("retains the resolved OpenClaw version and starts an isolated gateway", async () => {
   const { runner } = runnerFor();
   let launchEnv: NodeJS.ProcessEnv | undefined;
-  let capabilityEnv: NodeJS.ProcessEnv | undefined;
+  let capabilityInput: DetectionCommandInput | undefined;
   const manager = new DetectionSandboxManager({
     runGroupId: "run-version", image: `openclaw@sha256:${"a".repeat(64)}`,
     commandRunner: async (input) => {
-      if (input.args.includes("plugins")) capabilityEnv = input.env;
+      if (input.args.includes("plugins")) capabilityInput = input;
       return runner(input);
     },
     gatewayLauncher: async (input) => {
@@ -1230,11 +1297,9 @@ test("retains the resolved OpenClaw version and starts an isolated gateway", asy
   assert.equal(launchEnv?.OPENCLAW_WORKSPACE_DIR, path.join(evidence.profileRoot, "workspace"));
   assert.equal(launchEnv?.OPENCLAW_PLUGIN_DIRS, "");
   assert.equal(launchEnv?.OPENCLAW_GATEWAY_URL, evidence.gatewayUrl);
-  assert.equal(capabilityEnv?.OPENCLAW_GATEWAY_URL, evidence.gatewayUrl);
-  assert.equal(
-    capabilityEnv?.OPENCLAW_GATEWAY_TOKEN,
-    manager.getGatewayCredentials()?.gatewayToken,
-  );
+  assert.equal(capabilityInput?.env?.OPENCLAW_GATEWAY_URL, undefined);
+  assert.equal(capabilityInput?.env?.OPENCLAW_GATEWAY_TOKEN, undefined);
+  assert.equal(capabilityInput?.timeoutMs, 30_000);
   assert.deepEqual((await fs.readdir(evidence.profileRoot ? `${process.cwd()}/outputs/openclaw-detection/run-version` : "")).sort(), ["config.json", "hashes.json"]);
   const persisted = JSON.parse(await fs.readFile(`${process.cwd()}/outputs/openclaw-detection/run-version/config.json`, "utf8"));
   assert.deepEqual(persisted.agents.defaults.sandbox.docker.labels, { "agent-guard.run-group": "run-version", "agent-guard.role": "agent" });

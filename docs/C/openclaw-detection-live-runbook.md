@@ -6,7 +6,7 @@
 
 | 项目 | 固定值 |
 |---|---|
-| Agent Guard | `6bff05a504738772d82d3f1f5289a21f9b38aeb4` |
+| Agent Guard implementation | `2230444de0d1461e96e70dd4a58f8354d0b55790` |
 | 已验收 fork artifact | `<agent-guard-root>/outputs/openclaw-agentguard-active` |
 | OpenClaw fork | `2d55b950f357a8186eff433ca666a690d484a8e0` |
 | Runtime entrypoint | `<fork-root>/openclaw.mjs` |

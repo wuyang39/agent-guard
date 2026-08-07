@@ -365,7 +365,8 @@ Agent Guard 最终收口提交：
 | `5a90814` | launcher 原子接管 Gateway spawn |
 | `cba8ada` | default/controlled Docker required gate |
 | `22c48dc` | 强制真实 launcher child |
-| `6bff05a` | 建立有界 readiness baseline；当前收口工作树已将默认绝对 deadline 提高到 120 秒并新增回归 |
+| `6bff05a` | 建立基于绝对 deadline 的 readiness baseline |
+| `2230444` | readiness 120 秒/2,400 次对齐、`.mjs` installer、可重建工具镜像与最终操作手册 |
 
 ## 完成清单
 

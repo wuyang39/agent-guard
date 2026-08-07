@@ -9,18 +9,18 @@
  *   2. 有 guarded marker + live registry 证明完整 → 允许正常启动
  *   3. 有 guarded marker + live registry 不完整 → 只允许 maintenance cleanup
  *
- * 使用: node --import tsx scripts/openclaw-guard-launcher.ts [--maintenance]
+ * 使用: node --import tsx scripts/openclaw-guard-launcher.ts [--maintenance] -- <openclaw args>
  *
  * 退出码:
- *   0 — 允许正常 Gateway 启动
- *   1 — 只允许 maintenance cleanup 模式
- *   2 — 内部错误（无法查询 registry）
+ *   0 — maintenance cleanup allowed, or child exited successfully
+ *   1 — guarded startup contract rejected
+ *   2 — launcher configuration or child startup failed
  *
  * Launcher 接受精确匹配的受控 fork 或兼容的官方稳定版，但两条路线都必须
  * 提供完整的 live attestation；否则 guarded 启动会被拒绝，仅允许 maintenance 清理。
  */
 
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -62,6 +62,11 @@ type CliSpawn = (
 type RunCliOptions = {
   timeoutMs?: number;
   spawn?: CliSpawn;
+};
+
+type ChildResult = {
+  exitCode: number | null;
+  signal: NodeJS.Signals | null;
 };
 
 // ---- Helpers ----
@@ -122,6 +127,43 @@ export function runLiveRegistryCli(
   });
 }
 
+function runOpenClawChild(
+  args: string[],
+  cliPath = process.env.OPENCLAW_CLI ?? "openclaw",
+): Promise<ChildResult> {
+  const cli = resolveOpenClawCliInvocation(cliPath);
+  return new Promise((resolve) => {
+    const child = spawn(cli.command, [...cli.argsPrefix, ...args], {
+      windowsHide: true,
+      shell: cli.shell,
+      stdio: "inherit",
+      env: { ...cli.env, ...process.env },
+    });
+    const signals: NodeJS.Signals[] = ["SIGINT", "SIGTERM", "SIGHUP"];
+    const signalHandlers = signals.map((signal) => ({
+      signal,
+      handler: () => {
+        if (child.exitCode === null && child.signalCode === null) child.kill(signal);
+      },
+    }));
+    const removeSignalHandlers = () => {
+      for (const { signal, handler } of signalHandlers) {
+        process.removeListener(signal, handler);
+      }
+    };
+    for (const { signal, handler } of signalHandlers) process.on(signal, handler);
+    child.once("error", (error) => {
+      removeSignalHandlers();
+      log(`OpenClaw child failed to start: ${error.message}`);
+      resolve({ exitCode: 2, signal: null });
+    });
+    child.once("close", (exitCode, signal) => {
+      removeSignalHandlers();
+      resolve({ exitCode, signal });
+    });
+  });
+}
+
 export function inspectGuardedMarkers(
   markerDir: string,
   readDirectory: (directory: string) => string[] = (directory) =>
@@ -176,12 +218,26 @@ export function hasLiveGuardRegistry(
 
 // ---- Main ----
 
-function main(): void {
+async function main(): Promise<void> {
   const args = process.argv.slice(2);
-  const maintenanceMode = args.includes("--maintenance");
+  const separatorIndex = args.indexOf("--");
+  const launcherArgs = separatorIndex === -1 ? args : args.slice(0, separatorIndex);
+  const childArgs = separatorIndex === -1 ? [] : args.slice(separatorIndex + 1);
+  const maintenanceMode = launcherArgs.includes("--maintenance");
 
   log(`OpenClaw Guard Launcher — Task 14 startup gate`);
   log(`Marker directory: ${MARKER_DIR}`);
+
+  if (launcherArgs.some((arg) => arg !== "--maintenance")) {
+    die(2, "Unknown launcher option. Pass OpenClaw child arguments after --.");
+  }
+  if (maintenanceMode) {
+    log("Maintenance cleanup mode active — OpenClaw child launch is disabled.");
+    return;
+  }
+  if (childArgs.length === 0) {
+    die(2, "Missing OpenClaw child command after --.");
+  }
 
   // Step 1: Check for guarded markers
   let markerState: ReturnType<typeof inspectGuardedMarkers>;
@@ -191,18 +247,15 @@ function main(): void {
     die(2, "Guarded marker inventory is unavailable; refusing normal startup.");
   }
   if (markerState === "none") {
-    log("No guarded markers found — normal Gateway startup allowed.");
-    process.exit(0);
+    log("No guarded markers found — starting OpenClaw without Guard intervention.");
+    await finishWithChild(childArgs);
+    return;
   }
   log("Guarded markers found — live registry verification required.");
 
   // Step 2: Query live registry
   const pluginsResult = runLiveRegistryCli();
   if (pluginsResult.exitCode !== 0) {
-    if (maintenanceMode) {
-      log("Live registry unavailable but --maintenance mode active — allowing maintenance cleanup.");
-      process.exit(0);
-    }
     die(1, "Live registry unavailable. Use --maintenance for cleanup-only mode.");
   }
 
@@ -210,10 +263,6 @@ function main(): void {
   try {
     registry = JSON.parse(pluginsResult.stdout);
   } catch {
-    if (maintenanceMode) {
-      log("Live registry JSON is invalid but --maintenance mode is active — allowing maintenance cleanup.");
-      process.exit(0);
-    }
     die(1, "Live registry output is not valid JSON. Use --maintenance for cleanup-only mode.");
   }
 
@@ -221,10 +270,6 @@ function main(): void {
   const hasLiveAttestation = versionResult.exitCode === 0 &&
     hasLiveGuardRegistry(registry, versionResult.stdout);
   if (!hasLiveAttestation) {
-    if (maintenanceMode) {
-      log("--maintenance mode active — allowing maintenance cleanup.");
-      process.exit(0);
-    }
     die(1,
       "Live attestation is not available. " +
       "Use exact fork 2026.7.1-agentguard.1 or an official stable >=2026.7.2 " +
@@ -234,13 +279,24 @@ function main(): void {
   }
 
   // Step 6: All checks passed
-  log("Live registry verification passed — normal Gateway startup allowed.");
-  process.exit(0);
+  log("Live registry verification passed — starting OpenClaw child.");
+  await finishWithChild(childArgs);
+}
+
+async function finishWithChild(childArgs: string[]): Promise<void> {
+  const result = await runOpenClawChild(childArgs);
+  if (result.signal) {
+    process.kill(process.pid, result.signal);
+    return;
+  }
+  process.exitCode = result.exitCode ?? 1;
 }
 
 const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : undefined;
 if (invokedPath === path.resolve(fileURLToPath(import.meta.url))) {
-  main();
+  void main().catch(() => {
+    die(2, "Unexpected launcher failure; refusing OpenClaw startup.");
+  });
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

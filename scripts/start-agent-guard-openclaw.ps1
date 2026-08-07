@@ -15,6 +15,7 @@ $openClawCli = Join-Path $RuntimeRoot "openclaw-local.cmd"
 $openClawHome = Join-Path $RuntimeRoot "home"
 $openClawWorkspace = Join-Path $RuntimeRoot "workspace"
 $logDir = Join-Path $repoRoot "outputs\runs"
+$guardLauncher = Join-Path $repoRoot "scripts\openclaw-guard-launcher.ts"
 
 if (-not (Test-Path $openClawCli)) {
   throw "OpenClaw runtime wrapper not found: $openClawCli"
@@ -80,8 +81,8 @@ if (-not (Test-PortListening 18789)) {
 `$env:all_proxy='';
 `$env:NO_PROXY='*';
 `$env:no_proxy='*';
-Set-Location '$RuntimeRoot';
-.\openclaw-local.cmd gateway run --port 18789 --bind loopback --allow-unconfigured *> '$gatewayLog' 2> '$gatewayErr'
+Set-Location '$repoRoot';
+node --import tsx '$guardLauncher' -- gateway run --port 18789 --bind loopback --allow-unconfigured *> '$gatewayLog' 2> '$gatewayErr'
 "@
   Write-Host "[1/4] Starting OpenClaw gateway on 127.0.0.1:18789..."
   Start-HiddenPowerShell $gatewayCommand

@@ -1679,34 +1679,45 @@ git commit -m "feat: expose native guard coverage and controls"
 - Create: `scripts/verify-openclaw-native-guard.ts`
 - Create: `scripts/verify-openclaw-detection-sandbox.ts`
 - Create: `scripts/verify-openclaw-live-registry-gate.ts`
+- Create: `docker/openclaw-sandbox/Dockerfile`
+- Create: `docker/openclaw-sandbox/README.md`
+- Create: `scripts/build-openclaw-sandbox.ps1`
 - Modify: `scripts/openclaw-guard-launcher.ts`
 - Modify: `package.json`
 - Modify: `docs/C/openclaw-detection-live-runbook.md`
 - Modify: `docs/architecture.md`
 
-**Final implementation baseline:** Agent Guard `6bff05a` and controlled fork `2d55b950f357a8186eff433ca666a690d484a8e0`. The Agent Guard closeout commits are `5a90814` (launcher owns atomic Gateway spawn), `cba8ada` (default and controlled Docker required gate), `22c48dc` (mandatory real child), and `6bff05a` (60-second absolute readiness deadline).
+**Final implementation baseline:** Agent Guard `6bff05a` and controlled fork `2d55b950f357a8186eff433ca666a690d484a8e0`. The accepted fork artifact is `<agent-guard-root>/outputs/openclaw-agentguard-active`; both its Git HEAD and `dist/.buildstamp` must equal the exact SHA. Acceptance no longer rebuilds from the moving `E:\Projects\openclaw-agentguard` branch. The fork is not published, so other machines must import that exact artifact before running the gate and cannot assume it is available from upstream. Its exact Node engines are `>=22.22.3 <23 || >=24.15.0 <25 || >=25.9.0`.
+
+The Agent Guard closeout commits are `5a90814` (launcher owns atomic Gateway spawn), `cba8ada` (default and controlled Docker required gate), `22c48dc` (mandatory real child), and `6bff05a` (bounded readiness baseline). The current closeout worktree raises the default absolute readiness deadline to 120 seconds with TDD regression coverage. The current locally built sandbox reference is `openclaw-sandbox@sha256:01630cbb3486af7c0908b326d956d20722fde3ceada2775b53e547370a4e0e38`.
 
 - [x] **Step 1: Enforce installer and live capability checks**
 
-The installer and capability probes select the isolated CLI explicitly, require the exact controlled fork or a compatible official host, reject incomplete live attestation, and leave native guard OFF until a lease is activated. They do not modify the user's global tool policy or enable Docker globally.
+The installer and capability probes select the isolated CLI explicitly, require the exact controlled fork or a compatible official host, reject incomplete live attestation, and leave native guard OFF until a lease is activated. `OPENCLAW_HOME` and `OPENCLAW_CONFIG_PATH` are explicit, independent and created before installation. Root `openclaw.mjs` is passed directly; the installer executes JavaScript module entrypoints through Node and does not require a wrapper. They do not modify the user's global tool policy or enable Docker globally.
 
 - [x] **Step 2: Make the launcher own Gateway startup**
 
 Normal guarded startup uses:
 
-```bash
-node --import tsx scripts/openclaw-guard-launcher.ts -- gateway run --bind loopback --port <port> --token <token>
+```powershell
+$gatewayPort = 18789
+$env:OPENCLAW_GATEWAY_URL = "http://127.0.0.1:$gatewayPort"
+$env:OPENCLAW_GATEWAY_TOKEN = Read-Host "OpenClaw gateway token"
+node --import tsx scripts/openclaw-guard-launcher.ts -- `
+  gateway run --bind loopback --port $gatewayPort --token $env:OPENCLAW_GATEWAY_TOKEN
 ```
 
 After marker and live-registry checks, the launcher atomically spawns and supervises the exact Gateway child. Missing proof refuses startup. `--maintenance` is cleanup-only, accepts no child command, and never spawns OpenClaw.
 
 - [x] **Step 3: Bind detection to a mandatory real child and bounded readiness**
 
-fd3 bootstrap, signed core attestation and child completion bind the run to one Gateway generation. Bootstrap/readiness uses one 60-second absolute deadline; unexpected child exit aborts the run and prevents subsequent samples.
+fd3 bootstrap, signed core attestation and child completion bind the run to one Gateway generation. Bootstrap/readiness uses one 120-second absolute deadline; unexpected child exit aborts the run and prevents subsequent samples.
 
 - [x] **Step 4: Enforce the required Docker gate**
 
 The gate runs both default `network=none` and controlled sink cases. It proves non-root/read-only/capability/resource isolation, controlled sink reachability without Internet, host canary read and write denial, Docker socket absence, and zero residual labeled containers or networks. `--required` cannot be skipped.
+
+`docker/openclaw-sandbox/Dockerfile`, its README and `scripts/build-openclaw-sandbox.ps1` now provide the reproducible local build entrypoint. The build script's final digest output is authoritative for local acceptance. The `01630c...` reference currently exists only in this machine's Docker store; it is not a remotely pullable release digest.
 
 - [x] **Step 5: Add package commands**
 
@@ -1717,15 +1728,72 @@ The gate runs both default `network=none` and controlled sink cases. It proves n
 "verify:native-guard:all": "npm run test:native-guard:protocol && npm run test:native-guard:plugin && npm run verify:native-guard && npm run build:openclaw-plugin && npm run verify:native-guard:real && npm run verify:native-guard:docker -- --required"
 ```
 
-- [x] **Step 6: Run fresh required live gates**
+- [x] **Step 6: Run the fresh real-registry gate**
 
-With `OPENCLAW_CLI` set to root `openclaw.mjs` and `TEST_OPENCLAW_AGENTGUARD_CLI` set to `dist/cli/native-guard-inspector.js`, the fresh real registry gate and required Docker default/controlled gate both pass.
+With `OPENCLAW_CLI` set to the accepted artifact's root `openclaw.mjs` and `TEST_OPENCLAW_AGENTGUARD_CLI` set to its `dist/cli/native-guard-inspector.js`, the focused real registry gate has fresh PASS evidence.
 
 - [x] **Step 7: Update architecture and operator documentation**
 
-- [ ] **Step 8: Complete competition-external release hardening**
+- [x] **Step 8: Re-run the required Docker gate for the rebuilt image**
 
-Registry push, SBOM/provenance archival, the full manual scenario matrix and final release security review remain explicit release-hardening work. They are not required to claim the completed competition implementation and are not marked complete here.
+Run from the explicit fork/profile environment:
+
+```powershell
+Remove-Item Env:AGENT_GUARD_ALLOW_DOCKER_TEST_SKIP -ErrorAction SilentlyContinue
+$env:AGENT_GUARD_DETECTION_IMAGE = "openclaw-sandbox@sha256:01630cbb3486af7c0908b326d956d20722fde3ceada2775b53e547370a4e0e38"
+npm run verify:native-guard:docker -- --required
+```
+
+Result: both default and controlled cases PASS against `01630c...` in 122.2 seconds; controlled sink is reachable, Internet and host canary read/write are blocked, Docker socket is absent, and both cleanup rounds leave zero labeled containers/networks.
+
+- [ ] **Step 9: Run the complete non-Docker regression suite**
+
+Run every command; do not delete commands to reduce the final boundary:
+
+```powershell
+npm run typecheck
+npm run typecheck:frontend
+npm run typecheck:openclaw-plugin
+npm run test:native-guard:protocol
+npm run test:native-guard:plugin
+npm run verify:native-guard
+npm run verify:openclaw:realtime
+npm run verify:full-pipeline
+npm run test:frontend
+npm run build:frontend
+npm run build:openclaw-plugin
+npm run verify:all
+```
+
+Expected: every command exits 0. The focused real-registry PASS in Step 6 is not a substitute for this final aggregate regression.
+
+- [ ] **Step 10: Run the complete Native Guard aggregate gate**
+
+```powershell
+Remove-Item Env:AGENT_GUARD_ALLOW_DOCKER_TEST_SKIP -ErrorAction SilentlyContinue
+npm run verify:native-guard:all
+```
+
+Expected: protocol, plugin, non-live verification, plugin build, real registry and required Docker gates all PASS in one fresh run.
+
+- [ ] **Step 11: Execute and archive the ten manual scenarios**
+
+Follow `docs/C/openclaw-detection-live-runbook.md` for executable preconditions, PowerShell commands, expected results and evidence paths for OFF, allow, deny, redact, ask, PDP failure, child lease inheritance, restart recovery, coverage breach, and Docker isolation/cleanup. Steps without a stable CLI/API remain explicit human contract checks; they cannot be marked complete from unit tests or invented endpoints.
+
+- [ ] **Step 12: Inspect the final diff and run the secret scan**
+
+```powershell
+git diff --check
+git diff --stat main...HEAD
+git status --short
+rg -n 'credential|Authorization|PRIVATE KEY|OPENCLAW_GATEWAY_TOKEN' outputs docs backend plugins frontend scripts packages docker package.json package-lock.json -g '!*.test.ts'
+```
+
+Expected: no whitespace errors; only intended files are included; every secret match is a field name, redaction rule, placeholder or environment-variable reference, never a real value. Review all matches and record the disposition; do not shrink the scan scope by deleting directories or commands.
+
+- [ ] **Step 13: Complete external release hardening**
+
+Publish/export the exact fork artifact, push the sandbox image to a formal registry and record its remote repository digest, generate and archive SBOM/provenance, and request final release security review. Until these finish, the local digest cannot support a new-machine availability claim.
 
 ---
 

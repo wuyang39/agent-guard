@@ -33,6 +33,30 @@ export type ApiResponse<T> =
       requestId?: string;
     };
 
+export type NativeGuardSessionCoverageView = {
+  sessionKey: string;
+  leaseId: string;
+  leaseEpoch: number;
+  eventsTotal: number;
+  reconciled: boolean;
+  coverageBreachCount: number;
+  mismatchCount: number;
+  revokeError?: string;
+  evidenceError?: string;
+};
+
+export type NativeGuardCoverageView = {
+  coverage: "active" | "conditional" | "unsupported" | "misconfigured" | "off" | "unavailable";
+  eventsTotal: number;
+  reconciled: boolean;
+  coverageBreachCount: number;
+  mismatchCount: number;
+  /** Authoritative session list; top-level lease mirrors the first entry. */
+  sessions: NativeGuardSessionCoverageView[];
+  leaseId?: string;
+  leaseEpoch?: number;
+};
+
 export type CLineRunGroup = {
   schemaVersion: "mvp-1";
   runGroupId: string;
@@ -63,14 +87,7 @@ export type CLineRunGroup = {
   artifactIds: string[];
   error?: string;
   /** Task 13: Native guard coverage and sandbox evidence. */
-  nativeGuardCoverage?: {
-    coverage: "active" | "conditional" | "unsupported" | "misconfigured" | "off" | "unavailable";
-    eventsTotal: number;
-    reconciled: boolean;
-    coverageBreachCount: number;
-    leaseId?: string;
-    leaseEpoch?: number;
-  };
+  nativeGuardCoverage?: NativeGuardCoverageView;
   sandboxEvidence?: {
     preflightPassed: boolean;
     attested: boolean;

@@ -64,11 +64,27 @@ export type P2RunCaseFailure = {
   occurredAt: string;
 };
 
+export type NativeGuardSessionCoverageSummary = {
+  sessionKey: string;
+  leaseId: string;
+  leaseEpoch: number;
+  eventsTotal: number;
+  reconciled: boolean;
+  coverageBreachCount: number;
+  mismatchCount: number;
+  revokeError?: string;
+  evidenceError?: string;
+};
+
 export type NativeGuardCoverageSummary = {
   coverage: "active" | "conditional" | "unsupported" | "misconfigured" | "off" | "unavailable";
   eventsTotal: number;
   reconciled: boolean;
   coverageBreachCount: number;
+  mismatchCount: number;
+  /** Authoritative per-session evidence. Top-level lease identity mirrors
+   *  the first session for backwards compatibility. */
+  sessions: NativeGuardSessionCoverageSummary[];
   leaseId?: string;
   leaseEpoch?: number;
 };

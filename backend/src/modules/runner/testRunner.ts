@@ -166,11 +166,25 @@ export async function runTestCase(
         const revokeError = evidence.revokeError
           ? scrubSecrets(evidence.revokeError)
           : undefined;
+        const evidenceError = evidence.evidenceError
+          ? scrubSecrets(evidence.evidenceError)
+          : undefined;
         nativeGuardRuntime = {
+          sessionKey: evidence.sessionKey,
+          leaseId: evidence.leaseId,
+          leaseEpoch: evidence.leaseEpoch,
           events: evidence.nativeGuardEvents,
           reconciliation: evidence.reconciliation,
           revokeError,
+          evidenceError,
         };
+        if (options?.requireNativeGuardRuntimeEvidence && evidenceError) {
+          failTestRun(
+            testRun,
+            "NATIVE_GUARD_EVIDENCE_UNAVAILABLE",
+            evidenceError,
+          );
+        }
       } catch (error) {
         if (options?.requireNativeGuardRuntimeEvidence) {
           const evidenceError = scrubSecrets(

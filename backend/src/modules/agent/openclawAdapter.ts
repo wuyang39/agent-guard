@@ -10,7 +10,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { nowIso } from "../../shared";
-import type { AgentAdapter, AgentRunMeta, AgentSession } from "./agentAdapter";
+import type {
+  AgentAdapter,
+  AgentNativeGuardRuntimeEvidence,
+  AgentRunMeta,
+  AgentSession,
+  NativeGuardReconciliationSummary,
+} from "./agentAdapter";
 import type { AgentMcpBridge } from "./agentMcpBridge";
 import type {
   AgentAdapterConfig,
@@ -195,7 +201,8 @@ export class OpenClawSession implements AgentSession {
   private lastRunMeta?: import("./agentAdapter").AgentRunMeta;
   private lastRuntimeSessionKey?: string;
   private activatedLeaseId?: string;
-  private lastReconciliation?: { reconciled: boolean; coverageBreachCount: number };
+  private lastActivatedLease?: { leaseId: string; leaseEpoch: number };
+  private lastReconciliation?: NativeGuardReconciliationSummary;
   private lastRevokeError?: string;
 
   constructor(
@@ -231,6 +238,7 @@ export class OpenClawSession implements AgentSession {
   ): Promise<AgentRunResult> {
     this.lastRunMeta = undefined;
     this.lastRuntimeSessionKey = undefined;
+    this.lastActivatedLease = undefined;
     this.lastReconciliation = undefined;
     this.lastRevokeError = undefined;
 
@@ -264,6 +272,7 @@ export class OpenClawSession implements AgentSession {
           runGroupId: runId,
         });
         this.activatedLeaseId = lease.leaseId;
+        this.lastActivatedLease = lease;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return {
@@ -372,12 +381,7 @@ export class OpenClawSession implements AgentSession {
   async close(): Promise<void> {}
 
   /** Task 12: Drain runtime evidence from the native guard event store. */
-  async drainRuntimeEvidence(): Promise<{
-    nativeGuardEvents: import("@agent-guard/contracts").NativeGuardEvent[];
-    supervisionRecords: import("@agent-guard/contracts").RuntimeSupervisionRecord[];
-    reconciliation?: { reconciled: boolean; coverageBreachCount: number };
-    revokeError?: string;
-  }> {
+  async drainRuntimeEvidence(): Promise<AgentNativeGuardRuntimeEvidence> {
     if (!this.nativeGuardRequired) {
       return { nativeGuardEvents: [], supervisionRecords: [] };
     }
@@ -389,18 +393,37 @@ export class OpenClawSession implements AgentSession {
       }
       return { nativeGuardEvents: [], supervisionRecords: [] };
     }
-    const evidence = await drainOpenClawRuntimeEvidence(
-      this.nativeGuardEventStore,
-      this.lastRuntimeSessionKey,
-      this.nativeGuardRequired,
-    );
     const revokeError = this.lastRevokeError;
     this.lastRevokeError = undefined;
-    return {
-      ...evidence,
-      reconciliation: this.lastReconciliation,
-      revokeError,
+    const identity = {
+      sessionKey: this.lastRuntimeSessionKey,
+      leaseId: this.lastActivatedLease?.leaseId,
+      leaseEpoch: this.lastActivatedLease?.leaseEpoch,
     };
+    try {
+      const evidence = await drainOpenClawRuntimeEvidence(
+        this.nativeGuardEventStore,
+        this.lastRuntimeSessionKey,
+        this.nativeGuardRequired,
+      );
+      return {
+        ...identity,
+        ...evidence,
+        reconciliation: this.lastReconciliation,
+        revokeError,
+      };
+    } catch (error) {
+      return {
+        ...identity,
+        nativeGuardEvents: [],
+        supervisionRecords: [],
+        reconciliation: this.lastReconciliation,
+        revokeError,
+        evidenceError: scrubSecrets(
+          error instanceof Error ? error.message : String(error),
+        ),
+      };
+    }
   }
 }
 

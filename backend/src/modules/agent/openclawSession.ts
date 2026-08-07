@@ -54,7 +54,11 @@ export type OpenClawRunResult = {
   jsonlPath: string;
   /** Task 12: Reconciliation result from Hook events vs JSONL cross-check.
    *  Undefined when nativeGuardEventStore is not available. */
-  reconciliation?: { reconciled: boolean; coverageBreachCount: number };
+  reconciliation?: {
+    reconciled: boolean;
+    coverageBreachCount: number;
+    mismatchCount: number;
+  };
 };
 
 export type OpenClawRunOptions = {
@@ -239,6 +243,7 @@ export async function runOpenClawSession(
     reconciliation = {
       reconciled: segment.reconciliation.reconciled,
       coverageBreachCount: segment.reconciliation.coverageBreachCount,
+      mismatchCount: segment.reconciliation.mismatchCount,
     };
   }
   // No event store: reconciliation not available.

@@ -110,6 +110,16 @@ test("Guard ON uses one canonical session for lease, CLI, and evidence while pre
     assert.deepEqual(evidence?.reconciliation, {
       reconciled: true,
       coverageBreachCount: 0,
+      mismatchCount: 0,
+    });
+    assert.deepEqual(evidence && {
+      sessionKey: evidence.sessionKey,
+      leaseId: evidence.leaseId,
+      leaseEpoch: evidence.leaseEpoch,
+    }, {
+      sessionKey: canonicalSessionKey,
+      leaseId: "lease.canonical",
+      leaseEpoch: 1,
     });
   } finally {
     await rm(fixture.root, { recursive: true, force: true });

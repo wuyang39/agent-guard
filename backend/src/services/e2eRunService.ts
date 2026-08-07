@@ -71,7 +71,12 @@ import {
 } from "../modules/openclaw/detectionProfileSeed";
 import { createNativeGuardEventStore } from "../storage/nativeGuardEventStore";
 import type { NativeGuardEvent, RuntimeSupervisionRecord } from "@agent-guard/contracts";
-import type { SandboxEvidenceSummary, NativeGuardCoverageSummary } from "../api/types";
+import type {
+  NativeGuardSessionCoverageSummary,
+  SandboxEvidenceSummary,
+} from "../api/types";
+import type { TestRunResult } from "../modules/runner/runTypes";
+import { scrubSecrets } from "../shared/scrubSecrets";
 
 const CONFIGS_DIR = path.resolve(process.cwd(), "configs");
 const P2_DEMO_CASES_FILE = path.join(CONFIGS_DIR, "p2_demo_cases.json");
@@ -572,6 +577,8 @@ export async function runE2E(
           eventsTotal: 0,
           reconciled: false,
           coverageBreachCount: 0,
+          mismatchCount: 0,
+          sessions: [],
         };
         updateRunProgress(runGroup, { phase: "failed", runningCaseIds: [], retryingCaseIds: [] });
         await saveRunGroup(runGroup);
@@ -648,6 +655,8 @@ export async function runE2E(
           eventsTotal: 0,
           reconciled: false,
           coverageBreachCount: 0,
+          mismatchCount: 0,
+          sessions: [],
         };
         // Sandbox coordinator allows only one active lease. Force
         // sequential execution regardless of env var override.
@@ -662,6 +671,8 @@ export async function runE2E(
           eventsTotal: 0,
           reconciled: false,
           coverageBreachCount: 0,
+          mismatchCount: 0,
+          sessions: [],
         };
         runGroup.status = "failed";
         runGroup.phase = "failed";
@@ -734,23 +745,19 @@ export async function runE2E(
       // Per-session reconciliation against JSONL happens inside
       // runOpenClawSession; breaches cause the session to fail.
       if (runGroup.nativeGuardCoverage && eventStore) {
-        let totalEvents = 0;
         let anyDecisions = false;
         for (const sessionKey of sessionKeys) {
           try {
             const events = await eventStore.listBySession(sessionKey);
-            totalEvents += events.length;
             if (events.some((e: NativeGuardEvent) => e.type === "decision")) {
               anyDecisions = true;
             }
           } catch { /* store unavailable — leave coverage as-is */ }
         }
-        runGroup.nativeGuardCoverage.eventsTotal = totalEvents;
-        // coverageBreachCount is incremented by appendDetectionFailure
-        // and persists regardless of the bounded caseFailures list.
-        const breaches = runGroup.nativeGuardCoverage.coverageBreachCount;
-        runGroup.nativeGuardCoverage.reconciled = breaches === 0;
-        runGroup.nativeGuardCoverage.coverage = (anyDecisions && breaches === 0)
+        const reconciled = runGroup.nativeGuardCoverage.sessions.length > 0 &&
+          runGroup.nativeGuardCoverage.sessions.every((session) => session.reconciled);
+        runGroup.nativeGuardCoverage.reconciled = reconciled;
+        runGroup.nativeGuardCoverage.coverage = (anyDecisions && reconciled)
           ? "active" : "conditional";
       }
     }
@@ -1279,20 +1286,121 @@ async function runSingleDetectionAttempt(input: {
   await writeTraceFile(trace);
 
   // Aggregate per-session reconciliation into the run group.
-  if (nativeGuardRuntime && runGroup.nativeGuardCoverage) {
-    if (nativeGuardRuntime.reconciliation) {
-      const rec = nativeGuardRuntime.reconciliation;
-      runGroup.nativeGuardCoverage.coverageBreachCount += rec.coverageBreachCount;
-      if (!rec.reconciled) runGroup.nativeGuardCoverage.reconciled = false;
-    }
-  }
+  const coverageFailure = nativeGuardRuntime
+    ? recordNativeGuardSessionCoverage(runGroup, nativeGuardRuntime)
+    : undefined;
 
-  if (testRun.status === "failed") {
-    throw new Error(testRun.error ?? "Detection test run failed");
+  const attemptFailure = resolveDetectionAttemptFailure(testRun, coverageFailure);
+  if (attemptFailure) {
+    throw new Error(attemptFailure);
   }
 
   const evaluation = await evaluateRiskWithSemanticScoring(context, trace);
   return buildRiskReport(context, evaluation, trace);
+}
+
+export function resolveDetectionAttemptFailure(
+  testRun: Pick<TestRunResult["testRun"], "status" | "error">,
+  coverageFailure?: string,
+): string | undefined {
+  if (coverageFailure) return coverageFailure;
+  if (testRun.status === "failed") {
+    return testRun.error ?? "Detection test run failed";
+  }
+  return undefined;
+}
+
+export function recordNativeGuardSessionCoverage(
+  runGroup: P2RunGroup,
+  runtime: NonNullable<TestRunResult["nativeGuardRuntime"]>,
+): string | undefined {
+  const coverage = runGroup.nativeGuardCoverage;
+  if (!coverage) return undefined;
+
+  const { sessionKey, leaseId, leaseEpoch } = runtime;
+  if (
+    !sessionKey ||
+    !leaseId ||
+    !Number.isSafeInteger(leaseEpoch) ||
+    (leaseEpoch as number) <= 0
+  ) {
+    coverage.reconciled = false;
+    return "NATIVE_GUARD_EVIDENCE_UNAVAILABLE: Native guard session lease identity is missing.";
+  }
+
+  const identityMismatchCount = runtime.events.filter((event) =>
+    event.sessionKey !== sessionKey ||
+    event.leaseId !== leaseId ||
+    event.leaseEpoch !== leaseEpoch
+  ).length;
+  const identityError = identityMismatchCount > 0
+    ? `Native guard event lease identity conflict for session (${String(identityMismatchCount)} event(s)).`
+    : undefined;
+  const evidenceError = [runtime.evidenceError, identityError]
+    .filter((message): message is string => Boolean(message))
+    .map(scrubSecrets)
+    .join("; ") || undefined;
+  const revokeError = runtime.revokeError
+    ? scrubSecrets(runtime.revokeError)
+    : undefined;
+  const reconciliation = runtime.reconciliation;
+  const summary: NativeGuardSessionCoverageSummary = {
+    sessionKey,
+    leaseId,
+    leaseEpoch: leaseEpoch as number,
+    eventsTotal: runtime.events.length,
+    reconciled: Boolean(reconciliation?.reconciled && !evidenceError && !revokeError),
+    coverageBreachCount: reconciliation?.coverageBreachCount ?? 0,
+    mismatchCount: (reconciliation?.mismatchCount ?? 0) + identityMismatchCount,
+    ...(revokeError ? { revokeError } : {}),
+    ...(evidenceError ? { evidenceError } : {}),
+  };
+
+  const existingIndex = coverage.sessions.findIndex(
+    (session) => session.sessionKey === sessionKey,
+  );
+  if (existingIndex >= 0) {
+    const existing = coverage.sessions[existingIndex]!;
+    if (existing.leaseId !== leaseId || existing.leaseEpoch !== leaseEpoch) {
+      summary.reconciled = false;
+      summary.mismatchCount += 1;
+      summary.evidenceError = scrubSecrets(
+        [summary.evidenceError, "Native guard runtime lease identity conflict for session."]
+          .filter(Boolean)
+          .join("; "),
+      );
+    }
+    coverage.sessions[existingIndex] = summary;
+  } else {
+    coverage.sessions.push(summary);
+  }
+
+  coverage.eventsTotal = coverage.sessions.reduce(
+    (total, session) => total + session.eventsTotal,
+    0,
+  );
+  coverage.coverageBreachCount = coverage.sessions.reduce(
+    (total, session) => total + session.coverageBreachCount,
+    0,
+  );
+  coverage.mismatchCount = coverage.sessions.reduce(
+    (total, session) => total + session.mismatchCount,
+    0,
+  );
+  coverage.reconciled = coverage.sessions.length > 0 &&
+    coverage.sessions.every((session) => session.reconciled);
+
+  const primary = coverage.sessions[0];
+  coverage.leaseId = primary?.leaseId;
+  coverage.leaseEpoch = primary?.leaseEpoch;
+
+  if (summary.evidenceError) {
+    return `NATIVE_GUARD_EVIDENCE_UNAVAILABLE: ${summary.evidenceError}`;
+  }
+  if (summary.revokeError) {
+    return `NATIVE_GUARD_REVOKE_FAILED: ${summary.revokeError}`;
+  }
+  return undefined;
 }
 
 function normalizeDetectionCaseError(error: unknown): DetectionCaseError {

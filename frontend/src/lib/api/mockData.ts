@@ -405,8 +405,18 @@ const runGroup: CLineRunGroup = {
     eventsTotal: 2,
     reconciled: true,
     coverageBreachCount: 0,
+    mismatchCount: 0,
     leaseId: "lease.mock.active",
     leaseEpoch: 1,
+    sessions: [{
+      sessionKey: "agent:main:session.sample.openclaw",
+      leaseId: "lease.mock.active",
+      leaseEpoch: 1,
+      eventsTotal: 2,
+      reconciled: true,
+      coverageBreachCount: 0,
+      mismatchCount: 0,
+    }],
   },
   sandboxEvidence: {
     preflightPassed: true,

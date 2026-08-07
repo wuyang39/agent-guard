@@ -17,6 +17,8 @@ import {
   type DetectionRunReservation,
   runE2E,
 } from "./e2eRunService";
+import * as e2eRunServiceModule from "./e2eRunService";
+import type { P2RunGroup } from "../api/types";
 
 const OPENCLAW_REQUEST = {
   adapterKind: "openclaw",
@@ -124,6 +126,296 @@ test("E2E native guard boundaries use canonical session keys without changing st
     testRunIds: [],
     runGroupId: "run_group.fallback",
   }), ["agent:main:run_group.fallback"]);
+});
+
+type RuntimeEvidenceInput = {
+  sessionKey: string;
+  leaseId: string;
+  leaseEpoch: number;
+  events: Array<{
+    schemaVersion: "native-guard-1";
+    eventId: string;
+    type: "decision";
+    leaseId: string;
+    leaseEpoch: number;
+    sessionKey: string;
+    timestamp: string;
+    detail: Record<string, unknown>;
+  }>;
+  reconciliation: {
+    reconciled: boolean;
+    coverageBreachCount: number;
+    mismatchCount: number;
+  };
+  revokeError?: string;
+  evidenceError?: string;
+};
+
+function guardedRunGroup(): P2RunGroup {
+  const runGroup = createInitialE2ERunGroup({
+    ...OPENCLAW_REQUEST,
+    caseIds: ["case.resource_injection"],
+  });
+  runGroup.nativeGuardCoverage = {
+    coverage: "conditional",
+    eventsTotal: 0,
+    reconciled: false,
+    coverageBreachCount: 0,
+    mismatchCount: 0,
+    sessions: [],
+  } as never;
+  return runGroup;
+}
+
+function decisionEvent(input: {
+  eventId: string;
+  sessionKey: string;
+  leaseId: string;
+  leaseEpoch: number;
+}): RuntimeEvidenceInput["events"][number] {
+  return {
+    schemaVersion: "native-guard-1",
+    eventId: input.eventId,
+    type: "decision",
+    leaseId: input.leaseId,
+    leaseEpoch: input.leaseEpoch,
+    sessionKey: input.sessionKey,
+    timestamp: "2026-08-07T00:00:00.000Z",
+    detail: {},
+  };
+}
+
+function recordCoverage(
+  runGroup: P2RunGroup,
+  evidence: RuntimeEvidenceInput,
+): string | undefined {
+  const candidate = (e2eRunServiceModule as unknown as {
+    recordNativeGuardSessionCoverage?: (
+      target: P2RunGroup,
+      runtime: RuntimeEvidenceInput,
+    ) => string | undefined;
+  }).recordNativeGuardSessionCoverage;
+  assert.equal(typeof candidate, "function");
+  return candidate!(runGroup, evidence);
+}
+
+function resolveAttemptFailure(
+  testRun: { status: "completed" | "failed"; error?: string },
+  coverageFailure?: string,
+): string | undefined {
+  const candidate = (e2eRunServiceModule as unknown as {
+    resolveDetectionAttemptFailure?: (
+      run: { status: "completed" | "failed"; error?: string },
+      guardFailure?: string,
+    ) => string | undefined;
+  }).resolveDetectionAttemptFailure;
+  assert.equal(typeof candidate, "function");
+  return candidate!(testRun, coverageFailure);
+}
+
+test("single guarded session persists authoritative lease and reconciliation coverage", () => {
+  const runGroup = guardedRunGroup();
+  const sessionKey = "agent:main:run.coverage.single";
+  const event = decisionEvent({
+    eventId: "event.coverage.single",
+    sessionKey,
+    leaseId: "lease.single",
+    leaseEpoch: 4,
+  });
+
+  assert.equal(recordCoverage(runGroup, {
+    sessionKey,
+    leaseId: "lease.single",
+    leaseEpoch: 4,
+    events: [event],
+    reconciliation: {
+      reconciled: true,
+      coverageBreachCount: 0,
+      mismatchCount: 0,
+    },
+  }), undefined);
+
+  assert.deepEqual(runGroup.nativeGuardCoverage, {
+    coverage: "conditional",
+    eventsTotal: 1,
+    reconciled: true,
+    coverageBreachCount: 0,
+    mismatchCount: 0,
+    leaseId: "lease.single",
+    leaseEpoch: 4,
+    sessions: [{
+      sessionKey,
+      leaseId: "lease.single",
+      leaseEpoch: 4,
+      eventsTotal: 1,
+      reconciled: true,
+      coverageBreachCount: 0,
+      mismatchCount: 0,
+    }],
+  });
+});
+
+test("multiple guarded sessions keep distinct leases and first-session top-level compatibility", () => {
+  const runGroup = guardedRunGroup();
+  for (const [index, leaseEpoch] of [2, 7].entries()) {
+    const sessionKey = `agent:main:run.coverage.${String(index + 1)}`;
+    const leaseId = `lease.${String(index + 1)}`;
+    recordCoverage(runGroup, {
+      sessionKey,
+      leaseId,
+      leaseEpoch,
+      events: [decisionEvent({
+        eventId: `event.coverage.${String(index + 1)}`,
+        sessionKey,
+        leaseId,
+        leaseEpoch,
+      })],
+      reconciliation: {
+        reconciled: true,
+        coverageBreachCount: 0,
+        mismatchCount: index,
+      },
+    });
+  }
+
+  assert.equal(runGroup.nativeGuardCoverage?.eventsTotal, 2);
+  assert.equal(runGroup.nativeGuardCoverage?.mismatchCount, 1);
+  assert.equal(runGroup.nativeGuardCoverage?.leaseId, "lease.1");
+  assert.equal(runGroup.nativeGuardCoverage?.leaseEpoch, 2);
+  assert.deepEqual(
+    runGroup.nativeGuardCoverage?.sessions.map((session) => ({
+      sessionKey: session.sessionKey,
+      leaseId: session.leaseId,
+      leaseEpoch: session.leaseEpoch,
+    })),
+    [
+      { sessionKey: "agent:main:run.coverage.1", leaseId: "lease.1", leaseEpoch: 2 },
+      { sessionKey: "agent:main:run.coverage.2", leaseId: "lease.2", leaseEpoch: 7 },
+    ],
+  );
+});
+
+test("conflicting lease identities inside one session fail closed without selecting event identity", () => {
+  const runGroup = guardedRunGroup();
+  const sessionKey = "agent:main:run.coverage.conflict";
+  const failure = recordCoverage(runGroup, {
+    sessionKey,
+    leaseId: "lease.activated",
+    leaseEpoch: 5,
+    events: [
+      decisionEvent({
+        eventId: "event.coverage.expected",
+        sessionKey,
+        leaseId: "lease.activated",
+        leaseEpoch: 5,
+      }),
+      decisionEvent({
+        eventId: "event.coverage.conflict",
+        sessionKey,
+        leaseId: "lease.conflict",
+        leaseEpoch: 9,
+      }),
+    ],
+    reconciliation: {
+      reconciled: true,
+      coverageBreachCount: 0,
+      mismatchCount: 0,
+    },
+  });
+
+  assert.match(failure ?? "", /^NATIVE_GUARD_EVIDENCE_UNAVAILABLE:/);
+  assert.equal(runGroup.nativeGuardCoverage?.reconciled, false);
+  assert.equal(runGroup.nativeGuardCoverage?.mismatchCount, 1);
+  assert.deepEqual(runGroup.nativeGuardCoverage?.sessions[0] && {
+    leaseId: runGroup.nativeGuardCoverage.sessions[0].leaseId,
+    leaseEpoch: runGroup.nativeGuardCoverage.sessions[0].leaseEpoch,
+  }, { leaseId: "lease.activated", leaseEpoch: 5 });
+  assert.match(runGroup.nativeGuardCoverage?.sessions[0]?.evidenceError ?? "", /identity conflict/i);
+});
+
+test("native guard evidence failure takes precedence over a retryable agent error", () => {
+  assert.equal(
+    resolveAttemptFailure(
+      { status: "failed", error: "429 Too many requests" },
+      "NATIVE_GUARD_EVIDENCE_UNAVAILABLE: lease identity conflict",
+    ),
+    "NATIVE_GUARD_EVIDENCE_UNAVAILABLE: lease identity conflict",
+  );
+});
+
+test("revoke failures are scrubbed into the failed session coverage summary", () => {
+  const runGroup = guardedRunGroup();
+  const sessionKey = "agent:main:run.coverage.revoke";
+  const failure = recordCoverage(runGroup, {
+    sessionKey,
+    leaseId: "lease.revoke",
+    leaseEpoch: 1,
+    events: [],
+    reconciliation: {
+      reconciled: true,
+      coverageBreachCount: 0,
+      mismatchCount: 0,
+    },
+    revokeError: "gatewayToken=super-secret plugin did not acknowledge revoke",
+  });
+
+  assert.match(failure ?? "", /^NATIVE_GUARD_REVOKE_FAILED:/);
+  assert.equal(runGroup.nativeGuardCoverage?.reconciled, false);
+  assert.match(
+    runGroup.nativeGuardCoverage?.sessions[0]?.revokeError ?? "",
+    /gatewayToken=\[REDACTED\]/,
+  );
+  assert.doesNotMatch(
+    runGroup.nativeGuardCoverage?.sessions[0]?.revokeError ?? "",
+    /super-secret/,
+  );
+});
+
+test("evidence failures are scrubbed into the failed session coverage summary", () => {
+  const runGroup = guardedRunGroup();
+  const failure = recordCoverage(runGroup, {
+    sessionKey: "agent:main:run.coverage.evidence",
+    leaseId: "lease.evidence",
+    leaseEpoch: 2,
+    events: [],
+    reconciliation: {
+      reconciled: false,
+      coverageBreachCount: 0,
+      mismatchCount: 0,
+    },
+    evidenceError: "OPENCLAW_GATEWAY_TOKEN=super-secret event store unavailable",
+  });
+
+  assert.match(failure ?? "", /^NATIVE_GUARD_EVIDENCE_UNAVAILABLE:/);
+  assert.match(
+    runGroup.nativeGuardCoverage?.sessions[0]?.evidenceError ?? "",
+    /OPENCLAW_GATEWAY_TOKEN=\[REDACTED\]/,
+  );
+  assert.doesNotMatch(
+    runGroup.nativeGuardCoverage?.sessions[0]?.evidenceError ?? "",
+    /super-secret/,
+  );
+});
+
+test("Guard OFF does not create a coverage or session summary", () => {
+  const runGroup = createInitialE2ERunGroup({
+    adapterKind: "mock",
+    agent: { name: "Guard off" },
+    generateDefenseReport: false,
+  });
+
+  assert.equal(recordCoverage(runGroup, {
+    sessionKey: "run.guard-off",
+    leaseId: "lease.unexpected",
+    leaseEpoch: 1,
+    events: [],
+    reconciliation: {
+      reconciled: true,
+      coverageBreachCount: 0,
+      mismatchCount: 0,
+    },
+  }), undefined);
+  assert.equal(runGroup.nativeGuardCoverage, undefined);
 });
 
 test("formal OpenClaw runE2E resolves a scrubbed host profile seed for the sandbox manager", async (t) => {

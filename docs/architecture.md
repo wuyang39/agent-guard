@@ -518,7 +518,7 @@ preflight → start → [run cases] → attest → revoke → cleanup
 - JSONL 有 + Hook 无 before → **coverage breach**，run 失败
 - 同一 callId 多个 outcome → duplicate outcome，标记 mismatch
 
-调和结果写入 `P2RunGroup.nativeGuardCoverage`（`NativeGuardCoverageSummary`），包括 `coverage`、`eventsTotal`、`reconciled`、`coverageBreachCount`、`leaseId`/`leaseEpoch`。
+调和结果写入 `P2RunGroup.nativeGuardCoverage`（`NativeGuardCoverageSummary`），包括顶层聚合的 `coverage`、`eventsTotal`、`reconciled`、`coverageBreachCount`、`mismatchCount`，以及权威的 `sessions` 列表。每个 session 摘要持久化 `sessionKey`、`leaseId`/`leaseEpoch`、事件与调和计数，并可携带已脱敏的 revoke/evidence error；顶层 `leaseId`/`leaseEpoch` 仅为首个 session 的兼容镜像，多 session 调用方必须以 `sessions` 为准。
 
 ### 7.4 Realtime Hook Events & Coverage UI (Task 13)
 
@@ -543,7 +543,7 @@ TestRuns 页面新增"沙箱与原生监护"诊断区，显示 Docker Preflight/
 
 `P2RunGroup` 新增两个字段：
 
-- `nativeGuardCoverage?: NativeGuardCoverageSummary` — coverage 状态、事件总数、调和状态、覆盖缺口数、leaseId/epoch
+- `nativeGuardCoverage?: NativeGuardCoverageSummary` — coverage 状态、事件/调和/缺口/mismatch 聚合、权威 per-session lease/runtime 摘要，以及首 session 的顶层 lease 兼容镜像
 - `sandboxEvidence?: SandboxEvidenceSummary` — Docker preflight/attest 通过状态、镜像 ID/digest、OpenClaw 版本、网络模式、容器 ID、失败类别
 
 `RunCaseFailure.category` 新增 5 种稳定失败类别：`sandbox_preflight_failed`、`sandbox_attestation_failed`、`sandbox_cleanup_failed`、`native_guard_unavailable`、`native_guard_coverage_breach`。

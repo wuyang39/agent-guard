@@ -145,7 +145,7 @@ test("required runtime evidence makes a scrubbed revoke error fatal", async () =
         return {
           nativeGuardEvents: [],
           supervisionRecords: [],
-          reconciliation: { reconciled: true, coverageBreachCount: 0 },
+          reconciliation: { reconciled: true, coverageBreachCount: 0, mismatchCount: 0 },
           revokeError: "gatewayToken=super-secret plugin did not acknowledge revoke",
         };
       },
@@ -156,4 +156,40 @@ test("required runtime evidence makes a scrubbed revoke error fatal", async () =
   assert.match(result.testRun.error ?? "", /^NATIVE_GUARD_REVOKE_FAILED:/);
   assert.doesNotMatch(result.testRun.error ?? "", /super-secret/);
   assert.match(result.nativeGuardRuntime?.revokeError ?? "", /gatewayToken=\[REDACTED\]/);
+});
+
+test("runtime evidence preserves projector mismatch counts", async () => {
+  const result = await runTestCase(AGENT, ADAPTER_CONFIG, CONTEXT, {
+    requireNativeGuardRuntimeEvidence: true,
+    customAdapter: adapterWithSession({
+      async drainRuntimeEvidence() {
+        return {
+          sessionKey: "agent:main:run.native-guard-test",
+          leaseId: "lease.mismatch",
+          leaseEpoch: 3,
+          nativeGuardEvents: [],
+          supervisionRecords: [],
+          reconciliation: {
+            reconciled: false,
+            coverageBreachCount: 0,
+            mismatchCount: 2,
+          },
+        } as never;
+      },
+    }),
+  });
+
+  assert.deepEqual(result.nativeGuardRuntime, {
+    sessionKey: "agent:main:run.native-guard-test",
+    leaseId: "lease.mismatch",
+    leaseEpoch: 3,
+    events: [],
+    reconciliation: {
+      reconciled: false,
+      coverageBreachCount: 0,
+      mismatchCount: 2,
+    },
+    revokeError: undefined,
+    evidenceError: undefined,
+  });
 });

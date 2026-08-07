@@ -180,6 +180,7 @@ test("guard reconciliation selects canonical session events and treats zero even
     assert.deepEqual(result.reconciliation, {
       reconciled: false,
       coverageBreachCount: 1,
+      mismatchCount: 0,
     });
   } finally {
     await rm(root, { recursive: true, force: true });

@@ -208,7 +208,9 @@ function RunGroupDiagnostics({ runGroup }: { runGroup: CLineRunGroup }) {
                   ...(runGroup.nativeGuardCoverage.coverageBreachCount > 0
                     ? [{ label: "覆盖缺口", value: `${String(runGroup.nativeGuardCoverage.coverageBreachCount)} 个 JSONL 调用缺 before 事件` }]
                     : [{ label: "覆盖缺口", value: "无" }]),
-                  { label: "Lease", value: runGroup.nativeGuardCoverage.leaseId ? `${runGroup.nativeGuardCoverage.leaseId} @ epoch ${String(runGroup.nativeGuardCoverage.leaseEpoch ?? 0)}` : "-" },
+                  { label: "调和不一致", value: String(runGroup.nativeGuardCoverage.mismatchCount) },
+                  { label: "监护会话", value: String(runGroup.nativeGuardCoverage.sessions.length) },
+                  { label: "Primary lease", value: runGroup.nativeGuardCoverage.leaseId ? `${runGroup.nativeGuardCoverage.leaseId} @ epoch ${String(runGroup.nativeGuardCoverage.leaseEpoch ?? 0)}` : "-" },
                 ]
               : [{ label: "原生监护覆盖", value: "不可用 — 非 OpenClaw 或未启用原生监护" }]),
             ...(runGroup.sandboxEvidence
@@ -227,6 +229,10 @@ function RunGroupDiagnostics({ runGroup }: { runGroup: CLineRunGroup }) {
                 ]
               : [{ label: "沙箱证据", value: "不可用 — 需 AGENT_GUARD_DETECTION_IMAGE 环境变量" }]),
           ]}
+        />
+        <DiagnosticJson
+          value={runGroup.nativeGuardCoverage?.sessions}
+          emptyLabel="暂无 per-session 原生监护证据"
         />
       </DiagnosticSection>
 

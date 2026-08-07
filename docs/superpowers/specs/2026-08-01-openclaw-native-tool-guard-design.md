@@ -122,7 +122,7 @@ Detection only:
 isolated OpenClaw profile -> Docker sandbox -> ephemeral workspace / controlled sink
 ```
 
-Agent Guard 后端是策略决策点（PDP），OpenClaw 插件是执行点（PEP）。Docker 是检测阶段的隔离层，不是策略引擎。
+Agent Guard 后端是策略决策点（PDP），OpenClaw 插件是执行点（PEP）。Gateway、插件和 Agent Guard 后端在宿主隔离 profile 中运行；Docker 只承载 agent 原生工具及受控 sink，不包含 OpenClaw 或插件。它是检测阶段的工具隔离层，不是策略引擎，也不把整个 OpenClaw 容器化。
 
 ## 6. 插件内执行顺序
 
@@ -156,9 +156,9 @@ OpenClaw 当前没有公开的“所有普通 Hook 之后再次运行 Trusted Po
 
 参数输入也依赖同一受信任基座：工具参数内容可以不受信任，但承载对象必须具有宿主提供的、不可由普通 Hook 或调用方伪造的 JSON-only provenance；Agent Guard 之前的其他普通插件必须是 trusted base，不能向参数对象附加 non-enumerable key、symbol、accessor 或其他非 JSON 状态。ECMAScript 没有有界的 own-key 流式枚举接口，因此本地 validator 不能独立证明任意普通对象不存在超量 hidden/symbol fanout。若未来部署不再满足该前提，`ACTIVE` 必须保持 unsupported，直到宿主提供可信 live contract，保证原子执行 Agent Guard 已批准的 clean params snapshot（审批路径也执行同一 snapshot），或提供等价的 JSON-only params contract。
 
-固定基线 `3edbe19fbd84ba58fdbf8e83042da9efd1d06f81` 的 Hook、Trusted Policy、service 和 route registrar 均返回 `void`，也不提供上述参数 provenance 或原子 approved-snapshot execution contract。因此“注册函数已返回”和 `plugins list --json` 都不能证明贡献已经提交并处于 live 状态。插件必须先注册一个可 lazy-start recovery 的最小 final Hook；该 Hook 对启动、查找、继承和超时异常均返回稳定 `block`，内部 4 秒截止时间短于宿主 5 秒预算。只有未来宿主对 final Hook、Trusted Policy、recovery service、生命周期 Hook 和控制 route 全部返回显式 `true`，并满足参数契约时，插件才允许 activate/renew。固定基线只能返回 `coverage=unsupported`、`finalizerAssurance=unverified` 和 `TRUSTED_POLICY_UNATTESTED`，但仍保留 revoke 作为 marker 清理入口。
+官方对照基线 `3edbe19fbd84ba58fdbf8e83042da9efd1d06f81` 的 Hook、Trusted Policy、service 和 route registrar 均返回 `void`，也不提供上述参数 provenance 或原子 approved-snapshot execution contract，因此只能返回 `coverage=unsupported`、`finalizerAssurance=unverified` 和 `TRUSTED_POLICY_UNATTESTED`，并保留 revoke 作为 marker 清理入口。受控 fork `agentguard/2026.7.1` 固定在 `2d55b950f357a8186eff433ca666a690d484a8e0`，已提供显式 live contribution、JSON-only provenance、post-approval lease recheck、fd3 bootstrap 和 Gateway core 签名证明。
 
-插件内 quarantine 不能替代进程外启动门禁。只要存在 guarded marker，而 live registry query 不能同时证明 Agent Guard 插件、final `before_tool_call`、recovery service、可信的 post-approval lease recheck capability，以及 JSON-only provenance 或原子 approved-snapshot execution 参数契约，受管 launcher 必须拒绝正常 Gateway 启动，只开放不调度工具的 maintenance cleanup。参数契约是 post-approval lease recheck 之外的附加门禁，二者都不能来自 config、环境变量或调用方自报。该 launcher 门禁是 Task 14 的阻断验收项。
+插件内 quarantine 不能替代进程外启动门禁。只要存在 guarded marker，而 live registry query 不能同时证明 Agent Guard 插件、final `before_tool_call`、recovery service、可信的 post-approval lease recheck capability，以及 JSON-only provenance 或原子 approved-snapshot execution 参数契约，受管 launcher 必须拒绝正常 Gateway 启动，只开放不调度工具的 maintenance cleanup。参数契约是 post-approval lease recheck 之外的附加门禁，二者都不能来自 config、环境变量或调用方自报。该 launcher 门禁已经实现并通过真实 child 验收；正常用法为 `node --import tsx scripts/openclaw-guard-launcher.ts -- gateway run ...`，maintenance 模式不 spawn child。
 
 ### 6.3 `after_tool_call`
 
@@ -410,7 +410,8 @@ outputs/openclaw-detection/<runGroupId>/
 
 补充约束：
 
-- 镜像使用 digest 固定，禁止 `latest`。
+- 工具镜像固定为 `openclaw-sandbox@sha256:dcf6e79c5e3f41823c29cffe44103e06c2865ebfcee6434ce5a58f9860975b5d`，禁止 `latest`。镜像不包含 OpenClaw fork 或 Agent Guard 插件，只提供 non-root、`python3`、`sh`、`timeout` 和只读文件系统友好的工具运行环境。
+- OpenClaw Gateway 与插件在宿主隔离 profile 中运行；agent 原生工具进入 Docker。该边界符合“不把整个 OpenClaw 容器化”的设计目标。
 - 容器使用非 root 用户、`no-new-privileges`、CPU/内存/PID/时长限制。
 - 禁止 Docker socket、宿主秘密目录和任意外部 bind mount。
 - 工作区默认只读；需要验证写行为的 case 使用容器内临时副本，不回写宿主。
@@ -428,6 +429,8 @@ outputs/openclaw-detection/<runGroupId>/
 3. 会话结果检查 OpenClaw meta、容器 ID、network、mount、capabilities 和实际 canary 行为。
 
 任一次验证失败都将检测标记为 `sandbox_preflight_failed` 或 `sandbox_attestation_failed`，不得继续生成“安全检测完成”的结论。
+
+最终验收同时覆盖 default `network=none` 与 controlled sink 网络。两者均在 required Docker gate 中通过；controlled sink 可达但无 Internet 路由，宿主 canary 不可读也不可写，Docker socket 不可达，清理后残留容器和网络计数为 0。
 
 ## 11. 后端组件
 
@@ -513,9 +516,9 @@ guarded 模式要求 OpenClaw 提供：
 - 插件 Gateway HTTP route 及 gateway auth
 - Docker sandbox `mode=all`、`scope=session` 和 `sandbox explain`
 
-开发与验收固定在 OpenClaw `2026.7.2`，同时使用 capability preflight，而不是只根据版本字符串推断。
+官方能力研究对照固定在 OpenClaw `2026.7.2` / `3edbe19f`；最终真实验收固定在受控 fork `2d55b950f357a8186eff433ca666a690d484a8e0`，并使用 capability preflight，而不是只根据版本字符串推断。
 
-capability preflight 必须校验 Agent Guard 插件状态，以及 `plugins list --json` 的顶层 `diagnostics` 和 `registry.diagnostics`。Agent Guard 自身的 error 状态，或涉及其 route、service、Trusted Policy、Hook 的 error diagnostic，均强制 `supportsNativeGuard=false` 和 `finalizerAssurance=unverified`；畸形或超限 diagnostic 输出按无能力处理。warning 和无关插件 error 不得误杀。该 CLI 输出是不加载插件 runtime 的 manifest/snapshot 证据，不是 live contribution attestation。
+capability preflight 必须校验 Agent Guard 插件状态，以及 registry 输出的顶层 `diagnostics` 和 `registry.diagnostics`。Agent Guard 自身的 error 状态，或涉及其 route、service、Trusted Policy、Hook 的 error diagnostic，均强制 `supportsNativeGuard=false` 和 `finalizerAssurance=unverified`；畸形或超限 diagnostic 输出按无能力处理。warning 和无关插件 error 不得误杀。普通 manifest/snapshot CLI 输出不是 live contribution attestation；真实 gate 必须使用受控 fork 的 production inspector，并验证 host-produced live registry contract。
 
 ### 14.2 覆盖状态
 
@@ -559,8 +562,9 @@ misconfigured
 | Docker daemon/image 不可用 | 检测拒绝启动 |
 | sandbox explain 与预期不符 | 立即取消检测并清理 |
 | OpenClaw Gateway 重启 | 未到期 guarded session 进入 recovery |
-| 固定基线 registrar 无 live attestation | activate/renew 返回稳定 503；只允许 revoke/maintenance cleanup |
+| 官方对照基线 registrar 无 live attestation | activate/renew 返回稳定 503；只允许 revoke/maintenance cleanup |
 | marker 存在但 live registry 无法证明插件、final Hook、recovery service | launcher 拒绝正常 Gateway 启动，不调度任何工具 |
+| Gateway bootstrap/readiness 超过 60 秒绝对截止时间 | 终止 child，撤销 credentials，检测失败 |
 
 ## 16. 测试策略
 
@@ -664,7 +668,7 @@ misconfigured
 - 决策使用 Ed25519 签名，租约凭据不持久化。
 - 正式证据来自真实 before/after，JSONL 只作交叉校验。
 - 不把 OpenClaw 原生插件代码或 Gateway 本身误称为 Docker 已隔离。
-- 固定 `3edbe19f` 仍为 unsupported/quarantined；Task 14 的进程外 launcher gate 尚未实现和 live 验收，不能宣称 native guard 可发布。
+- 官方对照 `3edbe19f` 仍为 unsupported/quarantined；Task 14 的进程外 launcher gate、真实 child 绑定和 required Docker gate 已在受控 fork 上完成验收。
 
 ## 20. 参考项目与上游依据
 

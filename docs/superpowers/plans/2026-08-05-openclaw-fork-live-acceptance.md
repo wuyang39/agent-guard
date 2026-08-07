@@ -4,7 +4,7 @@
 
 **Goal:** Build and prove a controlled OpenClaw fork whose native-tool guard capabilities are verified without changing the host's global OpenClaw installation.
 
-**Architecture:** Agent Guard defines one strict, host-produced live-attestation contract consumed by the control client, external launcher, and Docker live verifier. A dedicated fd3 bootstrap pipe binds each spawned Gateway process to a fresh Ed25519 public key before any HTTP request; the Gateway's reserved core route signs its instance identity and live registry with the corresponding in-memory private key. The fork implements the seven required host capabilities and this process-bound identity contract. A digest-pinned container image packages the fork and plugin, while the host continues to use the official global OpenClaw unless `OPENCLAW_CLI` explicitly selects the fork.
+**Architecture:** Agent Guard defines one strict, host-produced live-attestation contract consumed by the control client, external launcher, and Docker live verifier. A dedicated fd3 bootstrap pipe binds each spawned Gateway process to a fresh Ed25519 public key before any HTTP request; the Gateway's reserved core route signs its instance identity and live registry with the corresponding in-memory private key. The fork and plugin run in a host-isolated profile selected by explicit CLI paths. A digest-pinned Docker image contains only the agent's native-tool sandbox dependencies; it does not package OpenClaw or the plugin.
 
 **Tech Stack:** TypeScript, Node.js, PowerShell, OpenClaw plugin SDK, Docker BuildKit, Node test runner.
 
@@ -52,14 +52,14 @@
 
 **Repository:** `E:\Projects\openclaw-agentguard`
 
-- [ ] Clone `https://github.com/openclaw/openclaw.git`, check out the source matching installed `2026.7.1-2`, and create branch `agentguard/2026.7.1`.
-- [ ] Add failing upstream tests for each of the seven host capabilities and the exact `native-guard-1` registry output.
-- [ ] Implement registrar results, live SDK returns, final hook ownership, trusted policy registration, recovery service registration, post-approval lease recheck, JSON-only parameter provenance, and live registry reporting.
-- [ ] In every `startGatewayServer`, generate a new Ed25519 keypair, write exactly one bounded `native-guard-bootstrap-1` JSON line to the declared fd3 bootstrap pipe, close fd3, and retain the private key only in that server instance's memory.
-- [ ] Keep the spawned Gateway process alive for the entire guarded detection lifetime. The launcher must expose one stable completion promise for that exact process; resolving or rejecting it before Agent Guard requests shutdown is fatal and a new process must use a new generation, keypair, and instance ID.
-- [ ] Reserve `/agent-guard/native-guard/v1/gateway-attestation` in Gateway core so plugins cannot register or shadow it. Authenticate the route, bind it to build `VERSION`, the per-server `gatewayInstanceId`, the active live registry, and the request challenge, then sign the canonical proof with the per-server key.
-- [ ] Set version `2026.7.1-agentguard.1`, run the upstream test/build suite, and create an npm package tarball.
-- [ ] Commit each capability independently and record the final fork commit.
+- [x] Create branch `agentguard/2026.7.1` and pin final fork commit `2d55b950f357a8186eff433ca666a690d484a8e0`.
+- [x] Add upstream tests for the seven host capabilities and exact `native-guard-1` registry output.
+- [x] Implement registrar results, live SDK returns, final hook ownership, trusted policy registration, recovery service registration, post-approval lease recheck, JSON-only parameter provenance, and live registry reporting.
+- [x] Generate a per-Gateway Ed25519 keypair, emit one bounded `native-guard-bootstrap-1` fd3 record, and keep the private key in the server instance only.
+- [x] Keep the exact Gateway child observable for the guarded detection lifetime and fail the run on unexpected exit.
+- [x] Reserve and authenticate `/agent-guard/native-guard/v1/gateway-attestation`, bind it to build identity, instance identity, live registry and challenge, then sign the canonical proof.
+- [x] Build with `node scripts/build-all.mjs gatewayWatch`; require `dist/.buildstamp` to bind the output to the pinned fork commit.
+- [x] Use root `openclaw.mjs` as the runtime entrypoint and `dist/cli/native-guard-inspector.js` as the production capability inspector.
 
 ### Task 4: Build and attest the immutable sandbox image
 
@@ -68,18 +68,18 @@
 - Create: `docker/openclaw-sandbox/README.md`
 - Create: `scripts/build-openclaw-sandbox.ps1`
 
-- [ ] Build the Agent Guard plugin and fork tarball without `npm link`.
-- [ ] Build a Node 22 based non-root image containing Python and network probe tools, with no embedded credentials.
-- [ ] Push the image, capture its repository digest, generate SBOM/provenance, and verify image labels match both source commits.
-- [ ] Verify `openclaw --version` and the exact live registry contract inside the image.
-- [ ] Commit with `build: add reproducible OpenClaw guard sandbox image`.
+- [x] Build the Agent Guard plugin and controlled fork without `npm link`.
+- [x] Build a non-root, read-only-friendly tool sandbox containing `python3`, `sh`, `timeout` and required probes, with no embedded credentials, OpenClaw, or Agent Guard plugin.
+- [x] Pin `openclaw-sandbox@sha256:dcf6e79c5e3f41823c29cffe44103e06c2865ebfcee6434ce5a58f9860975b5d` and verify its runtime isolation properties.
+- [x] Keep Gateway and plugin execution on the host isolated profile; use the image only for agent native tools and the controlled sink.
+- [ ] Push a release image and archive SBOM/provenance. This is competition-external release hardening.
 
 ### Task 5: Run live acceptance and archive evidence
 
-- [ ] Set `OPENCLAW_CLI` to the fork wrapper and `OPENCLAW_HOME` to an isolated profile; leave the global OpenClaw unchanged.
-- [ ] Run launcher negative/positive/maintenance tests against real registries.
-- [ ] Prove a same-port fake server that receives the bearer token and fresh challenge still fails when it cannot sign with the fd3-bound private key.
-- [ ] Set `AGENT_GUARD_DETECTION_IMAGE` to the new repository digest and ensure `AGENT_GUARD_ALLOW_DOCKER_TEST_SKIP` is absent.
-- [ ] Run `verify:native-guard:docker`, `verify:native-guard:all`, and `verify:all`.
+- [x] Set `OPENCLAW_CLI` to root `openclaw.mjs` and `TEST_OPENCLAW_AGENTGUARD_CLI` to production `dist/cli/native-guard-inspector.js`; leave the global OpenClaw unchanged.
+- [x] Run launcher negative, positive and maintenance tests against real registries, including a mandatory real spawned child.
+- [x] Prove a same-port fake server that receives the bearer token and fresh challenge still fails when it cannot sign with the fd3-bound private key.
+- [x] Set `AGENT_GUARD_DETECTION_IMAGE` to the pinned digest and run required default and controlled Docker cases without skip.
+- [x] Run a fresh real registry gate and required Docker gate. Controlled sink reachability passes, Internet egress and host canary read/write are blocked, and cleanup leaves zero labeled resources.
 - [ ] Execute the ten manual runbook scenarios and archive logs, JSONL, Hook evidence, Docker inspect output, SBOM, fork commit, plugin commit, and image digest.
-- [ ] Request final security review; release only with zero open Critical or High findings.
+- [ ] Request final release security review; this remains competition-external release hardening.

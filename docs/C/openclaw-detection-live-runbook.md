@@ -1,197 +1,142 @@
 # OpenClaw Detection Live Verification Runbook
 
-Task 14 P0-3 — 真实 Docker 环境验收操作手册。
+本文记录 Native Guard 最终真实验收路径。Gateway、Agent Guard 插件和后端运行在宿主隔离 profile；Docker 只运行 agent 原生工具和可选 controlled sink，不把整个 OpenClaw 容器化。
 
-## 前置条件
+## 固定基线
 
-| 组件 | 要求 | 验证 |
-|---|---|---|
-| Docker daemon | 运行中 | `docker version` |
-| OpenClaw CLI | ≥ 2026.7.2 或兼容 fork | `openclaw --version` |
-| Agent Guard 插件 | 已构建 + 已安装 | `openclaw plugins list --json` |
-| 不可变镜像 | sha256 digest pinned | `docker image inspect <image>` |
-| Node.js | ≥ 20 | `node --version` |
+| 项目 | 固定值 |
+|---|---|
+| Agent Guard | `6bff05a504738772d82d3f1f5289a21f9b38aeb4` |
+| OpenClaw branch | `agentguard/2026.7.1` |
+| OpenClaw fork | `2d55b950f357a8186eff433ca666a690d484a8e0` |
+| Runtime entrypoint | `<fork-root>/openclaw.mjs` |
+| Production inspector | `<fork-root>/dist/cli/native-guard-inspector.js` |
+| Tool sandbox image | `openclaw-sandbox@sha256:dcf6e79c5e3f41823c29cffe44103e06c2865ebfcee6434ce5a58f9860975b5d` |
 
-## 第〇步：Fork 开发隔离
+前置条件为 Node.js 20+、可用的 Docker daemon，以及独立的 OpenClaw fork 工作区。宿主全局 OpenClaw 保持不变。
 
-宿主机全局 `openclaw` 保留官方版本不动。Fork 通过 `OPENCLAW_CLI` 环境变量指向。
+## 1. 构建受控 fork
 
 ```powershell
-# 克隆 fork 到独立目录
-git clone <fork-url> E:\Projects\openclaw-agentguard
-cd E:\Projects\openclaw-agentguard
+Set-Location E:\Projects\openclaw-agentguard
+git switch agentguard/2026.7.1
+git rev-parse HEAD
+# Expected: 2d55b950f357a8186eff433ca666a690d484a8e0
 
-# 实现 7 项变更（见 docs/C/openclaw-fork-implementation-guide.md）
-# 构建
-npm ci
-npm run build
+corepack enable
+pnpm install --frozen-lockfile
+node scripts/build-all.mjs gatewayWatch
 
-# 创建包装脚本（Windows .cmd）
-@'
-@echo off
-node "%~dp0dist\cli.js" %*
-'@ | Set-Content openclaw.cmd
-
-# 宿主机手动测试（不影响全局安装）
-$env:OPENCLAW_CLI = "E:\Projects\openclaw-agentguard\openclaw.cmd"
-openclaw --version
-# 预期: openclaw 2026.7.1-agentguard.1
+Get-Content .\dist\.buildstamp
+Test-Path .\openclaw.mjs
+Test-Path .\dist\cli\native-guard-inspector.js
 ```
 
-Agent Guard 代码已原生支持 `OPENCLAW_CLI`：`resolveOpenClawCliPath()` 优先使用该环境变量。无需 `npm link` 或覆盖全局安装。
+`dist/.buildstamp` 必须绑定上述 fork SHA。正式验收禁止使用定向 `tsdown --no-config` 代替该构建；这种产物缺少 `dist/extensions`，Gateway 会卡在启动阶段，不能作为验收证据。
 
-## 第一步：构建插件
+## 2. 选择运行入口
 
 ```powershell
-cd E:\Projects\agent-guard
+$forkRoot = "E:\Projects\openclaw-agentguard"
+$env:OPENCLAW_CLI = "$forkRoot\openclaw.mjs"
+$env:TEST_OPENCLAW_AGENTGUARD_CLI = "$forkRoot\dist\cli\native-guard-inspector.js"
+
+node $env:OPENCLAW_CLI --version
+node $env:TEST_OPENCLAW_AGENTGUARD_CLI --version
+```
+
+`OPENCLAW_CLI` 是真实 Gateway child 入口。`TEST_OPENCLAW_AGENTGUARD_CLI` 是 production live-registry inspector，不能用测试 stub 或旧的单文件 CLI 产物替代。
+
+## 3. 构建并安装插件
+
+```powershell
+Set-Location E:\Projects\agent-guard
 npm ci
 npm run build:openclaw-plugin
-# → plugins/agent-guard-supervision/dist/index.js (216 KB)
-```
-
-## 第二步：准备镜像
-
-```powershell
-# Pull or build the detection image
-docker pull <registry>/openclaw-sandbox@sha256:aaaa...
-
-# Set the env var for all subsequent commands
-$env:AGENT_GUARD_DETECTION_IMAGE = "registry/openclaw-sandbox@sha256:aaaa..."
-```
-
-镜像要求：
-- 非 root 用户 (65532:65532)
-- 包含 OpenClaw fork binary (`2026.7.1-agentguard.1`)
-- 包含已构建的 Agent Guard 插件
-- 包含 `python3`、`nc`、`sh`、`wget`/`curl`
-- 不可变（digest pinned）
-- 只读文件系统友好
-
-**注意**：Fork 完成前可先用现有镜像测试基础设施（Docker daemon、port hijack 防御）。
-Fork 完成后必须重新构建镜像，digest 会变化——记录新 digest 并用它运行验收。
-
-## 第三步：安装插件
-
-```powershell
 .\scripts\install-openclaw-native-guard.ps1
 ```
 
-检查插件状态：
-```powershell
-openclaw plugins list --json
-```
+安装和检测使用独立 `OPENCLAW_STATE_DIR`、`OPENCLAW_CONFIG_PATH` 与 workspace；不要修改用户全局 profile。
 
-预期：`agent-guard-supervision` 状态为 `loaded`，hook 包含 `before_tool_call`，service 包含 `agent-guard-runtime`。
-
-## 第四步：非 Docker 回归
+## 4. 验证工具 sandbox 镜像
 
 ```powershell
-npm run verify:native-guard
+$env:AGENT_GUARD_DETECTION_IMAGE = "openclaw-sandbox@sha256:dcf6e79c5e3f41823c29cffe44103e06c2865ebfcee6434ce5a58f9860975b5d"
+docker image inspect $env:AGENT_GUARD_DETECTION_IMAGE --format '{{.Id}}'
+docker run --rm --read-only --user 65532:65532 --network none --entrypoint sh $env:AGENT_GUARD_DETECTION_IMAGE -c "id -u; python3 --version; command -v timeout"
 ```
 
-预期：protocol 8/8、plugin 319/319、backend tests 全部通过。
+该镜像是纯工具 sandbox：non-root，包含 `python3`、`sh`、`timeout`，适配只读 rootfs；不包含 OpenClaw fork 或 Agent Guard 插件。Gateway 与插件继续在宿主隔离 profile 中运行。
 
-## 第五步（fork 后）：镜像内验证
+## 5. 通过 launcher 启动 Gateway
+
+正常 guarded 启动必须把 child 命令放在 `--` 后：
 
 ```powershell
-# 确认 fork 版本
-docker run --rm --entrypoint "" $env:AGENT_GUARD_DETECTION_IMAGE openclaw --version
-# 预期: openclaw 2026.7.1-agentguard.1
-
-# 确认 live attestation
-docker run --rm --entrypoint "" $env:AGENT_GUARD_DETECTION_IMAGE openclaw plugins list --json
-# 预期: "liveAttestation": true
+node --import tsx scripts/openclaw-guard-launcher.ts -- gateway run --bind loopback --port <port> --token <token>
 ```
 
-## 第六步：Docker 真实验收
+launcher 在检查 marker 和 live registry 后原子 spawn 真实 Gateway child，并传递退出状态。fd3 bootstrap、签名 attestation 与 child completion 将检测绑定到同一 generation。bootstrap/readiness 使用一个 60 秒绝对截止时间。
+
+maintenance 只做进程外清理，不启动 OpenClaw：
 
 ```powershell
-npm run verify:native-guard:docker
+node --import tsx scripts/openclaw-guard-launcher.ts --maintenance
 ```
 
-验证项目：
+maintenance 模式不要附带 `-- gateway run ...`。
 
-| # | 检查项 | 说明 |
-|---|---|---|
-| 1 | Port hijack defense | TOCTOU 端口抢占被 auth gate 阻止 |
-| 2 | Sandbox lifecycle | preflight → start → cleanup 正常 |
-| 3 | Gateway auth | 无认证 → 401/403；nonce challenge 通过 |
-| 4 | Container PID ≠ host | 真实容器隔离 |
-| 5 | Readonly rootfs | `docker inspect` 确认 |
-| 6 | Non-privileged | `Privileged=false` |
-| 7 | Non-root user | `65532:65532` |
-| 8 | CapDrop ALL | 所有 capabilities dropped |
-| 9 | Resource limits | Memory 512m, CPU 1, PIDs 128 |
-| 10 | Host canary unreadable | 容器不能访问宿主 canary |
-| 11 | Docker socket absent | 容器内无 Docker socket |
-| 12 | Network isolation | 无 Internet 出口 |
-| 13 | Cleanup | 无残留容器/网络 |
+## 6. 运行真实 release gates
 
-失败时设置 `AGENT_GUARD_ALLOW_DOCKER_TEST_SKIP=1` 仅可在非发布环境跳过。发布环境禁止该变量。
+确保没有设置跳过变量：
 
-## 第七步：全链路
+```powershell
+Remove-Item Env:AGENT_GUARD_ALLOW_DOCKER_TEST_SKIP -ErrorAction SilentlyContinue
+npm run verify:native-guard:real
+npm run verify:native-guard:docker -- --required
+```
+
+完整 Native Guard gate 可用：
 
 ```powershell
 npm run verify:native-guard:all
 ```
 
-## 第八步：E2E 场景手动验收
+最终 fresh 结果：real registry gate PASS；required Docker default 与 controlled 两种 case 均 PASS。验收证明 controlled sink 可达、无 Internet 出口、宿主 canary 不可读也不可写、Docker socket 不可达，cleanup 后残留容器和网络均为 0。
 
-按顺序执行，每一步都需验证结果：
+## 7. Docker 验收项
 
-### 1. Guard OFF
-```powershell
-# openclaw.json: agent-guard-supervision enabled = false
-openclaw agent --json --message "read /docs/readme.md"
-```
-预期：`read` 正常执行，无 Hook 事件。
+| 检查项 | 通过条件 |
+|---|---|
+| Gateway identity | fd3 公钥与 core Ed25519 签名绑定真实 child |
+| Child lifetime | 非 cleanup 提前退出立即失败，后续 sample 不启动 |
+| Readiness | 60 秒绝对截止时间内完成 auth、nonce 与签名证明 |
+| Container identity | container PID 与 host PID 不同 |
+| Filesystem | rootfs readonly，host canary 读写均失败 |
+| Privilege | `65532:65532`、`Privileged=false`、`CapDrop=ALL` |
+| Resources | memory 512 MiB、CPU 1、PIDs 128 |
+| Default network | `network=none` |
+| Controlled network | sink 可达，Internet 不可达 |
+| Host boundary | Docker socket 不存在，无任意 host bind |
+| Cleanup | labeled container/network 残留均为 0 |
 
-### 2. ACTIVE allow
-```powershell
-# 激活 detection lease
-curl -X POST http://127.0.0.1:3100/api/v1/openclaw/native-guard/leases \
-  -H "X-Agent-Guard-Control-Token: <token>" \
-  -H "Content-Type: application/json" \
-  -d '{"rootSessionKey":"test-1","mode":"detection"}'
+## 8. 尚未完成的发布硬化
 
-openclaw agent --session-key test-1 --json --message "read /docs/readme.md"
-```
-预期：`read` 执行一次，before/after 对齐，no breach。
+以下项目不影响比赛实现与上述 gate 的完成状态，但发布前仍需单独完成：
 
-### 3. deny
-```powershell
-openclaw agent --session-key test-deny --json --message "exec rm -rf /"
-```
-预期：`exec` 被 deny，零副作用。
-
-### 4. redact
-预期：hook 改写参数，实际执行参数等于签名后的改写参数。
-
-### 5. ask
-预期：批准一次执行、拒绝一次、超时 deny、取消 deny。
-
-### 6. PDP 故障
-停止 Agent Guard backend，高风险工具 deny，未知工具 deny。
-
-### 7. 子 Agent 继承 lease
-子 session 的 before_tool_call 在同一 lease 下生效。
-
-### 8. Gateway 重启 → recovery
-重启 Gateway 后 lease 仍然 active，recovery marker 存在。
-
-### 9. Coverage breach
-修改 JSONL 添加 tool_call 但 Hook 不触发 → run failed。
-
-### 10. Docker 隔离 + 清理
-容器内 exec PID ≠ host PID，canary/socket/network 不可达，cancel 后无残留。
+- [ ] 推送正式 registry 镜像并固定远端 repository digest。
+- [ ] 生成并归档 SBOM 与 provenance。
+- [ ] 执行并归档完整人工场景矩阵，包括 OFF、allow、deny、redact、ask、PDP 故障、子 Agent、recovery 和 coverage breach。
+- [ ] 完成最终发布安全评审。
 
 ## 故障排查
 
 | 故障 | 检查 |
 |---|---|
-| `openclaw` not found | `$env:PATH` 包含 OpenClaw 安装目录 |
-| Docker daemon unavailable | `docker version` 确认 daemon 运行 |
-| Image not found | `docker pull` 或检查 digest 拼写 |
-| Plugin not loaded | `openclaw plugins list --json` 确认 `agent-guard-supervision` |
-| Gateway does not start | 检查端口冲突，`netstat -ano \| findstr <port>` |
-| Launcher rejects startup | 使用 `--maintenance` 清理模式，或修复 registry |
+| fork SHA 不符 | `git rev-parse HEAD` 必须等于固定 SHA |
+| `dist/.buildstamp` 缺失或不符 | 重新运行 `node scripts/build-all.mjs gatewayWatch` |
+| Gateway 启动卡住 | 排除定向 `tsdown --no-config` 产物，确认 `dist/extensions` 存在 |
+| real gate 找不到 CLI | 同时检查 `OPENCLAW_CLI` 与 `TEST_OPENCLAW_AGENTGUARD_CLI` |
+| launcher 拒绝正常启动 | 检查 marker inventory 和 production inspector 的 live attestation；清理时单独使用 `--maintenance` |
+| Docker gate 被拒绝跳过 | required gate 禁止 `AGENT_GUARD_ALLOW_DOCKER_TEST_SKIP=1` |
+| cleanup 失败 | 按 run label 检查残留 container/network，并保留失败证据 |

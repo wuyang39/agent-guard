@@ -4,7 +4,7 @@
 
 **Goal:** 为 OpenClaw 原生工具增加租约控制的执行前裁决，并让检测任务强制运行于可证明的 Docker 隔离环境，同时保证未启用 Agent Guard 的会话保持原有行为。
 
-**Architecture:** Agent Guard 后端作为 PDP，OpenClaw 插件作为 PEP。插件用 Trusted Tool Policy 处理租约准入和 recovery，用低优先级 `before_tool_call` 对最终可见参数请求裁决，用 `after_tool_call` 上报真实结果；检测编排使用独立 OpenClaw Gateway/profile 和 Docker sandbox。正式 Trace 来自 Hook 事件，OpenClaw JSONL 只做交叉校验。
+**Architecture:** Agent Guard 后端作为 PDP，OpenClaw 插件作为 PEP。插件用 Trusted Tool Policy 处理租约准入和 recovery，用低优先级 `before_tool_call` 对最终可见参数请求裁决，用 `after_tool_call` 上报真实结果；Gateway 与插件使用宿主隔离 profile，agent 原生工具使用 Docker sandbox。正式 Trace 来自 Hook 事件，OpenClaw JSONL 只做交叉校验。
 
 **Tech Stack:** TypeScript 5.9、Node.js 24.14+、Fastify 5、React 19、OpenClaw Plugin SDK 2026.7.2、Docker、Node test runner、esbuild、Ed25519/SHA-256。
 
@@ -13,10 +13,10 @@
 ## Baseline And Constraints
 
 - 设计规格：`docs/superpowers/specs/2026-08-01-openclaw-native-tool-guard-design.md`。
-- 当前本机 OpenClaw 为 `2026.6.1 (2e08f0f)`。
-- 2026-08-01 可从 npm 获取的 `2026.7.1-2` 仍不包含 `registerTrustedToolPolicy`、`contracts.trustedToolPolicies` 和新版 `requireApproval` 契约。
-- 开发契约固定到 OpenClaw `2026.7.2` / `3edbe19fbd84ba58fdbf8e83042da9efd1d06f81`。
-- 在兼容 OpenClaw 不可用时，必须完成编译、单元测试和 fake-host 契约测试；真实 guarded 模式必须报告 `unsupported`，OFF 模式仍正常工作。
+- 历史本机基线 OpenClaw `2026.6.1 (2e08f0f)` 只用于 OFF/unsupported 对照。
+- 2026-08-01 的 npm `2026.7.1-2` 不包含 `registerTrustedToolPolicy`、`contracts.trustedToolPolicies` 和新版 `requireApproval` 契约。
+- 官方能力研究对照为 OpenClaw `2026.7.2` / `3edbe19fbd84ba58fdbf8e83042da9efd1d06f81`；最终验收使用受控 fork `2d55b950f357a8186eff433ca666a690d484a8e0`。
+- 不兼容 OpenClaw 必须报告 `unsupported`，OFF 模式仍正常工作；guarded 真实验收只使用固定 fork 与 production inspector。
 - 不恢复或提交工作区中已删除的 `docs/p4-native-tool-bypass-defense-plan.md`。
 - 不把历史提交 `8aa25d9` 的插件直接恢复；只可参考其安装路径和事件展示方式。
 
@@ -104,7 +104,7 @@
 - Modify: `tsconfig.json`
 - Modify: `package.json`
 
-- [ ] **Step 1: Write failing protocol tests**
+- [x] **Step 1: Write failing protocol tests**
 
 ```typescript
 // packages/native-guard-protocol/src/index.test.ts
@@ -141,13 +141,13 @@ test("Ed25519 signature rejects changed payload", () => {
 });
 ```
 
-- [ ] **Step 2: Run the test and verify the missing module failure**
+- [x] **Step 2: Run the test and verify the missing module failure**
 
 Run: `node --import tsx --test packages/native-guard-protocol/src/index.test.ts`
 
 Expected: FAIL with `Cannot find module './index'`.
 
-- [ ] **Step 3: Add the exact wire types**
+- [x] **Step 3: Add the exact wire types**
 
 ```typescript
 // packages/contracts/src/types/nativeGuard.ts
@@ -284,7 +284,7 @@ export type OpenClawSandboxEvidence = {
 
 Append `export * from "./types/nativeGuard";` to `packages/contracts/src/index.ts`.
 
-- [ ] **Step 4: Implement canonical JSON and signing**
+- [x] **Step 4: Implement canonical JSON and signing**
 
 ```typescript
 // packages/native-guard-protocol/src/index.ts
@@ -344,7 +344,7 @@ export function verifyNativeGuardPayload(
 
 Create `packages/native-guard-protocol/package.json` with name `@agent-guard/native-guard-protocol`, type `module`, and export `./src/index.ts`. Add the package path to both `tsconfig.json` paths and include lists.
 
-- [ ] **Step 5: Add the protocol test command and run it**
+- [x] **Step 5: Add the protocol test command and run it**
 
 Add to `package.json`:
 
@@ -356,7 +356,7 @@ Run: `npm run test:native-guard:protocol && npm run typecheck`
 
 Expected: protocol tests PASS and TypeScript exits 0.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add package.json packages/contracts packages/native-guard-protocol tsconfig.json
@@ -376,7 +376,7 @@ git commit -m "feat: add native guard signed protocol"
 - Modify: `package.json`
 - Modify: `package-lock.json`
 
-- [ ] **Step 1: Write failing repository and unsafe-regex tests**
+- [x] **Step 1: Write failing repository and unsafe-regex tests**
 
 ```typescript
 // backend/src/modules/supervisor/policyEngine.test.ts
@@ -422,13 +422,13 @@ test("unsafe nested-quantifier regex never matches", () => {
 
 Repository tests must create a temporary report index and assert that a stored OpenClaw policy pack loads, while an HTTP-sample policy pack is rejected.
 
-- [ ] **Step 2: Run tests and verify failures**
+- [x] **Step 2: Run tests and verify failures**
 
 Run: `node --import tsx --test backend/src/modules/supervisor/policyEngine.test.ts backend/src/modules/policy/policyPackRepository.test.ts`
 
 Expected: FAIL because `safe-regex2` and `policyPackRepository` are absent.
 
-- [ ] **Step 3: Add safe regex validation**
+- [x] **Step 3: Add safe regex validation**
 
 Install: `npm install safe-regex2@5.1.1`
 
@@ -451,7 +451,7 @@ function matchesRegex(actual: string, pattern: string): boolean {
 }
 ```
 
-- [ ] **Step 4: Extract the stored policy loader**
+- [x] **Step 4: Extract the stored policy loader**
 
 ```typescript
 // backend/src/modules/policy/policyPackRepository.ts
@@ -491,13 +491,13 @@ export async function loadStoredOpenClawPolicyPack(policyPackId: string): Promis
 
 Update `realtimeMcpServer.ts` to call this repository instead of its private `loadOpenClawPolicyPackById` implementation.
 
-- [ ] **Step 5: Run focused and existing realtime tests**
+- [x] **Step 5: Run focused and existing realtime tests**
 
 Run: `node --import tsx --test backend/src/modules/supervisor/policyEngine.test.ts backend/src/modules/policy/policyPackRepository.test.ts && npm run verify:openclaw:realtime`
 
 Expected: all tests PASS and existing realtime MCP behavior remains unchanged.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add package.json package-lock.json backend/src/modules/policy backend/src/modules/supervisor/policyEngine.ts backend/src/modules/supervisor/policyEngine.test.ts backend/src/modules/openclaw/realtimeMcpServer.ts
@@ -512,7 +512,7 @@ git commit -m "refactor: centralize guarded policy loading"
 - Create: `backend/src/modules/openclaw/nativeGuardLeaseService.ts`
 - Create: `backend/src/modules/openclaw/nativeGuardLeaseService.test.ts`
 
-- [ ] **Step 1: Write failing lease lifecycle tests**
+- [x] **Step 1: Write failing lease lifecycle tests**
 
 ```typescript
 // backend/src/modules/openclaw/nativeGuardLeaseService.test.ts
@@ -572,13 +572,13 @@ test("lease is session-bound, expiring, renewable and revocable", () => {
 
 Include a second test proving wrong credentials, wrong sessions, TTL above 15 minutes and expired policy packs are rejected.
 
-- [ ] **Step 2: Run the test and verify failure**
+- [x] **Step 2: Run the test and verify failure**
 
 Run: `node --import tsx --test backend/src/modules/openclaw/nativeGuardLeaseService.test.ts`
 
 Expected: FAIL with missing module.
 
-- [ ] **Step 3: Implement the service**
+- [x] **Step 3: Implement the service**
 
 The implementation must expose this exact public surface:
 
@@ -598,13 +598,13 @@ export type NativeGuardLeaseService = {
 
 Use `randomBytes(32)`, `timingSafeEqual`, `generateKeyPairSync("ed25519")`, a SHA-256 credential hash, a 5-minute default TTL and a 15-minute maximum. Start at `leaseEpoch=1`; increment it before every renew and revoke so old in-flight responses cannot be accepted. Include the immutable failure policy `{ lowRisk: "warn", highRisk: "deny", unknownRisk: "deny" }` in activation. Store the private key and policy pack only in memory. Never include `credential`, private key or full policy pack in `status()`.
 
-- [ ] **Step 4: Run lease tests and typecheck**
+- [x] **Step 4: Run lease tests and typecheck**
 
 Run: `node --import tsx --test backend/src/modules/openclaw/nativeGuardLeaseService.test.ts && npm run typecheck`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add backend/src/modules/openclaw
@@ -622,7 +622,7 @@ git commit -m "feat: add session scoped native guard leases"
 - Create: `backend/src/storage/nativeGuardEventStore.test.ts`
 - Modify: `backend/src/modules/supervisor/supervisionRecorder.ts`
 
-- [ ] **Step 1: Write failing allow/deny/ask/redact tests**
+- [x] **Step 1: Write failing allow/deny/ask/redact tests**
 
 ```typescript
 test("decision service signs a nested redact bound to input digest", async () => {
@@ -669,13 +669,13 @@ test("decision service signs a nested redact bound to input digest", async () =>
 
 Add tests for deny priority, ask priority, unmatched default allow, unknown tool outage classification, stale request time, request digest mismatch, same-request replay and epoch changes. The same `requestId` plus the same digest must return the same `decisionId`; the same `requestId` with another digest must fail.
 
-- [ ] **Step 2: Run tests and verify failure**
+- [x] **Step 2: Run tests and verify failure**
 
 Run: `node --import tsx --test backend/src/modules/openclaw/nativeToolDecisionService.test.ts backend/src/storage/nativeGuardEventStore.test.ts`
 
 Expected: FAIL with missing modules.
 
-- [ ] **Step 3: Implement deterministic normalization and decisions**
+- [x] **Step 3: Implement deterministic normalization and decisions**
 
 ```typescript
 export type NativeToolDecisionService = {
@@ -701,7 +701,7 @@ The normalizer must map `exec`/`process` to `code_execution`, write/edit/apply_p
 
 For redact, deep-clone `params`, translate `payload.parameters.*` matcher paths to nested parameter paths, and replace the exact matched string with `[REDACTED]`. Return the full rewritten object and its digest. Reject a decision that attempts to combine ask with rewritten params. Cache request digest and signed response until lease expiry. Re-read the lease epoch immediately before signing; if renew or revoke changed it while evaluation was in flight, return `NATIVE_GUARD_LEASE_CHANGED` instead of an allow/redact/ask response.
 
-- [ ] **Step 4: Implement durable event ingestion**
+- [x] **Step 4: Implement durable event ingestion**
 
 `NativeGuardEventStore` must:
 
@@ -717,13 +717,13 @@ export type NativeGuardEventStore = {
 
 Persist JSONL under `outputs/native-guard/events/<leaseId>.jsonl`, serialize writes through `Mutex`, reject duplicate `eventId`, and never persist credentials, authorization headers or private keys.
 
-- [ ] **Step 5: Run focused tests**
+- [x] **Step 5: Run focused tests**
 
 Run: `node --import tsx --test backend/src/modules/openclaw/nativeToolDecisionService.test.ts backend/src/storage/nativeGuardEventStore.test.ts`
 
 Expected: all action, digest, signature and idempotency tests PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add backend/src/modules/openclaw backend/src/modules/supervisor/supervisionRecorder.ts backend/src/storage/nativeGuardEventStore*
@@ -740,7 +740,7 @@ git commit -m "feat: evaluate and persist native tool decisions"
 - Create: `backend/src/modules/openclaw/nativeGuardCoordinator.ts`
 - Create: `backend/src/modules/openclaw/nativeGuardCoordinator.test.ts`
 
-- [ ] **Step 1: Write failing URL, auth and rollback tests**
+- [x] **Step 1: Write failing URL, auth and rollback tests**
 
 Tests must prove:
 
@@ -769,13 +769,13 @@ assert.equal(capturedRedirectMode, "error");
 
 Coordinator tests must prove a backend lease is revoked if plugin activation fails, renew changes the credential, and revoke is idempotent even if the plugin is already offline. Add a CLI fixture where an enabled second plugin reports `hookNames: ["before_tool_call"]`; activation must fail with `NATIVE_GUARD_HOOK_ORDER_UNVERIFIED` and status must be `conditional`.
 
-- [ ] **Step 2: Run tests and verify failure**
+- [x] **Step 2: Run tests and verify failure**
 
 Run: `node --import tsx --test backend/src/modules/openclaw/openclawControlClient.test.ts backend/src/modules/openclaw/nativeGuardCoordinator.test.ts`
 
 Expected: FAIL with missing modules.
 
-- [ ] **Step 3: Implement the control client**
+- [x] **Step 3: Implement the control client**
 
 ```typescript
 export type OpenClawControlClient = {
@@ -800,7 +800,7 @@ Convert `ws://`/`wss://` gateway URLs to `http://`/`https://`, require loopback 
 
 `inspectCapabilities` must run `openclaw --version` and `openclaw plugins list --json` through the existing safe CLI resolver. For normal supervision, any enabled plugin other than Agent Guard whose `hookNames` contains `before_tool_call` makes assurance `unverified` and coverage `conditional`. For the generated detection profile, the exact plugin allowlist makes assurance `isolated_profile`. A compatible normal profile with Agent Guard as the only before-tool Hook uses `exclusive_before_hook`.
 
-- [ ] **Step 4: Implement coordinator ordering**
+- [x] **Step 4: Implement coordinator ordering**
 
 Activation order:
 
@@ -820,13 +820,13 @@ plugin failure still deletes backend secret and returns a warning status
 
 Include `createDetectionBaselinePolicyPack()` with a fixed ID and digest. It allows sandboxed file/shell intent observation and denies browser, elevated/host control, gateway mutation, cron, cross-session send and unknown plugin surfaces during detection.
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 5: Run tests**
 
 Run: `node --import tsx --test backend/src/modules/openclaw/openclawControlClient.test.ts backend/src/modules/openclaw/nativeGuardCoordinator.test.ts`
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add backend/src/modules/openclaw
@@ -845,7 +845,7 @@ git commit -m "feat: coordinate OpenClaw native guard leases"
 - Modify: `backend/src/api/v1/system/handlers.ts`
 - Modify: `desktop/main.cjs`
 
-- [ ] **Step 1: Write failing API auth tests**
+- [x] **Step 1: Write failing API auth tests**
 
 ```typescript
 test("management endpoint rejects missing operator token", async () => {
@@ -866,13 +866,13 @@ test("decision endpoint rejects operator token and accepts only lease bearer", a
 
 Add tests for unapproved Origin, a body larger than 320 KiB, exact 256 KiB canonical params with 4,096 keys, malformed decision payload and credential redaction in errors.
 
-- [ ] **Step 2: Run tests and verify failure**
+- [x] **Step 2: Run tests and verify failure**
 
 Run: `node --import tsx --test backend/src/api/v1/openclaw/native-guard-handlers.test.ts`
 
 Expected: FAIL with 404 or missing module.
 
-- [ ] **Step 3: Add routes with separate auth domains**
+- [x] **Step 3: Add routes with separate auth domains**
 
 Implement:
 
@@ -887,7 +887,7 @@ POST   /api/v1/openclaw/native-guard/events/batch
 
 Management routes require `X-Agent-Guard-Control-Token`. Decision and event routes require the exact lease bearer. Apply JSON schema validation, a 320 KiB decision body limit (256 KiB canonical params plus a 64 KiB envelope), 1 MiB event batch limit, maximum 100 events per batch and exact allowed Origins from `AGENT_GUARD_ALLOWED_ORIGINS` plus the local Electron/Vite defaults.
 
-- [ ] **Step 4: Generate and inject the desktop token**
+- [x] **Step 4: Generate and inject the desktop token**
 
 At desktop startup:
 
@@ -898,11 +898,11 @@ const CONTROL_TOKEN = process.env.AGENT_GUARD_CONTROL_TOKEN || randomBytes(32).t
 
 Pass `AGENT_GUARD_CONTROL_TOKEN: CONTROL_TOKEN` to the API child. Register an Electron `session.webRequest.onBeforeSendHeaders` filter for `${API_BASE}/*` and add `X-Agent-Guard-Control-Token` without exposing it to page JavaScript. In browser-only development, accept an explicitly configured `VITE_AGENT_GUARD_CONTROL_TOKEN`.
 
-- [ ] **Step 5: Expose status without secrets**
+- [x] **Step 5: Expose status without secrets**
 
 Add `nativeGuard` to `/api/v1/system/status.health` and set feature flags `openclawNativeGuard`, `openclawNativeGuardReady`, and `openclawDetectionDocker`. Status may include coverage, compatible versions and active lease count, but not full session keys, credentials or policy content.
 
-- [ ] **Step 6: Run API and desktop smoke tests**
+- [x] **Step 6: Run API and desktop smoke tests**
 
 Run: `node --import tsx --test backend/src/api/v1/openclaw/native-guard-handlers.test.ts && npm run typecheck && npm run build:frontend`
 
@@ -931,7 +931,7 @@ git commit -m "feat: secure native guard control APIs"
 - Modify: `package.json`
 - Modify: `package-lock.json`
 
-- [ ] **Step 1: Write failing OFF and recovery registry tests**
+- [x] **Step 1: Write failing OFF and recovery registry tests**
 
 ```typescript
 test("missing lease is a zero-effect OFF lookup", async () => {
@@ -954,13 +954,13 @@ test("restart with an unexpired marker enters recovery", async () => {
 
 Also test activation, rotation on renew, explicit revoke, expiry to OFF and child binding.
 
-- [ ] **Step 2: Run plugin tests and verify failure**
+- [x] **Step 2: Run plugin tests and verify failure**
 
 Run: `node --import tsx --test plugins/agent-guard-supervision/src/leaseRegistry.test.ts`
 
 Expected: FAIL with missing module.
 
-- [ ] **Step 3: Add strict manifest and package compatibility**
+- [x] **Step 3: Add strict manifest and package compatibility**
 
 ```json
 // plugins/agent-guard-supervision/openclaw.plugin.json
@@ -1063,7 +1063,7 @@ declare module "openclaw/plugin-sdk/plugin-entry" {
 }
 ```
 
-- [ ] **Step 4: Implement marker-safe lease registry**
+- [x] **Step 4: Implement marker-safe lease registry**
 
 Persist only:
 
@@ -1081,7 +1081,7 @@ type GuardedMarker = {
 
 Write with temp-file plus atomic rename and mode `0o600`. Store activation credentials and public keys only in memory. `start()` loads markers, deletes expired entries and marks remaining entries recovery until reactivated.
 
-- [ ] **Step 5: Add bundle and typecheck scripts**
+- [x] **Step 5: Add bundle and typecheck scripts**
 
 Install: `npm install --save-dev esbuild@0.28.1`
 
@@ -1095,13 +1095,13 @@ Add:
 
 Also add `packages/native-guard-protocol/**` and `plugins/agent-guard-supervision/**` to Electron Builder's `build.files`, so packaged desktop builds contain the protocol runtime and installable plugin bundle.
 
-- [ ] **Step 6: Run tests and build**
+- [x] **Step 6: Run tests and build**
 
 Run: `npm run test:native-guard:plugin && npm run typecheck:openclaw-plugin && npm run build:openclaw-plugin`
 
 Expected: tests PASS and `dist/index.js` is self-contained except for OpenClaw SDK imports.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add package.json package-lock.json plugins/agent-guard-supervision
@@ -1118,7 +1118,7 @@ git commit -m "feat: scaffold trusted OpenClaw guard plugin"
 - Modify: `plugins/agent-guard-supervision/src/runtime.ts`
 - Modify: `plugins/agent-guard-supervision/src/index.ts`
 
-- [ ] **Step 1: Write failing bounded-route tests**
+- [x] **Step 1: Write failing bounded-route tests**
 
 Test activate, renew, revoke and status; reject bodies above 64 KiB, schema mismatch, non-loopback backend URL, expired activation and renew with a different root session.
 
@@ -1129,13 +1129,13 @@ assert.equal(registry.lookup("agent:guard:run.1").state, "active");
 assert.equal(JSON.stringify(statusBody).includes("credential"), false);
 ```
 
-- [ ] **Step 2: Run tests and verify failure**
+- [x] **Step 2: Run tests and verify failure**
 
 Run: `node --import tsx --test plugins/agent-guard-supervision/src/controlRoutes.test.ts`
 
 Expected: FAIL with missing route module.
 
-- [ ] **Step 3: Register exact gateway-authenticated routes**
+- [x] **Step 3: Register exact gateway-authenticated routes**
 
 ```text
 POST /agent-guard/native-guard/v1/leases/activate
@@ -1146,7 +1146,7 @@ GET  /agent-guard/native-guard/v1/status
 
 Use `api.registerHttpRoute({ auth: "gateway", match: "exact", ... })`. Parse `IncomingMessage` with a 64 KiB limit, return JSON with `Cache-Control: no-store`, and never echo credentials.
 
-- [ ] **Step 4: Wire session and subagent lifecycle hooks**
+- [x] **Step 4: Wire session and subagent lifecycle hooks**
 
 Register:
 
@@ -1170,7 +1170,7 @@ Register the minimal final `before_tool_call` first. It must lazy-start recovery
 
 Capability inspection must validate the Agent Guard plugin `status`/failure fields plus top-level and `registry.diagnostics`. Relevant error diagnostics for the plugin, route prefix, `agent-guard-runtime`, `agent-guard-admission` or final Hook force `supportsNativeGuard=false` and `finalizerAssurance=unverified`. Malformed or oversized diagnostics fail closed; unrelated warnings remain non-blocking. Treat this CLI snapshot only as preflight evidence, never as live registration attestation.
 
-- [ ] **Step 5: Run plugin tests and build**
+- [x] **Step 5: Run plugin tests and build**
 
 Update `test:native-guard:plugin` to include `controlRoutes.test.ts` after `leaseRegistry.test.ts`.
 
@@ -1178,7 +1178,7 @@ Run: `npm run test:native-guard:plugin && npm run typecheck:openclaw-plugin && n
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add plugins/agent-guard-supervision
@@ -1196,7 +1196,7 @@ git commit -m "feat: add guarded lease control routes"
 - Modify: `plugins/agent-guard-supervision/src/runtime.ts`
 - Modify: `plugins/agent-guard-supervision/src/index.ts`
 
-- [ ] **Step 1: Write failing behavioral tests**
+- [x] **Step 1: Write failing behavioral tests**
 
 Cover these exact cases:
 
@@ -1241,13 +1241,13 @@ assert.deepEqual(attestedFutureAskResult?.requireApproval?.allowedDecisions, ["a
 
 Also test bad signature, mismatched digest, malformed response, timeout, cancellation, recovery, low-risk outage, high-risk outage and missing `toolCallId`.
 
-- [ ] **Step 2: Run tests and verify failure**
+- [x] **Step 2: Run tests and verify failure**
 
 Run: `node --import tsx --test plugins/agent-guard-supervision/src/runtime.test.ts`
 
 Expected: FAIL until hooks are implemented.
 
-- [ ] **Step 3: Implement Trusted Admission Policy**
+- [x] **Step 3: Implement Trusted Admission Policy**
 
 Register matcher-less policy ID `agent-guard-admission`:
 
@@ -1261,7 +1261,7 @@ api.registerTrustedToolPolicy({
 
 OFF returns `undefined`. ACTIVE continues to final Hook. RECOVERY blocks high-risk and unknown tools with reason code `NATIVE_GUARD_RECOVERY`; only the explicit local low-risk set may pass. Missing session identity during an active guarded run fails closed.
 
-- [ ] **Step 4: Implement the signed PDP client**
+- [x] **Step 4: Implement the signed PDP client**
 
 Use a two-second AbortController linked to optional `ctx.abortSignal`, the runtime stop signal and the internal Hook deadline. Validate response schema, Ed25519 signature, request ID, lease ID, lease epoch, policy digest and both parameter digests. Signed PDP `reasonCode` uses strict lower snake case matching the real `NativeToolDecisionService`; uppercase Agent Guard block codes are local projection codes, not wire values. Do not follow redirects. Treat all validation failures as PDP outage and apply the immutable `failurePolicy` carried by the active lease.
 
@@ -1271,7 +1271,7 @@ Treat tool parameter contents as untrusted, but require their carrier object to 
 
 Snapshot optional `derivedPaths` in ACTIVE without using its iterator: accept only a non-Proxy standard dense array with no extra keys, numeric enumerable data descriptors, at most 256 non-empty strings of at most 4,096 characters, and at most 64 KiB canonical UTF-8 for the array. Reject accessors, custom iterators and over-budget arrays without invoking them. Normalize `toolKind` and `toolInputKind` from event/context before building the request: retain metadata present on only one side, reject conflicting dual values, and use the same normalized values for request serialization and risk classification. The 320 KiB decision body remains 256 KiB canonical params plus a 64 KiB envelope allowance.
 
-- [ ] **Step 5: Implement the final `before_tool_call` Hook**
+- [x] **Step 5: Implement the final `before_tool_call` Hook**
 
 Register with priority `-1_000_000` and timeout `5_000`. Under ACTIVE, every tool produces one decision request. Map results exactly:
 
@@ -1286,7 +1286,7 @@ redact -> params only after signature and digest validation
 
 The fixed `3edbe19f` host invokes `onResolution` fire-and-forget, does not await it and exposes no veto result. Its `ask` path is therefore never executable, and it exposes neither trusted JSON-only parameter provenance nor atomic approved-snapshot execution. The approval and parameter capabilities must come from future trusted, read-only live host contracts; never infer them from plugin config, environment variables, version strings or caller input. Without them, the host remains unsupported/quarantined and the coordinator does not acknowledge an active lease. Do not combine `params` and `requireApproval`. Do not keep name-prefix bypass lists. Never use `allow-always`.
 
-- [ ] **Step 6: Run plugin behavioral tests**
+- [x] **Step 6: Run plugin behavioral tests**
 
 Update `test:native-guard:plugin` to append `runtime.test.ts`.
 
@@ -1294,7 +1294,7 @@ Run: `npm run test:native-guard:plugin && npm run typecheck:openclaw-plugin && n
 
 Expected: OFF, deny, redact, unattested-ask deny, future-attested ask, host cancellation, parameter bounds, timeout and signature tests PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add plugins/agent-guard-supervision
@@ -1400,7 +1400,7 @@ Run the Task 4-6 backend aggregate, then: `npm run test:native-guard:plugin && n
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add packages/contracts/src/types/nativeGuard.ts backend/src/modules/openclaw backend/src/api/v1/openclaw/native-guard-handlers.ts backend/src/api/v1/openclaw/native-guard-handlers.test.ts backend/src/storage/nativeGuardEventStore.ts backend/src/storage/nativeGuardEventStore.test.ts plugins/agent-guard-supervision package.json docs/superpowers/specs/2026-08-01-openclaw-native-tool-guard-design.md docs/superpowers/plans/2026-08-01-openclaw-native-tool-guard.md
@@ -1419,7 +1419,7 @@ git commit -m "feat: spool native tool outcome evidence"
 - Modify: `backend/src/modules/agent/openclawAdapter.ts`
 - Modify: `backend/src/modules/agent/openclawSession.ts`
 
-- [ ] **Step 1: Write failing config and preflight tests**
+- [x] **Step 1: Write failing config and preflight tests**
 
 Assert the generated runtime config contains:
 
@@ -1438,13 +1438,13 @@ assert.deepEqual(config.agents.defaults.sandbox.docker.binds, []);
 
 Manager tests use an injected command runner and verify Docker unavailable, mutable image tag without resolved image ID, unsupported OpenClaw, bad `sandbox explain`, cancel and cleanup behavior.
 
-- [ ] **Step 2: Run tests and verify failure**
+- [x] **Step 2: Run tests and verify failure**
 
 Run: `node --import tsx --test backend/src/modules/openclaw/detectionOpenClawConfig.test.ts backend/src/modules/openclaw/detectionSandboxManager.test.ts`
 
 Expected: FAIL with missing modules.
 
-- [ ] **Step 3: Generate an isolated, scrubbed profile**
+- [x] **Step 3: Generate an isolated, scrubbed profile**
 
 Runtime state lives in an OS temp directory with directory mode `0o700`. Persistent evidence lives under `outputs/openclaw-detection/<runGroupId>/` and contains only scrubbed config plus hashes.
 
@@ -1468,7 +1468,7 @@ Set Docker limits:
 }
 ```
 
-- [ ] **Step 4: Implement three-stage attestation**
+- [x] **Step 4: Implement three-stage attestation**
 
 1. `docker version` and `docker image inspect` resolve the configured image to immutable `sha256:<id>`.
 2. Start a dedicated loopback OpenClaw Gateway on an ephemeral port with generated gateway token, isolated state/config/workspace and only the Agent Guard plugin enabled.
@@ -1476,21 +1476,21 @@ Set Docker limits:
 
 Any mismatch throws `SandboxPreflightError` or `SandboxAttestationError`. Cleanup removes only containers and networks carrying the exact `agent-guard.run-group=<runGroupId>` label and deletes the verified temp root.
 
-- [ ] **Step 5: Add optional controlled network sink**
+- [x] **Step 5: Add optional controlled network sink**
 
 For explicitly marked network cases, create an internal Docker network and a sink container from the already resolved sandbox image running `python3 -u -m http.server 8080`. The agent container joins only this internal network. Record sink logs, and remove both sink and network in `finally`. All unmarked cases remain `network=none`.
 
-- [ ] **Step 6: Pass runtime environment to OpenClaw CLI**
+- [x] **Step 6: Pass runtime environment to OpenClaw CLI**
 
 Extend `OpenClawRunOptions` with `env`, `gatewayUrl`, `gatewayToken` and `nativeGuardRequired`. `spawnOpenClawAgent` must use the isolated environment and abort signal. It must not mutate global OpenClaw configuration.
 
-- [ ] **Step 7: Run unit tests**
+- [x] **Step 7: Run unit tests**
 
 Run: `node --import tsx --test backend/src/modules/openclaw/detectionOpenClawConfig.test.ts backend/src/modules/openclaw/detectionSandboxManager.test.ts && npm run typecheck`
 
 Expected: PASS without requiring Docker because command execution is injected.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add backend/src/modules/openclaw/detection* backend/src/modules/agent/openclawAdapter.ts backend/src/modules/agent/openclawSession.ts
@@ -1511,7 +1511,7 @@ git commit -m "feat: isolate OpenClaw detection in Docker"
 - Modify: `backend/src/services/e2eRunService.ts`
 - Modify: `backend/src/api/types.ts`
 
-- [ ] **Step 1: Write failing reconciliation tests**
+- [x] **Step 1: Write failing reconciliation tests**
 
 ```typescript
 test("JSONL call without guarded before event is a coverage breach", () => {
@@ -1530,13 +1530,13 @@ test("JSONL call without guarded before event is a coverage breach", () => {
 
 Add cases for allow+outcome, deny without outcome, cancelled call, duplicate outcome, incomplete allow, and OFF mode where guard evidence is not required.
 
-- [ ] **Step 2: Run test and verify failure**
+- [x] **Step 2: Run test and verify failure**
 
 Run: `node --import tsx --test backend/src/modules/openclaw/nativeGuardTraceProjector.test.ts`
 
 Expected: FAIL with missing module.
 
-- [ ] **Step 3: Add the session runtime-evidence interface**
+- [x] **Step 3: Add the session runtime-evidence interface**
 
 ```typescript
 export type AgentSessionRuntimeEvidence = {
@@ -1552,11 +1552,11 @@ export type AgentSession = {
 
 `OpenClawSession` collects events from `NativeGuardEventStore` by run ID after CLI completion, reconciles them with parsed JSONL and returns them once through `drainRuntimeEvidence()`.
 
-- [ ] **Step 4: Remove replay from formal Trace**
+- [x] **Step 4: Remove replay from formal Trace**
 
 Delete the call to `replayToolCallsToTrace` and remove that helper. Keep JSONL parsing and artifact copying. Project real decision and outcome events into `tool_call`, `tool_result` and `system_error` events with the original `toolCallId` as call ID.
 
-- [ ] **Step 5: Wire run-group lifecycle**
+- [x] **Step 5: Wire run-group lifecycle**
 
 For OpenClaw detection in `e2eRunService.ts`:
 
@@ -1569,13 +1569,13 @@ after run/cancel/error: stop gateway -> revoke remaining leases -> clean labeled
 
 Add `nativeGuardCoverage` and `sandboxEvidence` summaries to `P2RunGroup`. Docker failure must set run phase `failed`, include a stable failure category and execute zero attack cases.
 
-- [ ] **Step 6: Run focused and pipeline tests**
+- [x] **Step 6: Run focused and pipeline tests**
 
 Run: `node --import tsx --test backend/src/modules/openclaw/nativeGuardTraceProjector.test.ts && npm run verify:full-pipeline && npm run typecheck`
 
 Expected: PASS; mock/http adapters remain unchanged.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add backend/src/modules/agent backend/src/modules/openclaw/nativeGuardTraceProjector* backend/src/modules/runner/testRunner.ts backend/src/services/e2eRunService.ts backend/src/api/types.ts
@@ -1599,7 +1599,7 @@ git commit -m "feat: build traces from native guard hook evidence"
 - Modify: `frontend/src/styles/app.css`
 - Create: `frontend/src/lib/models/nativeGuard.test.ts`
 
-- [ ] **Step 1: Write failing frontend model tests**
+- [x] **Step 1: Write failing frontend model tests**
 
 ```typescript
 import assert from "node:assert/strict";
@@ -1615,17 +1615,17 @@ test("only active is displayed as complete native supervision", () => {
 
 Add tests for sandbox evidence labels and native event mapping.
 
-- [ ] **Step 2: Run frontend tests and verify failure**
+- [x] **Step 2: Run frontend tests and verify failure**
 
 Run: `node --import tsx --test frontend/src/lib/models/nativeGuard.test.ts`
 
 Expected: FAIL with missing module.
 
-- [ ] **Step 3: Publish native events through the existing realtime stream**
+- [x] **Step 3: Publish native events through the existing realtime stream**
 
 Export a bounded `publishRealtimeEvent` adapter from `realtimeMcpServer.ts`. Subscribe it to `NativeGuardEventStore` once at startup. Map native events to existing realtime events with `detail.source="native_tool_hook"`, preserving lease, tool call, decision and coverage identifiers.
 
-- [ ] **Step 4: Add the frontend API**
+- [x] **Step 4: Add the frontend API**
 
 ```typescript
 export const nativeGuardApi = {
@@ -1649,7 +1649,7 @@ export const nativeGuardApi = {
 
 `controlRequest` adds the Vite token only in browser development; Electron adds it at the network layer.
 
-- [ ] **Step 5: Add status and workflow UI**
+- [x] **Step 5: Add status and workflow UI**
 
 - System page: show plugin version, OpenClaw version, coverage, active lease count and reason code.
 - Detection workflow: show Docker preflight/attestation state, immutable image ID, network mode and cleanup result.
@@ -1657,13 +1657,13 @@ export const nativeGuardApi = {
 - Native `ask` events must state that approval is handled by OpenClaw. Do not create a second Agent Guard approval button for native tools.
 - Only `active` uses the “完整监督” label; `conditional`, `unsupported` and `misconfigured` use explicit warning text.
 
-- [ ] **Step 6: Run frontend verification**
+- [x] **Step 6: Run frontend verification**
 
 Run: `node --import tsx --test frontend/src/lib/models/nativeGuard.test.ts && npm run test:frontend && npm run typecheck:frontend && npm run build:frontend`
 
 Expected: PASS and production build exits 0.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add backend/src/modules/openclaw/realtimeMcpServer.ts backend/src/api/v1/system/handlers.ts frontend/src
@@ -1678,129 +1678,54 @@ git commit -m "feat: expose native guard coverage and controls"
 - Create: `scripts/install-openclaw-native-guard.ps1`
 - Create: `scripts/verify-openclaw-native-guard.ts`
 - Create: `scripts/verify-openclaw-detection-sandbox.ts`
+- Create: `scripts/verify-openclaw-live-registry-gate.ts`
+- Modify: `scripts/openclaw-guard-launcher.ts`
 - Modify: `package.json`
-- Modify: `docs/C/openclaw-local-install-and-demo-runbook.md`
+- Modify: `docs/C/openclaw-detection-live-runbook.md`
 - Modify: `docs/architecture.md`
 
-- [ ] **Step 1: Add installer capability checks**
+**Final implementation baseline:** Agent Guard `6bff05a` and controlled fork `2d55b950f357a8186eff433ca666a690d484a8e0`. The Agent Guard closeout commits are `5a90814` (launcher owns atomic Gateway spawn), `cba8ada` (default and controlled Docker required gate), `22c48dc` (mandatory real child), and `6bff05a` (60-second absolute readiness deadline).
 
-The PowerShell installer must:
+- [x] **Step 1: Enforce installer and live capability checks**
 
-```text
-1. run npm run build:openclaw-plugin
-2. read openclaw --version
-3. refuse versions below 2026.7.2 without modifying OpenClaw
-4. install the local plugin directory only on compatible hosts
-5. run openclaw plugins doctor/status, reject Agent Guard error diagnostics, and query the authenticated plugin status route
-6. perform a live registry query that proves the Agent Guard plugin, final `before_tool_call`, recovery service, trusted post-approval lease recheck capability, and trusted JSON-only params provenance or atomic approved-snapshot execution capability are committed
-7. leave the plugin installed but OFF, with zero leases
+The installer and capability probes select the isolated CLI explicitly, require the exact controlled fork or a compatible official host, reject incomplete live attestation, and leave native guard OFF until a lease is activated. They do not modify the user's global tool policy or enable Docker globally.
+
+- [x] **Step 2: Make the launcher own Gateway startup**
+
+Normal guarded startup uses:
+
+```bash
+node --import tsx scripts/openclaw-guard-launcher.ts -- gateway run --bind loopback --port <port> --token <token>
 ```
 
-Never modify the user tool allow/deny policy or enable Docker globally.
+After marker and live-registry checks, the launcher atomically spawns and supervises the exact Gateway child. Missing proof refuses startup. `--maintenance` is cleanup-only, accepts no child command, and never spawns OpenClaw.
 
-**Blocking launcher acceptance condition:** if any guarded marker exists and the live registry query cannot prove the required plugin, final Hook, recovery service, post-approval lease recheck capability, and either trusted JSON-only params provenance or atomic approved-snapshot execution capability, every Agent Guard-managed launcher must refuse normal Gateway startup and expose only a no-tool-dispatch maintenance cleanup path. Both host capabilities must be trusted, read-only live contracts and cannot come from config, env or caller self-report. The parameter capability is additional to, and never replaces, the post-approval lease recheck gate. The fixed `3edbe19f` host attests neither capability and cannot create new guarded activations. Task 8 provides plugin quarantine and diagnostic preflight only; implementing and live-testing this external launcher gate remains required work in Task 14 and blocks release.
+- [x] **Step 3: Bind detection to a mandatory real child and bounded readiness**
 
-- [ ] **Step 2: Add fake-host and backend verification**
+fd3 bootstrap, signed core attestation and child completion bind the run to one Gateway generation. Bootstrap/readiness uses one 60-second absolute deadline; unexpected child exit aborts the run and prevents subsequent samples.
 
-`verify-openclaw-native-guard.ts` must assert:
+- [x] **Step 4: Enforce the required Docker gate**
 
-- manifest declares trusted policy contract;
-- OFF returns without fetch or audit;
-- active allow, deny and redact mappings, unattested ask deny, and future live-attested ask allow-once/deny mapping;
-- invalid signature and timeout fail closed for high-risk tools;
-- subagent inheritance and restart recovery;
-- backend auth, replay defense and event idempotency;
-- current incompatible OpenClaw reports `unsupported`, not `active`.
-- a second enabled `before_tool_call` plugin reports `conditional` and prevents activation;
-- top-level and registry diagnostics, plugin error status and guarded contribution conflicts force unsupported/unverified capability, while unrelated warnings do not;
-- the absence of both trusted JSON-only params provenance and atomic approved-snapshot execution prevents ACTIVE; the fixed host remains unsupported/quarantined;
-- a guarded marker plus missing live plugin/final-Hook/recovery-service, post-approval lease recheck, or parameter-contract proof refuses normal Gateway startup and offers maintenance cleanup only;
-- 10,000 OFF Hook calls make zero network/filesystem calls and have p95 below 1 ms;
-- 500 local signed allow decisions have p95 below 100 ms, excluding approval waits.
+The gate runs both default `network=none` and controlled sink cases. It proves non-root/read-only/capability/resource isolation, controlled sink reachability without Internet, host canary read and write denial, Docker socket absence, and zero residual labeled containers or networks. `--required` cannot be skipped.
 
-- [ ] **Step 3: Add Docker live verification**
-
-`verify-openclaw-detection-sandbox.ts` must skip with exit code 0 only when `AGENT_GUARD_ALLOW_DOCKER_TEST_SKIP=1`; otherwise missing Docker or compatible OpenClaw is a failure. On a compatible environment it must prove:
-
-```text
-container PID differs from host
-host canary is unreadable/unwritable
-root is readonly
-capabilities are dropped
-memory/CPU/PID limits match
-default network has no egress
-controlled sink has no Internet route
-Docker socket is absent
-cancel leaves no labeled container/network
-```
-
-- [ ] **Step 4: Add package commands**
+- [x] **Step 5: Add package commands**
 
 ```json
 "verify:native-guard": "node --import tsx scripts/verify-openclaw-native-guard.ts",
+"verify:native-guard:real": "node --import tsx scripts/verify-openclaw-live-registry-gate.ts",
 "verify:native-guard:docker": "node --import tsx scripts/verify-openclaw-detection-sandbox.ts",
-"verify:native-guard:all": "npm run test:native-guard:protocol && npm run test:native-guard:plugin && npm run verify:native-guard && npm run verify:native-guard:docker"
+"verify:native-guard:all": "npm run test:native-guard:protocol && npm run test:native-guard:plugin && npm run verify:native-guard && npm run build:openclaw-plugin && npm run verify:native-guard:real && npm run verify:native-guard:docker -- --required"
 ```
 
-Add non-Docker native guard verification to `verify:all`. Keep the live Docker command separate so ordinary unit CI does not silently claim Docker coverage.
+- [x] **Step 6: Run fresh required live gates**
 
-- [ ] **Step 5: Update runbooks and architecture**
+With `OPENCLAW_CLI` set to root `openclaw.mjs` and `TEST_OPENCLAW_AGENTGUARD_CLI` set to `dist/cli/native-guard-inspector.js`, the fresh real registry gate and required Docker default/controlled gate both pass.
 
-Document:
+- [x] **Step 7: Update architecture and operator documentation**
 
-- supported OpenClaw version and the current `2026.6.1` upgrade requirement;
-- plugin build/install/enable/status commands;
-- gateway token and Agent Guard control-token handling;
-- session lease activation, renewal, explicit revoke and recovery;
-- detection Docker prerequisites and immutable image resolution;
-- OFF behavior and rollback procedure;
-- the non-coverage boundary for native plugin-internal side effects;
-- interpretation of `off`, `active`, `recovery`, `conditional`, `unsupported` and `misconfigured`.
+- [ ] **Step 8: Complete competition-external release hardening**
 
-- [ ] **Step 6: Run the complete non-live regression suite**
-
-Run:
-
-```bash
-npm run typecheck
-npm run typecheck:frontend
-npm run typecheck:openclaw-plugin
-npm run test:native-guard:protocol
-npm run test:native-guard:plugin
-npm run verify:native-guard
-npm run verify:openclaw:realtime
-npm run verify:full-pipeline
-npm run test:frontend
-npm run build:frontend
-npm run build:openclaw-plugin
-```
-
-Expected: all commands exit 0. On the current machine, the capability test must explicitly report OpenClaw `2026.6.1` as `unsupported` while OFF regression passes.
-
-- [ ] **Step 7: Run Docker/live verification on a compatible OpenClaw host**
-
-Run: `npm run verify:native-guard:docker`
-
-Expected: PASS with container, network, mount, resource and cleanup evidence. If OpenClaw 2026.7.2 is not available, report the live-test blocker verbatim; do not mark the feature fully verified.
-
-- [ ] **Step 8: Inspect the final diff and secret scan**
-
-Run:
-
-```bash
-git diff --check
-git diff --stat main...HEAD
-rg -n "credential|Authorization|PRIVATE KEY|OPENCLAW_GATEWAY_TOKEN" outputs docs backend plugins frontend scripts -g '!*.test.ts'
-```
-
-Expected: no whitespace errors; every secret match is a field name, redaction rule or environment-variable reference, never a real value.
-
-- [ ] **Step 9: Commit**
-
-```bash
-git add package.json package-lock.json scripts/install-openclaw-native-guard.ps1 scripts/verify-openclaw-native-guard.ts scripts/verify-openclaw-detection-sandbox.ts docs/C/openclaw-local-install-and-demo-runbook.md docs/architecture.md
-git commit -m "docs: add native guard operations and verification"
-```
+Registry push, SBOM/provenance archival, the full manual scenario matrix and final release security review remain explicit release-hardening work. They are not required to claim the completed competition implementation and are not marked complete here.
 
 ---
 
@@ -1818,5 +1743,5 @@ The work is complete only when all of the following are true:
 - Detection uses an isolated profile and never edits the user OpenClaw config.
 - Formal Trace and supervision records come from real Hook events and reconcile with JSONL.
 - UI reports conditional/unsupported states honestly and uses “完整监督” only for active coverage.
-- Current OpenClaw 2026.6.1 remains usable in OFF mode and is rejected for guarded mode.
+- Historical OpenClaw 2026.6.1 remains usable in OFF mode and is rejected for guarded mode.
 - The deleted `docs/p4-native-tool-bypass-defense-plan.md` remains untouched unless the user separately restores it.

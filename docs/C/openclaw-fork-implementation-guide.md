@@ -1,7 +1,6 @@
 # OpenClaw Fork 实现指南
 
-本文档描述从 OpenClaw 最新正式版（`2026.7.1`）创建受控 fork
-所需的所有代码变更。Fork 版本号 `2026.7.1-agentguard.1`。
+本文档记录从 OpenClaw `2026.7.1` 创建受控 fork 的最终实现。Fork 分支为 `agentguard/2026.7.1`，验收 SHA 为 `2d55b950f357a8186eff433ca666a690d484a8e0`，版本号为 `2026.7.1-agentguard.1`。
 
 ## 总览
 
@@ -233,104 +232,125 @@ Agent Guard 对 fork 的信任由四项证明共同建立：
 - `2026.7.1` 正式版 → base `2026.7.1` → 拒绝（无 fork 标识，需 ≥2026.7.2）
 - `2026.7.2` 正式版 → base `2026.7.2` → 接受（官方）
 
-## Docker 镜像集成
+## 运行时部署边界
 
-宿主机的 `npm link` 不会进入 Docker 容器。Fork 必须构建进镜像：
+最终部署不把 fork 或插件装进 Docker 镜像：
 
-```dockerfile
-# 在 OpenClaw fork 仓库中
-FROM node:22-bookworm-slim AS openclaw-build
-COPY . /src
-WORKDIR /src
-RUN npm ci && npm run build && npm pack --pack-destination /tmp
-
-# Agent Guard 检测镜像
-FROM python:3.12-slim
-COPY --from=openclaw-build /tmp/openclaw-2026.7.1-agentguard.1.tgz /tmp/
-RUN npm install -g /tmp/openclaw-2026.7.1-agentguard.1.tgz
-# 安装 Agent Guard 插件到全局 OpenClaw
-COPY plugins/agent-guard-supervision/dist /opt/agent-guard/plugin
-RUN openclaw config set pluginDirs '["/opt/agent-guard/plugin"]'
-USER 65532:65532
+```text
+host isolated profile
+  OpenClaw Gateway (controlled fork)
+  Agent Guard plugin
+  Agent Guard backend
+          |
+          v
+Docker tool sandbox
+  agent native tools
+  optional controlled sink
 ```
 
-构建后固定 digest：
+Gateway 和插件属于宿主受信基座。Docker 镜像只隔离 agent 原生工具副作用。这与设计目标“不把整个 OpenClaw 容器化”一致。
 
-```bash
-docker build -t openclaw-sandbox:agentguard .
-docker push openclaw-sandbox:agentguard
-# 记录 digest
-docker image inspect openclaw-sandbox:agentguard --format '{{.RepoDigests}}'
-```
-
-## 本地测试（隔离模式）
+## 正式构建
 
 ```powershell
-# 构建产物直接调用，不覆盖全局 openclaw
-node .\dist\cli.js --version
-node .\dist\cli.js plugins list --json
+Set-Location E:\Projects\openclaw-agentguard
+git switch agentguard/2026.7.1
+git rev-parse HEAD
+# Expected: 2d55b950f357a8186eff433ca666a690d484a8e0
 
-# 通过 OPENCLAW_CLI 让 agent-guard 使用 fork
-$env:OPENCLAW_CLI = "E:\Projects\openclaw-agentguard\openclaw.cmd"
-# 或直接指向 .js（需配合包装脚本）
+corepack enable
+pnpm install --frozen-lockfile
+node scripts/build-all.mjs gatewayWatch
+
+Get-Content .\dist\.buildstamp
+Test-Path .\openclaw.mjs
+Test-Path .\dist\cli\native-guard-inspector.js
 ```
 
-`resolveOpenClawCliPath()` 优先检查 `OPENCLAW_CLI` 环境变量，
-因此无需 `npm link` 即可在 agent-guard 项目中测试 fork。
+构建产物必须以 `dist/.buildstamp` 绑定固定 SHA。运行入口是仓库根目录 `openclaw.mjs`，production capability inspector 是 `dist/cli/native-guard-inspector.js`。
 
-## 构建与验证
+禁止将定向 `tsdown --no-config` 产物用于验收。它缺少 `dist/extensions`，会使 Gateway 卡在启动阶段，即使个别 CLI 命令可运行也不构成正式构建。
 
-```bash
-# 在 fork 仓库中
-npm install
-npm run build
+## Agent Guard 集成
 
-# 验证版本
-./bin/openclaw --version
-# 预期: openclaw 2026.7.1-agentguard.1 (commit-hash)
-
-# 安装插件后验证 live attestation
-openclaw plugins list --json | jq '.registry.liveAttestation'
-# 预期: true
+```powershell
+$forkRoot = "E:\Projects\openclaw-agentguard"
+$env:OPENCLAW_CLI = "$forkRoot\openclaw.mjs"
+$env:TEST_OPENCLAW_AGENTGUARD_CLI = "$forkRoot\dist\cli\native-guard-inspector.js"
 ```
 
-## 发布清单
+`OPENCLAW_CLI` 供 launcher 原子 spawn 真实 Gateway child；`TEST_OPENCLAW_AGENTGUARD_CLI` 供真实 registry gate 使用。两者都不修改宿主全局 OpenClaw。
 
-- [ ] Fork commit: `_________`
-- [ ] Fork 版本: `2026.7.1-agentguard.1`
-- [ ] Agent Guard 插件版本: `_________`
-- [ ] 镜像 digest: `sha256:_________`
-- [ ] `registry.liveAttestation === true`
-- [ ] fd3 bootstrap 使用每实例 Ed25519 key，core attestation 的正确签名与 wrong-key 负例均通过
-- [ ] attestation route 是不可被插件覆盖的 reserved core route
-- [ ] `verify:native-guard:docker` 通过
-- [ ] SBOM 生成并归档
+正常启动：
 
-## Agent Guard 侧配合变更
-
-### 版本接受
-
-`detectionSandboxManager.ts` 的 `versionAtLeast` 需接受 fork 格式：
-
-```typescript
-const REQUIRED_OPENCLAW = [2026, 7, 1] as const;
-// 接受 >= 2026.7.1 且包含 agentguard 标识的版本
+```powershell
+node --import tsx scripts/openclaw-guard-launcher.ts -- gateway run --bind loopback --port <port> --token <token>
 ```
 
-### Launcher 接受 Fork
+maintenance cleanup：
 
-`scripts/openclaw-guard-launcher.ts` 需接受 fork 的 `liveAttestation` 字段。
+```powershell
+node --import tsx scripts/openclaw-guard-launcher.ts --maintenance
+```
 
-### 能力探测
+maintenance 模式不接受 child 命令，也不会 spawn OpenClaw。正常模式在通过 marker 和 registry 检查后启动 child，并把检测生命周期绑定到该进程；bootstrap/readiness 使用 60 秒绝对截止时间。
 
-`openclawControlClient.inspectCapabilities()` 已读取 `plugins list --json` 并检查
-`liveAttestation`。fork 提供此字段后自动通过。
+## 工具 Sandbox 镜像
+
+固定镜像：
+
+```text
+openclaw-sandbox@sha256:dcf6e79c5e3f41823c29cffe44103e06c2865ebfcee6434ce5a58f9860975b5d
+```
+
+镜像要求和已验收属性：
+
+- 用户为 `65532:65532`，适配 readonly rootfs。
+- 包含 `python3`、`sh`、`timeout` 和验收所需工具。
+- 不包含 OpenClaw、Agent Guard 插件、credentials 或 Docker socket。
+- default case 使用 `network=none`。
+- controlled case 只能访问内部 sink，不能访问 Internet。
+
+## 最终验收
+
+```powershell
+Set-Location E:\Projects\agent-guard
+Remove-Item Env:AGENT_GUARD_ALLOW_DOCKER_TEST_SKIP -ErrorAction SilentlyContinue
+npm run verify:native-guard:real
+npm run verify:native-guard:docker -- --required
+```
+
+fresh real gate 已通过。required Docker default 与 controlled case 均通过；controlled sink 可达、Internet 不可达、宿主 canary 读写均失败，cleanup 后残留容器和网络为 0。
+
+Agent Guard 最终收口提交：
+
+| Commit | 作用 |
+|---|---|
+| `5a90814` | launcher 原子接管 Gateway spawn |
+| `cba8ada` | default/controlled Docker required gate |
+| `22c48dc` | 强制真实 launcher child |
+| `6bff05a` | 60 秒绝对 readiness deadline |
+
+## 完成清单
+
+- [x] Fork commit 固定为 `2d55b950f357a8186eff433ca666a690d484a8e0`。
+- [x] 正式 build 与 `dist/.buildstamp` 绑定固定 SHA。
+- [x] `registry.liveAttestation === true`。
+- [x] fd3 每实例 Ed25519 key、正确签名、wrong-key 和 port-hijack 负例通过。
+- [x] attestation route 是插件不可覆盖的 reserved core route。
+- [x] launcher 原子 spawn 真实 child，maintenance 不 spawn。
+- [x] required Docker default/controlled gate 通过。
+- [ ] 推送正式 registry 镜像。
+- [ ] 生成并归档 SBOM/provenance。
+- [ ] 执行并归档完整人工场景矩阵。
+- [ ] 完成最终发布安全评审。
+
+以上未完成项属于比赛外发布硬化，不影响当前比赛实现与真实 gate 的完成结论。
 
 ## 安全边界
 
-- Fork 只改变 plugin SDK 返回值和 registry 输出格式。
-- 不改变 tool dispatch、message routing、auth、session 管理等核心路径。
-- `liveAttestation` 字段仅由 registrar 在插件注册时设置，不可由插件自身伪造。
-- Gateway attestation route 由 core 保留，插件不能注册、替换或提供其签名私钥。
-- Bearer token 不作为 Gateway 身份证明；身份由 fd3 bootstrap 与每实例 Ed25519 签名双向绑定。
-- Agent Guard 在启动时（launcher）和检测前（capability probe）双重验证 live attestation。
+- `liveAttestation` 只能由 Gateway registrar 的 live registry 生成，插件不能自报。
+- Gateway attestation route 由 core 保留，插件不能注册、替换或获得签名私钥。
+- Bearer token 不证明进程身份；身份由 fd3 bootstrap、每实例 Ed25519 签名和 child lifetime 共同绑定。
+- Agent Guard 在 launcher 和检测 capability probe 两处验证 live attestation。
+- Docker 只隔离 agent 原生工具，不覆盖宿主受信插件内部副作用。

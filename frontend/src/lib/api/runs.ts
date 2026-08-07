@@ -138,7 +138,13 @@ type P2RunGroupWire = {
   defenseReportId?: string;
   artifactIds: string[];
   error?: string;
-  nativeGuardCoverage?: CLineRunGroup["nativeGuardCoverage"];
+  nativeGuardCoverage?: Omit<
+    NonNullable<CLineRunGroup["nativeGuardCoverage"]>,
+    "mismatchCount" | "sessions"
+  > & {
+    mismatchCount?: number;
+    sessions?: NonNullable<CLineRunGroup["nativeGuardCoverage"]>["sessions"];
+  };
   sandboxEvidence?: CLineRunGroup["sandboxEvidence"];
 };
 
@@ -165,10 +171,25 @@ function toRunGroup(run: P2RunGroupWire): CLineRunGroup {
     runtimeSessionIds: run.runtimeSessionIds,
     artifactIds: run.artifactIds,
     error: run.error,
-    nativeGuardCoverage: run.nativeGuardCoverage,
+    nativeGuardCoverage: normalizeNativeGuardCoverage(run.nativeGuardCoverage),
     sandboxEvidence: run.sandboxEvidence,
     createdAt: run.startedAt,
     updatedAt: run.updatedAt ?? run.endedAt ?? run.startedAt,
+  };
+}
+
+function normalizeNativeGuardCoverage(
+  coverage: P2RunGroupWire["nativeGuardCoverage"],
+): CLineRunGroup["nativeGuardCoverage"] {
+  if (!coverage) return undefined;
+  return {
+    ...coverage,
+    mismatchCount:
+      Number.isSafeInteger(coverage.mismatchCount) &&
+      (coverage.mismatchCount as number) >= 0
+        ? coverage.mismatchCount as number
+        : 0,
+    sessions: Array.isArray(coverage.sessions) ? coverage.sessions : [],
   };
 }
 

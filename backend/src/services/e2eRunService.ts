@@ -1318,59 +1318,103 @@ export function recordNativeGuardSessionCoverage(
   if (!coverage) return undefined;
 
   const { sessionKey, leaseId, leaseEpoch } = runtime;
-  if (
-    !sessionKey ||
-    !leaseId ||
-    !Number.isSafeInteger(leaseEpoch) ||
-    (leaseEpoch as number) <= 0
-  ) {
-    coverage.reconciled = false;
-    return "NATIVE_GUARD_EVIDENCE_UNAVAILABLE: Native guard session lease identity is missing.";
-  }
-
-  const identityMismatchCount = runtime.events.filter((event) =>
+  const runtimeIdentity = compactLeaseIdentity({ sessionKey, leaseId, leaseEpoch });
+  const identityMissing = !hasCompleteLeaseIdentity(runtimeIdentity);
+  const conflictingEvents = runtime.events.filter((event) =>
     event.sessionKey !== sessionKey ||
     event.leaseId !== leaseId ||
     event.leaseEpoch !== leaseEpoch
-  ).length;
-  const identityError = identityMismatchCount > 0
-    ? `Native guard event lease identity conflict for session (${String(identityMismatchCount)} event(s)).`
+  );
+  const identityError = conflictingEvents.length > 0
+    ? `Native guard event lease identity conflict for session (${String(conflictingEvents.length)} event(s)).`
     : undefined;
-  const evidenceError = [runtime.evidenceError, identityError]
-    .filter((message): message is string => Boolean(message))
-    .map(scrubSecrets)
-    .join("; ") || undefined;
+  const missingIdentityError = identityMissing
+    ? "Native guard session lease identity is missing."
+    : undefined;
+  const evidenceError = joinNativeGuardDiagnostics(
+    runtime.evidenceError,
+    identityError,
+    missingIdentityError,
+  );
   const revokeError = runtime.revokeError
     ? scrubSecrets(runtime.revokeError)
     : undefined;
   const reconciliation = runtime.reconciliation;
   const summary: NativeGuardSessionCoverageSummary = {
-    sessionKey,
-    leaseId,
-    leaseEpoch: leaseEpoch as number,
+    ...runtimeIdentity,
     eventsTotal: runtime.events.length,
     reconciled: Boolean(reconciliation?.reconciled && !evidenceError && !revokeError),
     coverageBreachCount: reconciliation?.coverageBreachCount ?? 0,
-    mismatchCount: (reconciliation?.mismatchCount ?? 0) + identityMismatchCount,
+    mismatchCount:
+      (reconciliation?.mismatchCount ?? 0) +
+      conflictingEvents.length +
+      (identityMissing ? 1 : 0),
+    ...(identityMissing ? { identityMissing: true as const } : {}),
+    ...(conflictingEvents.length > 0
+      ? {
+          leaseIdentityConflict: {
+            expected: runtimeIdentity,
+            observed: uniqueLeaseIdentities(
+              conflictingEvents.map((event) => compactLeaseIdentity(event)),
+            ),
+          },
+        }
+      : {}),
     ...(revokeError ? { revokeError } : {}),
     ...(evidenceError ? { evidenceError } : {}),
   };
 
-  const existingIndex = coverage.sessions.findIndex(
-    (session) => session.sessionKey === sessionKey,
-  );
+  const existingIndex = sessionKey
+    ? coverage.sessions.findIndex((session) => session.sessionKey === sessionKey)
+    : -1;
+  let persistedSummary = summary;
   if (existingIndex >= 0) {
     const existing = coverage.sessions[existingIndex]!;
-    if (existing.leaseId !== leaseId || existing.leaseEpoch !== leaseEpoch) {
-      summary.reconciled = false;
-      summary.mismatchCount += 1;
-      summary.evidenceError = scrubSecrets(
-        [summary.evidenceError, "Native guard runtime lease identity conflict for session."]
-          .filter(Boolean)
-          .join("; "),
-      );
-    }
-    coverage.sessions[existingIndex] = summary;
+    const runtimeIdentityConflict =
+      hasCompleteLeaseIdentity(existing) &&
+      hasCompleteLeaseIdentity(summary) &&
+      (existing.leaseId !== summary.leaseId || existing.leaseEpoch !== summary.leaseEpoch);
+    const conflictError = runtimeIdentityConflict
+      ? "Native guard runtime lease identity conflict for session."
+      : undefined;
+    const mergedConflict = mergeLeaseIdentityConflicts(
+      existing,
+      summary,
+      runtimeIdentityConflict,
+    );
+    const mergedEvidenceError = joinNativeGuardDiagnostics(
+      existing.evidenceError,
+      summary.evidenceError,
+      conflictError,
+    );
+    const mergedRevokeError = joinNativeGuardDiagnostics(
+      existing.revokeError,
+      summary.revokeError,
+    );
+    persistedSummary = {
+      ...compactLeaseIdentity(existing),
+      eventsTotal: existing.eventsTotal + summary.eventsTotal,
+      reconciled: Boolean(
+        existing.reconciled &&
+        summary.reconciled &&
+        !runtimeIdentityConflict &&
+        !mergedEvidenceError &&
+        !mergedRevokeError
+      ),
+      coverageBreachCount:
+        existing.coverageBreachCount + summary.coverageBreachCount,
+      mismatchCount:
+        existing.mismatchCount +
+        summary.mismatchCount +
+        (runtimeIdentityConflict ? 1 : 0),
+      ...(existing.identityMissing || summary.identityMissing
+        ? { identityMissing: true as const }
+        : {}),
+      ...(mergedConflict ? { leaseIdentityConflict: mergedConflict } : {}),
+      ...(mergedRevokeError ? { revokeError: mergedRevokeError } : {}),
+      ...(mergedEvidenceError ? { evidenceError: mergedEvidenceError } : {}),
+    };
+    coverage.sessions[existingIndex] = persistedSummary;
   } else {
     coverage.sessions.push(summary);
   }
@@ -1394,13 +1438,89 @@ export function recordNativeGuardSessionCoverage(
   coverage.leaseId = primary?.leaseId;
   coverage.leaseEpoch = primary?.leaseEpoch;
 
-  if (summary.evidenceError) {
-    return `NATIVE_GUARD_EVIDENCE_UNAVAILABLE: ${summary.evidenceError}`;
+  if (persistedSummary.evidenceError) {
+    return `NATIVE_GUARD_EVIDENCE_UNAVAILABLE: ${persistedSummary.evidenceError}`;
   }
-  if (summary.revokeError) {
-    return `NATIVE_GUARD_REVOKE_FAILED: ${summary.revokeError}`;
+  if (persistedSummary.revokeError) {
+    return `NATIVE_GUARD_REVOKE_FAILED: ${persistedSummary.revokeError}`;
   }
   return undefined;
+}
+
+type NativeGuardLeaseIdentitySummary = {
+  sessionKey?: string;
+  leaseId?: string;
+  leaseEpoch?: number;
+};
+
+function compactLeaseIdentity(
+  value: NativeGuardLeaseIdentitySummary,
+): NativeGuardLeaseIdentitySummary {
+  return {
+    ...(typeof value.sessionKey === "string" && value.sessionKey
+      ? { sessionKey: value.sessionKey }
+      : {}),
+    ...(typeof value.leaseId === "string" && value.leaseId
+      ? { leaseId: value.leaseId }
+      : {}),
+    ...(Number.isSafeInteger(value.leaseEpoch) && (value.leaseEpoch as number) > 0
+      ? { leaseEpoch: value.leaseEpoch }
+      : {}),
+  };
+}
+
+function hasCompleteLeaseIdentity(
+  value: NativeGuardLeaseIdentitySummary,
+): value is Required<NativeGuardLeaseIdentitySummary> {
+  return Boolean(
+    value.sessionKey &&
+    value.leaseId &&
+    Number.isSafeInteger(value.leaseEpoch) &&
+    (value.leaseEpoch as number) > 0,
+  );
+}
+
+function uniqueLeaseIdentities(
+  identities: NativeGuardLeaseIdentitySummary[],
+): NativeGuardLeaseIdentitySummary[] {
+  const byIdentity = new Map<string, NativeGuardLeaseIdentitySummary>();
+  for (const identity of identities) {
+    const key = JSON.stringify([
+      identity.sessionKey ?? null,
+      identity.leaseId ?? null,
+      identity.leaseEpoch ?? null,
+    ]);
+    if (!byIdentity.has(key)) byIdentity.set(key, identity);
+  }
+  return [...byIdentity.values()];
+}
+
+function mergeLeaseIdentityConflicts(
+  existing: NativeGuardSessionCoverageSummary,
+  incoming: NativeGuardSessionCoverageSummary,
+  runtimeIdentityConflict: boolean,
+): NativeGuardSessionCoverageSummary["leaseIdentityConflict"] {
+  const observed = [
+    ...(existing.leaseIdentityConflict?.observed ?? []),
+    ...(incoming.leaseIdentityConflict?.observed ?? []),
+    ...(runtimeIdentityConflict ? [compactLeaseIdentity(incoming)] : []),
+  ];
+  if (observed.length === 0) return existing.leaseIdentityConflict;
+  return {
+    expected: compactLeaseIdentity(existing),
+    observed: uniqueLeaseIdentities(observed),
+  };
+}
+
+function joinNativeGuardDiagnostics(
+  ...messages: Array<string | undefined>
+): string | undefined {
+  const unique = new Set(
+    messages
+      .filter((message): message is string => Boolean(message))
+      .map(scrubSecrets),
+  );
+  return unique.size > 0 ? [...unique].join("; ") : undefined;
 }
 
 function normalizeDetectionCaseError(error: unknown): DetectionCaseError {

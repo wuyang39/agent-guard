@@ -7,7 +7,12 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createId, Mutex, nowIso } from "../shared";
-import type { RunE2ERequest, P2RunGroup, P2AdapterKind } from "../api/types";
+import type {
+  NativeGuardCoverageSummary,
+  RunE2ERequest,
+  P2RunGroup,
+  P2AdapterKind,
+} from "../api/types";
 import type { RunStatus, RuntimeSupervisionRecord } from "@agent-guard/contracts";
 import { resolveInsideDirectory } from "./pathSafety";
 
@@ -70,12 +75,14 @@ export async function saveRunGroup(runGroup: P2RunGroup): Promise<void> {
   await runGroupsMutex.run(async () => {
     runGroup.updatedAt = nowIso();
     await ensureDir(ROOT);
-    const all = await readJson<P2RunGroup[]>(RUN_GROUPS_FILE, []);
+    const all = (await readJson<P2RunGroup[]>(RUN_GROUPS_FILE, []))
+      .map(normalizeStoredRunGroup);
     const idx = all.findIndex((r) => r.runGroupId === runGroup.runGroupId);
+    const normalized = normalizeStoredRunGroup(runGroup);
     if (idx >= 0) {
-      all[idx] = runGroup;
+      all[idx] = normalized;
     } else {
-      all.push(runGroup);
+      all.push(normalized);
     }
     await writeJson(RUN_GROUPS_FILE, all);
   });
@@ -84,7 +91,8 @@ export async function saveRunGroup(runGroup: P2RunGroup): Promise<void> {
 export async function getRunGroup(
   runGroupId: string,
 ): Promise<P2RunGroup | undefined> {
-  const all = await readJson<P2RunGroup[]>(RUN_GROUPS_FILE, []);
+  const all = (await readJson<P2RunGroup[]>(RUN_GROUPS_FILE, []))
+    .map(normalizeStoredRunGroup);
   return all.find((r) => r.runGroupId === runGroupId);
 }
 
@@ -93,7 +101,8 @@ export async function listRunGroups(opts?: {
   status?: RunStatus;
   adapterKind?: P2AdapterKind;
 }): Promise<P2RunGroup[]> {
-  let all = await readJson<P2RunGroup[]>(RUN_GROUPS_FILE, []);
+  let all = (await readJson<P2RunGroup[]>(RUN_GROUPS_FILE, []))
+    .map(normalizeStoredRunGroup);
 
   if (opts?.status) {
     all = all.filter((r) => r.status === opts.status);
@@ -113,6 +122,29 @@ export async function listRunGroups(opts?: {
   }
 
   return all;
+}
+
+export function normalizeStoredRunGroup(runGroup: P2RunGroup): P2RunGroup {
+  if (!runGroup.nativeGuardCoverage) return runGroup;
+  const legacyCoverage = runGroup.nativeGuardCoverage as NativeGuardCoverageSummary & {
+    mismatchCount?: number;
+    sessions?: NativeGuardCoverageSummary["sessions"];
+  };
+  const sessions = Array.isArray(legacyCoverage.sessions)
+    ? legacyCoverage.sessions
+    : [];
+  const mismatchCount = Number.isSafeInteger(legacyCoverage.mismatchCount) &&
+    (legacyCoverage.mismatchCount as number) >= 0
+    ? legacyCoverage.mismatchCount as number
+    : sessions.reduce((total, session) => total + session.mismatchCount, 0);
+  return {
+    ...runGroup,
+    nativeGuardCoverage: {
+      ...legacyCoverage,
+      mismatchCount,
+      sessions,
+    },
+  };
 }
 
 // ---- Supervision Session ----

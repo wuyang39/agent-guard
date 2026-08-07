@@ -34,13 +34,18 @@ export type ApiResponse<T> =
     };
 
 export type NativeGuardSessionCoverageView = {
-  sessionKey: string;
-  leaseId: string;
-  leaseEpoch: number;
+  sessionKey?: string;
+  leaseId?: string;
+  leaseEpoch?: number;
   eventsTotal: number;
   reconciled: boolean;
   coverageBreachCount: number;
   mismatchCount: number;
+  identityMissing?: true;
+  leaseIdentityConflict?: {
+    expected: { sessionKey?: string; leaseId?: string; leaseEpoch?: number };
+    observed: Array<{ sessionKey?: string; leaseId?: string; leaseEpoch?: number }>;
+  };
   revokeError?: string;
   evidenceError?: string;
 };
@@ -119,6 +124,8 @@ export type RunCaseFailureView = {
     | "sandbox_attestation_failed"
     | "sandbox_cleanup_failed"
     | "native_guard_unavailable"
+    | "native_guard_evidence_unavailable"
+    | "native_guard_revoke_failed"
     | "native_guard_coverage_breach";
   attempts: number;
   retryable: boolean;

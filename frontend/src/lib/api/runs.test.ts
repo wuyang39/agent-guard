@@ -69,3 +69,49 @@ test("frontend mock run includes structured native guard session coverage", () =
   assert.equal(coverage.leaseId, coverage.sessions[0]?.leaseId);
   assert.equal(coverage.leaseEpoch, coverage.sessions[0]?.leaseEpoch);
 });
+
+test("run group API defensively normalizes legacy native guard coverage", async (t) => {
+  const previousFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = previousFetch;
+  });
+  globalThis.fetch = (async () => ({
+    async json() {
+      return {
+        ok: true,
+        data: {
+          runGroup: {
+            runGroupId: "run_group.frontend.legacy-coverage",
+            agentId: "agent.frontend.legacy-coverage",
+            adapterKind: "openclaw",
+            status: "failed",
+            phase: "failed",
+            startedAt: "2026-08-07T02:11:52.248Z",
+            caseCount: 1,
+            testRunIds: [],
+            traceIds: [],
+            riskReportIds: [],
+            runtimeSessionIds: [],
+            artifactIds: [],
+            nativeGuardCoverage: {
+              coverage: "misconfigured",
+              eventsTotal: 0,
+              reconciled: false,
+              coverageBreachCount: 0,
+            },
+          },
+        },
+      };
+    },
+  })) as unknown as typeof fetch;
+
+  const result = await runsApi.runGroup("run_group.frontend.legacy-coverage");
+  assert.deepEqual(result.runGroup.nativeGuardCoverage, {
+    coverage: "misconfigured",
+    eventsTotal: 0,
+    reconciled: false,
+    coverageBreachCount: 0,
+    mismatchCount: 0,
+    sessions: [],
+  });
+});

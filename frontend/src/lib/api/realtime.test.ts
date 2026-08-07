@@ -15,8 +15,23 @@ const sandboxProfileSeedFailure = {
   occurredAt: "2026-08-07T00:00:00.000Z",
 } satisfies RunCaseFailureView;
 
+const nativeGuardEvidenceFailure = {
+  ...sandboxProfileSeedFailure,
+  category: "native_guard_evidence_unavailable",
+} satisfies RunCaseFailureView;
+
+const nativeGuardRevokeFailure = {
+  ...sandboxProfileSeedFailure,
+  category: "native_guard_revoke_failed",
+} satisfies RunCaseFailureView;
+
 test("run failure views accept the sandbox profile seed category", () => {
   assert.equal(sandboxProfileSeedFailure.category, "sandbox_profile_seed_failed");
+});
+
+test("run failure views accept native guard evidence and revoke categories", () => {
+  assert.equal(nativeGuardEvidenceFailure.category, "native_guard_evidence_unavailable");
+  assert.equal(nativeGuardRevokeFailure.category, "native_guard_revoke_failed");
 });
 
 test("live supervision stream defaults to realtime-only replay mode", () => {

@@ -2,8 +2,12 @@ import { constants as fsConstants, type Stats } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import JSON5 from "json5";
 import { resolveOpenClawCliInvocation } from "../agent/openclawAdapter";
 import { scrubDetectionOpenClawConfig } from "./detectionOpenClawConfig";
+
+const CONFIG_FILENAMES = ["openclaw.json", "clawdbot.json"] as const;
+const DEFAULT_STATE_DIRNAMES = [".openclaw", ".clawdbot"] as const;
 
 export type DetectionProfileSeed = {
   userConfig: Record<string, unknown>;
@@ -26,46 +30,45 @@ export type ResolveDetectionProfileSeedOptions = {
   homedir?: () => string;
 };
 
+export type DetectionProfileSeedPaths = {
+  stateDir: string;
+  configPath: string;
+};
+
+type TrustedDirectorySnapshot = {
+  path: string;
+  stat: Stats;
+};
+
 export async function resolveDetectionProfileSeed(
   options: ResolveDetectionProfileSeedOptions = {},
 ): Promise<DetectionProfileSeed> {
-  const baseEnv = options.env ?? process.env;
-  const invocationEnv = options.cliPath
-    ? resolveOpenClawCliInvocation(options.cliPath).env
-    : undefined;
-  const env = { ...baseEnv, ...invocationEnv };
-  const homeDir = resolveEffectiveHome(env, options.homedir ?? os.homedir);
-  const stateDir = env.OPENCLAW_STATE_DIR?.trim()
-    ? resolveProfilePath(env.OPENCLAW_STATE_DIR, homeDir)
-    : path.join(homeDir, ".openclaw");
-  const explicitConfigPath = env.OPENCLAW_CONFIG_PATH?.trim();
-  const configPath = explicitConfigPath
-    ? resolveProfilePath(explicitConfigPath, homeDir)
-    : path.join(stateDir, "openclaw.json");
-  const lastGoodPath = `${configPath}.last-good`;
-  const canonicalStateRoot = await assertTrustedDirectory(stateDir, "OpenClaw state root");
-  const trustedConfigRoot = explicitConfigPath
-    ? await assertTrustedDirectory(path.dirname(configPath), "OpenClaw config root")
-    : canonicalStateRoot;
+  const { stateDir, configPath } = await resolveDetectionProfileSeedPaths(options);
+  const stateRoot = await snapshotTrustedDirectory(stateDir, "OpenClaw state root");
+  const configRoot = await snapshotTrustedDirectory(path.dirname(configPath), "OpenClaw config root");
 
   let raw: string;
   try {
-    raw = (await readStableTrustedFile(lastGoodPath, trustedConfigRoot)).toString("utf8");
+    raw = (await readStableTrustedFile(configPath, configRoot.path)).toString("utf8");
   } catch (error) {
     if (error instanceof DetectionProfileSeedError) throw error;
     throw new DetectionProfileSeedError(
       "MODEL_PROFILE_SEED_MISSING",
-      `Detection last-known-good model configuration is unavailable at ${lastGoodPath}. Start OpenClaw with a valid model/provider configuration before running detection.`,
+      `Detection model configuration is unavailable at ${configPath}. Start OpenClaw with a valid model/provider configuration before running detection.`,
     );
   }
+  await Promise.all([
+    assertTrustedDirectoryUnchanged(stateRoot, "OpenClaw state root"),
+    assertTrustedDirectoryUnchanged(configRoot, "OpenClaw config root"),
+  ]);
 
   let parsed: unknown;
   try {
-    parsed = JSON.parse(raw) as unknown;
+    parsed = JSON5.parse(raw) as unknown;
   } catch {
     throw new DetectionProfileSeedError(
       "MODEL_PROFILE_SEED_INVALID",
-      `Detection last-known-good model configuration at ${lastGoodPath} is not valid JSON.`,
+      `Detection model configuration at ${configPath} is not valid JSON5.`,
     );
   }
   let userConfig: Record<string, unknown>;
@@ -74,19 +77,38 @@ export async function resolveDetectionProfileSeed(
   } catch {
     throw new DetectionProfileSeedError(
       "MODEL_PROFILE_SEED_INVALID",
-      `Detection last-known-good model configuration at ${lastGoodPath} contains unsafe or invalid model/provider settings.`,
+      `Detection model configuration at ${configPath} contains unsafe or invalid model settings.`,
     );
   }
   if (!hasExplicitModel(userConfig.model)) {
     throw new DetectionProfileSeedError(
       "MODEL_PROFILE_SEED_INVALID",
-      `Detection last-known-good model configuration at ${lastGoodPath} does not define an explicit default model.`,
+      `Detection model configuration at ${configPath} does not define an explicit default model.`,
     );
   }
+  await Promise.all([
+    assertTrustedDirectoryUnchanged(stateRoot, "OpenClaw state root"),
+    assertTrustedDirectoryUnchanged(configRoot, "OpenClaw config root"),
+  ]);
   return {
     userConfig,
     agentStateDir: path.join(stateDir, "agents", "main", "agent"),
   };
+}
+
+export async function resolveDetectionProfileSeedPaths(
+  options: ResolveDetectionProfileSeedOptions = {},
+): Promise<DetectionProfileSeedPaths> {
+  const baseEnv = options.env ?? process.env;
+  const invocationEnv = options.cliPath
+    ? resolveOpenClawCliInvocation(options.cliPath).env
+    : undefined;
+  const env = { ...baseEnv, ...invocationEnv };
+  const homeDir = resolveEffectiveHome(env, options.homedir ?? os.homedir);
+  const stateDir = await resolveStateDirectory(env, homeDir);
+  const configCandidates = resolveConfigCandidates(env, homeDir);
+  const configPath = await findSeedConfigPath(configCandidates);
+  return { stateDir, configPath };
 }
 
 function hasExplicitModel(value: unknown): boolean {
@@ -111,23 +133,90 @@ function resolveProfilePath(input: string, homeDir: string): string {
   return path.resolve(expanded);
 }
 
-async function assertTrustedDirectory(target: string, label: string): Promise<string> {
+async function resolveStateDirectory(env: NodeJS.ProcessEnv, homeDir: string): Promise<string> {
+  const explicit = env.OPENCLAW_STATE_DIR?.trim();
+  if (explicit) return resolveProfilePath(explicit, homeDir);
+  for (const name of DEFAULT_STATE_DIRNAMES) {
+    const candidate = path.join(homeDir, name);
+    if (await pathExists(candidate)) return candidate;
+  }
+  return path.join(homeDir, DEFAULT_STATE_DIRNAMES[0]);
+}
+
+function resolveConfigCandidates(env: NodeJS.ProcessEnv, homeDir: string): string[] {
+  const explicitConfig = env.OPENCLAW_CONFIG_PATH?.trim();
+  if (explicitConfig) return [resolveProfilePath(explicitConfig, homeDir)];
+
+  const directories: string[] = [];
+  const explicitState = env.OPENCLAW_STATE_DIR?.trim();
+  if (explicitState) directories.push(resolveProfilePath(explicitState, homeDir));
+  directories.push(...DEFAULT_STATE_DIRNAMES.map((name) => path.join(homeDir, name)));
+
+  const seen = new Set<string>();
+  const candidates: string[] = [];
+  for (const directory of directories) {
+    for (const filename of CONFIG_FILENAMES) {
+      const candidate = path.resolve(directory, filename);
+      const key = process.platform === "win32" ? candidate.toLowerCase() : candidate;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      candidates.push(candidate);
+    }
+  }
+  return candidates;
+}
+
+async function findSeedConfigPath(configCandidates: string[]): Promise<string> {
+  for (const configPath of configCandidates) {
+    for (const candidate of [`${configPath}.last-good`, configPath]) {
+      if (await pathExists(candidate)) return candidate;
+    }
+  }
+  throw new DetectionProfileSeedError(
+    "MODEL_PROFILE_SEED_MISSING",
+    `Detection last-known-good model configuration is unavailable; no current configuration was found among: ${configCandidates.join(", ")}. Start OpenClaw with a valid model/provider configuration before running detection.`,
+  );
+}
+
+async function pathExists(target: string): Promise<boolean> {
+  try {
+    await fs.lstat(target);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function snapshotTrustedDirectory(target: string, label: string): Promise<TrustedDirectorySnapshot> {
   const resolved = path.resolve(target);
   try {
     await assertNoSymlinkPath(resolved);
     const stat = await fs.lstat(resolved);
-    if (!stat.isDirectory()) {
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
       throw new DetectionProfileSeedError(
         "MODEL_PROFILE_SEED_INVALID",
         `Detection ${label} is not a regular directory: ${resolved}.`,
       );
     }
-    return await fs.realpath(resolved);
+    return { path: await fs.realpath(resolved), stat };
   } catch (error) {
     if (error instanceof DetectionProfileSeedError) throw error;
     throw new DetectionProfileSeedError(
       "MODEL_PROFILE_SEED_INVALID",
       `Detection ${label} is unavailable or invalid: ${resolved}.`,
+    );
+  }
+}
+
+async function assertTrustedDirectoryUnchanged(
+  expected: TrustedDirectorySnapshot,
+  label: string,
+): Promise<void> {
+  const current = await snapshotTrustedDirectory(expected.path, label);
+  if (!sameHostPath(current.path, expected.path) || !sameFileIdentity(current.stat, expected.stat)) {
+    throw new DetectionProfileSeedError(
+      "MODEL_PROFILE_SEED_INVALID",
+      `Detection ${label} changed while the model configuration was read: ${expected.path}.`,
     );
   }
 }
@@ -204,10 +293,14 @@ async function assertNoSymlinkPath(target: string): Promise<void> {
 }
 
 function sameFileSnapshot(left: Stats, right: Stats): boolean {
-  const sameIdentity = left.dev !== 0 || left.ino !== 0 || right.dev !== 0 || right.ino !== 0
+  return sameFileIdentity(left, right) && left.size === right.size &&
+    left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs;
+}
+
+function sameFileIdentity(left: Stats, right: Stats): boolean {
+  return left.dev !== 0 || left.ino !== 0 || right.dev !== 0 || right.ino !== 0
     ? left.dev === right.dev && left.ino === right.ino
     : left.birthtimeMs === right.birthtimeMs;
-  return sameIdentity && left.size === right.size && left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs;
 }
 
 function isPathInsideDirectory(candidate: string, root: string): boolean {

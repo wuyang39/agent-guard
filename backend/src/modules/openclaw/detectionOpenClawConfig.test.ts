@@ -223,8 +223,98 @@ test("profile seed rejects malformed last-known-good configuration", async (t) =
     (error: unknown) =>
       error instanceof DetectionProfileSeedError &&
       error.code === "MODEL_PROFILE_SEED_INVALID" &&
-      /not valid JSON/i.test(error.message),
+      /not valid JSON5/i.test(error.message),
   );
+});
+
+test("profile seed parses the JSON5 syntax accepted by OpenClaw", async (t) => {
+  const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-config-seed-json5-"));
+  const configPath = path.join(stateDir, "openclaw.json");
+  await fs.writeFile(`${configPath}.last-good`, `
+    // OpenClaw configuration is JSON5, not strict JSON.
+    {
+      agents: {
+        defaults: {
+          model: {
+            primary: 'deepseek/deepseek-v4-flash',
+            fallbacks: ['openai/gpt-5.5',],
+          },
+        },
+      },
+    }
+  `, "utf8");
+  t.after(() => fs.rm(stateDir, { recursive: true, force: true }));
+
+  const seed = await resolveDetectionProfileSeed({
+    env: {
+      OPENCLAW_CONFIG_PATH: configPath,
+      OPENCLAW_STATE_DIR: stateDir,
+    },
+  });
+
+  assert.deepEqual(seed.userConfig, {
+    model: {
+      primary: "deepseek/deepseek-v4-flash",
+      fallbacks: ["openai/gpt-5.5"],
+    },
+  });
+});
+
+test("profile seed discovers legacy clawdbot config in an explicit state directory", async (t) => {
+  const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-config-seed-state-legacy-"));
+  await fs.writeFile(path.join(stateDir, "clawdbot.json.last-good"), JSON.stringify({
+    agents: { defaults: { model: { primary: "deepseek/deepseek-v4-flash" } } },
+  }));
+  t.after(() => fs.rm(stateDir, { recursive: true, force: true }));
+
+  const seed = await resolveDetectionProfileSeed({ env: { OPENCLAW_STATE_DIR: stateDir } });
+
+  assert.deepEqual(seed.userConfig, {
+    model: { primary: "deepseek/deepseek-v4-flash" },
+  });
+  assert.equal(seed.agentStateDir, path.join(stateDir, "agents", "main", "agent"));
+});
+
+test("profile seed discovers the default legacy .clawdbot layout", async (t) => {
+  const homeDir = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-config-seed-home-legacy-"));
+  const stateDir = path.join(homeDir, ".clawdbot");
+  await fs.mkdir(stateDir);
+  await fs.writeFile(path.join(stateDir, "clawdbot.json.last-good"), JSON.stringify({
+    agents: { defaults: { model: "deepseek/deepseek-v4-flash" } },
+  }));
+  t.after(() => fs.rm(homeDir, { recursive: true, force: true }));
+
+  const seed = await resolveDetectionProfileSeed({ env: {}, homedir: () => homeDir });
+
+  assert.deepEqual(seed.userConfig, { model: "deepseek/deepseek-v4-flash" });
+  assert.equal(seed.agentStateDir, path.join(stateDir, "agents", "main", "agent"));
+});
+
+test("profile seed prefers last-good and falls back to the current config", async (t) => {
+  const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-config-seed-priority-"));
+  const configPath = path.join(stateDir, "openclaw.json");
+  await fs.writeFile(configPath, JSON.stringify({
+    agents: { defaults: { model: "openai/gpt-5.5" } },
+  }));
+  await fs.writeFile(`${configPath}.last-good`, JSON.stringify({
+    agents: { defaults: { model: "deepseek/deepseek-v4-flash" } },
+  }));
+  t.after(() => fs.rm(stateDir, { recursive: true, force: true }));
+
+  const options = {
+    env: {
+      OPENCLAW_CONFIG_PATH: configPath,
+      OPENCLAW_STATE_DIR: stateDir,
+    },
+  };
+  assert.deepEqual((await resolveDetectionProfileSeed(options)).userConfig, {
+    model: "deepseek/deepseek-v4-flash",
+  });
+
+  await fs.rm(`${configPath}.last-good`);
+  assert.deepEqual((await resolveDetectionProfileSeed(options)).userConfig, {
+    model: "openai/gpt-5.5",
+  });
 });
 
 test("profile seed rejects configuration without an explicit default model", async (t) => {

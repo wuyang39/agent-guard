@@ -1,6 +1,6 @@
 import { createHash, createPublicKey, randomBytes, type KeyObject } from "node:crypto";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { constants as fsConstants, type Stats } from "node:fs";
+import { constants as fsConstants, type Dirent, type Stats } from "node:fs";
 import type { Readable } from "node:stream";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -18,6 +18,15 @@ import type { DetectionProfileSeed } from "./detectionProfileSeed";
 
 const RUN_LABEL_KEY = "agent-guard.run-group";
 const RUN_ROLE_LABEL_KEY = "agent-guard.role";
+const MODEL_STATE_ALLOWLIST = new Set([
+  "models.json",
+  "openclaw-agent.sqlite",
+  "openclaw-agent.sqlite-wal",
+]);
+const MAX_MODEL_STATE_FILES = MODEL_STATE_ALLOWLIST.size;
+const MAX_MODEL_STATE_FILE_BYTES = 32 * 1024 * 1024;
+const MAX_MODEL_STATE_TOTAL_BYTES = 64 * 1024 * 1024;
+const MODEL_STATE_READ_CHUNK_BYTES = 1024 * 1024;
 export const DETECTION_SANDBOX_COMMAND_TIMEOUT_MS = 30_000;
 const MAX_COMMAND_OUTPUT_BYTES = 256 * 1024;
 const MAX_GATEWAY_BOOTSTRAP_BYTES = 8 * 1024;
@@ -613,11 +622,26 @@ export class DetectionSandboxManager {
   }
 
   private async snapshotAgentModelState(profileRoot: string, sourceAgentDir: string): Promise<void> {
-    const canonicalAgentDir = await assertTrustedSeedDirectory(sourceAgentDir);
-    const entries = await fs.readdir(canonicalAgentDir, { withFileTypes: true });
+    this.throwIfAborted();
+    const sourceDirectory = await snapshotTrustedSeedDirectory(sourceAgentDir);
+    let entries: Dirent[];
+    try {
+      entries = await fs.readdir(sourceDirectory.path, { withFileTypes: true });
+    } catch {
+      throw new SandboxPreflightError(
+        "MODEL_PROFILE_SEED_INVALID",
+        `Detection model state directory changed before snapshot: ${sourceAgentDir}.`,
+      );
+    }
     const allowed = entries
-      .filter((entry) => entry.name === "models.json" || entry.name.startsWith("openclaw-agent.sqlite"))
+      .filter((entry) => MODEL_STATE_ALLOWLIST.has(entry.name))
       .sort((left, right) => left.name.localeCompare(right.name));
+    if (allowed.length > MAX_MODEL_STATE_FILES) {
+      throw new SandboxPreflightError(
+        "MODEL_PROFILE_SEED_INVALID",
+        `Detection model state exceeds the allowlisted file count under ${sourceAgentDir}.`,
+      );
+    }
     for (const required of ["models.json", "openclaw-agent.sqlite"]) {
       if (!allowed.some((entry) => entry.name === required && entry.isFile() && !entry.isSymbolicLink())) {
         throw new SandboxPreflightError(
@@ -633,79 +657,107 @@ export class DetectionSandboxManager {
       );
     }
 
-    const snapshots = new Map<string, Buffer>();
-    for (const entry of allowed) {
-      snapshots.set(
-        entry.name,
-        await readStableSeedFile(path.join(canonicalAgentDir, entry.name), canonicalAgentDir),
-      );
-    }
-    await assertTrustedSeedDirectory(canonicalAgentDir);
-
-    let modelCatalog: unknown;
+    const openFiles: OpenSeedFileSnapshot[] = [];
     try {
-      modelCatalog = JSON.parse(snapshots.get("models.json")!.toString("utf8")) as unknown;
-    } catch {
-      throw new SandboxPreflightError(
-        "MODEL_PROFILE_SEED_INVALID",
-        `Detection model state models.json is not valid JSON under ${sourceAgentDir}.`,
-      );
-    }
-    if (
-      !isRecord(modelCatalog) ||
-      !isRecord(modelCatalog.providers) ||
-      Object.keys(modelCatalog.providers).length === 0
-    ) {
-      throw new SandboxPreflightError(
-        "MODEL_PROFILE_SEED_INVALID",
-        `Detection model state models.json does not contain a provider catalog under ${sourceAgentDir}.`,
-      );
-    }
-    const modelRef = parseSeedModelRef(this.options.profileSeed?.userConfig.model);
-    if (!modelRef) {
-      throw new SandboxPreflightError(
-        "MODEL_PROFILE_SEED_INVALID",
-        "Detection model profile does not contain a valid provider/model primary reference.",
-      );
-    }
-    const providerEntry = Object.entries(modelCatalog.providers).find(
-      ([provider]) => provider.trim().toLowerCase() === modelRef.provider,
-    )?.[1];
-    if (!isRecord(providerEntry)) {
-      throw new SandboxPreflightError(
-        "MODEL_PROFILE_SEED_INVALID",
-        `Detection model provider ${modelRef.provider} is absent from models.json.`,
-      );
-    }
-    const providerModels = Array.isArray(providerEntry.models) ? providerEntry.models : [];
-    const hasModel = providerModels.some(
-      (entry) => isRecord(entry) && typeof entry.id === "string" && entry.id === modelRef.model,
-    );
-    if (!hasModel) {
-      throw new SandboxPreflightError(
-        "MODEL_PROFILE_SEED_INVALID",
-        `Detection model ${modelRef.model} is absent from provider ${modelRef.provider} in models.json.`,
-      );
-    }
-    const expectedHeader = Buffer.from("SQLite format 3\0", "utf8");
-    const sqlite = snapshots.get("openclaw-agent.sqlite")!;
-    if (sqlite.length < expectedHeader.length || !sqlite.subarray(0, expectedHeader.length).equals(expectedHeader)) {
-      throw new SandboxPreflightError(
-        "MODEL_PROFILE_SEED_INVALID",
-        `Detection model state openclaw-agent.sqlite is not a valid SQLite database under ${sourceAgentDir}.`,
-      );
-    }
-
-    const destination = path.join(profileRoot, "state", "agents", "main", "agent");
-    await fs.mkdir(destination, { recursive: true, mode: 0o700 });
-    for (const entry of allowed) {
-      const target = path.join(destination, entry.name);
-      const handle = await fs.open(target, "wx", 0o600);
-      try {
-        await handle.writeFile(snapshots.get(entry.name)!);
-      } finally {
-        await handle.close();
+      let totalBytes = 0;
+      for (const entry of allowed) {
+        this.throwIfAborted();
+        const opened = await openSeedFileSnapshot(
+          path.join(sourceDirectory.path, entry.name),
+          sourceDirectory,
+        );
+        if (opened.stat.size > MAX_MODEL_STATE_FILE_BYTES) {
+          await opened.handle.close();
+          throw new SandboxPreflightError(
+            "MODEL_PROFILE_SEED_INVALID",
+            `Detection model state entry exceeds the per-file size limit: ${entry.name}.`,
+          );
+        }
+        totalBytes += opened.stat.size;
+        if (totalBytes > MAX_MODEL_STATE_TOTAL_BYTES) {
+          await opened.handle.close();
+          throw new SandboxPreflightError(
+            "MODEL_PROFILE_SEED_INVALID",
+            "Detection model state exceeds the total snapshot size limit.",
+          );
+        }
+        openFiles.push(opened);
       }
+      for (const opened of openFiles) {
+        opened.content = await readBoundedSeedFile(opened, () => this.throwIfAborted());
+      }
+      await assertSeedSnapshotUnchanged(sourceDirectory, openFiles);
+
+      const snapshots = new Map(openFiles.map((entry) => [entry.name, entry.content!]));
+      let modelCatalog: unknown;
+      try {
+        modelCatalog = JSON.parse(snapshots.get("models.json")!.toString("utf8")) as unknown;
+      } catch {
+        throw new SandboxPreflightError(
+          "MODEL_PROFILE_SEED_INVALID",
+          `Detection model state models.json is not valid JSON under ${sourceAgentDir}.`,
+        );
+      }
+      if (
+        !isRecord(modelCatalog) ||
+        !isRecord(modelCatalog.providers) ||
+        Object.keys(modelCatalog.providers).length === 0
+      ) {
+        throw new SandboxPreflightError(
+          "MODEL_PROFILE_SEED_INVALID",
+          `Detection model state models.json does not contain a provider catalog under ${sourceAgentDir}.`,
+        );
+      }
+      const modelRef = parseSeedModelRef(this.options.profileSeed?.userConfig.model);
+      if (!modelRef) {
+        throw new SandboxPreflightError(
+          "MODEL_PROFILE_SEED_INVALID",
+          "Detection model profile does not contain a valid provider/model primary reference.",
+        );
+      }
+      const providerEntry = Object.entries(modelCatalog.providers).find(
+        ([provider]) => provider.trim().toLowerCase() === modelRef.provider,
+      )?.[1];
+      if (!isRecord(providerEntry)) {
+        throw new SandboxPreflightError(
+          "MODEL_PROFILE_SEED_INVALID",
+          `Detection model provider ${modelRef.provider} is absent from models.json.`,
+        );
+      }
+      const providerModels = Array.isArray(providerEntry.models) ? providerEntry.models : [];
+      const hasModel = providerModels.some(
+        (entry) => isRecord(entry) && typeof entry.id === "string" && entry.id === modelRef.model,
+      );
+      if (!hasModel) {
+        throw new SandboxPreflightError(
+          "MODEL_PROFILE_SEED_INVALID",
+          `Detection model ${modelRef.model} is absent from provider ${modelRef.provider} in models.json.`,
+        );
+      }
+      const expectedHeader = Buffer.from("SQLite format 3\0", "utf8");
+      const sqlite = snapshots.get("openclaw-agent.sqlite")!;
+      if (sqlite.length < expectedHeader.length || !sqlite.subarray(0, expectedHeader.length).equals(expectedHeader)) {
+        throw new SandboxPreflightError(
+          "MODEL_PROFILE_SEED_INVALID",
+          `Detection model state openclaw-agent.sqlite is not a valid SQLite database under ${sourceAgentDir}.`,
+        );
+      }
+
+      const destination = path.join(profileRoot, "state", "agents", "main", "agent");
+      await fs.mkdir(destination, { recursive: true, mode: 0o700 });
+      for (const opened of openFiles) {
+        this.throwIfAborted();
+        const target = path.join(destination, opened.name);
+        const handle = await fs.open(target, "wx", 0o600);
+        try {
+          await handle.writeFile(opened.content!);
+        } finally {
+          await handle.close();
+        }
+      }
+      await assertSeedSnapshotUnchanged(sourceDirectory, openFiles);
+    } finally {
+      await Promise.all(openFiles.map((entry) => entry.handle.close().catch(() => undefined)));
     }
   }
 
@@ -1341,7 +1393,21 @@ async function assertNoSymlinkAncestors(target: string): Promise<void> {
   }
 }
 
-async function assertTrustedSeedDirectory(target: string): Promise<string> {
+type TrustedSeedDirectorySnapshot = {
+  path: string;
+  stat: Stats;
+};
+
+type OpenSeedFileSnapshot = {
+  name: string;
+  path: string;
+  canonicalPath: string;
+  handle: Awaited<ReturnType<typeof fs.open>>;
+  stat: Stats;
+  content?: Buffer;
+};
+
+async function snapshotTrustedSeedDirectory(target: string): Promise<TrustedSeedDirectorySnapshot> {
   const resolved = path.resolve(target);
   try {
     await assertNoSymlinkSeedPath(resolved);
@@ -1352,7 +1418,7 @@ async function assertTrustedSeedDirectory(target: string): Promise<string> {
         `Detection model state directory is not a regular directory: ${resolved}.`,
       );
     }
-    return await fs.realpath(resolved);
+    return { path: await fs.realpath(resolved), stat };
   } catch (error) {
     if (error instanceof SandboxPreflightError) throw error;
     throw new SandboxPreflightError(
@@ -1362,12 +1428,15 @@ async function assertTrustedSeedDirectory(target: string): Promise<string> {
   }
 }
 
-async function readStableSeedFile(filePath: string, trustedAgentDir: string): Promise<Buffer> {
+async function openSeedFileSnapshot(
+  filePath: string,
+  trustedDirectory: TrustedSeedDirectorySnapshot,
+): Promise<OpenSeedFileSnapshot> {
   const resolved = path.resolve(filePath);
   try {
     await assertNoSymlinkSeedPath(resolved);
     const canonical = await fs.realpath(resolved);
-    if (!isPathInsideDirectory(canonical, trustedAgentDir)) {
+    if (!isPathInsideDirectory(canonical, trustedDirectory.path)) {
       throw new SandboxPreflightError(
         "MODEL_PROFILE_SEED_INVALID",
         `Detection model state file escaped the trusted main-agent directory: ${resolved}.`,
@@ -1395,31 +1464,107 @@ async function readStableSeedFile(filePath: string, trustedAgentDir: string): Pr
           `Detection model state entry changed during validation: ${resolved}.`,
         );
       }
-      const content = await handle.readFile();
-      const postReadHandleStat = await handle.stat();
-      const postReadPathStat = await fs.lstat(resolved);
-      const postReadCanonical = await fs.realpath(resolved);
-      if (
-        postReadPathStat.isSymbolicLink() ||
-        !sameSeedFileSnapshot(openedStat, postReadHandleStat) ||
-        !sameSeedFileSnapshot(postReadHandleStat, postReadPathStat) ||
-        !sameHostPath(canonical, postReadCanonical) ||
-        !isPathInsideDirectory(postReadCanonical, trustedAgentDir)
-      ) {
-        throw new SandboxPreflightError(
-          "MODEL_PROFILE_SEED_INVALID",
-          `Detection model state entry changed while it was read: ${resolved}.`,
-        );
-      }
-      return content;
-    } finally {
-      await handle.close();
+      return {
+        name: path.basename(resolved),
+        path: resolved,
+        canonicalPath: canonical,
+        handle,
+        stat: openedStat,
+      };
+    } catch (error) {
+      await handle.close().catch(() => undefined);
+      throw error;
     }
   } catch (error) {
     if (error instanceof SandboxPreflightError) throw error;
     throw new SandboxPreflightError(
       "MODEL_PROFILE_SEED_INVALID",
       `Detection model state entry is unavailable or invalid: ${resolved}.`,
+    );
+  }
+}
+
+async function readBoundedSeedFile(
+  snapshot: OpenSeedFileSnapshot,
+  assertActive: () => void,
+): Promise<Buffer> {
+  try {
+    const content = Buffer.alloc(snapshot.stat.size);
+    let offset = 0;
+    while (offset < content.length) {
+      assertActive();
+      const length = Math.min(MODEL_STATE_READ_CHUNK_BYTES, content.length - offset);
+      const { bytesRead } = await snapshot.handle.read(content, offset, length, offset);
+      if (bytesRead <= 0) {
+        throw new SandboxPreflightError(
+          "MODEL_PROFILE_SEED_INVALID",
+          `Detection model state entry ended during snapshot: ${snapshot.name}.`,
+        );
+      }
+      offset += bytesRead;
+    }
+    return content;
+  } catch (error) {
+    if (error instanceof SandboxPreflightError) throw error;
+    throw new SandboxPreflightError(
+      "MODEL_PROFILE_SEED_INVALID",
+      `Detection model state entry could not be read consistently: ${snapshot.name}.`,
+    );
+  }
+}
+
+async function assertSeedSnapshotUnchanged(
+  directory: TrustedSeedDirectorySnapshot,
+  files: OpenSeedFileSnapshot[],
+): Promise<void> {
+  try {
+    const currentDirectory = await snapshotTrustedSeedDirectory(directory.path);
+    if (
+      !sameHostPath(currentDirectory.path, directory.path) ||
+      !sameSeedFileIdentity(currentDirectory.stat, directory.stat)
+    ) {
+      throw new SandboxPreflightError(
+        "MODEL_PROFILE_SEED_INVALID",
+        `Detection model state directory changed during snapshot: ${directory.path}.`,
+      );
+    }
+    const currentEntries = await fs.readdir(directory.path, { withFileTypes: true });
+    const currentNames = currentEntries
+      .filter((entry) => MODEL_STATE_ALLOWLIST.has(entry.name))
+      .map((entry) => entry.name)
+      .sort();
+    const expectedNames = files.map((entry) => entry.name).sort();
+    if (
+      currentNames.length !== expectedNames.length ||
+      currentNames.some((name, index) => name !== expectedNames[index])
+    ) {
+      throw new SandboxPreflightError(
+        "MODEL_PROFILE_SEED_INVALID",
+        `Detection model state allowlist changed during snapshot: ${directory.path}.`,
+      );
+    }
+    for (const file of files) {
+      const handleStat = await file.handle.stat();
+      const pathStat = await fs.lstat(file.path);
+      const canonicalPath = await fs.realpath(file.path);
+      if (
+        pathStat.isSymbolicLink() ||
+        !sameSeedFileSnapshot(file.stat, handleStat) ||
+        !sameSeedFileSnapshot(handleStat, pathStat) ||
+        !sameHostPath(canonicalPath, file.canonicalPath) ||
+        !isPathInsideDirectory(canonicalPath, directory.path)
+      ) {
+        throw new SandboxPreflightError(
+          "MODEL_PROFILE_SEED_INVALID",
+          `Detection model state entry changed during snapshot: ${file.name}.`,
+        );
+      }
+    }
+  } catch (error) {
+    if (error instanceof SandboxPreflightError) throw error;
+    throw new SandboxPreflightError(
+      "MODEL_PROFILE_SEED_INVALID",
+      `Detection model state changed during snapshot: ${directory.path}.`,
     );
   }
 }
@@ -1441,10 +1586,14 @@ async function assertNoSymlinkSeedPath(target: string): Promise<void> {
 }
 
 function sameSeedFileSnapshot(left: Stats, right: Stats): boolean {
-  const sameIdentity = left.dev !== 0 || left.ino !== 0 || right.dev !== 0 || right.ino !== 0
+  return sameSeedFileIdentity(left, right) && left.size === right.size &&
+    left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs;
+}
+
+function sameSeedFileIdentity(left: Stats, right: Stats): boolean {
+  return left.dev !== 0 || left.ino !== 0 || right.dev !== 0 || right.ino !== 0
     ? left.dev === right.dev && left.ino === right.ino
     : left.birthtimeMs === right.birthtimeMs;
-  return sameIdentity && left.size === right.size && left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs;
 }
 
 function isPathInsideDirectory(candidate: string, root: string): boolean {

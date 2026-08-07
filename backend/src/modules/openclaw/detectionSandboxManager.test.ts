@@ -231,6 +231,7 @@ test("profile seed snapshots only allowlisted main-agent model state files", asy
     })],
     ["openclaw-agent.sqlite", Buffer.from("SQLite format 3\0seed")],
     ["openclaw-agent.sqlite-wal", "wal-state"],
+    ["openclaw-agent.sqlite.evil", "must-not-copy"],
     ["auth-profiles.json", "must-not-copy"],
     ["arbitrary-tool.json", "must-not-copy"],
   ]);
@@ -437,6 +438,43 @@ test("profile seed rejects an invalid main-agent SQLite database before capabili
       error instanceof SandboxPreflightError &&
       error.code === "MODEL_PROFILE_SEED_INVALID" &&
       /SQLite database/i.test(error.message),
+  );
+  assert.equal(capabilityProbed, false);
+});
+
+test("profile seed rejects an oversized allowlisted state file before capability probing", async (t) => {
+  const sourceAgentDir = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-model-state-oversized-"));
+  await fs.writeFile(
+    path.join(sourceAgentDir, "models.json"),
+    JSON.stringify({ providers: { deepseek: { models: [{ id: "deepseek-v4-flash" }] } } }),
+  );
+  const sqlitePath = path.join(sourceAgentDir, "openclaw-agent.sqlite");
+  await fs.writeFile(sqlitePath, Buffer.from("SQLite format 3\0seed"));
+  await fs.truncate(sqlitePath, 33 * 1024 * 1024);
+  t.after(() => fs.rm(sourceAgentDir, { recursive: true, force: true }));
+
+  const { runner } = runnerFor();
+  let capabilityProbed = false;
+  const manager = new DetectionSandboxManager({
+    runGroupId: "run-profile-seed-oversized",
+    image: `openclaw@sha256:${"a".repeat(64)}`,
+    commandRunner: runner,
+    capabilityProbe: async () => {
+      capabilityProbed = true;
+      return readyCapability();
+    },
+    profileSeed: {
+      userConfig: { model: { primary: "deepseek/deepseek-v4-flash" } },
+      agentStateDir: sourceAgentDir,
+    },
+  });
+
+  await assert.rejects(
+    manager.preflight(),
+    (error: unknown) =>
+      error instanceof SandboxPreflightError &&
+      error.code === "MODEL_PROFILE_SEED_INVALID" &&
+      /size limit/i.test(error.message),
   );
   assert.equal(capabilityProbed, false);
 });

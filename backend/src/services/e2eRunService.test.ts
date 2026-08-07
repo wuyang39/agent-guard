@@ -194,15 +194,17 @@ test("formal OpenClaw runE2E resolves a scrubbed host profile seed for the sandb
   assert.deepEqual(runGroup.testRunIds, []);
 });
 
-test("formal OpenClaw runE2E fails before manager construction when the host seed is missing", async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-e2e-missing-seed-"));
+test("formal OpenClaw runE2E preserves invalid profile seed classification before manager construction", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-e2e-invalid-seed-"));
   const stateDir = path.join(root, "state");
   await fs.mkdir(stateDir, { recursive: true });
+  const configPath = path.join(stateDir, "openclaw.json");
+  await fs.writeFile(`${configPath}.last-good`, "{not-json5", "utf8");
   const previousImage = process.env.AGENT_GUARD_DETECTION_IMAGE;
   const previousConfigPath = process.env.OPENCLAW_CONFIG_PATH;
   const previousStateDir = process.env.OPENCLAW_STATE_DIR;
   process.env.AGENT_GUARD_DETECTION_IMAGE = `openclaw@sha256:${"a".repeat(64)}`;
-  process.env.OPENCLAW_CONFIG_PATH = path.join(stateDir, "missing.json");
+  process.env.OPENCLAW_CONFIG_PATH = configPath;
   process.env.OPENCLAW_STATE_DIR = stateDir;
   t.after(async () => {
     restoreEnv("AGENT_GUARD_DETECTION_IMAGE", previousImage);
@@ -225,12 +227,13 @@ test("formal OpenClaw runE2E fails before manager construction when the host see
         throw new Error("manager must not be constructed");
       },
     }),
-    /last-known-good model configuration is unavailable/i,
+    /not valid JSON5/i,
   );
 
   assert.equal(managerConstructions, 0);
   assert.deepEqual(runGroup.testRunIds, []);
   assert.equal(runGroup.progress?.caseFailures?.[0]?.caseId, "sandbox_preflight");
+  assert.equal(runGroup.progress?.caseFailures?.[0]?.category, "sandbox_profile_seed_failed");
 });
 
 function restoreEnv(name: string, value: string | undefined): void {

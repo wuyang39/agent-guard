@@ -59,11 +59,13 @@ import { updateSelectionPlanStatus } from "../modules/runner/selectionPlanStore"
 import { resolveInsideDirectory } from "../storage/pathSafety";
 import {
   DetectionSandboxManager,
+  SandboxPreflightError,
   createDetectionSandboxManager,
   type DetectionSandboxEvidence,
   type DetectionSandboxManagerOptions,
 } from "../modules/openclaw/detectionSandboxManager";
 import {
+  DetectionProfileSeedError,
   resolveDetectionProfileSeed,
   type ResolveDetectionProfileSeedOptions,
 } from "../modules/openclaw/detectionProfileSeed";
@@ -2018,6 +2020,12 @@ async function readP2DemoCasesConfig(): Promise<P2DemoCasesConfig> {
 function sandboxPreflightFailureCategory(
   error: unknown,
 ): P2RunCaseFailure["category"] {
+  if (
+    error instanceof DetectionProfileSeedError ||
+    (error instanceof SandboxPreflightError && error.code === "MODEL_PROFILE_SEED_INVALID")
+  ) {
+    return "sandbox_profile_seed_failed";
+  }
   const message = error instanceof Error ? error.message : String(error);
   const normalized = message.toLowerCase();
   if (normalized.includes("docker") || normalized.includes("unavailable")) return "sandbox_preflight_failed";

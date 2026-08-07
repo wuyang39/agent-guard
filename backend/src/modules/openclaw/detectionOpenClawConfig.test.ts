@@ -63,24 +63,33 @@ test("generates a Docker-only detection profile with destructive features disabl
   });
 });
 
-test("preserves references and SecretRefs without copying inline secret values", () => {
-  const envRef = { source: "env", provider: "default", id: "ANTHROPIC_API_KEY" };
-  const fileRef = { source: "file", provider: "mounted-json", id: "/providers/deepseek/apiKey" };
-  const execRef = { source: "exec", provider: "vault", id: "providers/deepseek/api-key" };
-  const config = scrubDetectionOpenClawConfig({
-    model: "anthropic:claude-sonnet",
-    providers: {
-      anthropic: { apiKey: envRef },
-      deepseek: { apiKey: fileRef },
-      privateProxy: { apiKey: execRef },
-    },
+for (const [source, apiKey] of Object.entries({
+  env: { source: "env", provider: "default", id: "DEEPSEEK_API_KEY" },
+  file: { source: "file", provider: "mounted-json", id: "/providers/deepseek/apiKey" },
+  exec: { source: "exec", provider: "vault", id: "providers/deepseek/api-key" },
+  pseudo: { SecretRef: "env:DEEPSEEK_API_KEY" },
+})) {
+  test(`rejects ${source} SecretRefs that the isolated profile cannot resolve`, () => {
+    assert.throws(
+      () => scrubDetectionOpenClawConfig({ providers: { deepseek: { apiKey } } }),
+      (error: unknown) => error instanceof DetectionConfigError && error.code === "INLINE_SECRET_UNSAFE",
+    );
   });
-  assert.equal(config.model, "anthropic:claude-sonnet");
-  assert.deepEqual(config.providers, {
-    anthropic: { apiKey: envRef },
-    deepseek: { apiKey: fileRef },
-    privateProxy: { apiKey: execRef },
+}
+
+for (const [name, value] of [
+  ["X-Api-Key", "inline-api-key"],
+  ["X-Custom-Token", "inline-custom-token"],
+] as const) {
+  test(`rejects provider headers containing ${name}`, () => {
+    assert.throws(
+      () => scrubDetectionOpenClawConfig({ providers: { deepseek: { headers: { [name]: value } } } }),
+      (error: unknown) => error instanceof DetectionConfigError && error.code === "INLINE_SECRET_UNSAFE",
+    );
   });
+}
+
+test("rejects inline and structured values in secret-bearing fields", () => {
   assert.throws(
     () => scrubDetectionOpenClawConfig({ providers: { anthropic: { apiKey: "sk-inline-secret" } } }),
     (error: unknown) => error instanceof DetectionConfigError && error.code === "INLINE_SECRET_UNSAFE",
@@ -92,25 +101,6 @@ test("preserves references and SecretRefs without copying inline secret values",
   const accessor = {} as { providers?: unknown };
   Object.defineProperty(accessor, "providers", { get: () => ({ apiKey: "must-not-read" }), enumerable: true });
   assert.throws(() => scrubDetectionOpenClawConfig(accessor), /accessors|INLINE_SECRET_UNSAFE/i);
-});
-
-test("rejects pseudo and non-exact OpenClaw SecretRefs", () => {
-  const rejected = [
-    { SecretRef: "env:ANTHROPIC_API_KEY" },
-    { source: "env", provider: "default", id: "ANTHROPIC_API_KEY", extra: true },
-    { source: "remote", provider: "default", id: "ANTHROPIC_API_KEY" },
-    { source: "env", provider: "Default", id: "ANTHROPIC_API_KEY" },
-    { source: "env", provider: "default", id: "anthropic_api_key" },
-    { source: "file", provider: "mounted-json", id: "providers/deepseek/apiKey" },
-    { source: "file", provider: "mounted-json", id: "/providers/~2invalid" },
-    { source: "exec", provider: "vault", id: "providers/../api-key" },
-  ];
-  for (const apiKey of rejected) {
-    assert.throws(
-      () => scrubDetectionOpenClawConfig({ providers: { anthropic: { apiKey } } }),
-      (error: unknown) => error instanceof DetectionConfigError && error.code === "INVALID_SECRET_REF",
-    );
-  }
 });
 
 test("does not copy user tools, plugins, binds, browser, or elevated settings", () => {
@@ -136,7 +126,6 @@ test("generated model config passes the equivalent strict OpenClaw AgentDefaults
   const providers = {
     deepseek: {
       api: "openai-completions",
-      apiKey: { source: "env", provider: "default", id: "DEEPSEEK_API_KEY" },
       models: [{ id: "deepseek-v4-flash", name: "DeepSeek V4 Flash" }],
     },
   };
@@ -174,7 +163,6 @@ test("scrubs the real top-level provider catalog and rejects its inline secrets"
     models: {
       providers: {
         deepseek: {
-          apiKey: { source: "env", provider: "default", id: "DEEPSEEK_API_KEY" },
           models: [{ id: "deepseek-v4-flash" }],
         },
       },
@@ -183,7 +171,6 @@ test("scrubs the real top-level provider catalog and rejects its inline secrets"
   assert.deepEqual(Object.keys(scrubbed).sort(), ["model", "models", "providers"]);
   assert.deepEqual(scrubbed.providers, {
     deepseek: {
-      apiKey: { source: "env", provider: "default", id: "DEEPSEEK_API_KEY" },
       models: [{ id: "deepseek-v4-flash" }],
     },
   });

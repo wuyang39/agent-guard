@@ -1,11 +1,5 @@
 import { createHash } from "node:crypto";
 
-export type SecretRef = {
-  source: "env" | "file" | "exec";
-  provider: string;
-  id: string;
-};
-
 export type DetectionOpenClawConfig = {
   gateway: { mode: "local" };
   agents: {
@@ -57,7 +51,7 @@ export type DetectionOpenClawConfig = {
 };
 
 export class DetectionConfigError extends Error {
-  constructor(public readonly code: "INLINE_SECRET_UNSAFE" | "INVALID_SECRET_REF", message: string) {
+  constructor(public readonly code: "INLINE_SECRET_UNSAFE", message: string) {
     super(message);
     this.name = "DetectionConfigError";
   }
@@ -66,10 +60,6 @@ export class DetectionConfigError extends Error {
 const SENSITIVE_KEY = /^(?:authorization|bearer|cookie|api|access|auth|client|private|secret|credential|password|passwd)?[_-]?(?:key|token|secret|password|passwd|credential|authorization|cookie)$/i;
 const FORBIDDEN_KEY = new Set(["__proto__", "prototype", "constructor"]);
 const MAX_CONFIG_DEPTH = 32;
-const SECRET_PROVIDER_ALIAS_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
-const ENV_SECRET_REF_ID_PATTERN = /^[A-Z][A-Z0-9_]{0,127}$/;
-const FILE_SECRET_REF_SEGMENT_PATTERN = /^(?:[^~]|~0|~1)*$/;
-const EXEC_SECRET_REF_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/#-]{0,255}$/;
 
 /**
  * Copy only a model/provider reference subtree. The input is deliberately
@@ -185,8 +175,8 @@ function scrubValue(value: unknown, parentKey: string, depth: number): unknown {
   if (Array.isArray(value)) return value.map((entry) => scrubValue(entry, parentKey, depth + 1));
   if (!isRecord(value)) return undefined;
 
-  if (Object.prototype.hasOwnProperty.call(value, "SecretRef")) {
-    throw new DetectionConfigError("INVALID_SECRET_REF", "Legacy pseudo SecretRef objects are not valid OpenClaw SecretRefs.");
+  if (isSecretRefShaped(value)) {
+    throw new DetectionConfigError("INLINE_SECRET_UNSAFE", "Detection profiles cannot resolve SecretRefs.");
   }
 
   const output: Record<string, unknown> = {};
@@ -194,54 +184,24 @@ function scrubValue(value: unknown, parentKey: string, depth: number): unknown {
     if (FORBIDDEN_KEY.has(key)) {
       throw new DetectionConfigError("INLINE_SECRET_UNSAFE", "Detection configuration contains a forbidden key.");
     }
+    if (key === "headers" || SENSITIVE_KEY.test(key)) {
+      throw new DetectionConfigError("INLINE_SECRET_UNSAFE", "Secret-bearing fields cannot be copied into a detection profile.");
+    }
     const descriptor = Object.getOwnPropertyDescriptor(value, key);
     if (!descriptor || descriptor.get || descriptor.set) {
       throw new DetectionConfigError("INLINE_SECRET_UNSAFE", "Detection configuration cannot contain accessors.");
     }
-    const entry = descriptor.value;
-    if (SENSITIVE_KEY.test(key)) {
-      if (!isRecord(entry)) {
-        throw new DetectionConfigError("INLINE_SECRET_UNSAFE", "Secret-bearing fields must use a SecretRef.");
-      }
-      output[key] = scrubSecretRef(entry);
-      continue;
-    }
-    const scrubbed = scrubValue(entry, key, depth + 1);
+    const scrubbed = scrubValue(descriptor.value, key, depth + 1);
     if (scrubbed !== undefined) output[key] = scrubbed;
   }
   return output;
 }
 
-function scrubSecretRef(value: Record<string, unknown>): SecretRef {
-  const keys = Object.keys(value);
-  const looksLikeRef = keys.some((key) => key === "source" || key === "provider" || key === "id" || key === "SecretRef");
-  if (!looksLikeRef) {
-    throw new DetectionConfigError("INLINE_SECRET_UNSAFE", "Secret-bearing fields must use a SecretRef.");
-  }
-  if (keys.length !== 3 || !keys.every((key) => key === "source" || key === "provider" || key === "id")) {
-    throw new DetectionConfigError("INVALID_SECRET_REF", "OpenClaw SecretRefs must contain exactly source, provider, and id.");
-  }
-  const source = readDataProperty(value, "source").value;
-  const provider = readDataProperty(value, "provider").value;
-  const id = readDataProperty(value, "id").value;
-  if (
-    (source !== "env" && source !== "file" && source !== "exec") ||
-    typeof provider !== "string" ||
-    !SECRET_PROVIDER_ALIAS_PATTERN.test(provider) ||
-    typeof id !== "string" ||
-    !isValidSecretRefId(source, id)
-  ) {
-    throw new DetectionConfigError("INVALID_SECRET_REF", "OpenClaw SecretRef source, provider, or id is invalid.");
-  }
-  return { source, provider, id };
-}
-
-function isValidSecretRefId(source: SecretRef["source"], id: string): boolean {
-  if (source === "env") return ENV_SECRET_REF_ID_PATTERN.test(id);
-  if (source === "file") {
-    return id === "value" || (id.startsWith("/") && id.slice(1).split("/").every((segment) => FILE_SECRET_REF_SEGMENT_PATTERN.test(segment)));
-  }
-  return EXEC_SECRET_REF_ID_PATTERN.test(id) && id.split("/").every((segment) => segment !== "." && segment !== "..");
+function isSecretRefShaped(value: Record<string, unknown>): boolean {
+  return Object.prototype.hasOwnProperty.call(value, "SecretRef") ||
+    (Object.prototype.hasOwnProperty.call(value, "source") &&
+      Object.prototype.hasOwnProperty.call(value, "provider") &&
+      Object.prototype.hasOwnProperty.call(value, "id"));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

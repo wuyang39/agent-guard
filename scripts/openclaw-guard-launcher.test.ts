@@ -8,9 +8,65 @@ import {
   hasLiveGuardRegistry,
   inspectGuardedMarkers,
   runCli,
+  runLiveRegistryCli,
 } from "./openclaw-guard-launcher";
 
 const LAUNCHER = path.resolve("scripts/openclaw-guard-launcher.ts");
+
+test("CLI runner uses the default timeout or an explicit bounded timeout", () => {
+  const timeouts: Array<number | undefined> = [];
+  const spawn = (
+    _command: string,
+    _args: string[],
+    options: { timeout?: number },
+  ) => {
+    timeouts.push(options.timeout);
+    return { status: 0, stdout: "", stderr: "" };
+  };
+
+  runCli(["--version"], process.execPath, { spawn });
+  runCli(["plugins", "list", "--json", "--live"], process.execPath, {
+    spawn,
+    timeoutMs: 60_000,
+  });
+
+  assert.deepEqual(timeouts, [15_000, 60_000]);
+});
+
+test("CLI runner rejects invalid or unbounded timeouts before spawning", () => {
+  let spawnCalls = 0;
+  const spawn = () => {
+    spawnCalls += 1;
+    return { status: 0, stdout: "", stderr: "" };
+  };
+
+  for (const timeoutMs of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 60_001]) {
+    assert.throws(
+      () => runCli(["--version"], process.execPath, { spawn, timeoutMs }),
+      /CLI timeout must be an integer between 1 and 60000 milliseconds/,
+    );
+  }
+  assert.equal(spawnCalls, 0);
+});
+
+test("live registry runner uses the exact contract with the cold-start timeout", () => {
+  const calls: Array<{ args: string[]; timeout: number }> = [];
+  const spawn = (
+    _command: string,
+    args: string[],
+    options: { timeout: number },
+  ) => {
+    calls.push({ args, timeout: options.timeout });
+    return { status: 0, stdout: "{}", stderr: "" };
+  };
+
+  runLiveRegistryCli(process.execPath, { spawn });
+
+  assert.deepEqual(calls, [{
+    args: ["plugins", "list", "--json", "--live"],
+    timeout: 60_000,
+  }]);
+});
 
 function launchGuard(params: {
   cliPath: string;

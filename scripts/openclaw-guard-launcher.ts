@@ -41,6 +41,28 @@ const REQUIRED_SERVICE = "agent-guard-runtime";
 const REQUIRED_POLICY = "agent-guard-admission";
 const LIVE_REGISTRY_CONTRACT_VERSION = "openclaw.plugins.live.v1";
 const CLI_MAX_BUFFER_BYTES = 256 * 1024;
+const CLI_DEFAULT_TIMEOUT_MS = 15_000;
+const CLI_MAX_TIMEOUT_MS = 60_000;
+
+type CliSpawnOptions = {
+  windowsHide: true;
+  shell: boolean;
+  timeout: number;
+  encoding: "utf-8";
+  maxBuffer: number;
+  env: NodeJS.ProcessEnv;
+};
+
+type CliSpawn = (
+  command: string,
+  args: string[],
+  options: CliSpawnOptions,
+) => { error?: Error; status: number | null; stdout?: string | null; stderr?: string | null };
+
+type RunCliOptions = {
+  timeoutMs?: number;
+  spawn?: CliSpawn;
+};
 
 // ---- Helpers ----
 
@@ -56,12 +78,19 @@ function die(code: number, message: string): never {
 export function runCli(
   args: string[],
   cliPath = process.env.OPENCLAW_CLI ?? "openclaw",
+  options: RunCliOptions = {},
 ): { exitCode: number; stdout: string; stderr: string } {
+  const timeoutMs = options.timeoutMs ?? CLI_DEFAULT_TIMEOUT_MS;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > CLI_MAX_TIMEOUT_MS) {
+    throw new RangeError("CLI timeout must be an integer between 1 and 60000 milliseconds");
+  }
   const cli = resolveOpenClawCliInvocation(cliPath);
-  const result = spawnSync(cli.command, [...cli.argsPrefix, ...args], {
+  const spawn: CliSpawn = options.spawn ?? ((command, spawnArgs, spawnOptions) =>
+    spawnSync(command, spawnArgs, spawnOptions));
+  const result = spawn(cli.command, [...cli.argsPrefix, ...args], {
     windowsHide: true,
     shell: cli.shell,
-    timeout: 15_000,
+    timeout: timeoutMs,
     encoding: "utf-8",
     maxBuffer: CLI_MAX_BUFFER_BYTES,
     env: { ...cli.env, ...process.env },
@@ -81,6 +110,16 @@ export function runCli(
     stdout: (result.stdout ?? "").trim(),
     stderr: (result.stderr ?? "").trim(),
   };
+}
+
+export function runLiveRegistryCli(
+  cliPath = process.env.OPENCLAW_CLI ?? "openclaw",
+  options: Pick<RunCliOptions, "spawn"> = {},
+): { exitCode: number; stdout: string; stderr: string } {
+  return runCli(["plugins", "list", "--json", "--live"], cliPath, {
+    ...options,
+    timeoutMs: CLI_MAX_TIMEOUT_MS,
+  });
 }
 
 export function inspectGuardedMarkers(
@@ -158,7 +197,7 @@ function main(): void {
   log("Guarded markers found — live registry verification required.");
 
   // Step 2: Query live registry
-  const pluginsResult = runCli(["plugins", "list", "--json", "--live"]);
+  const pluginsResult = runLiveRegistryCli();
   if (pluginsResult.exitCode !== 0) {
     if (maintenanceMode) {
       log("Live registry unavailable but --maintenance mode active — allowing maintenance cleanup.");

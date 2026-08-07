@@ -967,6 +967,320 @@ test("default readiness budget reaches a healthy forty-first attempt", async () 
   }
 });
 
+test("default readiness budget survives more than 240 immediate connection refusals", async () => {
+  const originalFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  let killed = false;
+  globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+    fetchCalls += 1;
+    if (fetchCalls <= 241) {
+      throw Object.assign(new TypeError("fetch failed"), {
+        cause: Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }),
+      });
+    }
+
+    const headers = new Headers(init?.headers);
+    const authorization = headers.get("authorization");
+    if (!authorization) {
+      return new Response("unauthorized", { status: 401 });
+    }
+
+    assert.equal(authorization, "Bearer token");
+    const nonce = headers.get("x-agent-guard-ready-nonce");
+    assert.ok(nonce);
+    return new Response(JSON.stringify({
+      coverage: "ready",
+      activeLeaseCount: 0,
+      _readyNonce: nonce,
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+
+  const child = { exitCode: null as number | null, kill: () => { killed = true; } };
+  try {
+    await waitForGateway(
+      "http://127.0.0.1:1",
+      "token",
+      child,
+      new AbortController().signal,
+      undefined,
+      0,
+    );
+    assert.equal(fetchCalls, 243);
+    assert.equal(killed, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("readiness polling stops at its absolute deadline", async () => {
+  const originalFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  globalThis.fetch = (async () => {
+    fetchCalls += 1;
+    throw new TypeError("fetch failed");
+  }) as typeof fetch;
+
+  const child = { exitCode: null as number | null, kill: () => { child.exitCode = 1; } };
+  const startedAt = Date.now();
+  try {
+    await assert.rejects(
+      waitForGateway(
+        "http://127.0.0.1:1",
+        "token",
+        child,
+        new AbortController().signal,
+        2,
+        100,
+        25,
+      ),
+      (error: unknown) =>
+        error instanceof SandboxPreflightError && error.code === "GATEWAY_START_FAILED",
+    );
+    assert.ok(Date.now() - startedAt < 150, "readiness exceeded its absolute deadline");
+    assert.equal(fetchCalls, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("readiness deadline bounds stalled response cancellation", async () => {
+  const originalFetch = globalThis.fetch;
+  let cancelCalls = 0;
+  globalThis.fetch = (async () => ({
+    status: 401,
+    body: {
+      cancel: () => {
+        cancelCalls += 1;
+        return new Promise<void>(() => undefined);
+      },
+    },
+  }) as unknown as Response) as typeof fetch;
+
+  const child = { exitCode: null as number | null, kill: () => { child.exitCode = 1; } };
+  let witnessTimer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const readiness = waitForGateway(
+      "http://127.0.0.1:1",
+      "token",
+      child,
+      new AbortController().signal,
+      1,
+      0,
+      5,
+    ).then(
+      () => "ready" as const,
+      (error: unknown) => {
+        assert.ok(error instanceof SandboxPreflightError);
+        assert.equal(error.code, "GATEWAY_START_FAILED");
+        return "failed" as const;
+      },
+    );
+    const outcome = await Promise.race([
+      readiness,
+      new Promise<"deadline-exceeded">((resolve) => {
+        witnessTimer = setTimeout(() => resolve("deadline-exceeded"), 15);
+      }),
+    ]);
+    if (outcome === "deadline-exceeded") await readiness;
+    assert.equal(outcome, "failed");
+    assert.ok(cancelCalls >= 1);
+  } finally {
+    if (witnessTimer) clearTimeout(witnessTimer);
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("readiness deadline bounds a stalled authenticated response body", async () => {
+  const originalFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  let cancelCalls = 0;
+  const cancel = () => {
+    cancelCalls += 1;
+    return new Promise<void>(() => undefined);
+  };
+  globalThis.fetch = (async () => {
+    fetchCalls += 1;
+    if (fetchCalls === 1) {
+      return { status: 401, body: null } as unknown as Response;
+    }
+    return {
+      status: 200,
+      headers: new Headers({ "content-type": "application/json" }),
+      body: {
+        cancel,
+        getReader: () => ({
+          cancel,
+          read: () => new Promise<ReadableStreamReadResult<Uint8Array>>(() => undefined),
+        }),
+      },
+    } as unknown as Response;
+  }) as typeof fetch;
+
+  const child = { exitCode: null as number | null, kill: () => { child.exitCode = 1; } };
+  let witnessTimer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const readiness = waitForGateway(
+      "http://127.0.0.1:1",
+      "token",
+      child,
+      new AbortController().signal,
+      1,
+      0,
+      5,
+    ).then(
+      () => "ready" as const,
+      (error: unknown) => {
+        assert.ok(error instanceof SandboxPreflightError);
+        assert.equal(error.code, "GATEWAY_START_FAILED");
+        return "failed" as const;
+      },
+    );
+    const outcome = await Promise.race([
+      readiness,
+      new Promise<"deadline-exceeded">((resolve) => {
+        witnessTimer = setTimeout(() => resolve("deadline-exceeded"), 15);
+      }),
+    ]);
+    if (outcome === "deadline-exceeded") await readiness;
+    assert.equal(outcome, "failed");
+    assert.ok(cancelCalls >= 1);
+  } finally {
+    if (witnessTimer) clearTimeout(witnessTimer);
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("readiness polling rejects invalid timeout values", async (t) => {
+  for (const timeoutMs of [0, -1, 60_001, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+    await t.test(String(timeoutMs), async () => {
+      const child = { exitCode: null as number | null, kill: () => { child.exitCode = 1; } };
+      await assert.rejects(
+        waitForGateway(
+          "http://127.0.0.1:1",
+          "token",
+          child,
+          new AbortController().signal,
+          0,
+          0,
+          timeoutMs,
+        ),
+        (error: unknown) =>
+          error instanceof TypeError && error.message === "Gateway readiness timeout is invalid.",
+      );
+    });
+  }
+});
+
+test("readiness polling fails immediately after the child exits", async () => {
+  let killCalls = 0;
+  const child = { exitCode: 9, kill: () => { killCalls += 1; } };
+  const startedAt = Date.now();
+
+  await assert.rejects(
+    waitForGateway(
+      "http://127.0.0.1:1",
+      "token",
+      child,
+      new AbortController().signal,
+      undefined,
+      50,
+      60_000,
+    ),
+    (error: unknown) =>
+      error instanceof SandboxPreflightError && error.code === "GATEWAY_START_FAILED",
+  );
+  assert.ok(Date.now() - startedAt < 150, "readiness waited after the child exited");
+  assert.equal(killCalls, 1);
+});
+
+test("readiness polling aborts an in-flight request with the caller signal", async () => {
+  const originalFetch = globalThis.fetch;
+  const controller = new AbortController();
+  let fetchStarted = false;
+  globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+    fetchStarted = true;
+    return await new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener(
+        "abort",
+        () => reject(new Error("attempt aborted")),
+        { once: true },
+      );
+    });
+  }) as typeof fetch;
+
+  const child = { exitCode: null as number | null, kill: () => { child.exitCode = 1; } };
+  const startedAt = Date.now();
+  setTimeout(() => controller.abort(), 10);
+  try {
+    await assert.rejects(
+      waitForGateway(
+        "http://127.0.0.1:1",
+        "token",
+        child,
+        controller.signal,
+        undefined,
+        500,
+        60_000,
+      ),
+      (error: unknown) =>
+        error instanceof SandboxPreflightError && error.code === "CANCELLED",
+    );
+    assert.equal(fetchStarted, true);
+    assert.ok(Date.now() - startedAt < 150, "caller abort did not stop the in-flight request");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("readiness polling aborts an in-flight request when the child exits", async () => {
+  const originalFetch = globalThis.fetch;
+  let resolveChildExit: (() => void) | undefined;
+  const childExit = new Promise<void>((resolve) => {
+    resolveChildExit = resolve;
+  });
+  let fetchStarted = false;
+  globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+    fetchStarted = true;
+    return await new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener(
+        "abort",
+        () => reject(new Error("attempt aborted")),
+        { once: true },
+      );
+    });
+  }) as typeof fetch;
+
+  const child = { exitCode: null as number | null, kill: () => { child.exitCode = 1; } };
+  const startedAt = Date.now();
+  setTimeout(() => {
+    child.exitCode = 9;
+    resolveChildExit?.();
+  }, 10);
+  try {
+    await assert.rejects(
+      waitForGateway(
+        "http://127.0.0.1:1",
+        "token",
+        child,
+        new AbortController().signal,
+        undefined,
+        500,
+        60_000,
+        childExit,
+      ),
+      (error: unknown) =>
+        error instanceof SandboxPreflightError && error.code === "GATEWAY_START_FAILED",
+    );
+    assert.equal(fetchStarted, true);
+    assert.ok(Date.now() - startedAt < 150, "child exit did not stop the in-flight request");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("readiness rejects encoded, non-JSON, oversized, and stalled status bodies", async (t) => {
   const modes = [
     "wrong-content-type",

@@ -36,7 +36,8 @@ const MAX_COMMAND_OUTPUT_BYTES = 256 * 1024;
 const MAX_GATEWAY_BOOTSTRAP_BYTES = 8 * 1024;
 const GATEWAY_BOOTSTRAP_TIMEOUT_MS = 60_000;
 const MAX_GATEWAY_READINESS_BYTES = 64 * 1024;
-const GATEWAY_READINESS_MAX_ATTEMPTS = 240;
+const GATEWAY_READINESS_MAX_ATTEMPTS = 1_200;
+const GATEWAY_READINESS_TIMEOUT_MS = 60_000;
 const RESPONSE_CANCEL_TIMEOUT_MS = 25;
 
 export type DetectionCommandInput = {
@@ -1936,7 +1937,16 @@ async function launchGateway(input: Parameters<DetectionGatewayLauncher>[0]): Pr
       );
     });
     await Promise.race([
-      waitForGateway(input.gatewayUrl, input.token, child, input.signal),
+      waitForGateway(
+        input.gatewayUrl,
+        input.token,
+        child,
+        input.signal,
+        GATEWAY_READINESS_MAX_ATTEMPTS,
+        50,
+        GATEWAY_READINESS_TIMEOUT_MS,
+        startupExit,
+      ),
       readinessExit,
     ]);
     return {
@@ -2001,77 +2011,131 @@ export async function waitForGateway(
   signal: AbortSignal,
   maxAttempts = GATEWAY_READINESS_MAX_ATTEMPTS,
   delayMs = 50,
+  timeoutMs = GATEWAY_READINESS_TIMEOUT_MS,
+  childExit?: Promise<unknown>,
 ): Promise<void> {
-  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    if (signal.aborted || child.exitCode !== null) break;
-    const attemptController = new AbortController();
-    const attemptTimer = setTimeout(() => attemptController.abort(), 500);
-    try {
-      const statusUrl = new URL("/agent-guard/native-guard/v1/status", url).toString();
-      // Step 1: The protected status route must reject an unauthenticated probe.
-      const unauthed = await fetch(statusUrl, {
-        method: "GET",
-        redirect: "error",
-        signal: attemptController.signal,
-      });
-      const enforcesAuth = unauthed.status === 401 || unauthed.status === 403;
-      await cancelResponseBodyBounded(unauthed);
-      if (!enforcesAuth) {
-        clearTimeout(attemptTimer);
-        await new Promise((resolve) => setTimeout(resolve, delayMs));
-        continue;
-      }
-      // Step 2: Authenticate to the same route with a random nonce challenge.
-      const nonce = randomBytes(24).toString("base64url");
-      const statusResponse = await fetch(statusUrl, {
-        method: "GET",
-        headers: {
-          authorization: `Bearer ${token}`,
-          "x-agent-guard-ready-nonce": nonce,
-        },
-        redirect: "error",
-        signal: attemptController.signal,
-      });
-      let statusBody: unknown;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > GATEWAY_READINESS_TIMEOUT_MS) {
+    throw new TypeError("Gateway readiness timeout is invalid.");
+  }
+  const lifetimeController = new AbortController();
+  const abortLifetime = (): void => lifetimeController.abort();
+  if (signal.aborted) {
+    abortLifetime();
+  } else {
+    signal.addEventListener("abort", abortLifetime, { once: true });
+  }
+  if (childExit) {
+    void childExit.then(abortLifetime, abortLifetime);
+  }
+  const deadline = Date.now() + timeoutMs;
+  try {
+    for (let attempt = 0; attempt < maxAttempts && Date.now() < deadline; attempt += 1) {
+      if (lifetimeController.signal.aborted || child.exitCode !== null) break;
+      const attemptController = new AbortController();
+      const abortAttempt = (): void => attemptController.abort();
+      lifetimeController.signal.addEventListener("abort", abortAttempt, { once: true });
+      const attemptTimer = setTimeout(
+        abortAttempt,
+        Math.min(500, Math.max(0, deadline - Date.now())),
+      );
       try {
-        statusBody = await readBoundedJsonResponse(
-          statusResponse,
-          attemptController.signal,
-        );
+        const statusUrl = new URL("/agent-guard/native-guard/v1/status", url).toString();
+        // Step 1: The protected status route must reject an unauthenticated probe.
+        const unauthed = await fetch(statusUrl, {
+          method: "GET",
+          redirect: "error",
+          signal: attemptController.signal,
+        });
+        const enforcesAuth = unauthed.status === 401 || unauthed.status === 403;
+        await cancelResponseBodyBounded(unauthed, attemptController.signal);
+        if (!enforcesAuth) {
+          await waitForGatewayPollDelay(delayMs, deadline, lifetimeController.signal);
+          continue;
+        }
+        // Step 2: Authenticate to the same route with a random nonce challenge.
+        const nonce = randomBytes(24).toString("base64url");
+        const statusResponse = await fetch(statusUrl, {
+          method: "GET",
+          headers: {
+            authorization: `Bearer ${token}`,
+            "x-agent-guard-ready-nonce": nonce,
+          },
+          redirect: "error",
+          signal: attemptController.signal,
+        });
+        let statusBody: unknown;
+        try {
+          statusBody = await readBoundedJsonResponse(
+            statusResponse,
+            attemptController.signal,
+          );
+        } catch {
+          await cancelResponseBodyBounded(statusResponse, attemptController.signal);
+          await waitForGatewayPollDelay(delayMs, deadline, lifetimeController.signal);
+          continue;
+        }
+        if (
+          statusResponse.status === 200 &&
+          isRecord(statusBody) &&
+          typeof statusBody._readyNonce === "string" &&
+          statusBody._readyNonce === nonce &&
+          (statusBody.coverage === "off" || statusBody.coverage === "ready") &&
+          statusBody.activeLeaseCount === 0 &&
+          Date.now() <= deadline
+        ) {
+          return;
+        }
       } catch {
-        await cancelResponseBodyBounded(statusResponse);
+        // Retry until the bounded deadline unless the run lifetime ended.
+      } finally {
         clearTimeout(attemptTimer);
-        await new Promise((resolve) => setTimeout(resolve, delayMs));
-        continue;
+        lifetimeController.signal.removeEventListener("abort", abortAttempt);
       }
-      clearTimeout(attemptTimer);
-      if (
-        statusResponse.status === 200 &&
-        isRecord(statusBody) &&
-        typeof statusBody._readyNonce === "string" &&
-        statusBody._readyNonce === nonce &&
-        (statusBody.coverage === "off" || statusBody.coverage === "ready") &&
-        statusBody.activeLeaseCount === 0
-      ) {
-        return;
-      }
-    } catch {
-      clearTimeout(attemptTimer);
+      await waitForGatewayPollDelay(delayMs, deadline, lifetimeController.signal);
     }
-    await new Promise((resolve) => setTimeout(resolve, delayMs));
+  } finally {
+    signal.removeEventListener("abort", abortLifetime);
   }
   child.kill();
+  if (signal.aborted) {
+    throw new SandboxPreflightError(
+      "CANCELLED",
+      "Detection sandbox operation was cancelled.",
+    );
+  }
   throw new SandboxPreflightError("GATEWAY_START_FAILED", "Isolated OpenClaw Gateway did not become ready on loopback.");
+}
+
+async function waitForGatewayPollDelay(
+  delayMs: number,
+  deadline: number,
+  signal?: AbortSignal,
+): Promise<void> {
+  const remainingMs = deadline - Date.now();
+  if (remainingMs <= 0 || signal?.aborted) return;
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(finish, Math.min(delayMs, remainingMs));
+    const onAbort = (): void => finish();
+    function finish(): void {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 /**
  * Cancel a response body with a bounded deadline — body cancellation must never
  * hang the readiness poll, even when a malicious server never closes the stream.
  */
-export async function cancelResponseBodyBounded(response: Response): Promise<void> {
+export async function cancelResponseBodyBounded(
+  response: Response,
+  signal?: AbortSignal,
+): Promise<void> {
   const body = response.body;
   if (!body) return;
-  await cancelOperationBounded(() => body.cancel());
+  await cancelOperationBounded(() => body.cancel(), signal);
 }
 
 export async function readBoundedJsonResponse(
@@ -2083,12 +2147,12 @@ export async function readBoundedJsonResponse(
     throw new TypeError("JSON response size limit is invalid.");
   }
   if (response.headers.get("content-encoding") !== null) {
-    await cancelResponseBodyBounded(response);
+    await cancelResponseBodyBounded(response, signal);
     throw new Error("Encoded Gateway readiness responses are not accepted.");
   }
   const contentType = response.headers.get("content-type") ?? "";
   if (contentType.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
-    await cancelResponseBodyBounded(response);
+    await cancelResponseBodyBounded(response, signal);
     throw new Error("Gateway readiness response was not JSON.");
   }
   const contentLength = response.headers.get("content-length");
@@ -2099,7 +2163,7 @@ export async function readBoundedJsonResponse(
       length < 0 ||
       length > maxBytes
     ) {
-      await cancelResponseBodyBounded(response);
+      await cancelResponseBodyBounded(response, signal);
       throw new Error("Gateway readiness response exceeded the size limit.");
     }
   }
@@ -2112,7 +2176,7 @@ export async function readBoundedJsonResponse(
       const { done, value } = await readBoundedResponseChunk(reader, signal);
       if (done) break;
       if (value.byteLength > maxBytes - size) {
-        await cancelOperationBounded(() => reader.cancel());
+        await cancelOperationBounded(() => reader.cancel(), signal);
         throw new Error("Gateway readiness response exceeded the size limit.");
       }
       size += value.byteLength;
@@ -2135,7 +2199,7 @@ async function readBoundedResponseChunk(
   if (signal.aborted) throw new Error("Gateway readiness attempt was cancelled.");
   return new Promise((resolve, reject) => {
     const onAbort = (): void => {
-      void cancelOperationBounded(() => reader.cancel());
+      void cancelOperationBounded(() => reader.cancel(), signal);
       reject(new Error("Gateway readiness attempt was cancelled."));
     };
     signal.addEventListener("abort", onAbort, { once: true });
@@ -2152,17 +2216,33 @@ async function readBoundedResponseChunk(
   });
 }
 
-async function cancelOperationBounded(operation: () => Promise<unknown>): Promise<void> {
+async function cancelOperationBounded(
+  operation: () => Promise<unknown>,
+  signal?: AbortSignal,
+): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+  const aborted = signal
+    ? new Promise<void>((resolve) => {
+        if (signal.aborted) {
+          resolve();
+          return;
+        }
+        onAbort = resolve;
+        signal.addEventListener("abort", onAbort, { once: true });
+      })
+    : new Promise<void>(() => undefined);
   try {
     await Promise.race([
       Promise.resolve().then(operation).catch(() => undefined),
       new Promise<void>((resolve) => {
         timer = setTimeout(resolve, RESPONSE_CANCEL_TIMEOUT_MS);
       }),
+      aborted,
     ]);
   } finally {
     if (timer) clearTimeout(timer);
+    if (onAbort) signal?.removeEventListener("abort", onAbort);
   }
 }
 

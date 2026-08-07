@@ -8,6 +8,7 @@ const sessionCoverage = {
   sessionKey: "agent:main:run.frontend.coverage",
   leaseId: "lease.frontend.coverage",
   leaseEpoch: 6,
+  testRunIds: ["run.frontend.coverage"],
   eventsTotal: 3,
   reconciled: false,
   coverageBreachCount: 0,

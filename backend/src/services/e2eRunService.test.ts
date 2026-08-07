@@ -242,6 +242,31 @@ async function persistAttemptEvidence(input: {
   return candidate!(input);
 }
 
+async function retryAfterTraceWriteFailure(input: {
+  runGroup: P2RunGroup;
+  result: Pick<TestRunResult, "testRun" | "trace" | "nativeGuardRuntime">;
+}): Promise<string | undefined> {
+  let shouldFail = true;
+  const traceWriter = async () => {
+    if (shouldFail) throw new Error("trace disk unavailable");
+  };
+  const signal = new AbortController().signal;
+  await assert.rejects(
+    persistAttemptEvidence({
+      ...input,
+      signal,
+      traceWriter,
+    }),
+    /trace disk unavailable/,
+  );
+  shouldFail = false;
+  return persistAttemptEvidence({
+    ...input,
+    signal,
+    traceWriter,
+  });
+}
+
 function completedAttemptResult(input: {
   runId: string;
   traceId: string;
@@ -311,6 +336,7 @@ test("single guarded session persists authoritative lease and reconciliation cov
       sessionKey,
       leaseId: "lease.single",
       leaseEpoch: 4,
+      testRunIds: ["run.coverage.test"],
       eventsTotal: 1,
       reconciled: true,
       coverageBreachCount: 0,
@@ -358,35 +384,95 @@ test("trace write failure retains evidence and a retry does not duplicate associ
     leaseId: "lease.trace-write-failure",
     leaseEpoch: 4,
   });
-  let shouldFail = true;
-  const traceWriter = async () => {
-    if (shouldFail) throw new Error("trace disk unavailable");
-  };
-
-  await assert.rejects(
-    persistAttemptEvidence({
-      runGroup,
-      result,
-      signal: new AbortController().signal,
-      traceWriter,
-    }),
-    /trace disk unavailable/,
-  );
-  assert.deepEqual(runGroup.testRunIds, [result.testRun.runId]);
-  assert.deepEqual(runGroup.traceIds, []);
-  assert.equal(runGroup.nativeGuardCoverage?.sessions[0]?.eventsTotal, 1);
-
-  shouldFail = false;
-  await persistAttemptEvidence({
-    runGroup,
-    result,
-    signal: new AbortController().signal,
-    traceWriter,
-  });
+  const retryFailure = await retryAfterTraceWriteFailure({ runGroup, result });
+  assert.equal(retryFailure, undefined);
   assert.deepEqual(runGroup.testRunIds, [result.testRun.runId]);
   assert.deepEqual(runGroup.traceIds, [result.trace.traceId]);
   assert.equal(runGroup.nativeGuardCoverage?.sessions[0]?.eventsTotal, 1);
 });
+
+test("identity-missing failure survives trace write retry", async () => {
+  const runGroup = guardedRunGroup();
+  const result = completedAttemptResult({
+    runId: "run.coverage.retry.identity-missing",
+    traceId: "trace.coverage.retry.identity-missing",
+    sessionKey: "agent:main:run.coverage.retry.identity-missing",
+    leaseId: "lease.identity-will-be-removed",
+    leaseEpoch: 1,
+  });
+  result.nativeGuardRuntime = {
+    sessionKey: "agent:main:run.coverage.retry.identity-missing",
+    events: [],
+    reconciliation: {
+      reconciled: true,
+      coverageBreachCount: 0,
+      mismatchCount: 0,
+    },
+    evidenceError: "event store unavailable",
+  };
+
+  const retryFailure = await retryAfterTraceWriteFailure({ runGroup, result });
+  assert.equal(
+    retryFailure,
+    "NATIVE_GUARD_EVIDENCE_UNAVAILABLE: event store unavailable; Native guard session lease identity is missing.",
+  );
+  assert.equal(runGroup.nativeGuardCoverage?.sessions.length, 0);
+  assert.equal(runGroup.nativeGuardCoverage?.runtimeFailures[0]?.testRunId, result.testRun.runId);
+});
+
+test("lease identity conflict survives trace write retry", async () => {
+  const runGroup = guardedRunGroup();
+  const result = completedAttemptResult({
+    runId: "run.coverage.retry.lease-conflict",
+    traceId: "trace.coverage.retry.lease-conflict",
+    sessionKey: "agent:main:run.coverage.retry.lease-conflict",
+    leaseId: "lease.expected",
+    leaseEpoch: 3,
+  });
+  result.nativeGuardRuntime!.events[0] = {
+    ...result.nativeGuardRuntime!.events[0]!,
+    leaseId: "lease.observed",
+    leaseEpoch: 9,
+  };
+
+  const retryFailure = await retryAfterTraceWriteFailure({ runGroup, result });
+  assert.equal(
+    retryFailure,
+    "NATIVE_GUARD_EVIDENCE_UNAVAILABLE: Native guard event lease identity conflict for session (1 event(s)).",
+  );
+  assert.deepEqual(runGroup.nativeGuardCoverage?.sessions[0]?.testRunIds, [result.testRun.runId]);
+  assert.equal(runGroup.nativeGuardCoverage?.sessions[0]?.eventsTotal, 1);
+});
+
+for (const diagnostic of [
+  {
+    name: "evidence",
+    patch: { evidenceError: "event store unavailable" },
+    expected: "NATIVE_GUARD_EVIDENCE_UNAVAILABLE: event store unavailable",
+  },
+  {
+    name: "revoke",
+    patch: { revokeError: "plugin did not acknowledge revoke" },
+    expected: "NATIVE_GUARD_REVOKE_FAILED: plugin did not acknowledge revoke",
+  },
+] as const) {
+  test(`${diagnostic.name} failure survives trace write retry`, async () => {
+    const runGroup = guardedRunGroup();
+    const result = completedAttemptResult({
+      runId: `run.coverage.retry.${diagnostic.name}`,
+      traceId: `trace.coverage.retry.${diagnostic.name}`,
+      sessionKey: `agent:main:run.coverage.retry.${diagnostic.name}`,
+      leaseId: `lease.${diagnostic.name}`,
+      leaseEpoch: 5,
+    });
+    Object.assign(result.nativeGuardRuntime!, diagnostic.patch);
+
+    const retryFailure = await retryAfterTraceWriteFailure({ runGroup, result });
+    assert.equal(retryFailure, diagnostic.expected);
+    assert.deepEqual(runGroup.nativeGuardCoverage?.sessions[0]?.testRunIds, [result.testRun.runId]);
+    assert.equal(runGroup.nativeGuardCoverage?.sessions[0]?.eventsTotal, 1);
+  });
+}
 
 test("multiple guarded sessions keep distinct leases and first-session top-level compatibility", () => {
   const runGroup = guardedRunGroup();
@@ -479,6 +565,7 @@ test("a second lease for the same session preserves first identity and accumulat
       sessionKey,
       leaseId: "lease.first",
       leaseEpoch: 2,
+      testRunIds: ["run.coverage.test"],
       eventsTotal: 5,
       reconciled: false,
       coverageBreachCount: 3,

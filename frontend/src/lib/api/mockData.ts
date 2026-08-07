@@ -412,6 +412,7 @@ const runGroup: CLineRunGroup = {
       sessionKey: "agent:main:session.sample.openclaw",
       leaseId: "lease.mock.active",
       leaseEpoch: 1,
+      testRunIds: [trace.runId],
       eventsTotal: 2,
       reconciled: true,
       coverageBreachCount: 0,

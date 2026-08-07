@@ -68,6 +68,8 @@ export type NativeGuardSessionCoverageSummary = {
   sessionKey: string;
   leaseId: string;
   leaseEpoch: number;
+  /** Attempt identities used to recover a stable failure after trace retry. */
+  testRunIds?: string[];
   eventsTotal: number;
   reconciled: boolean;
   coverageBreachCount: number;

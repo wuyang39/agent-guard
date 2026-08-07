@@ -37,6 +37,7 @@ export type NativeGuardSessionCoverageView = {
   sessionKey: string;
   leaseId: string;
   leaseEpoch: number;
+  testRunIds?: string[];
   eventsTotal: number;
   reconciled: boolean;
   coverageBreachCount: number;

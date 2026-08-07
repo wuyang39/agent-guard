@@ -1323,6 +1323,11 @@ export async function persistDetectionAttemptEvidence(input: {
           testRun.runId,
         )
       : undefined;
+  } else if (runGroup.nativeGuardCoverage) {
+    coverageFailure = recoverNativeGuardCoverageFailure(
+      runGroup.nativeGuardCoverage,
+      testRun.runId,
+    );
   }
 
   throwIfRunCancelled(signal);
@@ -1406,6 +1411,7 @@ export function recordNativeGuardSessionCoverage(
     sessionKey: runtimeIdentity.sessionKey,
     leaseId: runtimeIdentity.leaseId,
     leaseEpoch: runtimeIdentity.leaseEpoch,
+    testRunIds: [testRunId],
     eventsTotal: runtime.events.length,
     reconciled: Boolean(reconciliation?.reconciled && !evidenceError && !revokeError),
     coverageBreachCount: reconciliation?.coverageBreachCount ?? 0,
@@ -1457,6 +1463,10 @@ export function recordNativeGuardSessionCoverage(
       sessionKey: existing.sessionKey,
       leaseId: existing.leaseId,
       leaseEpoch: existing.leaseEpoch,
+      testRunIds: uniqueStrings([
+        ...(existing.testRunIds ?? []),
+        ...(summary.testRunIds ?? []),
+      ]),
       eventsTotal: existing.eventsTotal + summary.eventsTotal,
       reconciled: Boolean(
         existing.reconciled &&
@@ -1487,6 +1497,32 @@ export function recordNativeGuardSessionCoverage(
   }
   if (persistedSummary.revokeError) {
     return `NATIVE_GUARD_REVOKE_FAILED: ${persistedSummary.revokeError}`;
+  }
+  return undefined;
+}
+
+function recoverNativeGuardCoverageFailure(
+  coverage: NativeGuardCoverageSummary,
+  testRunId: string,
+): string | undefined {
+  const runtimeFailure = coverage.runtimeFailures.find(
+    (failure) => failure.testRunId === testRunId,
+  );
+  if (runtimeFailure?.evidenceError) {
+    return `NATIVE_GUARD_EVIDENCE_UNAVAILABLE: ${runtimeFailure.evidenceError}`;
+  }
+  if (runtimeFailure?.revokeError) {
+    return `NATIVE_GUARD_REVOKE_FAILED: ${runtimeFailure.revokeError}`;
+  }
+
+  const session = coverage.sessions.find(
+    (summary) => summary.testRunIds?.includes(testRunId),
+  );
+  if (session?.evidenceError) {
+    return `NATIVE_GUARD_EVIDENCE_UNAVAILABLE: ${session.evidenceError}`;
+  }
+  if (session?.revokeError) {
+    return `NATIVE_GUARD_REVOKE_FAILED: ${session.revokeError}`;
   }
   return undefined;
 }

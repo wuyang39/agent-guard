@@ -18,6 +18,8 @@
 
 当前 sandbox digest 只存在于已验收机器的本地 Docker image store，不是可供新机器 `docker pull` 的远端 repository digest。新机器必须先取得并导入受控镜像 artifact，再验证 digest；在正式 registry push 完成前，不得把本机 PASS 外推为“任意新机可获取”。
 
+无 registry 的本地构建要求 Docker Desktop 启用 containerd image store，使本地 build 产生 `RepoDigests`。经典 image store 通常不会为本地 build 生成 repository digest；此时构建脚本会失败，操作员必须先把镜像 push/pull 到受控 registry，或导入已经发布的镜像 artifact，不能退回可变 tag。
+
 ## 1. 固定 fork、Node 与隔离 profile
 
 从 Agent Guard 仓库根目录运行：
@@ -40,20 +42,25 @@ if ([string]$buildStamp.head -cne $expectedForkSha) {
   throw "OpenClaw buildstamp mismatch: expected $expectedForkSha, got $($buildStamp.head)"
 }
 
-node -e "const [a,b,c]=process.versions.node.split('.').map(Number);const ok=(a===22&&(b>22||(b===22&&c>=3)))||(a===24&&(b>15||(b===15&&c>=0)))||(a===25&&(b>9||(b===9&&c>=0)));if(!ok){console.error('Unsupported Node '+process.versions.node);process.exit(1)}"
+node -e "const [a,b,c]=process.versions.node.split('.').map(Number);const ok=(a===22&&(b>22||(b===22&&c>=3)))||(a===24&&(b>15||(b===15&&c>=0)))||(a>25)||(a===25&&(b>9||(b===9&&c>=0)));if(!ok){console.error('Unsupported Node '+process.versions.node);process.exit(1)}"
 
 $profileRoot = Join-Path $agentGuardRoot "outputs\openclaw-native-guard-profile"
 $env:OPENCLAW_HOME = $profileRoot
 $env:OPENCLAW_CONFIG_PATH = Join-Path $profileRoot "openclaw.json"
 $env:OPENCLAW_STATE_DIR = Join-Path $profileRoot "state"
-$env:OPENCLAW_WORKSPACE = Join-Path $profileRoot "workspace"
+$env:OPENCLAW_WORKSPACE_DIR = Join-Path $profileRoot "workspace"
 $env:OPENCLAW_CLI = Join-Path $forkRoot "openclaw.mjs"
 $env:TEST_OPENCLAW_AGENTGUARD_CLI = Join-Path $forkRoot "dist\cli\native-guard-inspector.js"
 $env:AGENT_GUARD_OPENCLAW_ISOLATED_PROFILE = "1"
 
-New-Item -ItemType Directory -Force -Path $env:OPENCLAW_HOME, $env:OPENCLAW_STATE_DIR, $env:OPENCLAW_WORKSPACE | Out-Null
+New-Item -ItemType Directory -Force -Path $env:OPENCLAW_HOME, $env:OPENCLAW_STATE_DIR, $env:OPENCLAW_WORKSPACE_DIR | Out-Null
 if (-not (Test-Path -LiteralPath $env:OPENCLAW_CONFIG_PATH)) {
   Set-Content -LiteralPath $env:OPENCLAW_CONFIG_PATH -Value "{}" -Encoding utf8
+}
+$workspaceReadme = Join-Path $env:OPENCLAW_WORKSPACE_DIR "README.md"
+Copy-Item -LiteralPath (Join-Path $agentGuardRoot "README.md") -Destination $workspaceReadme -Force
+if (-not (Test-Path -LiteralPath $workspaceReadme -PathType Leaf)) {
+  throw "Isolated workspace README seed is missing."
 }
 
 node $env:OPENCLAW_CLI --version
@@ -61,6 +68,18 @@ node $env:TEST_OPENCLAW_AGENTGUARD_CLI --version
 ```
 
 预期版本包含 `2026.7.1-agentguard.1` 和 `2d55b95`。`OPENCLAW_CLI` 必须直接指向根目录 `openclaw.mjs`；安装器和运行器对 `.mjs` 原生使用 `node` 执行，不需要 `.cmd` wrapper、`npm link` 或全局 `openclaw`。
+
+在同一隔离 profile 中完成 OpenClaw 自身的 model/provider 配置，然后执行 auth fail-fast。使用交互式 credential/SecretRef/env 流程；禁止复制宿主 `auth-profiles.json`、任意秘密文件或未筛选的用户 profile，也不要把 credential 值写入验收证据：
+
+```powershell
+node $env:OPENCLAW_CLI configure
+node $env:OPENCLAW_CLI models status --json --check
+if ($LASTEXITCODE -ne 0) {
+  throw "Isolated OpenClaw model/provider auth is missing, expired, or expiring."
+}
+```
+
+只有上述检查退出 0 才继续。终端 A/B/C 都必须复用这一个显式 profile 环境；Gateway 和 `openclaw agent` 因而读取相同的模型配置和 auth store，而不会落回宿主默认 `~/.openclaw`。
 
 ## 2. 构建并安装插件
 
@@ -99,12 +118,15 @@ docker run --rm --read-only --user 65532:65532 --network none --entrypoint sh `
 在终端 A 复用第 1 节的显式 fork/profile 环境，设置只存在于进程环境的控制 token 后启动 Agent Guard backend：
 
 ```powershell
+$gatewayPort = 18789
+$env:OPENCLAW_GATEWAY_URL = "http://127.0.0.1:$gatewayPort"
+$env:OPENCLAW_GATEWAY_TOKEN = Read-Host "OpenClaw gateway token"
 $env:AGENT_GUARD_CONTROL_TOKEN = Read-Host "Agent Guard control token"
 $env:API_PORT = "3100"
 npm run api:start 2>&1 | Tee-Object -FilePath (Join-Path $agentGuardRoot "outputs\native-guard-backend.log")
 ```
 
-在终端 B 重新执行第 1 节环境设置，使用同一个控制 token，并通过 launcher 启动真实 Gateway child：
+在终端 B 重新执行第 1 节环境设置，使用与终端 A 完全相同的 Gateway URL/token 和 control token，并通过 launcher 启动真实 Gateway child：
 
 ```powershell
 $gatewayPort = 18789
@@ -116,7 +138,7 @@ node --import tsx scripts/openclaw-guard-launcher.ts -- `
   Tee-Object -FilePath (Join-Path $agentGuardRoot "outputs\native-guard-gateway.log")
 ```
 
-launcher 在 marker 和 live registry 检查后 spawn 精确 `OPENCLAW_CLI`。fd3 bootstrap、签名 attestation 与 child completion 将检测绑定到同一 generation，bootstrap/readiness 共享 120 秒绝对截止时间。maintenance 清理必须在单独命令中运行，且不能附带 child：
+launcher 在 marker 和 live registry 检查后 spawn 精确 `OPENCLAW_CLI`。fd3 bootstrap、签名 attestation 与 child completion 将检测绑定到同一 generation；bootstrap 使用 60 秒绝对截止时间，随后 readiness 使用独立的 120 秒绝对截止时间。maintenance 清理必须在单独命令中运行，且不能附带 child：
 
 ```powershell
 node --import tsx scripts/openclaw-guard-launcher.ts --maintenance
@@ -147,6 +169,8 @@ real registry gate 已有新鲜 PASS 证据。新 `01630c...` digest 的 require
 $evidenceRoot = Join-Path $agentGuardRoot ("outputs\native-guard-manual-" + (Get-Date -Format "yyyyMMdd-HHmmss"))
 New-Item -ItemType Directory -Force -Path $evidenceRoot | Out-Null
 $env:AGENT_GUARD_CONTROL_TOKEN = Read-Host "Agent Guard control token"
+$env:OPENCLAW_GATEWAY_URL = "http://127.0.0.1:18789"
+$env:OPENCLAW_GATEWAY_TOKEN = Read-Host "OpenClaw gateway token"
 $headers = @{ "X-Agent-Guard-Control-Token" = $env:AGENT_GUARD_CONTROL_TOKEN }
 $nativeGuardBase = "http://127.0.0.1:3100/api/v1/openclaw/native-guard"
 
@@ -167,6 +191,26 @@ function Start-NativeGuardLease([string]$SessionKey, [string]$PolicyPackId) {
 
 function Stop-NativeGuardLease([string]$LeaseId) {
   Invoke-RestMethod -Method Delete -Uri "$nativeGuardBase/leases/$LeaseId" -Headers $headers
+}
+
+function Stop-NativeGuardPluginLease([string]$LeaseId) {
+  $sha256 = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes("agent-guard-native:revoke:${LeaseId}:0")
+    $digest = $sha256.ComputeHash($bytes)
+  } finally {
+    $sha256.Dispose()
+  }
+  $idempotencyKey = [Convert]::ToBase64String($digest).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+  $pluginHeaders = @{
+    Authorization = "Bearer $env:OPENCLAW_GATEWAY_TOKEN"
+    "Cache-Control" = "no-store"
+    "X-Idempotency-Key" = $idempotencyKey
+  }
+  $body = @{ leaseId = $LeaseId } | ConvertTo-Json -Compress
+  Invoke-RestMethod -Method Post `
+    -Uri "$env:OPENCLAW_GATEWAY_URL/agent-guard/native-guard/v1/leases/revoke" `
+    -Headers $pluginHeaders -ContentType "application/json" -Body $body
 }
 
 function Invoke-ForkAgent([string]$SessionKey, [string]$Message, [string]$EvidenceName, [switch]$AllowNonZero) {
@@ -242,7 +286,7 @@ Stop-NativeGuardLease $leaseId | ForEach-Object { Save-JsonEvidence "02-allow\re
 **前置：** 准备一个拒绝写文件或高风险 `exec` 的真实 policy pack。
 
 ```powershell
-$canary = Join-Path $env:OPENCLAW_WORKSPACE "deny-canary.txt"
+$canary = Join-Path $env:OPENCLAW_WORKSPACE_DIR "deny-canary.txt"
 Set-Content -LiteralPath $canary -Value "UNCHANGED" -Encoding utf8
 $sessionKey = "agent:main:manual-deny"
 $policyPackId = Read-Host "Deny policyPackId"
@@ -308,7 +352,7 @@ Stop-NativeGuardLease $leaseId | ForEach-Object { Save-JsonEvidence "05-ask\revo
 ```powershell
 $sessionKey = "agent:main:manual-pdp-down"
 $policyPackId = Read-Host "Fail-closed policyPackId"
-$canary = Join-Path $env:OPENCLAW_WORKSPACE "pdp-down-canary.txt"
+$canary = Join-Path $env:OPENCLAW_WORKSPACE_DIR "pdp-down-canary.txt"
 Set-Content -LiteralPath $canary -Value "UNCHANGED" -Encoding utf8
 $activation = Start-NativeGuardLease $sessionKey $policyPackId
 $leaseId = $activation.data.activeLease.leaseId
@@ -320,10 +364,12 @@ Get-Content -Raw $canary | Set-Content -LiteralPath (Join-Path $evidenceRoot "06
 if ((Get-Content -Raw $canary).Trim() -cne "UNCHANGED") { throw "PDP failure did not fail closed." }
 Archive-NativeGuardEvidence "06-pdp-down" $sessionKey
 Read-Host "Restart backend with the same explicit profile/token, then press Enter"
+Stop-NativeGuardPluginLease $leaseId |
+  ForEach-Object { Save-JsonEvidence "06-pdp-down\plugin-revoke.json" $_ }
 Stop-NativeGuardLease $leaseId | ForEach-Object { Save-JsonEvidence "06-pdp-down\revoke.json" $_ }
 ```
 
-**预期：** high-risk 和 unknown 均 deny，零副作用；错误和 evidence 不泄漏 token。归档停机时间、Gateway/plugin 日志、agent JSON 和 canary 检查。
+**预期：** high-risk 和 unknown 均 deny，零副作用；错误和 evidence 不泄漏 token。backend 重启后内存 coordinator 已丢失原 lease，必须先通过 Gateway-authenticated plugin revoke 删除 recovery marker，再调用 backend revoke 收敛本地状态。归档停机时间、Gateway/plugin 日志、agent JSON 和 canary 检查。
 
 ### 场景 7：子 Agent 继承 lease
 

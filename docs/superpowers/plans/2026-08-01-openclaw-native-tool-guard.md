@@ -6,7 +6,7 @@
 
 **Architecture:** Agent Guard 后端作为 PDP，OpenClaw 插件作为 PEP。插件用 Trusted Tool Policy 处理租约准入和 recovery，用低优先级 `before_tool_call` 对最终可见参数请求裁决，用 `after_tool_call` 上报真实结果；Gateway 与插件使用宿主隔离 profile，agent 原生工具使用 Docker sandbox。正式 Trace 来自 Hook 事件，OpenClaw JSONL 只做交叉校验。
 
-**Tech Stack:** TypeScript 5.9、Node.js 24.14+、Fastify 5、React 19、OpenClaw Plugin SDK 2026.7.2、Docker、Node test runner、esbuild、Ed25519/SHA-256。
+**Tech Stack:** TypeScript 5.9、Node.js `>=22.22.3 <23 || >=24.15.0 <25 || >=25.9.0`、Fastify 5、React 19、OpenClaw Plugin SDK 2026.7.2、Docker、Node test runner、esbuild、Ed25519/SHA-256。
 
 ---
 
@@ -1711,7 +1711,7 @@ After marker and live-registry checks, the launcher atomically spawns and superv
 
 - [x] **Step 3: Bind detection to a mandatory real child and bounded readiness**
 
-fd3 bootstrap, signed core attestation and child completion bind the run to one Gateway generation. Bootstrap/readiness uses one 120-second absolute deadline; unexpected child exit aborts the run and prevents subsequent samples.
+fd3 bootstrap, signed core attestation and child completion bind the run to one Gateway generation. Bootstrap uses a 60-second absolute deadline and the subsequent readiness phase uses an independent 120-second absolute deadline; unexpected child exit aborts the run and prevents subsequent samples.
 
 - [x] **Step 4: Enforce the required Docker gate**
 

@@ -71,7 +71,7 @@ export function runOpenClawLiveRegistryGate(params: {
       env: { ...env, TEST_OPENCLAW_AGENTGUARD_CLI: cliPath },
       shell: false,
       stdio: ["ignore", "pipe", "pipe"],
-      timeout: 180_000,
+      timeout: 240_000,
       windowsHide: true,
     },
   );

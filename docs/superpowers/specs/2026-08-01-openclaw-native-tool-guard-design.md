@@ -410,7 +410,7 @@ outputs/openclaw-detection/<runGroupId>/
 
 补充约束：
 
-- 工具镜像固定为 `openclaw-sandbox@sha256:dcf6e79c5e3f41823c29cffe44103e06c2865ebfcee6434ce5a58f9860975b5d`，禁止 `latest`。镜像不包含 OpenClaw fork 或 Agent Guard 插件，只提供 non-root、`python3`、`sh`、`timeout` 和只读文件系统友好的工具运行环境。
+- 当前工具镜像固定为 `openclaw-sandbox@sha256:01630cbb3486af7c0908b326d956d20722fde3ceada2775b53e547370a4e0e38`，禁止 `latest`。镜像由 `scripts/build-openclaw-sandbox.ps1` 从固定 base 构建；镜像不包含 OpenClaw fork 或 Agent Guard 插件，只提供 non-root、`python3`、`sh`、`timeout` 和只读文件系统友好的工具运行环境。
 - OpenClaw Gateway 与插件在宿主隔离 profile 中运行；agent 原生工具进入 Docker。该边界符合“不把整个 OpenClaw 容器化”的设计目标。
 - 容器使用非 root 用户、`no-new-privileges`、CPU/内存/PID/时长限制。
 - 禁止 Docker socket、宿主秘密目录和任意外部 bind mount。
@@ -564,7 +564,7 @@ misconfigured
 | OpenClaw Gateway 重启 | 未到期 guarded session 进入 recovery |
 | 官方对照基线 registrar 无 live attestation | activate/renew 返回稳定 503；只允许 revoke/maintenance cleanup |
 | marker 存在但 live registry 无法证明插件、final Hook、recovery service | launcher 拒绝正常 Gateway 启动，不调度任何工具 |
-| Gateway bootstrap/readiness 超过 60 秒绝对截止时间 | 终止 child，撤销 credentials，检测失败 |
+| Gateway fd3 bootstrap 超过 60 秒，或 readiness 超过随后独立的 120 秒绝对截止时间 | 终止 child，撤销 credentials，检测失败 |
 
 ## 16. 测试策略
 

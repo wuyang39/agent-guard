@@ -2,7 +2,7 @@
 # Agent Guard OpenClaw Native Tool Guard — 安装脚本
 #
 # 前置条件: OpenClaw 2026.7.1-agentguard.1 或官方稳定版 >= 2026.7.2,
-#           Node.js >= 20, Docker (可选)
+#           Node.js >=22.22.3 <23, >=24.15.0 <25, or >=25.9.0, Docker (可选)
 # 用途: 安装 Agent Guard 监督插件到 OpenClaw 配置目录，启用原生工具 Hook
 #
 # 安全约束:
@@ -33,7 +33,13 @@ function Write-Fail { param([string]$Message) Write-Host "  ✗ $Message" -Foreg
 # ---- Resolve OpenClaw ----
 function Get-OpenClawVersion {
   try {
-    $result = & $script:ResolvedOpenClawCli --version 2>&1
+    $extension = [System.IO.Path]::GetExtension($script:ResolvedOpenClawCli).ToLowerInvariant()
+    if ($extension -in @(".js", ".mjs", ".cjs")) {
+      $nodeCommand = Get-Command node -CommandType Application -ErrorAction Stop
+      $result = & $nodeCommand.Source $script:ResolvedOpenClawCli --version 2>&1
+    } else {
+      $result = & $script:ResolvedOpenClawCli --version 2>&1
+    }
     if ($LASTEXITCODE -ne 0) { return $null }
     $raw = [string]($result -join "`n")
     if ($raw -match '(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?') {
@@ -354,9 +360,15 @@ Write-Utf8NoBom $configPath $configJson
 Write-OK "$PLUGIN_NAME installed successfully."
 Write-OK "Config written to $configPath"
 Write-Host ""
+$resolvedCliExtension = [System.IO.Path]::GetExtension($script:ResolvedOpenClawCli).ToLowerInvariant()
+$cliCommandDisplay = if ($resolvedCliExtension -in @(".js", ".mjs", ".cjs")) {
+  "node `"$script:ResolvedOpenClawCli`""
+} else {
+  "`"$script:ResolvedOpenClawCli`""
+}
 Write-Host "Next steps:" -ForegroundColor Yellow
 Write-Host "  1. Restart OpenClaw Gateway"
-Write-Host "  2. Verify with the same explicit CLI: $script:ResolvedOpenClawCli plugins list --json"
+Write-Host "  2. Verify with the same explicit CLI: $cliCommandDisplay plugins list --json"
 Write-Host "  3. Check status with the same explicit CLI and isolated profile"
 Write-Host "  4. Run verification: npm run verify:native-guard"
 Write-Host ""

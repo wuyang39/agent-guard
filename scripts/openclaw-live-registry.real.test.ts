@@ -10,7 +10,7 @@ import { resolveRequiredOpenClawCli } from "./verify-openclaw-live-registry-gate
 
 const LAUNCHER = path.resolve("scripts/openclaw-guard-launcher.ts");
 
-test("required real OpenClaw live registry allows guarded startup", { timeout: 120_000 }, async () => {
+test("required real OpenClaw live registry allows guarded startup", { timeout: 180_000 }, async () => {
   const cliPath = resolveRequiredOpenClawCli(process.env);
   const versionResult = runCli(["--version"], cliPath);
   assert.equal(versionResult.exitCode, 0, "required OpenClaw CLI version probe failed");
@@ -65,7 +65,7 @@ test("required real OpenClaw live registry allows guarded startup", { timeout: 1
         },
         encoding: "utf8",
         shell: false,
-        timeout: 90_000,
+        timeout: 150_000,
         windowsHide: true,
       },
     );

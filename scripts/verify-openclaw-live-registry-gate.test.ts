@@ -38,12 +38,19 @@ test("real live registry gate runs the standalone required test without a name p
     args: string[];
     env: NodeJS.ProcessEnv;
     stdio: "inherit" | ["ignore", "pipe", "pipe"];
+    timeout: number;
   }> = [];
   runOpenClawLiveRegistryGate({
     env: { TEST_OPENCLAW_AGENTGUARD_CLI: "C:\\openclaw.cmd" },
     nodePath: "node-test",
     spawn: (command, args, options) => {
-      calls.push({ command, args, env: options.env ?? {}, stdio: options.stdio });
+      calls.push({
+        command,
+        args,
+        env: options.env ?? {},
+        stdio: options.stdio,
+        timeout: options.timeout,
+      });
       return {
         status: 0,
         stdout: [
@@ -69,6 +76,7 @@ test("real live registry gate runs the standalone required test without a name p
     ],
     env: { TEST_OPENCLAW_AGENTGUARD_CLI: "C:\\openclaw.cmd" },
     stdio: ["ignore", "pipe", "pipe"],
+    timeout: 240_000,
   }]);
 });
 

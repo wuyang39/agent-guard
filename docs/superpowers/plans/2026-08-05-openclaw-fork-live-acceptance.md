@@ -29,7 +29,7 @@
 - [x] Require the reserved core `POST /agent-guard/native-guard/v1/gateway-attestation` response to carry an exact `native-guard-gateway-1` proof signed by the fd3-bound key; cover unsigned, wrong-key, altered, and port-hijack responses.
 - [x] Bind the full detection operation to the exact authenticated child generation. An unexpected `close`, `exit`, or process-lifetime rejection after attestation must revoke credentials, abort the active sample, prevent later samples, and fail the run; only cleanup-initiated shutdown is expected.
 - [x] Bound readiness status JSON to 64 KiB, reject every `Content-Encoding`, require JSON content type, and make the 500 ms attempt abort cover stalled body reads and cancellation.
-- [x] Bound bootstrap/readiness with one 120-second absolute deadline and cover the default with TDD regression.
+- [x] Bound fd3 bootstrap with a 60-second absolute deadline and the subsequent readiness phase with an independent 120-second absolute deadline; cover the readiness default with TDD regression.
 - [x] Write failing parser, control-client, sandbox, and launcher tests for missing, malformed, spoofed, and complete attestations.
 - [x] Implement the shared parser and require its result in every guarded capability decision.
 - [x] Make marker inventory errors fail closed and make Windows `.cmd` CLI invocation explicit and bounded.

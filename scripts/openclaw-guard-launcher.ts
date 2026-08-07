@@ -42,7 +42,7 @@ const REQUIRED_POLICY = "agent-guard-admission";
 const LIVE_REGISTRY_CONTRACT_VERSION = "openclaw.plugins.live.v1";
 const CLI_MAX_BUFFER_BYTES = 256 * 1024;
 const CLI_DEFAULT_TIMEOUT_MS = 15_000;
-const CLI_MAX_TIMEOUT_MS = 60_000;
+const CLI_MAX_TIMEOUT_MS = 120_000;
 
 type CliSpawnOptions = {
   windowsHide: true;
@@ -87,7 +87,9 @@ export function runCli(
 ): { exitCode: number; stdout: string; stderr: string } {
   const timeoutMs = options.timeoutMs ?? CLI_DEFAULT_TIMEOUT_MS;
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > CLI_MAX_TIMEOUT_MS) {
-    throw new RangeError("CLI timeout must be an integer between 1 and 60000 milliseconds");
+    throw new RangeError(
+      `CLI timeout must be an integer between 1 and ${String(CLI_MAX_TIMEOUT_MS)} milliseconds`,
+    );
   }
   const cli = resolveOpenClawCliInvocation(cliPath);
   const spawn: CliSpawn = options.spawn ?? ((command, spawnArgs, spawnOptions) =>

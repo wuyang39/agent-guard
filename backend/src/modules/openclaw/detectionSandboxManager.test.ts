@@ -967,13 +967,65 @@ test("default readiness budget reaches a healthy forty-first attempt", async () 
   }
 });
 
-test("default readiness budget survives more than 240 immediate connection refusals", async () => {
+test("default readiness budget tolerates a cold Gateway after sixty seconds", async () => {
   const originalFetch = globalThis.fetch;
+  const originalNow = Date.now;
+  let nowMs = 0;
   let fetchCalls = 0;
+  Date.now = () => nowMs;
+  globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+    fetchCalls += 1;
+    if (fetchCalls === 1) {
+      nowMs = 60_001;
+      throw Object.assign(new TypeError("fetch failed"), {
+        cause: Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }),
+      });
+    }
+
+    const headers = new Headers(init?.headers);
+    if (!headers.has("authorization")) {
+      return new Response("unauthorized", { status: 401 });
+    }
+    const nonce = headers.get("x-agent-guard-ready-nonce");
+    assert.ok(nonce);
+    return new Response(JSON.stringify({
+      coverage: "ready",
+      activeLeaseCount: 0,
+      _readyNonce: nonce,
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+
+  const child = { exitCode: null as number | null, kill: () => { child.exitCode = 1; } };
+  try {
+    await waitForGateway(
+      "http://127.0.0.1:1",
+      "token",
+      child,
+      new AbortController().signal,
+      undefined,
+      0,
+    );
+    assert.equal(fetchCalls, 3);
+  } finally {
+    globalThis.fetch = originalFetch;
+    Date.now = originalNow;
+  }
+});
+
+test("default readiness budget survives more than 1200 connection refusals", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalNow = Date.now;
+  let nowMs = 0;
+  let fetchCalls = 0;
+  Date.now = () => nowMs;
   let killed = false;
   globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
     fetchCalls += 1;
-    if (fetchCalls <= 241) {
+    nowMs += 50;
+    if (fetchCalls <= 1_201) {
       throw Object.assign(new TypeError("fetch failed"), {
         cause: Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }),
       });
@@ -1008,10 +1060,11 @@ test("default readiness budget survives more than 240 immediate connection refus
       undefined,
       0,
     );
-    assert.equal(fetchCalls, 243);
+    assert.equal(fetchCalls, 1_203);
     assert.equal(killed, false);
   } finally {
     globalThis.fetch = originalFetch;
+    Date.now = originalNow;
   }
 });
 
@@ -1154,7 +1207,7 @@ test("readiness deadline bounds a stalled authenticated response body", async ()
 });
 
 test("readiness polling rejects invalid timeout values", async (t) => {
-  for (const timeoutMs of [0, -1, 60_001, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+  for (const timeoutMs of [0, -1, 120_001, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
     await t.test(String(timeoutMs), async () => {
       const child = { exitCode: null as number | null, kill: () => { child.exitCode = 1; } };
       await assert.rejects(

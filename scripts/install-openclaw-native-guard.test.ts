@@ -59,6 +59,33 @@ test("installer uses the explicit compatible fork CLI and writes only the isolat
   }
 });
 
+test("installer executes an explicit OpenClaw mjs entry through Node", {
+  skip: process.platform !== "win32",
+}, async () => {
+  const fixture = await createFixture("OpenClaw 2026.7.1-agentguard.1");
+  const mjsCli = path.join(fixture.root, "openclaw.mjs");
+  await writeFile(
+    mjsCli,
+    [
+      'if (process.argv[2] === "--version") {',
+      '  process.stdout.write("OpenClaw 2026.7.1-agentguard.1\\n");',
+      "} else {",
+      "  process.exitCode = 1;",
+      "}",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  try {
+    const result = runInstaller(fixture, { cli: mjsCli });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /node\s+"[^"]+openclaw\.mjs"\s+plugins list --json/u);
+    await readFile(path.join(fixture.home, "openclaw.json"));
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("installer resolves OPENCLAW_CLI when no explicit CLI is provided", {
   skip: process.platform !== "win32",
 }, async () => {

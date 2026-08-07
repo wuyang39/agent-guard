@@ -276,7 +276,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $forkRoot "openclaw.mjs")) -or
   throw "Controlled fork runtime artifacts are incomplete."
 }
 
-node -e "const [a,b,c]=process.versions.node.split('.').map(Number);const ok=(a===22&&(b>22||(b===22&&c>=3)))||(a===24&&(b>15||(b===15&&c>=0)))||(a===25&&(b>9||(b===9&&c>=0)));if(!ok){console.error('Unsupported Node '+process.versions.node);process.exit(1)}"
+node -e "const [a,b,c]=process.versions.node.split('.').map(Number);const ok=(a===22&&(b>22||(b===22&&c>=3)))||(a===24&&(b>15||(b===15&&c>=0)))||(a>25)||(a===25&&(b>9||(b===9&&c>=0)));if(!ok){console.error('Unsupported Node '+process.versions.node);process.exit(1)}"
 ```
 
 fork `package.json` 的精确 Node engines 为 `>=22.22.3 <23 || >=24.15.0 <25 || >=25.9.0`。运行入口是 artifact 根目录 `openclaw.mjs`，production capability inspector 是 `dist/cli/native-guard-inspector.js`。HEAD 或 `dist/.buildstamp` 任一不匹配都必须 fail fast。
@@ -290,12 +290,12 @@ $profileRoot = Join-Path $agentGuardRoot "outputs\openclaw-native-guard-profile"
 $env:OPENCLAW_HOME = $profileRoot
 $env:OPENCLAW_CONFIG_PATH = Join-Path $profileRoot "openclaw.json"
 $env:OPENCLAW_STATE_DIR = Join-Path $profileRoot "state"
-$env:OPENCLAW_WORKSPACE = Join-Path $profileRoot "workspace"
+$env:OPENCLAW_WORKSPACE_DIR = Join-Path $profileRoot "workspace"
 $env:OPENCLAW_CLI = Join-Path $forkRoot "openclaw.mjs"
 $env:TEST_OPENCLAW_AGENTGUARD_CLI = Join-Path $forkRoot "dist\cli\native-guard-inspector.js"
 $env:AGENT_GUARD_OPENCLAW_ISOLATED_PROFILE = "1"
 
-New-Item -ItemType Directory -Force -Path $env:OPENCLAW_HOME, $env:OPENCLAW_STATE_DIR, $env:OPENCLAW_WORKSPACE | Out-Null
+New-Item -ItemType Directory -Force -Path $env:OPENCLAW_HOME, $env:OPENCLAW_STATE_DIR, $env:OPENCLAW_WORKSPACE_DIR | Out-Null
 if (-not (Test-Path -LiteralPath $env:OPENCLAW_CONFIG_PATH)) {
   Set-Content -LiteralPath $env:OPENCLAW_CONFIG_PATH -Value "{}" -Encoding utf8
 }
@@ -324,7 +324,7 @@ maintenance cleanup：
 node --import tsx scripts/openclaw-guard-launcher.ts --maintenance
 ```
 
-maintenance 模式不接受 child 命令，也不会 spawn OpenClaw。正常模式在通过 marker 和 registry 检查后启动 child，并把检测生命周期绑定到该进程；bootstrap/readiness 使用 120 秒绝对截止时间。
+maintenance 模式不接受 child 命令，也不会 spawn OpenClaw。正常模式在通过 marker 和 registry 检查后启动 child，并把检测生命周期绑定到该进程；bootstrap 使用 60 秒绝对截止时间，随后 readiness 使用独立的 120 秒绝对截止时间。
 
 ## 工具 Sandbox 镜像
 
@@ -334,7 +334,7 @@ maintenance 模式不接受 child 命令，也不会 spawn OpenClaw。正常模�
 openclaw-sandbox@sha256:01630cbb3486af7c0908b326d956d20722fde3ceada2775b53e547370a4e0e38
 ```
 
-`docker/openclaw-sandbox/Dockerfile`、`docker/openclaw-sandbox/README.md` 和 `scripts/build-openclaw-sandbox.ps1` 已提供可重复的本地构建入口。构建脚本最终输出的 digest 是本机验收的权威引用；不得继续使用被同 tag 重建替换的旧 `dcf6e...` 引用。
+`docker/openclaw-sandbox/Dockerfile`、`docker/openclaw-sandbox/README.md` 和 `scripts/build-openclaw-sandbox.ps1` 已提供可重复的本地构建入口。无 registry 的本地 digest 输出要求启用 containerd image store；经典 image store 必须先 push/pull 到受控 registry 或导入已发布 artifact。构建脚本最终输出的 digest 是本机验收的权威引用；不得继续使用被同 tag 重建替换的旧 `dcf6e...` 引用，也不得退回可变 tag。
 
 该 digest 目前只登记在当前机器的 Docker image store，尚未推送到正式 registry。其他机器不能假设可 `docker pull`；必须先导入受控 image artifact 或等待 registry 发布，再用构建脚本输出/`docker image inspect` 验证精确 digest。
 

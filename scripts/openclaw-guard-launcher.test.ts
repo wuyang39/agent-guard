@@ -27,10 +27,10 @@ test("CLI runner uses the default timeout or an explicit bounded timeout", () =>
   runCli(["--version"], process.execPath, { spawn });
   runCli(["plugins", "list", "--json", "--live"], process.execPath, {
     spawn,
-    timeoutMs: 60_000,
+    timeoutMs: 120_000,
   });
 
-  assert.deepEqual(timeouts, [15_000, 60_000]);
+  assert.deepEqual(timeouts, [15_000, 120_000]);
 });
 
 test("CLI runner rejects invalid or unbounded timeouts before spawning", () => {
@@ -40,10 +40,10 @@ test("CLI runner rejects invalid or unbounded timeouts before spawning", () => {
     return { status: 0, stdout: "", stderr: "" };
   };
 
-  for (const timeoutMs of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 60_001]) {
+  for (const timeoutMs of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 120_001]) {
     assert.throws(
       () => runCli(["--version"], process.execPath, { spawn, timeoutMs }),
-      /CLI timeout must be an integer between 1 and 60000 milliseconds/,
+      /CLI timeout must be an integer between 1 and 120000 milliseconds/,
     );
   }
   assert.equal(spawnCalls, 0);
@@ -64,7 +64,7 @@ test("live registry runner uses the exact contract with the cold-start timeout",
 
   assert.deepEqual(calls, [{
     args: ["plugins", "list", "--json", "--live"],
-    timeout: 60_000,
+    timeout: 120_000,
   }]);
 });
 

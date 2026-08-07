@@ -467,7 +467,7 @@ Launcher 实现在 `scripts/openclaw-guard-launcher.ts`。在 OpenClaw Gateway �
 ```bash
 node --import tsx scripts/openclaw-guard-launcher.ts -- gateway run --bind loopback --port <port> --token <token>
 ```
-launcher 完成 marker 和 live registry 检查后原子 spawn `--` 后的 Gateway child，并将 child 退出状态传回调用方；检测全程绑定该真实 child。`--maintenance` 必须单独使用，不接受 child 参数，也不会 spawn OpenClaw。Gateway bootstrap 与 readiness 共用 60 秒绝对截止时间，慢启动不能通过逐次探测重置预算。
+launcher 完成 marker 和 live registry 检查后原子 spawn `--` 后的 Gateway child，并将 child 退出状态传回调用方；检测全程绑定该真实 child。`--maintenance` 必须单独使用，不接受 child 参数，也不会 spawn OpenClaw。Gateway fd3 bootstrap 使用 60 秒绝对截止时间，随后 readiness 使用独立的 120 秒绝对截止时间；慢启动不能通过逐次探测重置任一预算。
 
 #### 7.1.1 兼容 OpenClaw Fork 需要提供的能力
 
@@ -491,9 +491,9 @@ launcher 完成 marker 和 live registry 检查后原子 spawn `--` 后的 Gatew
 preflight → start → [run cases] → attest → revoke → cleanup
 ```
 
-**Preflight**：验证 Docker daemon 可用 → 解析纯工具 sandbox 镜像的不可变 digest → 创建宿主隔离 profile → 通过宿主 fork 的 production inspector 探测 OpenClaw 能力 → 可选创建受控 sink 网络。固定镜像为 `openclaw-sandbox@sha256:dcf6e79c5e3f41823c29cffe44103e06c2865ebfcee6434ce5a58f9860975b5d`；镜像只包含 non-root、`python3`、`sh`、`timeout` 等工具运行依赖，不包含 OpenClaw 或 Agent Guard 插件。
+**Preflight**：验证 Docker daemon 可用 → 解析纯工具 sandbox 镜像的不可变 digest → 创建宿主隔离 profile → 通过宿主 fork 的 production inspector 探测 OpenClaw 能力 → 可选创建受控 sink 网络。当前重建并验收的镜像为 `openclaw-sandbox@sha256:01630cbb3486af7c0908b326d956d20722fde3ceada2775b53e547370a4e0e38`；`scripts/build-openclaw-sandbox.ps1` 从固定 Python base 生成并输出本机权威 digest。镜像只包含 non-root、`python3`、`sh`、`timeout` 等工具运行依赖，不包含 OpenClaw 或 Agent Guard 插件。
 
-**Start**：生成随机 Bearer token → 分配临时 loopback 端口 → 由 launcher 在宿主隔离 profile 原子启动 OpenClaw Gateway 与插件 → 在 60 秒绝对截止时间内完成未认证 401/403、已认证 root 200、status nonce challenge 和 core 签名证明。
+**Start**：生成随机 Bearer token → 分配临时 loopback 端口 → 由 launcher 在宿主隔离 profile 原子启动 OpenClaw Gateway 与插件 → 在 fd3 bootstrap 完成后，于 120 秒 readiness 绝对截止时间内完成未认证 401/403、已认证 root 200、status nonce challenge 和 core 签名证明。
 
 **Run**：Gateway、插件和 Agent Guard 后端留在宿主信任边界；agent 的原生工具在 Docker sandbox 内执行。Gateway URL/token 注入隔离会话，不把整个 OpenClaw 容器化。
 

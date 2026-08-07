@@ -48,24 +48,32 @@ test("required real OpenClaw live registry allows guarded startup", { timeout: 1
   }), "utf8");
 
   try {
-    const result = spawnSync(process.execPath, ["--import", "tsx", LAUNCHER], {
-      cwd: process.cwd(),
-      env: {
-        ...process.env,
-        AGENT_GUARD_MARKER_DIR: markerDir,
-        NODE_ENV: "production",
-        OPENCLAW_CLI: cliPath,
-        OPENCLAW_CONFIG_PATH: configPath,
-        OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
-        OPENCLAW_DISABLE_PERSISTED_PLUGIN_REGISTRY: "1",
-        OPENCLAW_HOME: root,
+    const result = spawnSync(
+      process.execPath,
+      ["--import", "tsx", LAUNCHER, "--", "--version"],
+      {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          AGENT_GUARD_MARKER_DIR: markerDir,
+          NODE_ENV: "production",
+          OPENCLAW_CLI: cliPath,
+          OPENCLAW_CONFIG_PATH: configPath,
+          OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
+          OPENCLAW_DISABLE_PERSISTED_PLUGIN_REGISTRY: "1",
+          OPENCLAW_HOME: root,
+        },
+        encoding: "utf8",
+        shell: false,
+        timeout: 90_000,
+        windowsHide: true,
       },
-      encoding: "utf8",
-      shell: false,
-      timeout: 90_000,
-      windowsHide: true,
-    });
+    );
     assert.equal(result.status, 0, "required live registry rejected guarded startup");
+    assert.ok(
+      (result.stdout ?? "").includes(versionResult.stdout),
+      "guarded launcher did not execute the required OpenClaw --version child",
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

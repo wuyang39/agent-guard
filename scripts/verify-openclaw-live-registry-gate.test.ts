@@ -72,6 +72,18 @@ test("real live registry gate runs the standalone required test without a name p
   }]);
 });
 
+test("required real test executes a bounded child through the guarded launcher", async () => {
+  const source = await readFile("scripts/openclaw-live-registry.real.test.ts", "utf8");
+  assert.match(
+    source,
+    /spawnSync\(\s*process\.execPath,\s*\["--import",\s*"tsx",\s*LAUNCHER,\s*"--",\s*"--version"\]/u,
+  );
+  assert.match(
+    source,
+    /assert\.ok\(\s*\(result\.stdout\s*\?\?\s*""\)\.includes\(versionResult\.stdout\)/u,
+  );
+});
+
 test("real live registry gate rejects a successful child that ran zero tests", () => {
   assert.throws(
     () => runOpenClawLiveRegistryGate({

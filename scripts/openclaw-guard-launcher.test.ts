@@ -158,57 +158,6 @@ test("guarded launcher requests the exact live CLI contract", async () => {
   }
 });
 
-test("exact fork live registry allows guarded startup in an isolated profile", {
-  skip: !process.env.TEST_OPENCLAW_AGENTGUARD_CLI,
-  timeout: 120_000,
-}, async () => {
-  const cliPath = process.env.TEST_OPENCLAW_AGENTGUARD_CLI;
-  assert.ok(cliPath);
-  const root = await mkdtemp(path.join(os.tmpdir(), "openclaw-launcher-exact-fork-"));
-  const markerDir = path.join(root, "markers");
-  const spoolDir = path.join(root, "spool");
-  const configPath = path.join(root, "openclaw.json");
-  await mkdir(markerDir, { recursive: true });
-  await writeFile(path.join(markerDir, "lease.1.json"), JSON.stringify({
-    leaseId: "lease.1",
-    rootSessionKey: "agent:guard:launcher-test",
-    childSessionKeys: [],
-    mode: "supervision",
-    policyPackId: "policy.launcher-test",
-    policyPackDigest: "a".repeat(64),
-    expiresAt: "2026-08-01T00:00:00.000Z",
-  }), "utf8");
-  await writeFile(configPath, JSON.stringify({
-    plugins: {
-      enabled: true,
-      allow: ["agent-guard-supervision"],
-      load: { paths: [path.resolve("plugins/agent-guard-supervision")] },
-      entries: {
-        "agent-guard-supervision": {
-          enabled: true,
-          config: { markerDir, spoolDir },
-        },
-      },
-    },
-  }), "utf8");
-
-  try {
-    const result = launchGuard({
-      cliPath,
-      markerDir,
-      homeDir: root,
-      timeoutMs: 90_000,
-      env: {
-        OPENCLAW_CONFIG_PATH: configPath,
-        OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
-      },
-    });
-    assert.equal(result.status, 0, result.stderr || result.stdout);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
 test("launcher fails closed with bounded output when the CLI exceeds maxBuffer", {
   skip: process.platform !== "win32",
 }, async () => {

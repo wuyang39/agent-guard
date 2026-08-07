@@ -9,19 +9,30 @@ import {
 test("real live registry gate requires an explicit exact-fork CLI", () => {
   assert.throws(
     () => resolveRequiredOpenClawCli({}),
-    /TEST_OPENCLAW_AGENTGUARD_CLI is required/,
+    /TEST_OPENCLAW_AGENTGUARD_CLI or OPENCLAW_CLI is required/,
   );
   assert.throws(
     () => resolveRequiredOpenClawCli({ TEST_OPENCLAW_AGENTGUARD_CLI: "  " }),
-    /TEST_OPENCLAW_AGENTGUARD_CLI is required/,
+    /TEST_OPENCLAW_AGENTGUARD_CLI or OPENCLAW_CLI is required/,
   );
   assert.equal(
     resolveRequiredOpenClawCli({ TEST_OPENCLAW_AGENTGUARD_CLI: " C:\\openclaw.cmd " }),
     "C:\\openclaw.cmd",
   );
+  assert.equal(
+    resolveRequiredOpenClawCli({ OPENCLAW_CLI: " C:\\fallback-openclaw.cmd " }),
+    "C:\\fallback-openclaw.cmd",
+  );
+  assert.equal(
+    resolveRequiredOpenClawCli({
+      TEST_OPENCLAW_AGENTGUARD_CLI: " C:\\preferred-openclaw.cmd ",
+      OPENCLAW_CLI: "C:\\fallback-openclaw.cmd",
+    }),
+    "C:\\preferred-openclaw.cmd",
+  );
 });
 
-test("real live registry gate runs only the non-skipped cross-repo launcher test", () => {
+test("real live registry gate runs the standalone required test without a name pattern", () => {
   const calls: Array<{
     command: string;
     args: string[];
@@ -33,7 +44,17 @@ test("real live registry gate runs only the non-skipped cross-repo launcher test
     nodePath: "node-test",
     spawn: (command, args, options) => {
       calls.push({ command, args, env: options.env ?? {}, stdio: options.stdio });
-      return { status: 0 };
+      return {
+        status: 0,
+        stdout: [
+          "TAP version 13",
+          "ok 1 - required real OpenClaw live registry allows guarded startup",
+          "1..1",
+          "# tests 1",
+          "# pass 1",
+          "# fail 0",
+        ].join("\n"),
+      };
     },
   });
 
@@ -43,15 +64,57 @@ test("real live registry gate runs only the non-skipped cross-repo launcher test
       "--import",
       "tsx",
       "--test",
-      "--test-name-pattern=exact fork live registry",
-      "scripts/openclaw-guard-launcher.test.ts",
+      "--test-reporter=tap",
+      "scripts/openclaw-live-registry.real.test.ts",
     ],
     env: { TEST_OPENCLAW_AGENTGUARD_CLI: "C:\\openclaw.cmd" },
     stdio: ["ignore", "pipe", "pipe"],
   }]);
 });
 
-test("real live registry gate reports a fixed failure without child payloads", () => {
+test("real live registry gate rejects a successful child that ran zero tests", () => {
+  assert.throws(
+    () => runOpenClawLiveRegistryGate({
+      env: { TEST_OPENCLAW_AGENTGUARD_CLI: "C:\\openclaw.cmd" },
+      spawn: () => ({
+        status: 0,
+        stdout: [
+          "TAP version 13",
+          "1..0",
+          "# tests 0",
+          "# pass 0",
+          "# fail 0",
+        ].join("\n"),
+      }),
+    }),
+    /real OpenClaw live registry gate failed/,
+  );
+});
+
+test("real live registry gate rejects hidden or duplicate TAP test points", () => {
+  const validSummary = [
+    "TAP version 13",
+    "ok 1 - required real OpenClaw live registry allows guarded startup",
+    "1..1",
+    "# tests 1",
+    "# pass 1",
+    "# fail 0",
+  ];
+  for (const extraPoint of [
+    "not ok 2 - hidden child failure",
+    "ok 1 - required real OpenClaw live registry allows guarded startup",
+  ]) {
+    assert.throws(
+      () => runOpenClawLiveRegistryGate({
+        env: { TEST_OPENCLAW_AGENTGUARD_CLI: "C:\\openclaw.cmd" },
+        spawn: () => ({ status: 0, stdout: [...validSummary, extraPoint].join("\n") }),
+      }),
+      /real OpenClaw live registry gate failed/,
+    );
+  }
+});
+
+test("real live registry gate reports a fixed child failure without payloads", () => {
   assert.throws(
     () => runOpenClawLiveRegistryGate({
       env: { TEST_OPENCLAW_AGENTGUARD_CLI: "C:\\openclaw.cmd" },
@@ -78,6 +141,10 @@ test("verify:native-guard:all includes the mandatory real live registry gate", a
   );
   assert.match(
     pkg.scripts["verify:native-guard:all"] ?? "",
-    /verify:native-guard:real.*verify:native-guard:docker/,
+    /build:openclaw-plugin.*verify:native-guard:real.*verify:native-guard:docker/,
+  );
+  assert.match(
+    pkg.scripts["verify:all"] ?? "",
+    /build:openclaw-plugin.*verify:native-guard:real/,
   );
 });

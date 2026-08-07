@@ -16,14 +16,34 @@ type GateSpawn = (
   command: string,
   args: string[],
   options: GateSpawnOptions,
-) => { error?: Error; status: number | null };
+) => { error?: Error; status: number | null; stdout?: string };
 
 export function resolveRequiredOpenClawCli(env: NodeJS.ProcessEnv = process.env): string {
-  const cliPath = env.TEST_OPENCLAW_AGENTGUARD_CLI?.trim();
+  const cliPath = env.TEST_OPENCLAW_AGENTGUARD_CLI?.trim() || env.OPENCLAW_CLI?.trim();
   if (!cliPath) {
-    throw new Error("TEST_OPENCLAW_AGENTGUARD_CLI is required for the real live registry gate");
+    throw new Error(
+      "TEST_OPENCLAW_AGENTGUARD_CLI or OPENCLAW_CLI is required for the real live registry gate",
+    );
   }
   return cliPath;
+}
+
+function hasExactlyOneRequiredTestPass(output: string | undefined): boolean {
+  if (!output) {
+    return false;
+  }
+  const testPoints = output
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter((line) => /^(?:not )?ok\b/u.test(line));
+  return (
+    testPoints.length === 1 &&
+    testPoints[0] === "ok 1 - required real OpenClaw live registry allows guarded startup" &&
+    /^1\.\.1\r?$/m.test(output) &&
+    /^# tests 1\r?$/m.test(output) &&
+    /^# pass 1\r?$/m.test(output) &&
+    /^# fail 0\r?$/m.test(output)
+  );
 }
 
 export function runOpenClawLiveRegistryGate(params: {
@@ -42,8 +62,8 @@ export function runOpenClawLiveRegistryGate(params: {
       "--import",
       "tsx",
       "--test",
-      "--test-name-pattern=exact fork live registry",
-      "scripts/openclaw-guard-launcher.test.ts",
+      "--test-reporter=tap",
+      "scripts/openclaw-live-registry.real.test.ts",
     ],
     {
       cwd: params.cwd ?? process.cwd(),
@@ -55,7 +75,7 @@ export function runOpenClawLiveRegistryGate(params: {
       windowsHide: true,
     },
   );
-  if (result.error || result.status !== 0) {
+  if (result.error || result.status !== 0 || !hasExactlyOneRequiredTestPass(result.stdout)) {
     throw new Error("real OpenClaw live registry gate failed");
   }
 }

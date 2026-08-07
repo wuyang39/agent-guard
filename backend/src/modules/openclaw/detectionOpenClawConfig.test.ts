@@ -63,44 +63,83 @@ test("generates a Docker-only detection profile with destructive features disabl
   });
 });
 
-for (const [source, apiKey] of Object.entries({
-  env: { source: "env", provider: "default", id: "DEEPSEEK_API_KEY" },
-  file: { source: "file", provider: "mounted-json", id: "/providers/deepseek/apiKey" },
-  exec: { source: "exec", provider: "vault", id: "providers/deepseek/api-key" },
-  pseudo: { SecretRef: "env:DEEPSEEK_API_KEY" },
-})) {
-  test(`rejects ${source} SecretRefs that the isolated profile cannot resolve`, () => {
-    assert.throws(
-      () => scrubDetectionOpenClawConfig({ providers: { deepseek: { apiKey } } }),
-      (error: unknown) => error instanceof DetectionConfigError && error.code === "INLINE_SECRET_UNSAFE",
-    );
+test("projects only OpenClaw's strict default model selector", () => {
+  assert.deepEqual(scrubDetectionOpenClawConfig({ model: "openai/gpt-5.5" }), {
+    model: "openai/gpt-5.5",
   });
-}
+  assert.deepEqual(scrubDetectionOpenClawConfig({
+    agents: {
+      defaults: {
+        model: {
+          primary: "deepseek/deepseek-v4-flash",
+          fallbacks: ["openai/gpt-5.5"],
+        },
+      },
+    },
+  }), {
+    model: {
+      primary: "deepseek/deepseek-v4-flash",
+      fallbacks: ["openai/gpt-5.5"],
+    },
+  });
+});
 
-for (const [name, value] of [
-  ["X-Api-Key", "inline-api-key"],
-  ["X-Custom-Token", "inline-custom-token"],
+for (const [caseName, model] of [
+  ["extra keys", { primary: "deepseek/deepseek-v4-flash", request: { auth: { mode: "header", headerName: "X-Key", value: "inline" } } }],
+  ["non-string fallbacks", { primary: "deepseek/deepseek-v4-flash", fallbacks: ["openai/gpt-5.5", 7] }],
+  ["a structured primary", { primary: { provider: "deepseek", model: "deepseek-v4-flash" } }],
 ] as const) {
-  test(`rejects provider headers containing ${name}`, () => {
+  test(`rejects model selectors with ${caseName}`, () => {
     assert.throws(
-      () => scrubDetectionOpenClawConfig({ providers: { deepseek: { headers: { [name]: value } } } }),
+      () => scrubDetectionOpenClawConfig({ model }),
       (error: unknown) => error instanceof DetectionConfigError && error.code === "INLINE_SECRET_UNSAFE",
     );
   });
 }
 
-test("rejects inline and structured values in secret-bearing fields", () => {
-  assert.throws(
-    () => scrubDetectionOpenClawConfig({ providers: { anthropic: { apiKey: "sk-inline-secret" } } }),
-    (error: unknown) => error instanceof DetectionConfigError && error.code === "INLINE_SECRET_UNSAFE",
-  );
-  assert.throws(
-    () => scrubDetectionOpenClawConfig({ providers: { anthropic: { apiKey: { value: "sk-nested-secret" } } } }),
-    (error: unknown) => error instanceof DetectionConfigError && error.code === "INLINE_SECRET_UNSAFE",
-  );
-  const accessor = {} as { providers?: unknown };
-  Object.defineProperty(accessor, "providers", { get: () => ({ apiKey: "must-not-read" }), enumerable: true });
-  assert.throws(() => scrubDetectionOpenClawConfig(accessor), /accessors|INLINE_SECRET_UNSAFE/i);
+test("does not inspect or copy schema-valid provider request authentication", () => {
+  const secret = "inline-request-auth-secret";
+  const scrubbed = scrubDetectionOpenClawConfig({
+    agents: { defaults: { model: { primary: "deepseek/deepseek-v4-flash" } } },
+    models: {
+      providers: {
+        deepseek: {
+          request: {
+            auth: {
+              mode: "header",
+              headerName: "X-Custom-Credential",
+              value: secret,
+            },
+          },
+        },
+      },
+    },
+  });
+
+  assert.deepEqual(scrubbed, { model: { primary: "deepseek/deepseek-v4-flash" } });
+  assert.equal(JSON.stringify(scrubbed).includes(secret), false);
+});
+
+test("does not inspect or copy schema-valid provider local service commands or environment", () => {
+  const command = "C:/private/provider/start-deepseek.cmd";
+  const secret = "inline-local-service-secret";
+  const scrubbed = scrubDetectionOpenClawConfig({
+    agents: { defaults: { model: { primary: "deepseek/deepseek-v4-flash" } } },
+    models: {
+      providers: {
+        deepseek: {
+          localService: {
+            command,
+            env: { DEEPSEEK_API_KEY: secret },
+          },
+        },
+      },
+    },
+  });
+
+  assert.deepEqual(scrubbed, { model: { primary: "deepseek/deepseek-v4-flash" } });
+  assert.equal(JSON.stringify(scrubbed).includes(command), false);
+  assert.equal(JSON.stringify(scrubbed).includes(secret), false);
 });
 
 test("does not copy user tools, plugins, binds, browser, or elevated settings", () => {
@@ -123,64 +162,49 @@ test("does not copy user tools, plugins, binds, browser, or elevated settings", 
 });
 
 test("generated model config passes the equivalent strict OpenClaw AgentDefaults schema", () => {
-  const providers = {
-    deepseek: {
-      api: "openai-completions",
-      models: [{ id: "deepseek-v4-flash", name: "DeepSeek V4 Flash" }],
-    },
-  };
   const config = generateDetectionOpenClawConfig({
     ...detectionPaths(),
     userConfig: {
-      model: { primary: "deepseek/deepseek-v4-flash" },
-      provider: "deepseek",
-      models: { "deepseek/deepseek-v4-flash": { alias: "DeepSeek" } },
-      providers,
+      agents: {
+        defaults: {
+          model: {
+            primary: "deepseek/deepseek-v4-flash",
+            fallbacks: ["openai/gpt-5.5"],
+          },
+          models: { "deepseek/deepseek-v4-flash": { alias: "DeepSeek" } },
+        },
+      },
+      models: {
+        providers: {
+          deepseek: {
+            localService: {
+              command: "C:/private/provider/start-deepseek.cmd",
+              env: { DEEPSEEK_API_KEY: "inline-local-service-secret" },
+            },
+            request: {
+              auth: {
+                mode: "header",
+                headerName: "X-Custom-Credential",
+                value: "inline-request-auth-secret",
+              },
+            },
+          },
+        },
+      },
       tools: { elevated: { enabled: true } },
       plugins: { entries: { arbitrary: { enabled: true } } },
     },
   });
 
-  assert.deepEqual(config.agents.defaults.model, { primary: "deepseek/deepseek-v4-flash" });
-  assert.equal(Object.hasOwn(config.agents.defaults, "provider"), false);
-  assert.deepEqual(config.agents.defaults.models, {
-    "deepseek/deepseek-v4-flash": { alias: "DeepSeek" },
+  assert.deepEqual(config.agents.defaults.model, {
+    primary: "deepseek/deepseek-v4-flash",
+    fallbacks: ["openai/gpt-5.5"],
   });
-  assert.deepEqual(config.models, { providers });
+  assert.equal(Object.hasOwn(config.agents.defaults, "models"), false);
+  assert.equal(Object.hasOwn(config, "models"), false);
   assert.deepEqual(config.tools, { elevated: { enabled: false } });
   assert.deepEqual(Object.keys(config.plugins.entries), ["agent-guard-supervision"]);
   assertEquivalentStrictAgentDefaultsModelSchema(config.agents.defaults);
-});
-
-test("scrubs the real top-level provider catalog and rejects its inline secrets", () => {
-  const scrubbed = scrubDetectionOpenClawConfig({
-    agents: {
-      defaults: {
-        model: { primary: "deepseek/deepseek-v4-flash" },
-        models: { "deepseek/deepseek-v4-flash": { alias: "DeepSeek" } },
-      },
-    },
-    models: {
-      providers: {
-        deepseek: {
-          models: [{ id: "deepseek-v4-flash" }],
-        },
-      },
-    },
-  });
-  assert.deepEqual(Object.keys(scrubbed).sort(), ["model", "models", "providers"]);
-  assert.deepEqual(scrubbed.providers, {
-    deepseek: {
-      models: [{ id: "deepseek-v4-flash" }],
-    },
-  });
-  assert.throws(
-    () => scrubDetectionOpenClawConfig({
-      agents: { defaults: { model: "deepseek/deepseek-v4-flash" } },
-      models: { providers: { deepseek: { apiKey: "inline-secret" } } },
-    }),
-    (error: unknown) => error instanceof DetectionConfigError && error.code === "INLINE_SECRET_UNSAFE",
-  );
 });
 
 test("profile seed rejects malformed last-known-good configuration", async (t) => {
@@ -254,7 +278,6 @@ test("profile seed accepts an explicit config path outside OpenClaw home and sta
 
   assert.deepEqual(seed.userConfig, {
     model: { primary: "deepseek/deepseek-v4-flash" },
-    models: { "deepseek/deepseek-v4-flash": { alias: "DeepSeek" } },
   });
   assert.equal(seed.agentStateDir, path.join(stateDir, "agents", "main", "agent"));
 });
@@ -303,17 +326,12 @@ function isSymlinkPrivilegeError(error: unknown): boolean {
 }
 
 function assertEquivalentStrictAgentDefaultsModelSchema(defaults: Record<string, unknown>): void {
-  assert.deepEqual(Object.keys(defaults).sort(), ["model", "models", "sandbox"]);
+  assert.deepEqual(Object.keys(defaults).sort(), ["model", "sandbox"]);
   const model = defaults.model;
   assert.ok(typeof model === "string" || (isPlainRecord(model) &&
     Object.keys(model).every((key) => key === "primary" || key === "fallbacks") &&
     (model.primary === undefined || typeof model.primary === "string") &&
     (model.fallbacks === undefined || (Array.isArray(model.fallbacks) && model.fallbacks.every((entry) => typeof entry === "string")))));
-  assert.ok(isPlainRecord(defaults.models));
-  for (const entry of Object.values(defaults.models)) {
-    assert.ok(isPlainRecord(entry));
-    assert.ok(Object.keys(entry).every((key) => key === "alias" || key === "params" || key === "agentRuntime" || key === "streaming"));
-  }
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {

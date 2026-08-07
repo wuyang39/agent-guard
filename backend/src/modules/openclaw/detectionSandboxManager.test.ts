@@ -247,13 +247,6 @@ test("profile seed snapshots only allowlisted main-agent model state files", asy
     profileSeed: {
       userConfig: {
         model: { primary: "deepseek/deepseek-v4-flash" },
-        provider: "deepseek",
-        models: { "deepseek/deepseek-v4-flash": { alias: "DeepSeek" } },
-        providers: {
-          deepseek: {
-            models: [{ id: "deepseek-v4-flash" }],
-          },
-        },
       },
       agentStateDir: sourceAgentDir,
     },
@@ -273,17 +266,11 @@ test("profile seed snapshots only allowlisted main-agent model state files", asy
     agents?: { defaults?: Record<string, unknown> };
     models?: unknown;
   };
-  assert.deepEqual(isolatedConfig.agents?.defaults?.models, {
-    "deepseek/deepseek-v4-flash": { alias: "DeepSeek" },
+  assert.deepEqual(isolatedConfig.agents?.defaults?.model, {
+    primary: "deepseek/deepseek-v4-flash",
   });
-  assert.equal(Object.hasOwn(isolatedConfig.agents?.defaults ?? {}, "provider"), false);
-  assert.deepEqual(isolatedConfig.models, {
-    providers: {
-      deepseek: {
-        models: [{ id: "deepseek-v4-flash" }],
-      },
-    },
-  });
+  assert.equal(Object.hasOwn(isolatedConfig.agents?.defaults ?? {}, "models"), false);
+  assert.equal(Object.hasOwn(isolatedConfig, "models"), false);
 });
 
 test("profile seed fails preflight before capability probing when required model state is missing", async (t) => {

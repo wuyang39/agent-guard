@@ -1,5 +1,10 @@
 import { createHash } from "node:crypto";
 
+export type DetectionModelSelection = string | {
+  primary?: string;
+  fallbacks?: string[];
+};
+
 export type DetectionOpenClawConfig = {
   gateway: { mode: "local" };
   agents: {
@@ -27,11 +32,9 @@ export type DetectionOpenClawConfig = {
           binds: [];
         };
       };
-      model?: unknown;
-      models?: unknown;
+      model?: DetectionModelSelection;
     };
   };
-  models?: { providers: unknown };
   tools: { elevated: { enabled: false } };
   plugins: {
     enabled: true;
@@ -57,14 +60,9 @@ export class DetectionConfigError extends Error {
   }
 }
 
-const SENSITIVE_KEY = /^(?:authorization|bearer|cookie|api|access|auth|client|private|secret|credential|password|passwd)?[_-]?(?:key|token|secret|password|passwd|credential|authorization|cookie)$/i;
-const FORBIDDEN_KEY = new Set(["__proto__", "prototype", "constructor"]);
-const MAX_CONFIG_DEPTH = 32;
-
 /**
- * Copy only a model/provider reference subtree. The input is deliberately
- * treated as untrusted: no user plugins, tools, mounts, browser or elevated
- * settings are ever merged into the generated profile.
+ * Project only OpenClaw's default model selector. Provider catalogs and model
+ * aliases stay in the isolated agent's validated models.json snapshot.
  */
 export function scrubDetectionOpenClawConfig(input: unknown): Record<string, unknown> {
   if (!isRecord(input)) return {};
@@ -72,19 +70,8 @@ export function scrubDetectionOpenClawConfig(input: unknown): Record<string, unk
   const inputDefaults = isRecord(inputAgents.value) ? readDataProperty(inputAgents.value, "defaults") : { present: false, value: undefined };
   const hasDefaults = isRecord(inputAgents.value) && isRecord(inputDefaults.value);
   const source = hasDefaults ? inputDefaults.value as Record<string, unknown> : input;
-  const output: Record<string, unknown> = {};
-  for (const key of ["model", "models"] as const) {
-    const property = readDataProperty(source, key);
-    if (property.present) output[key] = scrubValue(property.value, key, 0);
-  }
-  const topLevelModels = readDataProperty(input, "models");
-  const catalogProviders = hasDefaults && isRecord(topLevelModels.value)
-    ? readDataProperty(topLevelModels.value, "providers")
-    : readDataProperty(source, "providers");
-  if (catalogProviders.present) {
-    output.providers = scrubValue(catalogProviders.value, "providers", 0);
-  }
-  return output;
+  const model = readDataProperty(source, "model");
+  return model.present ? { model: projectModelSelection(model.value) } : {};
 }
 
 export type GenerateDetectionConfigOptions = {
@@ -100,9 +87,7 @@ export function generateDetectionOpenClawConfig(
 ): DetectionOpenClawConfig {
   const scrubbed = scrubDetectionOpenClawConfig(options.userConfig);
   const modelInput = options.model ?? scrubbed.model;
-  const model = modelInput === undefined ? undefined : scrubValue(modelInput, "model", 0);
-  const models = scrubbed.models;
-  const providers = scrubbed.providers;
+  const model = modelInput === undefined ? undefined : projectModelSelection(modelInput);
 
   const generated: DetectionOpenClawConfig = {
     gateway: { mode: "local" },
@@ -149,8 +134,6 @@ export function generateDetectionOpenClawConfig(
     },
   };
   if (model !== undefined) generated.agents.defaults.model = model;
-  if (models !== undefined) generated.agents.defaults.models = models;
-  if (providers !== undefined) generated.models = { providers };
   return generated;
 }
 
@@ -161,47 +144,36 @@ export function detectionConfigDigest(config: DetectionOpenClawConfig): string {
   return createHash("sha256").update(JSON.stringify(config), "utf8").digest("hex");
 }
 
-function scrubValue(value: unknown, parentKey: string, depth: number): unknown {
-  if (depth > MAX_CONFIG_DEPTH) {
-    throw new DetectionConfigError("INLINE_SECRET_UNSAFE", "Detection configuration is too deeply nested.");
-  }
-  if (value === null || typeof value === "number" || typeof value === "boolean") return value;
-  if (typeof value === "string") {
-    if (SENSITIVE_KEY.test(parentKey)) {
-      throw new DetectionConfigError("INLINE_SECRET_UNSAFE", "Inline secret cannot be copied into a detection profile.");
-    }
-    return value;
-  }
-  if (Array.isArray(value)) return value.map((entry) => scrubValue(entry, parentKey, depth + 1));
-  if (!isRecord(value)) return undefined;
+function projectModelSelection(value: unknown): DetectionModelSelection {
+  if (typeof value === "string") return value;
+  if (!isRecord(value)) throw invalidModelSelection();
 
-  if (isSecretRefShaped(value)) {
-    throw new DetectionConfigError("INLINE_SECRET_UNSAFE", "Detection profiles cannot resolve SecretRefs.");
+  const keys = Reflect.ownKeys(value);
+  if (keys.some((key) => typeof key !== "string" || (key !== "primary" && key !== "fallbacks"))) {
+    throw invalidModelSelection();
   }
 
-  const output: Record<string, unknown> = {};
-  for (const key of Object.keys(value)) {
-    if (FORBIDDEN_KEY.has(key)) {
-      throw new DetectionConfigError("INLINE_SECRET_UNSAFE", "Detection configuration contains a forbidden key.");
+  const output: Exclude<DetectionModelSelection, string> = {};
+  const primary = readDataProperty(value, "primary");
+  if (primary.present) {
+    if (typeof primary.value !== "string") throw invalidModelSelection();
+    output.primary = primary.value;
+  }
+  const fallbacks = readDataProperty(value, "fallbacks");
+  if (fallbacks.present) {
+    if (!Array.isArray(fallbacks.value) || !fallbacks.value.every((entry) => typeof entry === "string")) {
+      throw invalidModelSelection();
     }
-    if (key === "headers" || SENSITIVE_KEY.test(key)) {
-      throw new DetectionConfigError("INLINE_SECRET_UNSAFE", "Secret-bearing fields cannot be copied into a detection profile.");
-    }
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (!descriptor || descriptor.get || descriptor.set) {
-      throw new DetectionConfigError("INLINE_SECRET_UNSAFE", "Detection configuration cannot contain accessors.");
-    }
-    const scrubbed = scrubValue(descriptor.value, key, depth + 1);
-    if (scrubbed !== undefined) output[key] = scrubbed;
+    output.fallbacks = [...fallbacks.value];
   }
   return output;
 }
 
-function isSecretRefShaped(value: Record<string, unknown>): boolean {
-  return Object.prototype.hasOwnProperty.call(value, "SecretRef") ||
-    (Object.prototype.hasOwnProperty.call(value, "source") &&
-      Object.prototype.hasOwnProperty.call(value, "provider") &&
-      Object.prototype.hasOwnProperty.call(value, "id"));
+function invalidModelSelection(): DetectionConfigError {
+  return new DetectionConfigError(
+    "INLINE_SECRET_UNSAFE",
+    "Detection model selection must match OpenClaw's string or { primary, fallbacks } schema.",
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

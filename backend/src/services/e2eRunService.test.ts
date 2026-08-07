@@ -188,12 +188,6 @@ test("formal OpenClaw runE2E resolves a scrubbed host profile seed for the sandb
   assert.deepEqual(receivedOptions.profileSeed, {
     userConfig: {
       model: { primary: "deepseek/deepseek-v4-flash" },
-      models: { "deepseek/deepseek-v4-flash": { alias: "DeepSeek" } },
-      providers: {
-        deepseek: {
-          models: [{ id: "deepseek-v4-flash" }],
-        },
-      },
     },
     agentStateDir,
   });

@@ -65,19 +65,18 @@ export type P2RunCaseFailure = {
 };
 
 export type NativeGuardSessionCoverageSummary = {
-  sessionKey?: string;
-  leaseId?: string;
-  leaseEpoch?: number;
+  sessionKey: string;
+  leaseId: string;
+  leaseEpoch: number;
   eventsTotal: number;
   reconciled: boolean;
   coverageBreachCount: number;
   mismatchCount: number;
-  identityMissing?: true;
   leaseIdentityConflict?: {
     expected: {
-      sessionKey?: string;
-      leaseId?: string;
-      leaseEpoch?: number;
+      sessionKey: string;
+      leaseId: string;
+      leaseEpoch: number;
     };
     observed: Array<{
       sessionKey?: string;
@@ -89,6 +88,19 @@ export type NativeGuardSessionCoverageSummary = {
   evidenceError?: string;
 };
 
+export type NativeGuardRuntimeFailureSummary = {
+  testRunId: string;
+  sessionKey?: string;
+  kind: "identity_missing";
+  identityMissing: true;
+  eventsTotal: number;
+  reconciled: false;
+  coverageBreachCount: number;
+  mismatchCount: number;
+  evidenceError: string;
+  revokeError?: string;
+};
+
 export type NativeGuardCoverageSummary = {
   coverage: "active" | "conditional" | "unsupported" | "misconfigured" | "off" | "unavailable";
   eventsTotal: number;
@@ -98,6 +110,8 @@ export type NativeGuardCoverageSummary = {
   /** Authoritative per-session evidence. Top-level lease identity mirrors
    *  the first session for backwards compatibility. */
   sessions: NativeGuardSessionCoverageSummary[];
+  /** Runtime failures without a complete lease identity never enter sessions. */
+  runtimeFailures: NativeGuardRuntimeFailureSummary[];
   leaseId?: string;
   leaseEpoch?: number;
 };

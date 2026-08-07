@@ -18,7 +18,10 @@ import {
   runE2E,
 } from "./e2eRunService";
 import * as e2eRunServiceModule from "./e2eRunService";
-import type { P2RunGroup } from "../api/types";
+import type {
+  NativeGuardSessionCoverageSummary,
+  P2RunGroup,
+} from "../api/types";
 
 const OPENCLAW_REQUEST = {
   adapterKind: "openclaw",
@@ -163,6 +166,7 @@ function guardedRunGroup(): P2RunGroup {
     coverageBreachCount: 0,
     mismatchCount: 0,
     sessions: [],
+    runtimeFailures: [],
   } as never;
   return runGroup;
 }
@@ -188,16 +192,27 @@ function decisionEvent(input: {
 function recordCoverage(
   runGroup: P2RunGroup,
   evidence: RuntimeEvidenceInput,
+  testRunId = "run.coverage.test",
 ): string | undefined {
   const candidate = (e2eRunServiceModule as unknown as {
     recordNativeGuardSessionCoverage?: (
       target: P2RunGroup,
       runtime: RuntimeEvidenceInput,
+      testRunId: string,
     ) => string | undefined;
   }).recordNativeGuardSessionCoverage;
   assert.equal(typeof candidate, "function");
-  return candidate!(runGroup, evidence);
+  return candidate!(runGroup, evidence, testRunId);
 }
+
+// @ts-expect-error authoritative session summaries require the complete identity.
+const invalidAnonymousSessionSummary: NativeGuardSessionCoverageSummary = {
+  eventsTotal: 0,
+  reconciled: false,
+  coverageBreachCount: 0,
+  mismatchCount: 1,
+};
+void invalidAnonymousSessionSummary;
 
 function resolveAttemptFailure(
   testRun: { status: "completed" | "failed"; error?: string },
@@ -241,6 +256,7 @@ test("single guarded session persists authoritative lease and reconciliation cov
     reconciled: true,
     coverageBreachCount: 0,
     mismatchCount: 0,
+    runtimeFailures: [],
     leaseId: "lease.single",
     leaseEpoch: 4,
     sessions: [{
@@ -339,6 +355,7 @@ test("a second lease for the same session preserves first identity and accumulat
     reconciled: false,
     coverageBreachCount: 3,
     mismatchCount: 4,
+    runtimeFailures: [],
     leaseId: "lease.first",
     leaseEpoch: 2,
     sessions: [{
@@ -472,7 +489,7 @@ test("missing lease identity persists original scrubbed evidence and revoke diag
     },
     evidenceError: "OPENCLAW_GATEWAY_TOKEN=super-secret event store unavailable",
     revokeError: "gatewayToken=another-secret revoke failed",
-  });
+  }, "run.coverage.identity-missing");
 
   assert.match(failure ?? "", /^NATIVE_GUARD_EVIDENCE_UNAVAILABLE:/);
   assert.deepEqual(runGroup.nativeGuardCoverage, {
@@ -483,8 +500,11 @@ test("missing lease identity persists original scrubbed evidence and revoke diag
     mismatchCount: 1,
     leaseId: undefined,
     leaseEpoch: undefined,
-    sessions: [{
+    sessions: [],
+    runtimeFailures: [{
+      testRunId: "run.coverage.identity-missing",
       sessionKey: "agent:main:run.coverage.identity-missing",
+      kind: "identity_missing",
       eventsTotal: 0,
       reconciled: false,
       coverageBreachCount: 0,

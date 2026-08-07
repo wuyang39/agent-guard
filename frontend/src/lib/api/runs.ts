@@ -140,10 +140,11 @@ type P2RunGroupWire = {
   error?: string;
   nativeGuardCoverage?: Omit<
     NonNullable<CLineRunGroup["nativeGuardCoverage"]>,
-    "mismatchCount" | "sessions"
+    "mismatchCount" | "sessions" | "runtimeFailures"
   > & {
     mismatchCount?: number;
     sessions?: NonNullable<CLineRunGroup["nativeGuardCoverage"]>["sessions"];
+    runtimeFailures?: NonNullable<CLineRunGroup["nativeGuardCoverage"]>["runtimeFailures"];
   };
   sandboxEvidence?: CLineRunGroup["sandboxEvidence"];
 };
@@ -190,6 +191,9 @@ function normalizeNativeGuardCoverage(
         ? coverage.mismatchCount as number
         : 0,
     sessions: Array.isArray(coverage.sessions) ? coverage.sessions : [],
+    runtimeFailures: Array.isArray(coverage.runtimeFailures)
+      ? coverage.runtimeFailures
+      : [],
   };
 }
 

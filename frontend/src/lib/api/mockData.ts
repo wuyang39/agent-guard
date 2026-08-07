@@ -417,6 +417,7 @@ const runGroup: CLineRunGroup = {
       coverageBreachCount: 0,
       mismatchCount: 0,
     }],
+    runtimeFailures: [],
   },
   sandboxEvidence: {
     preflightPassed: true,

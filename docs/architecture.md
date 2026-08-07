@@ -518,7 +518,7 @@ preflight → start → [run cases] → attest → revoke → cleanup
 - JSONL 有 + Hook 无 before → **coverage breach**，run 失败
 - 同一 callId 多个 outcome → duplicate outcome，标记 mismatch
 
-调和结果写入 `P2RunGroup.nativeGuardCoverage`（`NativeGuardCoverageSummary`），包括顶层聚合的 `coverage`、`eventsTotal`、`reconciled`、`coverageBreachCount`、`mismatchCount`，以及权威的 `sessions` 列表。正常 session 摘要持久化 `sessionKey`、`leaseId`/`leaseEpoch`、事件与调和计数；identity 缺失的失败项允许省略未知 identity，并用 `identityMissing`、结构化 `leaseIdentityConflict` 及已脱敏的 revoke/evidence error 保存根因。同一 session 后续出现不同 lease 时保留 first identity、累加计数并 fail closed，绝不以新 identity 覆盖。顶层 `leaseId`/`leaseEpoch` 仅为首个 session 的兼容镜像，多 session 调用方必须以 `sessions` 为准；历史 coverage 在存储和 frontend wire 层补齐空 `sessions` 与零 `mismatchCount`。
+调和结果写入 `P2RunGroup.nativeGuardCoverage`（`NativeGuardCoverageSummary`），包括顶层聚合的 `coverage`、`eventsTotal`、`reconciled`、`coverageBreachCount`、`mismatchCount`，以及权威的 `sessions` 列表。`sessions` 中每项都强制持久化完整 `sessionKey`、`leaseId`/`leaseEpoch`、事件与调和计数，绝不包含匿名项；identity 缺失改写入独立 `runtimeFailures`，以必填 `testRunId` 关联 TestRun，并用 `identityMissing`、稳定 kind 及已脱敏的 revoke/evidence error 保存根因。同一 session 后续出现不同 lease 时保留 first identity、用结构化 `leaseIdentityConflict` 记录 observed identity、累加计数并 fail closed，绝不以新 identity 覆盖。顶层 `leaseId`/`leaseEpoch` 仅为首个 session 的兼容镜像，多 session 调用方必须以 `sessions` 为准；历史 coverage 在存储和 frontend wire 层补齐空 `sessions`、空 `runtimeFailures` 与零 `mismatchCount`。
 
 ### 7.4 Realtime Hook Events & Coverage UI (Task 13)
 

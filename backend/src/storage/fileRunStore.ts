@@ -129,20 +129,26 @@ export function normalizeStoredRunGroup(runGroup: P2RunGroup): P2RunGroup {
   const legacyCoverage = runGroup.nativeGuardCoverage as NativeGuardCoverageSummary & {
     mismatchCount?: number;
     sessions?: NativeGuardCoverageSummary["sessions"];
+    runtimeFailures?: NativeGuardCoverageSummary["runtimeFailures"];
   };
   const sessions = Array.isArray(legacyCoverage.sessions)
     ? legacyCoverage.sessions
     : [];
+  const runtimeFailures = Array.isArray(legacyCoverage.runtimeFailures)
+    ? legacyCoverage.runtimeFailures
+    : [];
   const mismatchCount = Number.isSafeInteger(legacyCoverage.mismatchCount) &&
     (legacyCoverage.mismatchCount as number) >= 0
     ? legacyCoverage.mismatchCount as number
-    : sessions.reduce((total, session) => total + session.mismatchCount, 0);
+    : [...sessions, ...runtimeFailures]
+        .reduce((total, summary) => total + summary.mismatchCount, 0);
   return {
     ...runGroup,
     nativeGuardCoverage: {
       ...legacyCoverage,
       mismatchCount,
       sessions,
+      runtimeFailures,
     },
   };
 }

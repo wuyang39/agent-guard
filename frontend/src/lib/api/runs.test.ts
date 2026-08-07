@@ -22,6 +22,7 @@ const nativeGuardCoverage = {
   coverageBreachCount: 0,
   mismatchCount: 2,
   sessions: [sessionCoverage],
+  runtimeFailures: [],
   leaseId: sessionCoverage.leaseId,
   leaseEpoch: sessionCoverage.leaseEpoch,
 } satisfies NonNullable<CLineRunGroup["nativeGuardCoverage"]>;
@@ -68,6 +69,7 @@ test("frontend mock run includes structured native guard session coverage", () =
   assert.equal(coverage.sessions.length, 1);
   assert.equal(coverage.leaseId, coverage.sessions[0]?.leaseId);
   assert.equal(coverage.leaseEpoch, coverage.sessions[0]?.leaseEpoch);
+  assert.deepEqual(coverage.runtimeFailures, []);
 });
 
 test("run group API defensively normalizes legacy native guard coverage", async (t) => {
@@ -113,5 +115,6 @@ test("run group API defensively normalizes legacy native guard coverage", async 
     coverageBreachCount: 0,
     mismatchCount: 0,
     sessions: [],
+    runtimeFailures: [],
   });
 });

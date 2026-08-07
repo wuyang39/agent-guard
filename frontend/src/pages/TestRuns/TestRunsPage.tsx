@@ -210,6 +210,7 @@ function RunGroupDiagnostics({ runGroup }: { runGroup: CLineRunGroup }) {
                     : [{ label: "覆盖缺口", value: "无" }]),
                   { label: "调和不一致", value: String(runGroup.nativeGuardCoverage.mismatchCount) },
                   { label: "监护会话", value: String(runGroup.nativeGuardCoverage.sessions?.length ?? 0) },
+                  { label: "Runtime failures", value: String(runGroup.nativeGuardCoverage.runtimeFailures?.length ?? 0) },
                   { label: "Primary lease", value: runGroup.nativeGuardCoverage.leaseId ? `${runGroup.nativeGuardCoverage.leaseId} @ epoch ${String(runGroup.nativeGuardCoverage.leaseEpoch ?? 0)}` : "-" },
                 ]
               : [{ label: "原生监护覆盖", value: "不可用 — 非 OpenClaw 或未启用原生监护" }]),
@@ -231,7 +232,10 @@ function RunGroupDiagnostics({ runGroup }: { runGroup: CLineRunGroup }) {
           ]}
         />
         <DiagnosticJson
-          value={runGroup.nativeGuardCoverage?.sessions ?? []}
+          value={{
+            sessions: runGroup.nativeGuardCoverage?.sessions ?? [],
+            runtimeFailures: runGroup.nativeGuardCoverage?.runtimeFailures ?? [],
+          }}
           emptyLabel="暂无 per-session 原生监护证据"
         />
       </DiagnosticSection>

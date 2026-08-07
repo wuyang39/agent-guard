@@ -23,6 +23,7 @@ test("legacy native guard coverage from the current output shape gains safe defa
     ...fixture.nativeGuardCoverage,
     mismatchCount: 0,
     sessions: [],
+    runtimeFailures: [],
   });
   assert.equal(Object.hasOwn(legacyCoverage, "sessions"), false);
 });

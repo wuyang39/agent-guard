@@ -72,6 +72,7 @@ import {
 import { createNativeGuardEventStore } from "../storage/nativeGuardEventStore";
 import type { NativeGuardEvent, RuntimeSupervisionRecord } from "@agent-guard/contracts";
 import type {
+  NativeGuardCoverageSummary,
   NativeGuardSessionCoverageSummary,
   SandboxEvidenceSummary,
 } from "../api/types";
@@ -579,6 +580,7 @@ export async function runE2E(
           coverageBreachCount: 0,
           mismatchCount: 0,
           sessions: [],
+          runtimeFailures: [],
         };
         updateRunProgress(runGroup, { phase: "failed", runningCaseIds: [], retryingCaseIds: [] });
         await saveRunGroup(runGroup);
@@ -657,6 +659,7 @@ export async function runE2E(
           coverageBreachCount: 0,
           mismatchCount: 0,
           sessions: [],
+          runtimeFailures: [],
         };
         // Sandbox coordinator allows only one active lease. Force
         // sequential execution regardless of env var override.
@@ -673,6 +676,7 @@ export async function runE2E(
           coverageBreachCount: 0,
           mismatchCount: 0,
           sessions: [],
+          runtimeFailures: [],
         };
         runGroup.status = "failed";
         runGroup.phase = "failed";
@@ -1287,7 +1291,7 @@ async function runSingleDetectionAttempt(input: {
 
   // Aggregate per-session reconciliation into the run group.
   const coverageFailure = nativeGuardRuntime
-    ? recordNativeGuardSessionCoverage(runGroup, nativeGuardRuntime)
+    ? recordNativeGuardSessionCoverage(runGroup, nativeGuardRuntime, testRun.runId)
     : undefined;
 
   const attemptFailure = resolveDetectionAttemptFailure(testRun, coverageFailure);
@@ -1313,6 +1317,7 @@ export function resolveDetectionAttemptFailure(
 export function recordNativeGuardSessionCoverage(
   runGroup: P2RunGroup,
   runtime: NonNullable<TestRunResult["nativeGuardRuntime"]>,
+  testRunId: string,
 ): string | undefined {
   const coverage = runGroup.nativeGuardCoverage;
   if (!coverage) return undefined;
@@ -1340,16 +1345,43 @@ export function recordNativeGuardSessionCoverage(
     ? scrubSecrets(runtime.revokeError)
     : undefined;
   const reconciliation = runtime.reconciliation;
+  if (identityMissing) {
+    const failure = {
+      testRunId,
+      ...(runtimeIdentity.sessionKey
+        ? { sessionKey: runtimeIdentity.sessionKey }
+        : {}),
+      kind: "identity_missing" as const,
+      identityMissing: true as const,
+      eventsTotal: runtime.events.length,
+      reconciled: false as const,
+      coverageBreachCount: reconciliation?.coverageBreachCount ?? 0,
+      mismatchCount: (reconciliation?.mismatchCount ?? 0) + 1,
+      evidenceError: evidenceError!,
+      ...(revokeError ? { revokeError } : {}),
+    };
+    const existingFailureIndex = coverage.runtimeFailures.findIndex(
+      (item) => item.testRunId === testRunId,
+    );
+    if (existingFailureIndex >= 0) {
+      coverage.runtimeFailures[existingFailureIndex] = failure;
+    } else {
+      coverage.runtimeFailures.push(failure);
+    }
+    aggregateNativeGuardCoverage(coverage);
+    return `NATIVE_GUARD_EVIDENCE_UNAVAILABLE: ${failure.evidenceError}`;
+  }
+
   const summary: NativeGuardSessionCoverageSummary = {
-    ...runtimeIdentity,
+    sessionKey: runtimeIdentity.sessionKey,
+    leaseId: runtimeIdentity.leaseId,
+    leaseEpoch: runtimeIdentity.leaseEpoch,
     eventsTotal: runtime.events.length,
     reconciled: Boolean(reconciliation?.reconciled && !evidenceError && !revokeError),
     coverageBreachCount: reconciliation?.coverageBreachCount ?? 0,
     mismatchCount:
       (reconciliation?.mismatchCount ?? 0) +
-      conflictingEvents.length +
-      (identityMissing ? 1 : 0),
-    ...(identityMissing ? { identityMissing: true as const } : {}),
+      conflictingEvents.length,
     ...(conflictingEvents.length > 0
       ? {
           leaseIdentityConflict: {
@@ -1392,7 +1424,9 @@ export function recordNativeGuardSessionCoverage(
       summary.revokeError,
     );
     persistedSummary = {
-      ...compactLeaseIdentity(existing),
+      sessionKey: existing.sessionKey,
+      leaseId: existing.leaseId,
+      leaseEpoch: existing.leaseEpoch,
       eventsTotal: existing.eventsTotal + summary.eventsTotal,
       reconciled: Boolean(
         existing.reconciled &&
@@ -1407,9 +1441,6 @@ export function recordNativeGuardSessionCoverage(
         existing.mismatchCount +
         summary.mismatchCount +
         (runtimeIdentityConflict ? 1 : 0),
-      ...(existing.identityMissing || summary.identityMissing
-        ? { identityMissing: true as const }
-        : {}),
       ...(mergedConflict ? { leaseIdentityConflict: mergedConflict } : {}),
       ...(mergedRevokeError ? { revokeError: mergedRevokeError } : {}),
       ...(mergedEvidenceError ? { evidenceError: mergedEvidenceError } : {}),
@@ -1419,24 +1450,7 @@ export function recordNativeGuardSessionCoverage(
     coverage.sessions.push(summary);
   }
 
-  coverage.eventsTotal = coverage.sessions.reduce(
-    (total, session) => total + session.eventsTotal,
-    0,
-  );
-  coverage.coverageBreachCount = coverage.sessions.reduce(
-    (total, session) => total + session.coverageBreachCount,
-    0,
-  );
-  coverage.mismatchCount = coverage.sessions.reduce(
-    (total, session) => total + session.mismatchCount,
-    0,
-  );
-  coverage.reconciled = coverage.sessions.length > 0 &&
-    coverage.sessions.every((session) => session.reconciled);
-
-  const primary = coverage.sessions[0];
-  coverage.leaseId = primary?.leaseId;
-  coverage.leaseEpoch = primary?.leaseEpoch;
+  aggregateNativeGuardCoverage(coverage);
 
   if (persistedSummary.evidenceError) {
     return `NATIVE_GUARD_EVIDENCE_UNAVAILABLE: ${persistedSummary.evidenceError}`;
@@ -1445,6 +1459,30 @@ export function recordNativeGuardSessionCoverage(
     return `NATIVE_GUARD_REVOKE_FAILED: ${persistedSummary.revokeError}`;
   }
   return undefined;
+}
+
+function aggregateNativeGuardCoverage(
+  coverage: NativeGuardCoverageSummary,
+): void {
+  const summaries = [...coverage.sessions, ...coverage.runtimeFailures];
+  coverage.eventsTotal = summaries.reduce(
+    (total, summary) => total + summary.eventsTotal,
+    0,
+  );
+  coverage.coverageBreachCount = summaries.reduce(
+    (total, summary) => total + summary.coverageBreachCount,
+    0,
+  );
+  coverage.mismatchCount = summaries.reduce(
+    (total, summary) => total + summary.mismatchCount,
+    0,
+  );
+  coverage.reconciled = summaries.length > 0 &&
+    summaries.every((summary) => summary.reconciled);
+
+  const primary = coverage.sessions[0];
+  coverage.leaseId = primary?.leaseId;
+  coverage.leaseEpoch = primary?.leaseEpoch;
 }
 
 type NativeGuardLeaseIdentitySummary = {
@@ -1507,7 +1545,11 @@ function mergeLeaseIdentityConflicts(
   ];
   if (observed.length === 0) return existing.leaseIdentityConflict;
   return {
-    expected: compactLeaseIdentity(existing),
+    expected: {
+      sessionKey: existing.sessionKey,
+      leaseId: existing.leaseId,
+      leaseEpoch: existing.leaseEpoch,
+    },
     observed: uniqueLeaseIdentities(observed),
   };
 }

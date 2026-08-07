@@ -34,20 +34,32 @@ export type ApiResponse<T> =
     };
 
 export type NativeGuardSessionCoverageView = {
-  sessionKey?: string;
-  leaseId?: string;
-  leaseEpoch?: number;
+  sessionKey: string;
+  leaseId: string;
+  leaseEpoch: number;
   eventsTotal: number;
   reconciled: boolean;
   coverageBreachCount: number;
   mismatchCount: number;
-  identityMissing?: true;
   leaseIdentityConflict?: {
-    expected: { sessionKey?: string; leaseId?: string; leaseEpoch?: number };
+    expected: { sessionKey: string; leaseId: string; leaseEpoch: number };
     observed: Array<{ sessionKey?: string; leaseId?: string; leaseEpoch?: number }>;
   };
   revokeError?: string;
   evidenceError?: string;
+};
+
+export type NativeGuardRuntimeFailureView = {
+  testRunId: string;
+  sessionKey?: string;
+  kind: "identity_missing";
+  identityMissing: true;
+  eventsTotal: number;
+  reconciled: false;
+  coverageBreachCount: number;
+  mismatchCount: number;
+  evidenceError: string;
+  revokeError?: string;
 };
 
 export type NativeGuardCoverageView = {
@@ -58,6 +70,7 @@ export type NativeGuardCoverageView = {
   mismatchCount: number;
   /** Authoritative session list; top-level lease mirrors the first entry. */
   sessions: NativeGuardSessionCoverageView[];
+  runtimeFailures: NativeGuardRuntimeFailureView[];
   leaseId?: string;
   leaseEpoch?: number;
 };

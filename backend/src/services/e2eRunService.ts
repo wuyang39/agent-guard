@@ -1277,22 +1277,18 @@ async function runSingleDetectionAttempt(input: {
 }): Promise<ReturnType<typeof buildRiskReport>> {
   const { agent, adapterConfig, context, customAdapter, runGroup, signal } = input;
   throwIfRunCancelled(signal);
-  const { testRun, trace, nativeGuardRuntime } = await runTestCase(agent, adapterConfig, context, {
+  const result = await runTestCase(agent, adapterConfig, context, {
     customAdapter,
     selectionPlanId: runGroup.selectionPlanId,
     signal,
     requireNativeGuardRuntimeEvidence: Boolean(runGroup.nativeGuardCoverage),
   });
-  throwIfRunCancelled(signal);
-
-  runGroup.testRunIds.push(testRun.runId);
-  runGroup.traceIds.push(trace.traceId);
-  await writeTraceFile(trace);
-
-  // Aggregate per-session reconciliation into the run group.
-  const coverageFailure = nativeGuardRuntime
-    ? recordNativeGuardSessionCoverage(runGroup, nativeGuardRuntime, testRun.runId)
-    : undefined;
+  const { testRun, trace } = result;
+  const coverageFailure = await persistDetectionAttemptEvidence({
+    runGroup,
+    result,
+    signal,
+  });
 
   const attemptFailure = resolveDetectionAttemptFailure(testRun, coverageFailure);
   if (attemptFailure) {
@@ -1301,6 +1297,40 @@ async function runSingleDetectionAttempt(input: {
 
   const evaluation = await evaluateRiskWithSemanticScoring(context, trace);
   return buildRiskReport(context, evaluation, trace);
+}
+
+export async function persistDetectionAttemptEvidence(input: {
+  runGroup: P2RunGroup;
+  result: Pick<TestRunResult, "testRun" | "trace" | "nativeGuardRuntime">;
+  signal: AbortSignal;
+  traceWriter?: (trace: TestRunResult["trace"]) => Promise<void>;
+}): Promise<string | undefined> {
+  const {
+    runGroup,
+    result: { testRun, trace, nativeGuardRuntime },
+    signal,
+    traceWriter = writeTraceFile,
+  } = input;
+  const alreadyAssociated = runGroup.testRunIds.includes(testRun.runId);
+  let coverageFailure: string | undefined;
+
+  if (!alreadyAssociated) {
+    runGroup.testRunIds.push(testRun.runId);
+    coverageFailure = nativeGuardRuntime
+      ? recordNativeGuardSessionCoverage(
+          runGroup,
+          nativeGuardRuntime,
+          testRun.runId,
+        )
+      : undefined;
+  }
+
+  throwIfRunCancelled(signal);
+  await traceWriter(trace);
+  if (!runGroup.traceIds.includes(trace.traceId)) {
+    runGroup.traceIds.push(trace.traceId);
+  }
+  return coverageFailure;
 }
 
 export function resolveDetectionAttemptFailure(

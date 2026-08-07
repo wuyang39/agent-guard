@@ -22,6 +22,7 @@ import type {
   NativeGuardSessionCoverageSummary,
   P2RunGroup,
 } from "../api/types";
+import type { TestRunResult } from "../modules/runner/runTypes";
 
 const OPENCLAW_REQUEST = {
   adapterKind: "openclaw",
@@ -228,6 +229,53 @@ function resolveAttemptFailure(
   return candidate!(testRun, coverageFailure);
 }
 
+async function persistAttemptEvidence(input: {
+  runGroup: P2RunGroup;
+  result: Pick<TestRunResult, "testRun" | "trace" | "nativeGuardRuntime">;
+  signal: AbortSignal;
+  traceWriter: (trace: unknown) => Promise<void>;
+}): Promise<string | undefined> {
+  const candidate = (e2eRunServiceModule as unknown as {
+    persistDetectionAttemptEvidence?: (options: typeof input) => Promise<string | undefined>;
+  }).persistDetectionAttemptEvidence;
+  assert.equal(typeof candidate, "function");
+  return candidate!(input);
+}
+
+function completedAttemptResult(input: {
+  runId: string;
+  traceId: string;
+  sessionKey: string;
+  leaseId: string;
+  leaseEpoch: number;
+}): Pick<TestRunResult, "testRun" | "trace" | "nativeGuardRuntime"> {
+  return {
+    testRun: {
+      runId: input.runId,
+      status: "completed",
+    } as TestRunResult["testRun"],
+    trace: {
+      traceId: input.traceId,
+    } as TestRunResult["trace"],
+    nativeGuardRuntime: {
+      sessionKey: input.sessionKey,
+      leaseId: input.leaseId,
+      leaseEpoch: input.leaseEpoch,
+      events: [decisionEvent({
+        eventId: `event.${input.runId}`,
+        sessionKey: input.sessionKey,
+        leaseId: input.leaseId,
+        leaseEpoch: input.leaseEpoch,
+      })],
+      reconciliation: {
+        reconciled: true,
+        coverageBreachCount: 0,
+        mismatchCount: 0,
+      },
+    },
+  };
+}
+
 test("single guarded session persists authoritative lease and reconciliation coverage", () => {
   const runGroup = guardedRunGroup();
   const sessionKey = "agent:main:run.coverage.single";
@@ -269,6 +317,75 @@ test("single guarded session persists authoritative lease and reconciliation cov
       mismatchCount: 0,
     }],
   });
+});
+
+test("cancellation after a completed agent run retains testRun and native guard summary", async () => {
+  const runGroup = guardedRunGroup();
+  const controller = new AbortController();
+  controller.abort();
+  let traceWrites = 0;
+  const result = completedAttemptResult({
+    runId: "run.coverage.cancelled-after-drain",
+    traceId: "trace.coverage.cancelled-after-drain",
+    sessionKey: "agent:main:run.coverage.cancelled-after-drain",
+    leaseId: "lease.cancelled-after-drain",
+    leaseEpoch: 2,
+  });
+
+  await assert.rejects(
+    persistAttemptEvidence({
+      runGroup,
+      result,
+      signal: controller.signal,
+      async traceWriter() { traceWrites += 1; },
+    }),
+    /cancelled/i,
+  );
+
+  assert.deepEqual(runGroup.testRunIds, [result.testRun.runId]);
+  assert.deepEqual(runGroup.traceIds, []);
+  assert.equal(traceWrites, 0);
+  assert.equal(runGroup.nativeGuardCoverage?.sessions[0]?.sessionKey, result.nativeGuardRuntime?.sessionKey);
+  assert.equal(runGroup.nativeGuardCoverage?.sessions[0]?.eventsTotal, 1);
+});
+
+test("trace write failure retains evidence and a retry does not duplicate associations", async () => {
+  const runGroup = guardedRunGroup();
+  const result = completedAttemptResult({
+    runId: "run.coverage.trace-write-failure",
+    traceId: "trace.coverage.trace-write-failure",
+    sessionKey: "agent:main:run.coverage.trace-write-failure",
+    leaseId: "lease.trace-write-failure",
+    leaseEpoch: 4,
+  });
+  let shouldFail = true;
+  const traceWriter = async () => {
+    if (shouldFail) throw new Error("trace disk unavailable");
+  };
+
+  await assert.rejects(
+    persistAttemptEvidence({
+      runGroup,
+      result,
+      signal: new AbortController().signal,
+      traceWriter,
+    }),
+    /trace disk unavailable/,
+  );
+  assert.deepEqual(runGroup.testRunIds, [result.testRun.runId]);
+  assert.deepEqual(runGroup.traceIds, []);
+  assert.equal(runGroup.nativeGuardCoverage?.sessions[0]?.eventsTotal, 1);
+
+  shouldFail = false;
+  await persistAttemptEvidence({
+    runGroup,
+    result,
+    signal: new AbortController().signal,
+    traceWriter,
+  });
+  assert.deepEqual(runGroup.testRunIds, [result.testRun.runId]);
+  assert.deepEqual(runGroup.traceIds, [result.trace.traceId]);
+  assert.equal(runGroup.nativeGuardCoverage?.sessions[0]?.eventsTotal, 1);
 });
 
 test("multiple guarded sessions keep distinct leases and first-session top-level compatibility", () => {

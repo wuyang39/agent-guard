@@ -192,22 +192,22 @@ test("formal OpenClaw runE2E resolves a scrubbed host profile seed for the sandb
   });
   assert.equal(receivedSeed.agentStateDir, agentStateDir);
   const [stateRootStat, agentStateStat] = await Promise.all([
-    fs.lstat(stateDir),
-    fs.lstat(agentStateDir),
+    fs.lstat(stateDir, { bigint: true }),
+    fs.lstat(agentStateDir, { bigint: true }),
   ]);
   assert.deepEqual(receivedSeed.stateRootIdentity, {
     resolvedPath: path.resolve(stateDir),
     canonicalPath: await fs.realpath(stateDir),
     dev: stateRootStat.dev,
     ino: stateRootStat.ino,
-    birthtimeMs: stateRootStat.birthtimeMs,
+    birthtimeNs: stateRootStat.birthtimeNs,
   });
   assert.deepEqual(receivedSeed.agentStateIdentity, {
     resolvedPath: path.resolve(agentStateDir),
     canonicalPath: await fs.realpath(agentStateDir),
     dev: agentStateStat.dev,
     ino: agentStateStat.ino,
-    birthtimeMs: agentStateStat.birthtimeMs,
+    birthtimeNs: agentStateStat.birthtimeNs,
   });
   assert.deepEqual(runGroup.testRunIds, []);
 });

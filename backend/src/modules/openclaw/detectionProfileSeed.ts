@@ -1,4 +1,4 @@
-import { constants as fsConstants, type Stats } from "node:fs";
+import { constants as fsConstants, type BigIntStats } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -16,12 +16,15 @@ export type DetectionProfileSeed = {
   agentStateIdentity: DetectionProfileSeedDirectoryIdentity;
 };
 
-export type DetectionProfileSeedDirectoryIdentity = {
+export type DetectionProfileSeedFileIdentity = {
+  dev: bigint;
+  ino: bigint;
+  birthtimeNs: bigint;
+};
+
+export type DetectionProfileSeedDirectoryIdentity = DetectionProfileSeedFileIdentity & {
   resolvedPath: string;
   canonicalPath: string;
-  dev: number;
-  ino: number;
-  birthtimeMs: number;
 };
 
 export class DetectionProfileSeedError extends Error {
@@ -47,7 +50,7 @@ export type DetectionProfileSeedPaths = {
 
 type TrustedDirectorySnapshot = {
   path: string;
-  stat: Stats;
+  stat: BigIntStats;
 };
 
 export async function resolveDetectionProfileSeed(
@@ -206,7 +209,7 @@ async function snapshotTrustedDirectory(target: string, label: string): Promise<
   const resolved = path.resolve(target);
   try {
     await assertNoSymlinkPath(resolved);
-    const stat = await fs.lstat(resolved);
+    const stat = await fs.lstat(resolved, { bigint: true });
     if (!stat.isDirectory() || stat.isSymbolicLink()) {
       throw new DetectionProfileSeedError(
         "MODEL_PROFILE_SEED_INVALID",
@@ -247,7 +250,7 @@ async function readStableTrustedFile(filePath: string, trustedRoot: string): Pro
     );
   }
 
-  const preOpenStat = await fs.lstat(resolved);
+  const preOpenStat = await fs.lstat(resolved, { bigint: true });
   if (!preOpenStat.isFile() || preOpenStat.isSymbolicLink()) {
     throw new DetectionProfileSeedError(
       "MODEL_PROFILE_SEED_INVALID",
@@ -256,8 +259,8 @@ async function readStableTrustedFile(filePath: string, trustedRoot: string): Pro
   }
   const handle = await fs.open(resolved, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
   try {
-    const openedStat = await handle.stat();
-    const postOpenStat = await fs.lstat(resolved);
+    const openedStat = await handle.stat({ bigint: true });
+    const postOpenStat = await fs.lstat(resolved, { bigint: true });
     if (
       !openedStat.isFile() ||
       postOpenStat.isSymbolicLink() ||
@@ -270,8 +273,8 @@ async function readStableTrustedFile(filePath: string, trustedRoot: string): Pro
       );
     }
     const content = await handle.readFile();
-    const postReadHandleStat = await handle.stat();
-    const postReadPathStat = await fs.lstat(resolved);
+    const postReadHandleStat = await handle.stat({ bigint: true });
+    const postReadPathStat = await fs.lstat(resolved, { bigint: true });
     const postReadCanonical = await fs.realpath(resolved);
     if (
       postReadPathStat.isSymbolicLink() ||
@@ -307,15 +310,22 @@ async function assertNoSymlinkPath(target: string): Promise<void> {
   }
 }
 
-function sameFileSnapshot(left: Stats, right: Stats): boolean {
+function sameFileSnapshot(left: BigIntStats, right: BigIntStats): boolean {
   return sameFileIdentity(left, right) && left.size === right.size &&
-    left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs;
+    left.mtimeNs === right.mtimeNs && left.ctimeNs === right.ctimeNs;
 }
 
-function sameFileIdentity(left: Stats, right: Stats): boolean {
-  return left.dev !== 0 || left.ino !== 0 || right.dev !== 0 || right.ino !== 0
+function sameFileIdentity(left: BigIntStats, right: BigIntStats): boolean {
+  return sameDetectionProfileSeedFileIdentity(left, right);
+}
+
+export function sameDetectionProfileSeedFileIdentity(
+  left: DetectionProfileSeedFileIdentity,
+  right: DetectionProfileSeedFileIdentity,
+): boolean {
+  return left.dev !== 0n || left.ino !== 0n || right.dev !== 0n || right.ino !== 0n
     ? left.dev === right.dev && left.ino === right.ino
-    : left.birthtimeMs === right.birthtimeMs;
+    : left.birthtimeNs === right.birthtimeNs;
 }
 
 function serializeTrustedDirectory(
@@ -327,7 +337,7 @@ function serializeTrustedDirectory(
     canonicalPath: snapshot.path,
     dev: snapshot.stat.dev,
     ino: snapshot.stat.ino,
-    birthtimeMs: snapshot.stat.birthtimeMs,
+    birthtimeNs: snapshot.stat.birthtimeNs,
   };
 }
 

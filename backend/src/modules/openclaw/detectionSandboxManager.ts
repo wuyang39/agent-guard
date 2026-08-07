@@ -1,6 +1,6 @@
 import { createHash, createPublicKey, randomBytes, type KeyObject } from "node:crypto";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { constants as fsConstants, type Dirent, type Stats } from "node:fs";
+import { constants as fsConstants, type BigIntStats, type Dirent } from "node:fs";
 import type { Readable } from "node:stream";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -14,9 +14,10 @@ import {
   isCompatibleNativeGuardVersion,
   parseNativeGuardGatewayAttestation,
 } from "./nativeGuardLiveCapability";
-import type {
-  DetectionProfileSeed,
-  DetectionProfileSeedDirectoryIdentity,
+import {
+  sameDetectionProfileSeedFileIdentity,
+  type DetectionProfileSeed,
+  type DetectionProfileSeedDirectoryIdentity,
 } from "./detectionProfileSeed";
 
 const RUN_LABEL_KEY = "agent-guard.run-group";
@@ -681,14 +682,14 @@ export class DetectionSandboxManager {
 
     const openFiles: OpenSeedFileSnapshot[] = [];
     try {
-      let totalBytes = 0;
+      let totalBytes = 0n;
       for (const entry of allowed) {
         this.throwIfAborted();
         const opened = await openSeedFileSnapshot(
           path.join(sourceDirectory.path, entry.name),
           sourceDirectory,
         );
-        if (opened.stat.size > MAX_MODEL_STATE_FILE_BYTES) {
+        if (opened.stat.size > BigInt(MAX_MODEL_STATE_FILE_BYTES)) {
           await opened.handle.close();
           throw new SandboxPreflightError(
             "MODEL_PROFILE_SEED_INVALID",
@@ -696,7 +697,7 @@ export class DetectionSandboxManager {
           );
         }
         totalBytes += opened.stat.size;
-        if (totalBytes > MAX_MODEL_STATE_TOTAL_BYTES) {
+        if (totalBytes > BigInt(MAX_MODEL_STATE_TOTAL_BYTES)) {
           await opened.handle.close();
           throw new SandboxPreflightError(
             "MODEL_PROFILE_SEED_INVALID",
@@ -1429,7 +1430,7 @@ async function assertNoSymlinkAncestors(target: string): Promise<void> {
 
 type TrustedSeedDirectorySnapshot = {
   path: string;
-  stat: Stats;
+  stat: BigIntStats;
 };
 
 type OpenSeedFileSnapshot = {
@@ -1437,7 +1438,7 @@ type OpenSeedFileSnapshot = {
   path: string;
   canonicalPath: string;
   handle: Awaited<ReturnType<typeof fs.open>>;
-  stat: Stats;
+  stat: BigIntStats;
   content?: Buffer;
 };
 
@@ -1445,7 +1446,7 @@ async function snapshotTrustedSeedDirectory(target: string): Promise<TrustedSeed
   const resolved = path.resolve(target);
   try {
     await assertNoSymlinkSeedPath(resolved);
-    const stat = await fs.lstat(resolved);
+    const stat = await fs.lstat(resolved, { bigint: true });
     if (!stat.isDirectory() || stat.isSymbolicLink()) {
       throw new SandboxPreflightError(
         "MODEL_PROFILE_SEED_INVALID",
@@ -1507,7 +1508,7 @@ async function openSeedFileSnapshot(
         `Detection model state file escaped the trusted main-agent directory: ${resolved}.`,
       );
     }
-    const preOpenStat = await fs.lstat(resolved);
+    const preOpenStat = await fs.lstat(resolved, { bigint: true });
     if (!preOpenStat.isFile() || preOpenStat.isSymbolicLink()) {
       throw new SandboxPreflightError(
         "MODEL_PROFILE_SEED_INVALID",
@@ -1516,8 +1517,8 @@ async function openSeedFileSnapshot(
     }
     const handle = await fs.open(resolved, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
     try {
-      const openedStat = await handle.stat();
-      const postOpenStat = await fs.lstat(resolved);
+      const openedStat = await handle.stat({ bigint: true });
+      const postOpenStat = await fs.lstat(resolved, { bigint: true });
       if (
         !openedStat.isFile() ||
         postOpenStat.isSymbolicLink() ||
@@ -1554,7 +1555,7 @@ async function readBoundedSeedFile(
   assertActive: () => void,
 ): Promise<Buffer> {
   try {
-    const content = Buffer.alloc(snapshot.stat.size);
+    const content = Buffer.alloc(Number(snapshot.stat.size));
     let offset = 0;
     while (offset < content.length) {
       assertActive();
@@ -1592,6 +1593,7 @@ export async function writeSeedSnapshotInChunks(
       assertActive();
       const length = chunkEnd - offset;
       const { bytesWritten } = await writer.write(content, offset, length, offset);
+      assertActive();
       if (!Number.isInteger(bytesWritten) || bytesWritten <= 0 || bytesWritten > length) {
         throw new SandboxPreflightError(
           "MODEL_PROFILE_SEED_INVALID",
@@ -1601,6 +1603,7 @@ export async function writeSeedSnapshotInChunks(
       offset += bytesWritten;
     }
   }
+  assertActive();
 }
 
 async function assertSeedSnapshotUnchanged(
@@ -1634,8 +1637,8 @@ async function assertSeedSnapshotUnchanged(
       );
     }
     for (const file of files) {
-      const handleStat = await file.handle.stat();
-      const pathStat = await fs.lstat(file.path);
+      const handleStat = await file.handle.stat({ bigint: true });
+      const pathStat = await fs.lstat(file.path, { bigint: true });
       const canonicalPath = await fs.realpath(file.path);
       if (
         pathStat.isSymbolicLink() ||
@@ -1675,15 +1678,13 @@ async function assertNoSymlinkSeedPath(target: string): Promise<void> {
   }
 }
 
-function sameSeedFileSnapshot(left: Stats, right: Stats): boolean {
+function sameSeedFileSnapshot(left: BigIntStats, right: BigIntStats): boolean {
   return sameSeedFileIdentity(left, right) && left.size === right.size &&
-    left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs;
+    left.mtimeNs === right.mtimeNs && left.ctimeNs === right.ctimeNs;
 }
 
-function sameSeedFileIdentity(left: Stats, right: Stats): boolean {
-  return left.dev !== 0 || left.ino !== 0 || right.dev !== 0 || right.ino !== 0
-    ? left.dev === right.dev && left.ino === right.ino
-    : left.birthtimeMs === right.birthtimeMs;
+function sameSeedFileIdentity(left: BigIntStats, right: BigIntStats): boolean {
+  return sameDetectionProfileSeedFileIdentity(left, right);
 }
 
 function isDetectionProfileSeedDirectoryIdentity(
@@ -1692,18 +1693,16 @@ function isDetectionProfileSeedDirectoryIdentity(
   return isRecord(value) &&
     typeof value.resolvedPath === "string" && value.resolvedPath.length > 0 &&
     typeof value.canonicalPath === "string" && value.canonicalPath.length > 0 &&
-    typeof value.dev === "number" && Number.isFinite(value.dev) &&
-    typeof value.ino === "number" && Number.isFinite(value.ino) &&
-    typeof value.birthtimeMs === "number" && Number.isFinite(value.birthtimeMs);
+    typeof value.dev === "bigint" &&
+    typeof value.ino === "bigint" &&
+    typeof value.birthtimeNs === "bigint";
 }
 
 function sameSerializedSeedDirectoryIdentity(
-  current: Stats,
+  current: BigIntStats,
   expected: DetectionProfileSeedDirectoryIdentity,
 ): boolean {
-  return current.dev !== 0 || current.ino !== 0 || expected.dev !== 0 || expected.ino !== 0
-    ? current.dev === expected.dev && current.ino === expected.ino
-    : current.birthtimeMs === expected.birthtimeMs;
+  return sameDetectionProfileSeedFileIdentity(current, expected);
 }
 
 function isPathInsideDirectory(candidate: string, root: string): boolean {

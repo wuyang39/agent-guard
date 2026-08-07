@@ -11,6 +11,7 @@ import {
 import {
   DetectionProfileSeedError,
   resolveDetectionProfileSeed,
+  sameDetectionProfileSeedFileIdentity,
 } from "./detectionProfileSeed";
 
 const PROFILE_ROOT = path.resolve("tmp", "detection-profile");
@@ -259,6 +260,38 @@ test("profile seed parses the JSON5 syntax accepted by OpenClaw", async (t) => {
       fallbacks: ["openai/gpt-5.5"],
     },
   });
+  const agentStateDir = path.join(stateDir, "agents", "main", "agent");
+  const [stateRootStat, agentStateStat] = await Promise.all([
+    fs.lstat(stateDir, { bigint: true }),
+    fs.lstat(agentStateDir, { bigint: true }),
+  ]);
+  assert.deepEqual(seed.stateRootIdentity, {
+    resolvedPath: path.resolve(stateDir),
+    canonicalPath: await fs.realpath(stateDir),
+    dev: stateRootStat.dev,
+    ino: stateRootStat.ino,
+    birthtimeNs: stateRootStat.birthtimeNs,
+  });
+  assert.deepEqual(seed.agentStateIdentity, {
+    resolvedPath: path.resolve(agentStateDir),
+    canonicalPath: await fs.realpath(agentStateDir),
+    dev: agentStateStat.dev,
+    ino: agentStateStat.ino,
+    birthtimeNs: agentStateStat.birthtimeNs,
+  });
+});
+
+test("profile seed identity distinguishes adjacent unsafe inode values", () => {
+  const firstInode = BigInt(Number.MAX_SAFE_INTEGER) + 1n;
+  const secondInode = firstInode + 1n;
+  assert.equal(Number(firstInode), Number(secondInode), "fixture must reproduce number precision loss");
+  assert.equal(
+    sameDetectionProfileSeedFileIdentity(
+      { dev: 1n, ino: firstInode, birthtimeNs: 10n },
+      { dev: 1n, ino: secondInode, birthtimeNs: 10n },
+    ),
+    false,
+  );
 });
 
 test("profile seed discovers legacy clawdbot config in an explicit state directory", async (t) => {

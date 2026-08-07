@@ -312,6 +312,28 @@ test("profile seed destination copying checks cancellation before each chunk", a
   assert.deepEqual(writes, [{ offset: 0, length: 1024 * 1024, position: 0 }]);
 });
 
+test("profile seed destination copying checks cancellation after the final write", async () => {
+  const controller = new AbortController();
+  let writes = 0;
+  const writer = {
+    async write(_buffer: Buffer, _offset: number, length: number, _position: number) {
+      writes += 1;
+      controller.abort();
+      return { bytesWritten: length };
+    },
+  };
+
+  await assert.rejects(
+    writeSeedSnapshotInChunks(writer, Buffer.alloc(1), () => {
+      if (controller.signal.aborted) {
+        throw new SandboxPreflightError("CANCELLED", "Detection sandbox operation was cancelled.");
+      }
+    }),
+    (error: unknown) => error instanceof SandboxPreflightError && error.code === "CANCELLED",
+  );
+  assert.equal(writes, 1);
+});
+
 test("profile seed destination copying retries partial writes from the next byte", async () => {
   const content = Buffer.alloc(1024 * 1024 + 17, 0x5a);
   const destination = Buffer.alloc(content.length);

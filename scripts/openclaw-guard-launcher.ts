@@ -39,6 +39,7 @@ const PLUGIN_ID = "agent-guard-supervision";
 const REQUIRED_HOOK = "before_tool_call";
 const REQUIRED_SERVICE = "agent-guard-runtime";
 const REQUIRED_POLICY = "agent-guard-admission";
+const LIVE_REGISTRY_CONTRACT_VERSION = "openclaw.plugins.live.v1";
 const CLI_MAX_BUFFER_BYTES = 256 * 1024;
 
 // ---- Helpers ----
@@ -106,26 +107,32 @@ export function hasLiveGuardRegistry(
     /(?:^|\D)(\d{4}\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)(?:\s|$)/,
   )?.[1];
   if (!version || !isCompatibleNativeGuardVersion(version)) return false;
+  if (
+    !isRecord(inventory) ||
+    !hasExactKeys(inventory, ["workspaceDir", "registry", "plugins", "diagnostics"]) ||
+    (inventory.workspaceDir !== null && typeof inventory.workspaceDir !== "string") ||
+    !isRecord(inventory.registry) ||
+    !hasExactKeys(inventory.registry, ["contractVersion", "liveAttestation", "nativeGuard"]) ||
+    inventory.registry.contractVersion !== LIVE_REGISTRY_CONTRACT_VERSION ||
+    inventory.registry.liveAttestation !== true ||
+    !Array.isArray(inventory.plugins) ||
+    !Array.isArray(inventory.diagnostics)
+  ) {
+    return false;
+  }
   if (!parseNativeGuardLiveCapability(inventory)) return false;
-  if (!isRecord(inventory) || !Array.isArray(inventory.plugins)) return false;
+  if (!inventory.plugins.every(isLivePluginContribution)) return false;
   const plugin = inventory.plugins.find((entry) =>
-    isRecord(entry) &&
     entry.id === PLUGIN_ID &&
     entry.enabled === true &&
-    entry.status === "loaded"
+    entry.status === "loaded" &&
+    entry.activated === true
   );
-  if (!isRecord(plugin)) return false;
-  const hookNames = Array.isArray(plugin.hookNames) ? plugin.hookNames : [];
-  const services = Array.isArray(plugin.services) ? plugin.services : [];
-  const manifest = isRecord(plugin.manifest) ? plugin.manifest : {};
-  const contracts = isRecord(manifest.contracts) ? manifest.contracts : {};
-  const policies = Array.isArray(contracts.trustedToolPolicies)
-    ? contracts.trustedToolPolicies
-    : [];
-  return hookNames.includes(REQUIRED_HOOK) &&
-    services.includes(REQUIRED_SERVICE) &&
-    policies.length === 1 &&
-    policies[0] === REQUIRED_POLICY;
+  if (!plugin) return false;
+  return plugin.hookNames.includes(REQUIRED_HOOK) &&
+    plugin.services.includes(REQUIRED_SERVICE) &&
+    plugin.trustedToolPolicies.length === 1 &&
+    plugin.trustedToolPolicies[0] === REQUIRED_POLICY;
 }
 
 // ---- Main ----
@@ -151,7 +158,7 @@ function main(): void {
   log("Guarded markers found — live registry verification required.");
 
   // Step 2: Query live registry
-  const pluginsResult = runCli(["plugins", "list", "--json"]);
+  const pluginsResult = runCli(["plugins", "list", "--json", "--live"]);
   if (pluginsResult.exitCode !== 0) {
     if (maintenanceMode) {
       log("Live registry unavailable but --maintenance mode active — allowing maintenance cleanup.");
@@ -199,4 +206,44 @@ if (invokedPath === path.resolve(fileURLToPath(import.meta.url))) {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+type LivePluginContribution = {
+  id: string;
+  enabled: boolean;
+  status: string;
+  activated: boolean;
+  hookNames: string[];
+  services: string[];
+  trustedToolPolicies: string[];
+};
+
+function isLivePluginContribution(value: unknown): value is LivePluginContribution {
+  return isRecord(value) &&
+    hasExactKeys(value, [
+      "id",
+      "enabled",
+      "status",
+      "activated",
+      "hookNames",
+      "services",
+      "trustedToolPolicies",
+    ]) &&
+    typeof value.id === "string" &&
+    typeof value.enabled === "boolean" &&
+    typeof value.status === "string" &&
+    typeof value.activated === "boolean" &&
+    isStringArray(value.hookNames) &&
+    isStringArray(value.services) &&
+    isStringArray(value.trustedToolPolicies);
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === "string");
+}
+
+function hasExactKeys(value: Record<string, unknown>, expectedKeys: readonly string[]): boolean {
+  const actualKeys = Object.keys(value);
+  return actualKeys.length === expectedKeys.length &&
+    expectedKeys.every((key) => Object.hasOwn(value, key));
 }

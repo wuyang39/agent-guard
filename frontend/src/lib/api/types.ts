@@ -98,6 +98,7 @@ export type RunCaseFailureView = {
     | "agent_error"
     | "fatal"
     | "sandbox_preflight_failed"
+    | "sandbox_profile_seed_failed"
     | "sandbox_attestation_failed"
     | "sandbox_cleanup_failed"
     | "native_guard_unavailable"

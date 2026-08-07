@@ -12,12 +12,14 @@ import { gzipSync } from "node:zlib";
 import { signNativeGuardPayload } from "@agent-guard/native-guard-protocol";
 import { registerControlRoutes } from "../../../../plugins/agent-guard-supervision/src/controlRoutes";
 import { OpenClawAdapter } from "../agent/openclawAdapter";
+import { resolveDetectionProfileSeed } from "./detectionProfileSeed";
 import {
   DetectionSandboxManager,
   SandboxAttestationError,
   SandboxPreflightError,
   readGatewayBootstrap,
   waitForGateway,
+  writeSeedSnapshotInChunks,
   type DetectionCommandInput,
   type DetectionCommandResult,
 } from "./detectionSandboxManager";
@@ -83,6 +85,22 @@ function runnerFor(result: Partial<DetectionCommandResult> = {}) {
     return { exitCode: 0, stdout: "", stderr: "", ...result };
   };
   return { runner, calls };
+}
+
+async function resolveTestProfileSeed(
+  stateDir: string,
+  userConfig: Record<string, unknown>,
+) {
+  const configPath = path.join(stateDir, "openclaw.json");
+  await fs.writeFile(`${configPath}.last-good`, JSON.stringify({
+    agents: { defaults: userConfig },
+  }));
+  return resolveDetectionProfileSeed({
+    env: {
+      OPENCLAW_CONFIG_PATH: configPath,
+      OPENCLAW_STATE_DIR: stateDir,
+    },
+  });
 }
 
 function realSandboxExplain() {
@@ -238,6 +256,9 @@ test("profile seed snapshots only allowlisted main-agent model state files", asy
   for (const [name, content] of sourceFiles) {
     await fs.writeFile(path.join(sourceAgentDir, name), content);
   }
+  const profileSeed = await resolveTestProfileSeed(sourceRoot, {
+    model: { primary: "deepseek/deepseek-v4-flash" },
+  });
   t.after(() => fs.rm(sourceRoot, { recursive: true, force: true }));
 
   const { runner } = runnerFor();
@@ -245,12 +266,7 @@ test("profile seed snapshots only allowlisted main-agent model state files", asy
     runGroupId: "run-profile-seed-allowlist",
     image: `openclaw@sha256:${"a".repeat(64)}`,
     commandRunner: runner,
-    profileSeed: {
-      userConfig: {
-        model: { primary: "deepseek/deepseek-v4-flash" },
-      },
-      agentStateDir: sourceAgentDir,
-    },
+    profileSeed,
   });
   t.after(() => manager.cleanup().catch(() => undefined));
 
@@ -274,10 +290,119 @@ test("profile seed snapshots only allowlisted main-agent model state files", asy
   assert.equal(Object.hasOwn(isolatedConfig, "models"), false);
 });
 
+test("profile seed destination copying checks cancellation before each chunk", async () => {
+  const controller = new AbortController();
+  const writes: { offset: number; length: number; position: number }[] = [];
+  const writer = {
+    async write(_buffer: Buffer, offset: number, length: number, position: number) {
+      writes.push({ offset, length, position });
+      controller.abort();
+      return { bytesWritten: length };
+    },
+  };
+
+  await assert.rejects(
+    writeSeedSnapshotInChunks(writer, Buffer.alloc(1024 * 1024 + 1), () => {
+      if (controller.signal.aborted) {
+        throw new SandboxPreflightError("CANCELLED", "Detection sandbox operation was cancelled.");
+      }
+    }),
+    (error: unknown) => error instanceof SandboxPreflightError && error.code === "CANCELLED",
+  );
+  assert.deepEqual(writes, [{ offset: 0, length: 1024 * 1024, position: 0 }]);
+});
+
+test("profile seed destination copying retries partial writes from the next byte", async () => {
+  const content = Buffer.alloc(1024 * 1024 + 17, 0x5a);
+  const destination = Buffer.alloc(content.length);
+  const writes: { offset: number; length: number; position: number }[] = [];
+  const maxWriteBytes = 128 * 1024;
+  const writer = {
+    async write(buffer: Buffer, offset: number, length: number, position: number) {
+      const bytesWritten = Math.min(length, maxWriteBytes);
+      writes.push({ offset, length, position });
+      buffer.copy(destination, position, offset, offset + bytesWritten);
+      return { bytesWritten };
+    },
+  };
+
+  await writeSeedSnapshotInChunks(writer, content, () => undefined);
+
+  assert.deepEqual(destination, content);
+  assert.deepEqual(writes.slice(0, 2), [
+    { offset: 0, length: 1024 * 1024, position: 0 },
+    { offset: maxWriteBytes, length: 896 * 1024, position: maxWriteBytes },
+  ]);
+  assert.deepEqual(writes.at(-1), {
+    offset: 1024 * 1024,
+    length: 17,
+    position: 1024 * 1024,
+  });
+});
+
+test("profile seed rejects a state root replaced after resolver approval", async (t) => {
+  const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-profile-seed-identity-"));
+  const approvedStateDir = `${stateDir}-approved`;
+  const sourceAgentDir = path.join(stateDir, "agents", "main", "agent");
+  const configPath = path.join(stateDir, "openclaw.json");
+  const modelCatalog = JSON.stringify({
+    providers: { deepseek: { models: [{ id: "deepseek-v4-flash" }] } },
+  });
+  await fs.mkdir(sourceAgentDir, { recursive: true });
+  await fs.writeFile(`${configPath}.last-good`, JSON.stringify({
+    agents: { defaults: { model: { primary: "deepseek/deepseek-v4-flash" } } },
+  }));
+  await fs.writeFile(path.join(sourceAgentDir, "models.json"), modelCatalog);
+  await fs.writeFile(path.join(sourceAgentDir, "openclaw-agent.sqlite"), Buffer.from("SQLite format 3\0approved"));
+  const profileSeed = await resolveDetectionProfileSeed({
+    env: {
+      OPENCLAW_CONFIG_PATH: configPath,
+      OPENCLAW_STATE_DIR: stateDir,
+    },
+  });
+
+  await fs.rename(stateDir, approvedStateDir);
+  await fs.mkdir(sourceAgentDir, { recursive: true });
+  await fs.writeFile(path.join(sourceAgentDir, "models.json"), modelCatalog);
+  await fs.writeFile(path.join(sourceAgentDir, "openclaw-agent.sqlite"), Buffer.from("SQLite format 3\0replacement"));
+  t.after(async () => {
+    await fs.rm(stateDir, { recursive: true, force: true });
+    await fs.rm(approvedStateDir, { recursive: true, force: true });
+  });
+
+  const { runner } = runnerFor();
+  let capabilityProbed = false;
+  const manager = new DetectionSandboxManager({
+    runGroupId: "run-profile-seed-replaced-root",
+    image: `openclaw@sha256:${"a".repeat(64)}`,
+    commandRunner: runner,
+    capabilityProbe: async () => {
+      capabilityProbed = true;
+      return readyCapability();
+    },
+    profileSeed,
+  });
+  t.after(() => manager.cleanup().catch(() => undefined));
+
+  await assert.rejects(
+    manager.preflight(),
+    (error: unknown) =>
+      error instanceof SandboxPreflightError &&
+      error.code === "MODEL_PROFILE_SEED_INVALID" &&
+      /changed since profile resolution/i.test(error.message),
+  );
+  assert.equal(capabilityProbed, false);
+});
+
 test("profile seed fails preflight before capability probing when required model state is missing", async (t) => {
-  const sourceAgentDir = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-model-state-missing-"));
+  const sourceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-model-state-missing-"));
+  const sourceAgentDir = path.join(sourceRoot, "agents", "main", "agent");
+  await fs.mkdir(sourceAgentDir, { recursive: true });
   await fs.writeFile(path.join(sourceAgentDir, "models.json"), JSON.stringify({ providers: { deepseek: {} } }));
-  t.after(() => fs.rm(sourceAgentDir, { recursive: true, force: true }));
+  const profileSeed = await resolveTestProfileSeed(sourceRoot, {
+    model: { primary: "deepseek/deepseek-v4-flash" },
+  });
+  t.after(() => fs.rm(sourceRoot, { recursive: true, force: true }));
 
   const { runner } = runnerFor();
   let capabilityProbed = false;
@@ -289,10 +414,7 @@ test("profile seed fails preflight before capability probing when required model
       capabilityProbed = true;
       return readyCapability();
     },
-    profileSeed: {
-      userConfig: { model: { primary: "deepseek/deepseek-v4-flash" } },
-      agentStateDir: sourceAgentDir,
-    },
+    profileSeed,
   });
 
   await assert.rejects(
@@ -306,13 +428,18 @@ test("profile seed fails preflight before capability probing when required model
 });
 
 test("profile seed rejects a default model whose provider is absent from models.json", async (t) => {
-  const sourceAgentDir = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-model-state-provider-missing-"));
+  const sourceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-model-state-provider-missing-"));
+  const sourceAgentDir = path.join(sourceRoot, "agents", "main", "agent");
+  await fs.mkdir(sourceAgentDir, { recursive: true });
   await fs.writeFile(
     path.join(sourceAgentDir, "models.json"),
     JSON.stringify({ providers: { deepseek: { models: [{ id: "deepseek-v4-flash" }] } } }),
   );
   await fs.writeFile(path.join(sourceAgentDir, "openclaw-agent.sqlite"), Buffer.from("SQLite format 3\0seed"));
-  t.after(() => fs.rm(sourceAgentDir, { recursive: true, force: true }));
+  const profileSeed = await resolveTestProfileSeed(sourceRoot, {
+    model: { primary: "openai/gpt-5.5" },
+  });
+  t.after(() => fs.rm(sourceRoot, { recursive: true, force: true }));
 
   const { runner } = runnerFor();
   let capabilityProbed = false;
@@ -324,10 +451,7 @@ test("profile seed rejects a default model whose provider is absent from models.
       capabilityProbed = true;
       return readyCapability();
     },
-    profileSeed: {
-      userConfig: { model: { primary: "openai/gpt-5.5" } },
-      agentStateDir: sourceAgentDir,
-    },
+    profileSeed,
   });
 
   await assert.rejects(
@@ -341,13 +465,18 @@ test("profile seed rejects a default model whose provider is absent from models.
 });
 
 test("profile seed rejects a default model absent from its models.json provider catalog", async (t) => {
-  const sourceAgentDir = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-model-state-model-missing-"));
+  const sourceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-model-state-model-missing-"));
+  const sourceAgentDir = path.join(sourceRoot, "agents", "main", "agent");
+  await fs.mkdir(sourceAgentDir, { recursive: true });
   await fs.writeFile(
     path.join(sourceAgentDir, "models.json"),
     JSON.stringify({ providers: { deepseek: { models: [{ id: "deepseek-chat" }] } } }),
   );
   await fs.writeFile(path.join(sourceAgentDir, "openclaw-agent.sqlite"), Buffer.from("SQLite format 3\0seed"));
-  t.after(() => fs.rm(sourceAgentDir, { recursive: true, force: true }));
+  const profileSeed = await resolveTestProfileSeed(sourceRoot, {
+    model: { primary: "deepseek/deepseek-v4-flash" },
+  });
+  t.after(() => fs.rm(sourceRoot, { recursive: true, force: true }));
 
   const { runner } = runnerFor();
   let capabilityProbed = false;
@@ -359,10 +488,7 @@ test("profile seed rejects a default model absent from its models.json provider 
       capabilityProbed = true;
       return readyCapability();
     },
-    profileSeed: {
-      userConfig: { model: { primary: "deepseek/deepseek-v4-flash" } },
-      agentStateDir: sourceAgentDir,
-    },
+    profileSeed,
   });
 
   await assert.rejects(
@@ -376,10 +502,15 @@ test("profile seed rejects a default model absent from its models.json provider 
 });
 
 test("profile seed rejects malformed models.json before capability probing", async (t) => {
-  const sourceAgentDir = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-model-state-invalid-"));
+  const sourceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-model-state-invalid-"));
+  const sourceAgentDir = path.join(sourceRoot, "agents", "main", "agent");
+  await fs.mkdir(sourceAgentDir, { recursive: true });
   await fs.writeFile(path.join(sourceAgentDir, "models.json"), "{not-json", "utf8");
   await fs.writeFile(path.join(sourceAgentDir, "openclaw-agent.sqlite"), Buffer.from("SQLite format 3\0seed"));
-  t.after(() => fs.rm(sourceAgentDir, { recursive: true, force: true }));
+  const profileSeed = await resolveTestProfileSeed(sourceRoot, {
+    model: { primary: "deepseek/deepseek-v4-flash" },
+  });
+  t.after(() => fs.rm(sourceRoot, { recursive: true, force: true }));
 
   const { runner } = runnerFor();
   let capabilityProbed = false;
@@ -391,10 +522,7 @@ test("profile seed rejects malformed models.json before capability probing", asy
       capabilityProbed = true;
       return readyCapability();
     },
-    profileSeed: {
-      userConfig: { model: { primary: "deepseek/deepseek-v4-flash" } },
-      agentStateDir: sourceAgentDir,
-    },
+    profileSeed,
   });
 
   await assert.rejects(
@@ -408,13 +536,18 @@ test("profile seed rejects malformed models.json before capability probing", asy
 });
 
 test("profile seed rejects an invalid main-agent SQLite database before capability probing", async (t) => {
-  const sourceAgentDir = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-model-state-invalid-db-"));
+  const sourceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-model-state-invalid-db-"));
+  const sourceAgentDir = path.join(sourceRoot, "agents", "main", "agent");
+  await fs.mkdir(sourceAgentDir, { recursive: true });
   await fs.writeFile(
     path.join(sourceAgentDir, "models.json"),
     JSON.stringify({ providers: { deepseek: { models: [{ id: "deepseek-v4-flash" }] } } }),
   );
   await fs.writeFile(path.join(sourceAgentDir, "openclaw-agent.sqlite"), "not-sqlite", "utf8");
-  t.after(() => fs.rm(sourceAgentDir, { recursive: true, force: true }));
+  const profileSeed = await resolveTestProfileSeed(sourceRoot, {
+    model: { primary: "deepseek/deepseek-v4-flash" },
+  });
+  t.after(() => fs.rm(sourceRoot, { recursive: true, force: true }));
 
   const { runner } = runnerFor();
   let capabilityProbed = false;
@@ -426,10 +559,7 @@ test("profile seed rejects an invalid main-agent SQLite database before capabili
       capabilityProbed = true;
       return readyCapability();
     },
-    profileSeed: {
-      userConfig: { model: { primary: "deepseek/deepseek-v4-flash" } },
-      agentStateDir: sourceAgentDir,
-    },
+    profileSeed,
   });
 
   await assert.rejects(
@@ -443,7 +573,9 @@ test("profile seed rejects an invalid main-agent SQLite database before capabili
 });
 
 test("profile seed rejects an oversized allowlisted state file before capability probing", async (t) => {
-  const sourceAgentDir = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-model-state-oversized-"));
+  const sourceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-model-state-oversized-"));
+  const sourceAgentDir = path.join(sourceRoot, "agents", "main", "agent");
+  await fs.mkdir(sourceAgentDir, { recursive: true });
   await fs.writeFile(
     path.join(sourceAgentDir, "models.json"),
     JSON.stringify({ providers: { deepseek: { models: [{ id: "deepseek-v4-flash" }] } } }),
@@ -451,7 +583,10 @@ test("profile seed rejects an oversized allowlisted state file before capability
   const sqlitePath = path.join(sourceAgentDir, "openclaw-agent.sqlite");
   await fs.writeFile(sqlitePath, Buffer.from("SQLite format 3\0seed"));
   await fs.truncate(sqlitePath, 33 * 1024 * 1024);
-  t.after(() => fs.rm(sourceAgentDir, { recursive: true, force: true }));
+  const profileSeed = await resolveTestProfileSeed(sourceRoot, {
+    model: { primary: "deepseek/deepseek-v4-flash" },
+  });
+  t.after(() => fs.rm(sourceRoot, { recursive: true, force: true }));
 
   const { runner } = runnerFor();
   let capabilityProbed = false;
@@ -463,10 +598,7 @@ test("profile seed rejects an oversized allowlisted state file before capability
       capabilityProbed = true;
       return readyCapability();
     },
-    profileSeed: {
-      userConfig: { model: { primary: "deepseek/deepseek-v4-flash" } },
-      agentStateDir: sourceAgentDir,
-    },
+    profileSeed,
   });
 
   await assert.rejects(
@@ -482,14 +614,25 @@ test("profile seed rejects an oversized allowlisted state file before capability
 test("profile seed rejects a junction in the main-agent state ancestry", async (t) => {
   const trustedRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-model-state-junction-"));
   const outsideRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-model-state-junction-target-"));
+  const trustedAgentDir = path.join(trustedRoot, "agents", "main", "agent");
   const outsideAgentDir = path.join(outsideRoot, "main", "agent");
+  await fs.mkdir(trustedAgentDir, { recursive: true });
   await fs.mkdir(outsideAgentDir, { recursive: true });
+  const modelCatalog = JSON.stringify({
+    providers: { deepseek: { models: [{ id: "deepseek-v4-flash" }] } },
+  });
+  await fs.writeFile(path.join(trustedAgentDir, "models.json"), modelCatalog);
+  await fs.writeFile(path.join(trustedAgentDir, "openclaw-agent.sqlite"), Buffer.from("SQLite format 3\0approved"));
   await fs.writeFile(
     path.join(outsideAgentDir, "models.json"),
-    JSON.stringify({ providers: { deepseek: { models: [{ id: "deepseek-v4-flash" }] } } }),
+    modelCatalog,
   );
   await fs.writeFile(path.join(outsideAgentDir, "openclaw-agent.sqlite"), Buffer.from("SQLite format 3\0seed"));
+  const profileSeed = await resolveTestProfileSeed(trustedRoot, {
+    model: { primary: "deepseek/deepseek-v4-flash" },
+  });
   const junctionPath = path.join(trustedRoot, "agents");
+  await fs.rm(junctionPath, { recursive: true });
   try {
     await fs.symlink(outsideRoot, junctionPath, "junction");
   } catch (error) {
@@ -517,10 +660,7 @@ test("profile seed rejects a junction in the main-agent state ancestry", async (
       capabilityProbed = true;
       return readyCapability();
     },
-    profileSeed: {
-      userConfig: { model: { primary: "deepseek/deepseek-v4-flash" } },
-      agentStateDir: path.join(junctionPath, "main", "agent"),
-    },
+    profileSeed,
   });
 
   await assert.rejects(

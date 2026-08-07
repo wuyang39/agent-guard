@@ -230,6 +230,7 @@ test("profile seed rejects malformed last-known-good configuration", async (t) =
 test("profile seed parses the JSON5 syntax accepted by OpenClaw", async (t) => {
   const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-config-seed-json5-"));
   const configPath = path.join(stateDir, "openclaw.json");
+  await fs.mkdir(path.join(stateDir, "agents", "main", "agent"), { recursive: true });
   await fs.writeFile(`${configPath}.last-good`, `
     // OpenClaw configuration is JSON5, not strict JSON.
     {
@@ -262,6 +263,7 @@ test("profile seed parses the JSON5 syntax accepted by OpenClaw", async (t) => {
 
 test("profile seed discovers legacy clawdbot config in an explicit state directory", async (t) => {
   const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-config-seed-state-legacy-"));
+  await fs.mkdir(path.join(stateDir, "agents", "main", "agent"), { recursive: true });
   await fs.writeFile(path.join(stateDir, "clawdbot.json.last-good"), JSON.stringify({
     agents: { defaults: { model: { primary: "deepseek/deepseek-v4-flash" } } },
   }));
@@ -278,7 +280,7 @@ test("profile seed discovers legacy clawdbot config in an explicit state directo
 test("profile seed discovers the default legacy .clawdbot layout", async (t) => {
   const homeDir = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-config-seed-home-legacy-"));
   const stateDir = path.join(homeDir, ".clawdbot");
-  await fs.mkdir(stateDir);
+  await fs.mkdir(path.join(stateDir, "agents", "main", "agent"), { recursive: true });
   await fs.writeFile(path.join(stateDir, "clawdbot.json.last-good"), JSON.stringify({
     agents: { defaults: { model: "deepseek/deepseek-v4-flash" } },
   }));
@@ -293,6 +295,7 @@ test("profile seed discovers the default legacy .clawdbot layout", async (t) => 
 test("profile seed prefers last-good and falls back to the current config", async (t) => {
   const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-config-seed-priority-"));
   const configPath = path.join(stateDir, "openclaw.json");
+  await fs.mkdir(path.join(stateDir, "agents", "main", "agent"), { recursive: true });
   await fs.writeFile(configPath, JSON.stringify({
     agents: { defaults: { model: "openai/gpt-5.5" } },
   }));
@@ -346,7 +349,7 @@ test("profile seed accepts an explicit config path outside OpenClaw home and sta
   const stateDir = path.join(openClawHome, ".openclaw");
   const configDir = path.join(root, "independent-config");
   const configPath = path.join(configDir, "openclaw.json");
-  await fs.mkdir(stateDir, { recursive: true });
+  await fs.mkdir(path.join(stateDir, "agents", "main", "agent"), { recursive: true });
   await fs.mkdir(configDir, { recursive: true });
   await fs.writeFile(`${configPath}.last-good`, JSON.stringify({
     agents: {

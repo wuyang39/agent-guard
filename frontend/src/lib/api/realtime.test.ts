@@ -2,6 +2,22 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { apiBaseUrl } from "./core";
 import { realtimeApi } from "./realtime";
+import type { RunCaseFailureView } from "./types";
+
+const sandboxProfileSeedFailure = {
+  caseId: "case.profile-seed",
+  phase: "detecting",
+  reason: "The host profile seed changed before sandbox preflight.",
+  category: "sandbox_profile_seed_failed",
+  attempts: 1,
+  retryable: false,
+  skipped: true,
+  occurredAt: "2026-08-07T00:00:00.000Z",
+} satisfies RunCaseFailureView;
+
+test("run failure views accept the sandbox profile seed category", () => {
+  assert.equal(sandboxProfileSeedFailure.category, "sandbox_profile_seed_failed");
+});
 
 test("live supervision stream defaults to realtime-only replay mode", () => {
   assert.equal(

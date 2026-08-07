@@ -12,6 +12,16 @@ const DEFAULT_STATE_DIRNAMES = [".openclaw", ".clawdbot"] as const;
 export type DetectionProfileSeed = {
   userConfig: Record<string, unknown>;
   agentStateDir: string;
+  stateRootIdentity: DetectionProfileSeedDirectoryIdentity;
+  agentStateIdentity: DetectionProfileSeedDirectoryIdentity;
+};
+
+export type DetectionProfileSeedDirectoryIdentity = {
+  resolvedPath: string;
+  canonicalPath: string;
+  dev: number;
+  ino: number;
+  birthtimeMs: number;
 };
 
 export class DetectionProfileSeedError extends Error {
@@ -86,13 +96,18 @@ export async function resolveDetectionProfileSeed(
       `Detection model configuration at ${configPath} does not define an explicit default model.`,
     );
   }
+  const agentStateDir = path.join(stateDir, "agents", "main", "agent");
+  const agentState = await snapshotTrustedDirectory(agentStateDir, "OpenClaw main-agent state directory");
   await Promise.all([
     assertTrustedDirectoryUnchanged(stateRoot, "OpenClaw state root"),
     assertTrustedDirectoryUnchanged(configRoot, "OpenClaw config root"),
+    assertTrustedDirectoryUnchanged(agentState, "OpenClaw main-agent state directory"),
   ]);
   return {
     userConfig,
-    agentStateDir: path.join(stateDir, "agents", "main", "agent"),
+    agentStateDir,
+    stateRootIdentity: serializeTrustedDirectory(stateDir, stateRoot),
+    agentStateIdentity: serializeTrustedDirectory(agentStateDir, agentState),
   };
 }
 
@@ -301,6 +316,19 @@ function sameFileIdentity(left: Stats, right: Stats): boolean {
   return left.dev !== 0 || left.ino !== 0 || right.dev !== 0 || right.ino !== 0
     ? left.dev === right.dev && left.ino === right.ino
     : left.birthtimeMs === right.birthtimeMs;
+}
+
+function serializeTrustedDirectory(
+  resolvedPath: string,
+  snapshot: TrustedDirectorySnapshot,
+): DetectionProfileSeedDirectoryIdentity {
+  return {
+    resolvedPath: path.resolve(resolvedPath),
+    canonicalPath: snapshot.path,
+    dev: snapshot.stat.dev,
+    ino: snapshot.stat.ino,
+    birthtimeMs: snapshot.stat.birthtimeMs,
+  };
 }
 
 function isPathInsideDirectory(candidate: string, root: string): boolean {

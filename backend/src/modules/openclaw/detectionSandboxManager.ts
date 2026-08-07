@@ -14,7 +14,10 @@ import {
   isCompatibleNativeGuardVersion,
   parseNativeGuardGatewayAttestation,
 } from "./nativeGuardLiveCapability";
-import type { DetectionProfileSeed } from "./detectionProfileSeed";
+import type {
+  DetectionProfileSeed,
+  DetectionProfileSeedDirectoryIdentity,
+} from "./detectionProfileSeed";
 
 const RUN_LABEL_KEY = "agent-guard.run-group";
 const RUN_ROLE_LABEL_KEY = "agent-guard.role";
@@ -579,7 +582,7 @@ export class DetectionSandboxManager {
       fs.mkdir(spoolDir, { recursive: true, mode: 0o700 }),
     ]);
     if (this.options.profileSeed) {
-      await this.snapshotAgentModelState(root, this.options.profileSeed.agentStateDir);
+      await this.snapshotAgentModelState(root, this.options.profileSeed);
     }
     this.config = generateDetectionOpenClawConfig({
       userConfig: this.options.profileSeed?.userConfig ?? this.options.userConfig,
@@ -621,9 +624,28 @@ export class DetectionSandboxManager {
     });
   }
 
-  private async snapshotAgentModelState(profileRoot: string, sourceAgentDir: string): Promise<void> {
+  private async snapshotAgentModelState(
+    profileRoot: string,
+    profileSeed: DetectionProfileSeed,
+  ): Promise<void> {
     this.throwIfAborted();
-    const sourceDirectory = await snapshotTrustedSeedDirectory(sourceAgentDir);
+    const sourceAgentDir = profileSeed.agentStateDir;
+    const stateRootDirectory = await snapshotApprovedSeedDirectory(
+      profileSeed.stateRootIdentity?.resolvedPath ?? "",
+      profileSeed.stateRootIdentity,
+      "state root",
+    );
+    const sourceDirectory = await snapshotApprovedSeedDirectory(
+      sourceAgentDir,
+      profileSeed.agentStateIdentity,
+      "main-agent state directory",
+    );
+    if (!sameHostPath(sourceDirectory.path, path.join(stateRootDirectory.path, "agents", "main", "agent"))) {
+      throw new SandboxPreflightError(
+        "MODEL_PROFILE_SEED_INVALID",
+        "Detection main-agent state directory no longer matches the resolver-approved state root.",
+      );
+    }
     let entries: Dirent[];
     try {
       entries = await fs.readdir(sourceDirectory.path, { withFileTypes: true });
@@ -750,12 +772,24 @@ export class DetectionSandboxManager {
         const target = path.join(destination, opened.name);
         const handle = await fs.open(target, "wx", 0o600);
         try {
-          await handle.writeFile(opened.content!);
+          await writeSeedSnapshotInChunks(handle, opened.content!, () => this.throwIfAborted());
         } finally {
           await handle.close();
         }
       }
       await assertSeedSnapshotUnchanged(sourceDirectory, openFiles);
+      await Promise.all([
+        snapshotApprovedSeedDirectory(
+          profileSeed.stateRootIdentity?.resolvedPath ?? "",
+          profileSeed.stateRootIdentity,
+          "state root",
+        ),
+        snapshotApprovedSeedDirectory(
+          sourceAgentDir,
+          profileSeed.agentStateIdentity,
+          "main-agent state directory",
+        ),
+      ]);
     } finally {
       await Promise.all(openFiles.map((entry) => entry.handle.close().catch(() => undefined)));
     }
@@ -1428,6 +1462,37 @@ async function snapshotTrustedSeedDirectory(target: string): Promise<TrustedSeed
   }
 }
 
+async function snapshotApprovedSeedDirectory(
+  target: string,
+  expected: DetectionProfileSeedDirectoryIdentity | undefined,
+  label: string,
+): Promise<TrustedSeedDirectorySnapshot> {
+  if (!isDetectionProfileSeedDirectoryIdentity(expected)) {
+    throw new SandboxPreflightError(
+      "MODEL_PROFILE_SEED_INVALID",
+      `Detection ${label} is missing its resolver-approved identity.`,
+    );
+  }
+  const resolved = path.resolve(target);
+  if (!sameHostPath(resolved, expected.resolvedPath)) {
+    throw new SandboxPreflightError(
+      "MODEL_PROFILE_SEED_INVALID",
+      `Detection ${label} changed since profile resolution: ${resolved}.`,
+    );
+  }
+  const current = await snapshotTrustedSeedDirectory(resolved);
+  if (
+    !sameHostPath(current.path, expected.canonicalPath) ||
+    !sameSerializedSeedDirectoryIdentity(current.stat, expected)
+  ) {
+    throw new SandboxPreflightError(
+      "MODEL_PROFILE_SEED_INVALID",
+      `Detection ${label} changed since profile resolution: ${resolved}.`,
+    );
+  }
+  return current;
+}
+
 async function openSeedFileSnapshot(
   filePath: string,
   trustedDirectory: TrustedSeedDirectorySnapshot,
@@ -1513,6 +1578,31 @@ async function readBoundedSeedFile(
   }
 }
 
+export async function writeSeedSnapshotInChunks(
+  writer: {
+    write(buffer: Buffer, offset: number, length: number, position: number): Promise<{ bytesWritten: number }>;
+  },
+  content: Buffer,
+  assertActive: () => void,
+): Promise<void> {
+  let offset = 0;
+  while (offset < content.length) {
+    const chunkEnd = Math.min(offset + MODEL_STATE_READ_CHUNK_BYTES, content.length);
+    while (offset < chunkEnd) {
+      assertActive();
+      const length = chunkEnd - offset;
+      const { bytesWritten } = await writer.write(content, offset, length, offset);
+      if (!Number.isInteger(bytesWritten) || bytesWritten <= 0 || bytesWritten > length) {
+        throw new SandboxPreflightError(
+          "MODEL_PROFILE_SEED_INVALID",
+          "Detection model state destination write did not advance within the requested chunk.",
+        );
+      }
+      offset += bytesWritten;
+    }
+  }
+}
+
 async function assertSeedSnapshotUnchanged(
   directory: TrustedSeedDirectorySnapshot,
   files: OpenSeedFileSnapshot[],
@@ -1594,6 +1684,26 @@ function sameSeedFileIdentity(left: Stats, right: Stats): boolean {
   return left.dev !== 0 || left.ino !== 0 || right.dev !== 0 || right.ino !== 0
     ? left.dev === right.dev && left.ino === right.ino
     : left.birthtimeMs === right.birthtimeMs;
+}
+
+function isDetectionProfileSeedDirectoryIdentity(
+  value: unknown,
+): value is DetectionProfileSeedDirectoryIdentity {
+  return isRecord(value) &&
+    typeof value.resolvedPath === "string" && value.resolvedPath.length > 0 &&
+    typeof value.canonicalPath === "string" && value.canonicalPath.length > 0 &&
+    typeof value.dev === "number" && Number.isFinite(value.dev) &&
+    typeof value.ino === "number" && Number.isFinite(value.ino) &&
+    typeof value.birthtimeMs === "number" && Number.isFinite(value.birthtimeMs);
+}
+
+function sameSerializedSeedDirectoryIdentity(
+  current: Stats,
+  expected: DetectionProfileSeedDirectoryIdentity,
+): boolean {
+  return current.dev !== 0 || current.ino !== 0 || expected.dev !== 0 || expected.ino !== 0
+    ? current.dev === expected.dev && current.ino === expected.ino
+    : current.birthtimeMs === expected.birthtimeMs;
 }
 
 function isPathInsideDirectory(candidate: string, root: string): boolean {

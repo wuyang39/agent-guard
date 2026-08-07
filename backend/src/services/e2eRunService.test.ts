@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import type { DetectionSandboxManager } from "../modules/openclaw/detectionSandboxManager";
+import type { DetectionProfileSeed } from "../modules/openclaw/detectionProfileSeed";
 import {
   DetectionRunConflictError,
   classifyDetectionError,
@@ -185,11 +186,28 @@ test("formal OpenClaw runE2E resolves a scrubbed host profile seed for the sandb
   );
 
   assert.ok(receivedOptions);
-  assert.deepEqual(receivedOptions.profileSeed, {
-    userConfig: {
-      model: { primary: "deepseek/deepseek-v4-flash" },
-    },
-    agentStateDir,
+  const receivedSeed = receivedOptions.profileSeed as DetectionProfileSeed;
+  assert.deepEqual(receivedSeed.userConfig, {
+    model: { primary: "deepseek/deepseek-v4-flash" },
+  });
+  assert.equal(receivedSeed.agentStateDir, agentStateDir);
+  const [stateRootStat, agentStateStat] = await Promise.all([
+    fs.lstat(stateDir),
+    fs.lstat(agentStateDir),
+  ]);
+  assert.deepEqual(receivedSeed.stateRootIdentity, {
+    resolvedPath: path.resolve(stateDir),
+    canonicalPath: await fs.realpath(stateDir),
+    dev: stateRootStat.dev,
+    ino: stateRootStat.ino,
+    birthtimeMs: stateRootStat.birthtimeMs,
+  });
+  assert.deepEqual(receivedSeed.agentStateIdentity, {
+    resolvedPath: path.resolve(agentStateDir),
+    canonicalPath: await fs.realpath(agentStateDir),
+    dev: agentStateStat.dev,
+    ino: agentStateStat.ino,
+    birthtimeMs: agentStateStat.birthtimeMs,
   });
   assert.deepEqual(runGroup.testRunIds, []);
 });

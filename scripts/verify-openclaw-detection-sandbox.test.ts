@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -11,11 +11,433 @@ import {
   startSandboxWithBenignProbe,
   verifyGatewayAuthentication,
 } from "./verify-openclaw-detection-sandbox";
+import * as liveVerifier from "./verify-openclaw-detection-sandbox";
 
 const SCRIPT = path.resolve("scripts", "verify-openclaw-detection-sandbox.ts");
 const SCRIPT_URL = pathToFileURL(SCRIPT).href;
 const IMAGE = `registry.example/openclaw-agentguard@sha256:${"a".repeat(64)}`;
 const IMAGE_ID = `sha256:${"b".repeat(64)}`;
+
+type GateCommandResult = {
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+  failure?: {
+    kind: "spawn" | "timeout" | "signal";
+    message: string;
+  };
+};
+
+type GateCommandRunner = (
+  command: string,
+  args: string[],
+  timeoutMs?: number,
+) => GateCommandResult;
+
+type LiveVerifierApi = {
+  runSandboxNetworkCases(options: {
+    baseRunGroupId: string;
+    runCase(options: { runGroupId: string; networkCase: boolean }): Promise<void>;
+  }): Promise<void>;
+  verifyHostCanaryIsolation(options: {
+    containerId: string;
+    commandRunner: GateCommandRunner;
+  }): void;
+  attestSandboxCase(options: {
+    sandbox: {
+      attestSession(sessionKey: string, phase: "after"): Promise<Record<string, unknown>>;
+    };
+    runGroupId: string;
+    sessionKey: string;
+    networkCase: boolean;
+    commandRunner: GateCommandRunner;
+  }): Promise<{ agentContainerId: string; sinkContainerId?: string }>;
+  cleanupSandboxCase(options: {
+    sandbox: {
+      cleanup(): Promise<void>;
+    };
+    runGroupId: string;
+    commandRunner: GateCommandRunner;
+  }): Promise<void>;
+};
+
+const liveVerifierApi = liveVerifier as unknown as Partial<LiveVerifierApi>;
+
+test("live gate runs isolated default and controlled network lifecycles", async () => {
+  assert.equal(typeof liveVerifierApi.runSandboxNetworkCases, "function");
+  const cases: Array<{ runGroupId: string; networkCase: boolean }> = [];
+
+  await liveVerifierApi.runSandboxNetworkCases!({
+    baseRunGroupId: "verification-run",
+    async runCase(options) {
+      cases.push(options);
+    },
+  });
+
+  assert.deepEqual(cases, [
+    { runGroupId: "verification-run-default", networkCase: false },
+    { runGroupId: "verification-run-controlled", networkCase: true },
+  ]);
+});
+
+test("required Docker verification rejects explicit skip before Docker preflight", () => {
+  const result = spawnSync(process.execPath, [
+    "--import",
+    "tsx",
+    SCRIPT,
+    "--required",
+  ], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      AGENT_GUARD_ALLOW_DOCKER_TEST_SKIP: "1",
+      AGENT_GUARD_DETECTION_IMAGE: "",
+    },
+    encoding: "utf8",
+    shell: false,
+    windowsHide: true,
+    timeout: 30_000,
+  });
+
+  assert.equal(result.status, 1, result.stderr || result.stdout);
+  assert.match(result.stderr, /required Docker verification cannot be skipped/i);
+  assert.doesNotMatch(result.stderr, /Docker daemon unavailable/i);
+});
+
+test("native guard release gate invokes Docker verification in required mode", async () => {
+  const packageJson = JSON.parse(await readFile(path.resolve("package.json"), "utf8")) as {
+    scripts: Record<string, string>;
+  };
+
+  assert.match(
+    packageJson.scripts["verify:native-guard:all"],
+    /npm run verify:native-guard:docker -- --required(?:\s|$)/,
+  );
+  assert.equal(
+    packageJson.scripts["verify:native-guard:docker"],
+    "node --import tsx scripts/verify-openclaw-detection-sandbox.ts",
+  );
+  assert.doesNotMatch(packageJson.scripts["verify:all"], /verify:native-guard:docker/);
+});
+
+test("host canary verifier performs real in-container read and write attempts", () => {
+  assert.equal(typeof liveVerifierApi.verifyHostCanaryIsolation, "function");
+  const calls: Array<{ command: string; args: string[] }> = [];
+  liveVerifierApi.verifyHostCanaryIsolation!({
+    containerId: "agent-container",
+    commandRunner: (command, args) => {
+      calls.push({ command, args });
+      const marker = args.join(" ").includes("cat /host/canary")
+        ? "AGENT_GUARD_CANARY_READ_BLOCKED"
+        : "AGENT_GUARD_CANARY_WRITE_BLOCKED";
+      return { exitCode: 0, stdout: marker, stderr: "permission denied" };
+    },
+  });
+
+  assert.deepEqual(calls, [
+    {
+      command: "docker",
+      args: [
+        "exec",
+        "agent-container",
+        "sh",
+        "-c",
+        "if cat /host/canary >/dev/null 2>&1; then printf 'AGENT_GUARD_CANARY_READABLE'; " +
+          "else printf 'AGENT_GUARD_CANARY_READ_BLOCKED'; fi",
+      ],
+    },
+    {
+      command: "docker",
+      args: [
+        "exec",
+        "agent-container",
+        "sh",
+        "-c",
+        "if printf 'agent-guard-canary-write-probe' > /host/canary; " +
+          "then printf 'AGENT_GUARD_CANARY_WRITABLE'; " +
+          "else printf 'AGENT_GUARD_CANARY_WRITE_BLOCKED'; fi",
+      ],
+    },
+  ]);
+});
+
+test("host canary verifier rejects successful reads or writes by exit status", () => {
+  assert.equal(typeof liveVerifierApi.verifyHostCanaryIsolation, "function");
+  assert.throws(
+    () => liveVerifierApi.verifyHostCanaryIsolation!({
+      containerId: "readable-agent",
+      commandRunner: () => ({
+        exitCode: 0,
+        stdout: "AGENT_GUARD_CANARY_READABLE",
+        stderr: "",
+      }),
+    }),
+    /readable/i,
+  );
+
+  let call = 0;
+  assert.throws(
+    () => liveVerifierApi.verifyHostCanaryIsolation!({
+      containerId: "writable-agent",
+      commandRunner: () => call++ === 0
+        ? { exitCode: 0, stdout: "AGENT_GUARD_CANARY_READ_BLOCKED", stderr: "" }
+        : { exitCode: 0, stdout: "AGENT_GUARD_CANARY_WRITABLE", stderr: "" },
+    }),
+    /writable/i,
+  );
+});
+
+test("host canary verifier rejects Docker infrastructure failures", () => {
+  assert.equal(typeof liveVerifierApi.verifyHostCanaryIsolation, "function");
+  assert.throws(
+    () => liveVerifierApi.verifyHostCanaryIsolation!({
+      containerId: "unverified-agent",
+      commandRunner: () => ({
+        exitCode: null,
+        stdout: "",
+        stderr: "",
+        failure: { kind: "timeout", message: "docker exec timed out" },
+      }),
+    }),
+    /could not verify.*canary/i,
+  );
+});
+
+test("controlled network case uses role-scoped containers and proves sink-only reachability", async () => {
+  assert.equal(typeof liveVerifierApi.attestSandboxCase, "function");
+  const agentContainerId = "a".repeat(64);
+  const sinkContainerId = "b".repeat(64);
+  const attestationCalls: Array<[string, string]> = [];
+  const runnerCalls: Array<{ command: string; args: string[] }> = [];
+  const commandRunner: GateCommandRunner = (command, args) => {
+    runnerCalls.push({ command, args });
+    const joined = args.join(" ");
+    if (args[0] === "ps" && joined.includes("agent-guard.role=agent")) {
+      return {
+        exitCode: 0,
+        stdout: args.includes("--no-trunc") ? agentContainerId : agentContainerId.slice(0, 12),
+        stderr: "",
+      };
+    }
+    if (args[0] === "ps" && joined.includes("agent-guard.role=sink")) {
+      return {
+        exitCode: 0,
+        stdout: args.includes("--no-trunc") ? sinkContainerId : sinkContainerId.slice(0, 12),
+        stderr: "",
+      };
+    }
+    if (args[0] === "ps") {
+      return { exitCode: 0, stdout: "sink-container\nagent-container", stderr: "" };
+    }
+    if (args[0] === "inspect") {
+      return { exitCode: 0, stdout: "agent-guard-controlled-network", stderr: "" };
+    }
+    if (args[0] === "network" && args[1] === "inspect") {
+      return { exitCode: 0, stdout: "true", stderr: "" };
+    }
+    if (args[0] === "exec" && joined.includes("http://sink:8080")) {
+      return { exitCode: 0, stdout: "AGENT_GUARD_HTTP_REACHABLE", stderr: "" };
+    }
+    if (args[0] === "exec" && joined.includes("http://example.com")) {
+      return { exitCode: 0, stdout: "AGENT_GUARD_HTTP_BLOCKED", stderr: "" };
+    }
+    return { exitCode: 1, stdout: "", stderr: `unexpected: ${joined}` };
+  };
+
+  const containers = await liveVerifierApi.attestSandboxCase!({
+    sandbox: {
+      async attestSession(sessionKey, phase) {
+        attestationCalls.push([sessionKey, phase]);
+        return {
+          status: "attested",
+          networkMode: "internal",
+          containerId: agentContainerId,
+          sinkLogs: "sink request log",
+        };
+      },
+    },
+    runGroupId: "controlled-run",
+    sessionKey: "controlled-session",
+    networkCase: true,
+    commandRunner,
+  });
+
+  assert.deepEqual(attestationCalls, [["controlled-session", "after"]]);
+  assert.deepEqual(containers, {
+    agentContainerId,
+    sinkContainerId,
+  });
+  assert.ok(runnerCalls.some((call) =>
+    call.args.includes("label=agent-guard.role=agent") &&
+    call.args.includes("label=agent-guard.run-group=controlled-run")
+  ));
+  assert.ok(runnerCalls.some((call) =>
+    call.args[0] === "network" &&
+    call.args[1] === "inspect" &&
+    call.args[2] === "agent-guard-controlled-network" &&
+    call.args.includes("{{.Internal}}")
+  ));
+  assert.ok(runnerCalls.some((call) =>
+    call.args.includes("label=agent-guard.role=sink") &&
+    call.args.includes("label=agent-guard.run-group=controlled-run")
+  ));
+  assert.ok(runnerCalls.some((call) =>
+    call.args[0] === "exec" &&
+    call.args[1] === agentContainerId &&
+    call.args[2] === "python3" &&
+    call.args.join(" ").includes("http://sink:8080")
+  ));
+  assert.ok(runnerCalls.some((call) =>
+    call.args[0] === "exec" &&
+    call.args[1] === agentContainerId &&
+    call.args[2] === "python3" &&
+    call.args.join(" ").includes("http://example.com")
+  ));
+  assert.equal(
+    runnerCalls.some((call) => call.args.join(" ").includes("wget")),
+    false,
+  );
+  assert.ok(runnerCalls
+    .filter((call) => call.args[0] === "exec")
+    .every((call) => call.args.join(" ").includes("http.client")));
+  assert.equal(
+    runnerCalls.some((call) => call.args.join(" ").includes("urllib.request")),
+    false,
+  );
+});
+
+test("controlled network rejects an inconclusive Internet probe", async () => {
+  assert.equal(typeof liveVerifierApi.attestSandboxCase, "function");
+  await assert.rejects(
+    liveVerifierApi.attestSandboxCase!({
+      sandbox: {
+        async attestSession() {
+          return {
+            status: "attested",
+            networkMode: "internal",
+            containerId: "agent-container",
+            sinkLogs: "sink logs",
+          };
+        },
+      },
+      runGroupId: "inconclusive-run",
+      sessionKey: "inconclusive-session",
+      networkCase: true,
+      commandRunner: (_command, args) => {
+        const joined = args.join(" ");
+        if (args[0] === "ps" && joined.includes("agent-guard.role=agent")) {
+          return { exitCode: 0, stdout: "agent-container", stderr: "" };
+        }
+        if (args[0] === "ps" && joined.includes("agent-guard.role=sink")) {
+          return { exitCode: 0, stdout: "sink-container", stderr: "" };
+        }
+        if (args[0] === "inspect") {
+          return { exitCode: 0, stdout: "internal-network", stderr: "" };
+        }
+        if (args[0] === "network" && args[1] === "inspect") {
+          return { exitCode: 0, stdout: "true", stderr: "" };
+        }
+        if (joined.includes("http://sink:8080")) {
+          return { exitCode: 0, stdout: "AGENT_GUARD_HTTP_REACHABLE", stderr: "" };
+        }
+        if (joined.includes("http://example.com")) {
+          return {
+            exitCode: null,
+            stdout: "",
+            stderr: "",
+            failure: { kind: "timeout", message: "docker exec timed out" },
+          };
+        }
+        return { exitCode: 1, stdout: "", stderr: "unexpected" };
+      },
+    }),
+    /could not verify Internet egress/i,
+  );
+});
+
+test("default network case proves network=none without a sink", async () => {
+  assert.equal(typeof liveVerifierApi.attestSandboxCase, "function");
+  const runnerCalls: string[][] = [];
+  const containers = await liveVerifierApi.attestSandboxCase!({
+    sandbox: {
+      async attestSession() {
+        return {
+          status: "attested",
+          networkMode: "none",
+          containerId: "default-agent",
+        };
+      },
+    },
+    runGroupId: "default-run",
+    sessionKey: "default-session",
+    networkCase: false,
+    commandRunner: (_command, args) => {
+      runnerCalls.push(args);
+      const joined = args.join(" ");
+      if (args[0] === "ps" && joined.includes("agent-guard.role=agent")) {
+        return { exitCode: 0, stdout: "default-agent", stderr: "" };
+      }
+      if (args[0] === "ps" && joined.includes("agent-guard.role=sink")) {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "inspect") {
+        return { exitCode: 0, stdout: "none", stderr: "" };
+      }
+      return { exitCode: 1, stdout: "", stderr: "unexpected" };
+    },
+  });
+
+  assert.deepEqual(containers, { agentContainerId: "default-agent" });
+  assert.equal(runnerCalls.some((args) => args[0] === "exec"), false);
+});
+
+test("controlled network cleanup leaves no run-labeled containers or networks", async () => {
+  assert.equal(typeof liveVerifierApi.cleanupSandboxCase, "function");
+  let cleaned = false;
+  const calls: string[][] = [];
+  await liveVerifierApi.cleanupSandboxCase!({
+    sandbox: {
+      async cleanup() {
+        cleaned = true;
+      },
+    },
+    runGroupId: "controlled-cleanup",
+    commandRunner: (_command, args) => {
+      assert.equal(cleaned, true, "residual inventory must run after manager cleanup");
+      calls.push(args);
+      return { exitCode: 0, stdout: "", stderr: "" };
+    },
+  });
+
+  assert.deepEqual(calls, [
+    ["ps", "-aq", "--filter", "label=agent-guard.run-group=controlled-cleanup"],
+    ["network", "ls", "-q", "--filter", "label=agent-guard.run-group=controlled-cleanup"],
+  ]);
+});
+
+test("cleanup inventories labeled resources even when manager cleanup fails", async () => {
+  assert.equal(typeof liveVerifierApi.cleanupSandboxCase, "function");
+  const calls: string[][] = [];
+  await assert.rejects(
+    liveVerifierApi.cleanupSandboxCase!({
+      sandbox: {
+        async cleanup() {
+          throw new Error("manager cleanup failed");
+        },
+      },
+      runGroupId: "failed-cleanup",
+      commandRunner: (_command, args) => {
+        calls.push(args);
+        return { exitCode: 0, stdout: "", stderr: "" };
+      },
+    }),
+    /manager cleanup failed/i,
+  );
+  assert.deepEqual(calls, [
+    ["ps", "-aq", "--filter", "label=agent-guard.run-group=failed-cleanup"],
+    ["network", "ls", "-q", "--filter", "label=agent-guard.run-group=failed-cleanup"],
+  ]);
+});
 
 test("live verifier is import-safe", async () => {
   const result = spawnSync(process.execPath, [

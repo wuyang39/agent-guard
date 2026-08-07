@@ -9,7 +9,7 @@
  * The script uses DetectionSandboxManager to start a real sandbox Gateway,
  * then verifies every isolation property. Fails if any check fails.
  *
- * Skip: AGENT_GUARD_ALLOW_DOCKER_TEST_SKIP=1 (exit 0)
+ * Skip: AGENT_GUARD_ALLOW_DOCKER_TEST_SKIP=1 (exit 0 unless --required)
  */
 
 import { randomBytes } from "node:crypto";
@@ -47,7 +47,17 @@ function log(message: string): void {
   process.stdout.write(`  ${message}\n`);
 }
 
-function run(cmd: string, args: string[], timeoutMs = 15_000): { exitCode: number; stdout: string; stderr: string } {
+export type LiveGateCommandResult = {
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+  failure?: {
+    kind: "spawn" | "timeout" | "signal";
+    message: string;
+  };
+};
+
+function run(cmd: string, args: string[], timeoutMs = 15_000): LiveGateCommandResult {
   const r = spawnSync(cmd, args, {
     windowsHide: true,
     shell: false,
@@ -55,7 +65,303 @@ function run(cmd: string, args: string[], timeoutMs = 15_000): { exitCode: numbe
     encoding: "utf-8",
     maxBuffer: 256 * 1024,
   });
-  return { exitCode: r.status ?? 1, stdout: (r.stdout ?? "").trim(), stderr: (r.stderr ?? "").trim() };
+  const spawnError = r.error as NodeJS.ErrnoException | undefined;
+  const failure = spawnError
+    ? {
+        kind: spawnError.code === "ETIMEDOUT" ? "timeout" as const : "spawn" as const,
+        message: spawnError.message,
+      }
+    : r.status === null
+      ? {
+          kind: r.signal ? "signal" as const : "spawn" as const,
+          message: r.signal
+            ? `Command terminated by signal ${r.signal}.`
+            : "Command did not return an exit status.",
+        }
+      : undefined;
+  return {
+    exitCode: r.status,
+    stdout: (r.stdout ?? "").trim(),
+    stderr: (r.stderr ?? "").trim(),
+    ...(failure ? { failure } : {}),
+  };
+}
+
+export type LiveGateCommandRunner = typeof run;
+
+export function verifyHostCanaryIsolation(options: {
+  containerId: string;
+  commandRunner?: LiveGateCommandRunner;
+}): void {
+  const commandRunner = options.commandRunner ?? run;
+  const readAttempt = commandRunner("docker", [
+    "exec",
+    options.containerId,
+    "sh",
+    "-c",
+    "if cat /host/canary >/dev/null 2>&1; then printf 'AGENT_GUARD_CANARY_READABLE'; " +
+      "else printf 'AGENT_GUARD_CANARY_READ_BLOCKED'; fi",
+  ]);
+  requireCompletedProbe(readAttempt, "host canary readability");
+  if (readAttempt.stdout === "AGENT_GUARD_CANARY_READABLE") {
+    throw new Error("Host canary is readable from inside the container.");
+  }
+  if (readAttempt.stdout !== "AGENT_GUARD_CANARY_READ_BLOCKED") {
+    throw new Error("Could not verify host canary readability: invalid probe marker.");
+  }
+
+  const writeAttempt = commandRunner("docker", [
+    "exec",
+    options.containerId,
+    "sh",
+    "-c",
+    "if printf 'agent-guard-canary-write-probe' > /host/canary; " +
+      "then printf 'AGENT_GUARD_CANARY_WRITABLE'; " +
+      "else printf 'AGENT_GUARD_CANARY_WRITE_BLOCKED'; fi",
+  ]);
+  requireCompletedProbe(writeAttempt, "host canary writability");
+  if (writeAttempt.stdout === "AGENT_GUARD_CANARY_WRITABLE") {
+    throw new Error("Host canary is writable from inside the container.");
+  }
+  if (writeAttempt.stdout !== "AGENT_GUARD_CANARY_WRITE_BLOCKED") {
+    throw new Error("Could not verify host canary writability: invalid probe marker.");
+  }
+}
+
+export async function attestSandboxCase(options: {
+  sandbox: Pick<DetectionSandboxManager, "attestSession">;
+  runGroupId: string;
+  sessionKey: string;
+  networkCase: boolean;
+  commandRunner?: LiveGateCommandRunner;
+}): Promise<{ agentContainerId: string; sinkContainerId?: string }> {
+  const commandRunner = options.commandRunner ?? run;
+  const evidence = await options.sandbox.attestSession(options.sessionKey, "after");
+  if (evidence.status !== "attested") {
+    throw new Error("Sandbox manager did not return attested container evidence.");
+  }
+
+  const agentContainerId = requireRoleContainer(
+    options.runGroupId,
+    "agent",
+    commandRunner,
+  );
+  if (evidence.containerId !== agentContainerId) {
+    throw new Error("Sandbox manager attested a different agent container.");
+  }
+
+  const sinkContainerId = optionalRoleContainer(
+    options.runGroupId,
+    "sink",
+    commandRunner,
+  );
+  const agentNetwork = inspectContainerNetwork(agentContainerId, commandRunner);
+
+  if (!options.networkCase) {
+    if (evidence.networkMode !== "none" || agentNetwork !== "none") {
+      throw new Error("Default sandbox case did not use network=none.");
+    }
+    if (sinkContainerId) {
+      throw new Error("Default sandbox case unexpectedly created a sink container.");
+    }
+    return { agentContainerId };
+  }
+
+  if (evidence.networkMode !== "internal" || typeof evidence.sinkLogs !== "string") {
+    throw new Error("Sandbox manager did not attest the controlled agent and sink.");
+  }
+  if (!sinkContainerId) {
+    throw new Error("Controlled sandbox case did not create exactly one sink container.");
+  }
+  const sinkNetwork = inspectContainerNetwork(sinkContainerId, commandRunner);
+  if (agentNetwork === "none" || sinkNetwork !== agentNetwork) {
+    throw new Error("Controlled agent and sink do not share the attested internal network.");
+  }
+  const internalNetwork = commandRunner("docker", [
+    "network",
+    "inspect",
+    agentNetwork,
+    "--format",
+    "{{.Internal}}",
+  ]);
+  requireCompletedProbe(internalNetwork, "controlled network internal mode");
+  if (internalNetwork.stdout !== "true") {
+    throw new Error("Controlled agent and sink network is not internal.");
+  }
+
+  const sinkReachability = commandRunner(
+    "docker",
+    [
+      "exec",
+      agentContainerId,
+      "python3",
+      "-c",
+      buildHttpProbeScript("http://sink:8080"),
+    ],
+    10_000,
+  );
+  requireCompletedProbe(sinkReachability, "controlled sink reachability");
+  if (sinkReachability.stdout !== "AGENT_GUARD_HTTP_REACHABLE") {
+    throw new Error("Controlled sink is not reachable from the agent container.");
+  }
+
+  const internetEgress = commandRunner(
+    "docker",
+    [
+      "exec",
+      agentContainerId,
+      "python3",
+      "-c",
+      buildHttpProbeScript("http://example.com"),
+    ],
+    10_000,
+  );
+  requireCompletedProbe(internetEgress, "Internet egress");
+  if (internetEgress.stdout === "AGENT_GUARD_HTTP_REACHABLE") {
+    throw new Error("Controlled agent container has Internet egress.");
+  }
+  if (internetEgress.stdout !== "AGENT_GUARD_HTTP_BLOCKED") {
+    throw new Error("Could not verify Internet egress: invalid probe marker.");
+  }
+
+  return { agentContainerId, sinkContainerId };
+}
+
+export async function cleanupSandboxCase(options: {
+  sandbox: Pick<DetectionSandboxManager, "cleanup">;
+  runGroupId: string;
+  commandRunner?: LiveGateCommandRunner;
+}): Promise<void> {
+  const commandRunner = options.commandRunner ?? run;
+  const failures: Error[] = [];
+  try {
+    await options.sandbox.cleanup();
+  } catch (error) {
+    failures.push(new Error(`Sandbox manager cleanup failed: ${errorMessage(error)}`, {
+      cause: error,
+    }));
+  }
+
+  const residualContainers = commandRunner("docker", [
+    "ps",
+    "-aq",
+    "--filter",
+    `label=agent-guard.run-group=${options.runGroupId}`,
+  ]);
+  if (residualContainers.exitCode !== 0 || residualContainers.failure) {
+    failures.push(new Error("Could not inventory residual sandbox containers."));
+  } else {
+    const remainingIds = outputLines(residualContainers.stdout);
+    if (remainingIds.length > 0) {
+      failures.push(new Error(`Residual containers after cleanup: ${remainingIds.join(", ")}`));
+    }
+  }
+
+  const residualNetworks = commandRunner("docker", [
+    "network",
+    "ls",
+    "-q",
+    "--filter",
+    `label=agent-guard.run-group=${options.runGroupId}`,
+  ]);
+  if (residualNetworks.exitCode !== 0 || residualNetworks.failure) {
+    failures.push(new Error("Could not inventory residual sandbox networks."));
+  } else {
+    const remainingNetworks = outputLines(residualNetworks.stdout);
+    if (remainingNetworks.length > 0) {
+      failures.push(new Error(`Residual networks after cleanup: ${remainingNetworks.join(", ")}`));
+    }
+  }
+
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) {
+    throw new AggregateError(failures, "Sandbox cleanup and residual verification failed.");
+  }
+}
+
+function buildHttpProbeScript(url: string): string {
+  return [
+    "import http.client, urllib.parse",
+    `url=urllib.parse.urlsplit(${JSON.stringify(url)})`,
+    "connection=http.client.HTTPConnection(url.hostname, url.port, timeout=5)",
+    "try:",
+    "    connection.connect()",
+    "except OSError:",
+    "    print('AGENT_GUARD_HTTP_BLOCKED')",
+    "else:",
+    "    connection.request('GET', url.path or '/')",
+    "    connection.getresponse().read(1)",
+    "    print('AGENT_GUARD_HTTP_REACHABLE')",
+  ].join("\n");
+}
+
+function requireCompletedProbe(
+  result: LiveGateCommandResult,
+  label: string,
+): void {
+  if (result.exitCode === 0 && !result.failure) return;
+  const detail = result.failure?.message || result.stderr || `exit ${String(result.exitCode)}`;
+  throw new Error(`Could not verify ${label}: ${detail}`);
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function requireRoleContainer(
+  runGroupId: string,
+  role: "agent" | "sink",
+  commandRunner: LiveGateCommandRunner,
+): string {
+  const containerId = optionalRoleContainer(runGroupId, role, commandRunner);
+  if (!containerId) {
+    throw new Error(`No labeled ${role} container found for the sandbox.`);
+  }
+  return containerId;
+}
+
+function optionalRoleContainer(
+  runGroupId: string,
+  role: "agent" | "sink",
+  commandRunner: LiveGateCommandRunner,
+): string | undefined {
+  const listed = commandRunner("docker", [
+    "ps",
+    "-q",
+    "--no-trunc",
+    "--filter",
+    `label=agent-guard.run-group=${runGroupId}`,
+    "--filter",
+    `label=agent-guard.role=${role}`,
+  ]);
+  if (listed.exitCode !== 0) {
+    throw new Error(`Could not inventory the labeled ${role} container.`);
+  }
+  const ids = outputLines(listed.stdout);
+  if (ids.length > 1) {
+    throw new Error(`Expected at most one labeled ${role} container, found ${String(ids.length)}.`);
+  }
+  return ids[0];
+}
+
+function inspectContainerNetwork(
+  containerId: string,
+  commandRunner: LiveGateCommandRunner,
+): string {
+  const result = commandRunner("docker", [
+    "inspect",
+    containerId,
+    "--format",
+    "{{.HostConfig.NetworkMode}}",
+  ]);
+  if (result.exitCode !== 0 || !result.stdout.trim()) {
+    throw new Error(`Could not inspect network mode for container ${containerId}.`);
+  }
+  return result.stdout.trim();
+}
+
+function outputLines(output: string): string[] {
+  return output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
 }
 
 export type LiveDetectionSandboxOptions = {
@@ -70,6 +376,7 @@ export type LiveDetectionSandboxOptions = {
     gatewayUrl: string;
     gatewayToken: string;
   }) => Promise<NativeGuardStatus>;
+  networkCase?: boolean;
 };
 
 export function resolveLiveOpenClawCli(env: NodeJS.ProcessEnv = process.env): string {
@@ -88,6 +395,7 @@ export function createLiveDetectionSandbox(
     commandRunner: options.commandRunner,
     gatewayLauncher: options.gatewayLauncher,
     runtimeStatusProbe: options.runtimeStatusProbe,
+    networkCase: options.networkCase,
   });
 }
 
@@ -295,11 +603,28 @@ async function withRequestDeadline<T>(
 // Main
 // ---------------------------------------------------------------------------
 
+export async function runSandboxNetworkCases(options: {
+  baseRunGroupId: string;
+  runCase(options: { runGroupId: string; networkCase: boolean }): Promise<void>;
+}): Promise<void> {
+  await options.runCase({
+    runGroupId: `${options.baseRunGroupId}-default`,
+    networkCase: false,
+  });
+  await options.runCase({
+    runGroupId: `${options.baseRunGroupId}-controlled`,
+    networkCase: true,
+  });
+}
+
 async function main(): Promise<void> {
   process.stdout.write("OpenClaw Detection Sandbox Live Verification\n\n");
 
   // ---- Skip gate ----
   if (process.env.AGENT_GUARD_ALLOW_DOCKER_TEST_SKIP === "1") {
+    if (process.argv.slice(2).includes("--required")) {
+      die("Required Docker verification cannot be skipped.");
+    }
     log("AGENT_GUARD_ALLOW_DOCKER_TEST_SKIP=1 — skipping.");
     process.exit(0);
   }
@@ -343,20 +668,23 @@ async function main(): Promise<void> {
   if (!portOccupied) die("Port hijack defense: port binding check failed.");
   log("Port hijack defense verified (TOCTOU window guarded by auth gate).");
 
-  // ---- 2. DetectionSandboxManager lifecycle ----
-  log("\n[2] Sandbox manager lifecycle...");
-  const controller = new AbortController();
-  const sandbox = createLiveDetectionSandbox({
-    runGroupId: TEST_RUN_GROUP,
-    image,
-    signal: controller.signal,
-    env: process.env,
-  });
-
-  let gatewayUrl = "";
-  let gatewayToken = "";
-
   try {
+    await runSandboxNetworkCases({
+      baseRunGroupId: TEST_RUN_GROUP,
+      runCase: async ({ runGroupId, networkCase }) => {
+        log(`\n[2] Sandbox manager lifecycle (${networkCase ? "controlled" : "default"})...`);
+        const controller = new AbortController();
+        const sandbox = createLiveDetectionSandbox({
+          runGroupId,
+          image,
+          networkCase,
+          signal: controller.signal,
+          env: process.env,
+        });
+        let gatewayUrl = "";
+        let gatewayToken = "";
+
+        try {
     const evidence = await sandbox.preflight();
     log(`  Preflight: image=${evidence.imageId.slice(0, 19)}, version=${evidence.openclawVersion}, network=${evidence.networkMode}`);
 
@@ -364,7 +692,7 @@ async function main(): Promise<void> {
     const { credentials: creds } = await startSandboxWithBenignProbe({
       sandbox,
       cliPath: resolveLiveOpenClawCli(process.env),
-      sessionKey: `${TEST_RUN_GROUP}.benign`,
+      sessionKey: `${runGroupId}.benign`,
     });
     gatewayUrl = creds.gatewayUrl;
     gatewayToken = creds.gatewayToken;
@@ -381,12 +709,19 @@ async function main(): Promise<void> {
     log("  Unauthenticated → 401/403 ✓");
     log(`  Nonce challenge passed, coverage=${String(statusBody.coverage)}`);
 
-    // ---- 4. Container isolation ----
-    log("\n[4] Container isolation...");
-    const listed = run("docker", ["ps", "-q", "--filter", `label=agent-guard.run-group=${TEST_RUN_GROUP}`]);
-    if (listed.exitCode !== 0 || !listed.stdout) die("No labeled container found for the sandbox.");
-    const containerId = listed.stdout.split("\n")[0].trim();
-    log(`  Container: ${containerId.slice(0, 12)}`);
+    // ---- 4. Manager attestation + container isolation ----
+    log("\n[4] Manager attestation and container isolation...");
+    const containers = await attestSandboxCase({
+      sandbox,
+      runGroupId,
+      sessionKey: `${runGroupId}.benign`,
+      networkCase,
+    });
+    const containerId = containers.agentContainerId;
+    log(`  Attested agent: ${containerId.slice(0, 12)}`);
+    if (containers.sinkContainerId) {
+      log(`  Attested sink: ${containers.sinkContainerId.slice(0, 12)}`);
+    }
 
     const inspect = run("docker", ["inspect", containerId, "--format",
       "{{.State.Pid}} {{.HostConfig.ReadonlyRootfs}} {{.HostConfig.Privileged}} {{.HostConfig.NetworkMode}} {{.Config.User}}"]);
@@ -394,82 +729,64 @@ async function main(): Promise<void> {
     // PID differs from host and > 0
     const inspectParts = inspect.stdout.split(/\s+/);
     const containerPid = Number(inspectParts[0]);
-    if (!Number.isSafeInteger(containerPid) || containerPid <= 0) die("Cannot read container PID.");
-    if (containerPid === process.pid) die(`Container PID ${String(containerPid)} equals host PID.`);
+    if (!Number.isSafeInteger(containerPid) || containerPid <= 0) throw new Error("Cannot read container PID.");
+    if (containerPid === process.pid) throw new Error(`Container PID ${String(containerPid)} equals host PID.`);
     log(`  PID ${String(containerPid)} ≠ host ${String(process.pid)} ✓`);
 
     // Readonly root
-    if (inspectParts[1] !== "true") die("Root filesystem is not read-only.");
+    if (inspectParts[1] !== "true") throw new Error("Root filesystem is not read-only.");
     log("  Readonly rootfs ✓");
 
     // Not privileged
-    if (inspectParts[2] !== "false") die("Container is privileged.");
+    if (inspectParts[2] !== "false") throw new Error("Container is privileged.");
     log("  Not privileged ✓");
 
     // User is non-root
-    if (inspectParts[4] !== "65532:65532") die(`Container user is ${inspectParts[4]}, expected 65532:65532.`);
+    if (inspectParts[4] !== "65532:65532") throw new Error(`Container user is ${inspectParts[4]}, expected 65532:65532.`);
     log("  User 65532:65532 ✓");
 
     // Capabilities dropped
     const capInspect = run("docker", ["inspect", containerId, "--format", "{{json .HostConfig.CapDrop}}"]);
-    if (!capInspect.stdout.includes("ALL")) die("CapDrop does not include ALL.");
+    if (!capInspect.stdout.includes("ALL")) throw new Error("CapDrop does not include ALL.");
     log("  CapDrop ALL ✓");
 
     // Resource limits
     const memInspect = run("docker", ["inspect", containerId, "--format", "{{.HostConfig.Memory}}"]);
-    if (Number(memInspect.stdout) !== 536870912) die(`Memory limit ${memInspect.stdout}, expected 536870912 (512m).`);
+    if (Number(memInspect.stdout) !== 536870912) throw new Error(`Memory limit ${memInspect.stdout}, expected 536870912 (512m).`);
     log("  Memory 512m ✓");
 
     const cpuInspect = run("docker", ["inspect", containerId, "--format", "{{.HostConfig.NanoCpus}}"]);
-    if (Number(cpuInspect.stdout) !== 1_000_000_000) die(`CPU limit ${cpuInspect.stdout}, expected 1000000000 (1 CPU).`);
+    if (Number(cpuInspect.stdout) !== 1_000_000_000) throw new Error(`CPU limit ${cpuInspect.stdout}, expected 1000000000 (1 CPU).`);
     log("  CPU 1 ✓");
 
     const pidsInspect = run("docker", ["inspect", containerId, "--format", "{{.HostConfig.PidsLimit}}"]);
-    if (Number(pidsInspect.stdout) !== 128) die(`PIDs limit ${pidsInspect.stdout}, expected 128.`);
+    if (Number(pidsInspect.stdout) !== 128) throw new Error(`PIDs limit ${pidsInspect.stdout}, expected 128.`);
     log("  PIDs limit 128 ✓");
 
     // ---- 5. Host canary + Docker socket ----
     log("\n[5] Host canary and Docker socket...");
-    const canaryCheck = run("docker", ["exec", containerId,
-      "sh", "-c", "cat /host/canary 2>/dev/null && echo 'READABLE' || echo 'BLOCKED'"]);
-    if (canaryCheck.stdout.includes("READABLE")) die("Host canary is readable from inside the container.");
-    log("  Host canary unreadable ✓");
+    verifyHostCanaryIsolation({ containerId });
+    log("  Host canary unreadable and unwritable ✓");
 
     const socketCheck = run("docker", ["exec", containerId,
       "sh", "-c", "ls /var/run/docker.sock 2>/dev/null && echo 'FOUND' || echo 'ABSENT'"]);
-    if (socketCheck.stdout.includes("FOUND")) die("Docker socket is accessible from inside the container.");
+    if (socketCheck.stdout.includes("FOUND")) throw new Error("Docker socket is accessible from inside the container.");
     log("  Docker socket absent ✓");
 
     // ---- 6. Network isolation ----
     log("\n[6] Network isolation...");
-    const netMode = run("docker", ["inspect", containerId, "--format", "{{.HostConfig.NetworkMode}}"]);
-    if (netMode.stdout !== "none") {
-      // If using internal network with sink, verify no Internet
-      const egressCheck = run("docker", ["exec", containerId,
-        "sh", "-c", "timeout 3 wget -q -O- http://example.com 2>/dev/null && echo 'EGRESS' || echo 'ISOLATED'"]);
-      if (egressCheck.stdout.includes("EGRESS")) die("Container has Internet egress.");
-      log(`  Network=${netMode.stdout}, no egress ✓`);
+    if (networkCase) {
+      log("  Agent reached http://sink:8080 on the controlled internal network ✓");
+      log("  Agent Internet egress blocked ✓");
     } else {
-      log("  Network=none, isolated ✓");
+      log("  Default agent network=none ✓");
     }
 
     // ---- 7. Cleanup ----
     log("\n[7] Cleanup...");
     controller.abort();
-    await sandbox.cleanup();
-
-    // Verify no residual containers
-    const residual = run("docker", ["ps", "-aq", "--filter", `label=agent-guard.run-group=${TEST_RUN_GROUP}`]);
-    const remainingIds = residual.stdout.split(/\r?\n/).filter(Boolean);
-    if (remainingIds.length > 0) {
-      die(`Residual containers after cleanup: ${remainingIds.join(", ")}`);
-    }
-    log("  No residual containers ✓");
-
-    // Verify no residual networks
-    const residualNets = run("docker", ["network", "ls", "-q", "--filter", `label=agent-guard.run-group=${TEST_RUN_GROUP}`]);
-    if (residualNets.stdout.trim()) die(`Residual networks after cleanup: ${residualNets.stdout}`);
-    log("  No residual networks ✓");
+    await cleanupSandboxCase({ sandbox, runGroupId });
+    log("  No residual containers or networks ✓");
 
     // Cleanup errors recorded
     const cleanupErrors = sandbox.getCleanupErrors();
@@ -479,9 +796,22 @@ async function main(): Promise<void> {
       }
     }
 
+        } catch (error) {
+          controller.abort();
+          try {
+            await cleanupSandboxCase({ sandbox, runGroupId });
+          } catch (cleanupError) {
+            throw new AggregateError(
+              [error, cleanupError],
+              `Sandbox lifecycle failed (${errorMessage(error)}); ` +
+                `cleanup verification failed (${errorMessage(cleanupError)}).`,
+            );
+          }
+          throw error;
+        }
+      },
+    });
   } catch (error) {
-    controller.abort();
-    await sandbox.cleanup().catch(() => undefined);
     if (error instanceof SandboxPreflightError) {
       die(`Sandbox preflight failed [${error.code}]: ${error.message}`);
     }

@@ -48,7 +48,7 @@
     "verify:native-guard": "node --import tsx scripts/verify-openclaw-native-guard.ts",
     "verify:native-guard:real": "node --import tsx scripts/verify-openclaw-live-registry-gate.ts",
     "verify:native-guard:docker": "node --import tsx scripts/verify-openclaw-detection-sandbox.ts",
-    "verify:native-guard:all": "npm run test:native-guard:protocol && npm run test:native-guard:plugin && npm run verify:native-guard && npm run build:openclaw-plugin && npm run verify:native-guard:real && npm run verify:native-guard:docker",
+    "verify:native-guard:all": "npm run test:native-guard:protocol && npm run test:native-guard:plugin && npm run verify:native-guard && npm run build:openclaw-plugin && npm run verify:native-guard:real && npm run verify:native-guard:docker -- --required",
     "verify:p3:b-gateway": "node --import tsx scripts/verify-p3-b-gateway.ts",
     "verify:p3:b-llm-profiler": "node --import tsx scripts/verify-p3-b-llm-profiler.ts",
     "verify:p3:b-semantic-scorer": "node --import tsx scripts/verify-p3-b-semantic-scorer.ts",

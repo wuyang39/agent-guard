@@ -1650,8 +1650,13 @@ function parseSandboxExplainAttestation(raw: string): {
 function canonicalSessionIdentity(value: string): string | undefined {
   const normalized = value.trim();
   if (!normalized) return undefined;
-  const agentScoped = /^agent:[^:]+:(.+)$/.exec(normalized);
-  return agentScoped?.[1] || normalized;
+  if (/^agent:/i.test(normalized)) {
+    const agentScoped = /^agent:([^:]+):(.+)$/i.exec(normalized);
+    const agentId = agentScoped?.[1].trim().toLowerCase();
+    const tail = agentScoped?.[2].trim();
+    return agentId && tail ? `agent:${agentId}:${tail}` : undefined;
+  }
+  return `agent:main:${normalized}`;
 }
 
 function containerWorkspaceSource(record: Record<string, unknown>): string {

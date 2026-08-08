@@ -227,6 +227,65 @@ function assertCleanupDiagnostic(
   assert.doesNotMatch(diagnostic.error.message, new RegExp(forbiddenText, "i"));
 }
 
+function scopedSessionCleanupFixture(runGroupId: string) {
+  const { runner } = runnerFor();
+  const activeContainerIds = new Set(["agent-main", "agent-other"]);
+  const removeCalls: string[][] = [];
+  let profileRoot: string | undefined;
+  const manager = new DetectionSandboxManager({
+    ...readyGatewayTestOptions(),
+    runGroupId,
+    image: `openclaw@sha256:${"a".repeat(64)}`,
+    commandRunner: async (input) => {
+      const result = await runner(input);
+      if (input.args.includes("sandbox") && input.args.includes("explain") && profileRoot) {
+        const sessionFlag = input.args.indexOf("--session");
+        const requested = input.args[sessionFlag + 1] ?? "";
+        const agentId = requested === "agent:other:session-1" ? "other" : "main";
+        const payload = sandboxExplainForSession(profileRoot, `agent-${agentId}-session-1`);
+        payload.sessionKey = `agent:${agentId}:session-1`;
+        return { ...result, stdout: JSON.stringify(payload) };
+      }
+      if (input.args[0] === "ps") {
+        const idFilter = input.args.find((arg) => arg.startsWith("id="));
+        const ids = idFilter
+          ? (activeContainerIds.has(idFilter.slice(3)) ? [idFilter.slice(3)] : [])
+          : [...activeContainerIds];
+        return { ...result, stdout: ids.length ? `${ids.join("\n")}\n` : "" };
+      }
+      if (input.args[0] === "inspect" && profileRoot) {
+        const records = input.args.slice(3)
+          .filter((id) => activeContainerIds.has(id))
+          .map((id) => {
+            const agentId = id === "agent-other" ? "other" : "main";
+            const record = realAgentContainerInspect(
+              profileRoot!,
+              runGroupId,
+              `agent-${agentId}-session-1`,
+              id,
+            );
+            record.Config.Labels["openclaw.sessionKey"] = `agent:${agentId}:session-1`;
+            return record;
+          });
+        return { ...result, stdout: JSON.stringify(records) };
+      }
+      if (input.args[0] === "rm" && input.args[1] === "-f") {
+        const ids = input.args.slice(2);
+        removeCalls.push(ids);
+        ids.forEach((id) => activeContainerIds.delete(id));
+        return result;
+      }
+      return result;
+    },
+  });
+  return {
+    activeContainerIds,
+    manager,
+    removeCalls,
+    setProfileRoot(value: string) { profileRoot = value; },
+  };
+}
+
 test("writes the canonical isolated plugin profile with run-scoped marker and spool directories", async () => {
   const fixtureRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-plugin-profile-"));
   const pluginRoot = path.join(fixtureRoot, "plugin");
@@ -3045,6 +3104,47 @@ test("concurrent attestAndCleanupSession calls share one removal and return deta
   } finally {
     allowRemoval.resolve();
     await manager.cleanup().catch(() => undefined);
+  }
+});
+
+test("agent-scoped sessions with the same tail keep independent cleanup tombstones", async () => {
+  const fixture = scopedSessionCleanupFixture("run-scoped-session-tombstones");
+
+  try {
+    fixture.setProfileRoot((await fixture.manager.start()).profileRoot);
+    const mainEvidence = await fixture.manager.attestAndCleanupSession("agent:main:session-1");
+    const otherEvidence = await fixture.manager.attestAndCleanupSession("agent:other:session-1");
+
+    assert.equal(mainEvidence.containerId, "agent-main");
+    assert.equal(otherEvidence.containerId, "agent-other");
+    assert.deepEqual(fixture.removeCalls, [["agent-main"], ["agent-other"]]);
+    assert.deepEqual([...fixture.activeContainerIds], []);
+  } finally {
+    await fixture.manager.cleanup().catch(() => undefined);
+  }
+});
+
+test("concurrent agent-scoped sessions with the same tail do not share cleanup work", async () => {
+  const fixture = scopedSessionCleanupFixture("run-scoped-session-concurrent");
+
+  try {
+    fixture.setProfileRoot((await fixture.manager.start()).profileRoot);
+    const [mainEvidence, otherEvidence] = await Promise.all([
+      fixture.manager.attestAndCleanupSession("agent:main:session-1"),
+      fixture.manager.attestAndCleanupSession("agent:other:session-1"),
+    ]);
+
+    assert.deepEqual(
+      new Set([mainEvidence.containerId, otherEvidence.containerId]),
+      new Set(["agent-main", "agent-other"]),
+    );
+    assert.equal(fixture.removeCalls.length, 2);
+    assert.deepEqual(
+      new Set(fixture.removeCalls.flat()),
+      new Set(["agent-main", "agent-other"]),
+    );
+  } finally {
+    await fixture.manager.cleanup().catch(() => undefined);
   }
 });
 

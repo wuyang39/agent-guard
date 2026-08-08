@@ -85,6 +85,12 @@ const P2_DEMO_CASES_FILE = path.join(CONFIGS_DIR, "p2_demo_cases.json");
 const OUTPUT_DIR = path.resolve(process.cwd(), "outputs", "reports");
 const TRACES_DIR = path.resolve(process.cwd(), "outputs", "traces");
 const MAX_PROGRESS_FAILURES = 24;
+const MAX_NATIVE_GUARD_DIAGNOSTIC_COUNT = 1_000_000;
+const GUARDED_FINALIZER_ERROR_CODES = new Set([
+  "SESSION_CONTAINER_CLEANUP_FAILED",
+  "CONTAINER_ATTESTATION_MISMATCH",
+  "SANDBOX_EXPLAIN_MISMATCH",
+]);
 const RUN_CANCELLED_MESSAGE = "Run cancelled by user.";
 const activeRunControllers = new Map<string, AbortController>();
 
@@ -987,6 +993,8 @@ type DetectionBatchResult = {
   retriedCases: number;
 };
 
+type DetectionAttemptEvidencePersister = typeof persistDetectionAttemptEvidence;
+
 class DetectionCaseError extends Error {
   readonly category: P2RunCaseFailure["category"];
   readonly attempts: number;
@@ -1018,6 +1026,7 @@ export async function runDetectionCasesConcurrently(input: {
   request: RunE2ERequest;
   signal: AbortSignal;
   guardedSessionFinalizer?: GuardedSessionFinalizer;
+  detectionAttemptEvidencePersister?: DetectionAttemptEvidencePersister;
 }): Promise<DetectionBatchResult> {
   const {
     targetCases,
@@ -1028,6 +1037,7 @@ export async function runDetectionCasesConcurrently(input: {
     request,
     signal,
     guardedSessionFinalizer,
+    detectionAttemptEvidencePersister,
   } = input;
   const concurrency = runGroup.progress?.concurrency ?? getDetectionConcurrency(request);
   const runningCaseIds = new Set<string>();
@@ -1065,11 +1075,13 @@ export async function runDetectionCasesConcurrently(input: {
           request,
           signal,
           guardedSessionFinalizer,
+          detectionAttemptEvidencePersister,
           getCounters: () => ({ completedCases, failedCases, skippedCases, retriedCases }),
           setRetried: () => {
             retriedCases++;
           },
         });
+        throwIfRunCancelled(signal);
 
         riskReportsByIndex[index] = result.riskReport;
 
@@ -1186,6 +1198,7 @@ async function runDetectionCaseWithRetry(input: {
   request: RunE2ERequest;
   signal: AbortSignal;
   guardedSessionFinalizer?: GuardedSessionFinalizer;
+  detectionAttemptEvidencePersister?: DetectionAttemptEvidencePersister;
   getCounters: () => {
     completedCases: number;
     failedCases: number;
@@ -1203,6 +1216,7 @@ async function runDetectionCaseWithRetry(input: {
     request,
     signal,
     guardedSessionFinalizer,
+    detectionAttemptEvidencePersister,
     getCounters,
     setRetried,
   } = input;
@@ -1230,10 +1244,13 @@ async function runDetectionCaseWithRetry(input: {
           runGroup,
           signal,
           guardedSessionFinalizer,
+          detectionAttemptEvidencePersister,
         }),
       };
     } catch (error) {
-      lastMessage = error instanceof Error ? error.message : String(error);
+      lastMessage = scrubDetectionMessage(
+        error instanceof Error ? error.message : String(error),
+      );
       lastClassification = classifyDetectionError(lastMessage, request);
       const shouldRetry =
         lastClassification.retryable && attempt < maxAttempts;
@@ -1296,6 +1313,7 @@ async function runSingleDetectionAttempt(input: {
   runGroup: P2RunGroup;
   signal: AbortSignal;
   guardedSessionFinalizer?: GuardedSessionFinalizer;
+  detectionAttemptEvidencePersister?: DetectionAttemptEvidencePersister;
 }): Promise<ReturnType<typeof buildRiskReport>> {
   const {
     agent,
@@ -1305,6 +1323,7 @@ async function runSingleDetectionAttempt(input: {
     runGroup,
     signal,
     guardedSessionFinalizer,
+    detectionAttemptEvidencePersister = persistDetectionAttemptEvidence,
   } = input;
   throwIfRunCancelled(signal);
   const result = await runTestCase(agent, adapterConfig, context, {
@@ -1314,29 +1333,45 @@ async function runSingleDetectionAttempt(input: {
     requireNativeGuardRuntimeEvidence: Boolean(runGroup.nativeGuardCoverage),
   });
   const { testRun, trace } = result;
-  const coverageFailure = await persistDetectionAttemptEvidence({
-    runGroup,
-    result,
-    signal,
-  });
-
-  const attemptFailure = resolveDetectionAttemptFailure(testRun, coverageFailure);
-  if (attemptFailure) {
-    throw new Error(attemptFailure);
+  let coverageFailure: string | undefined;
+  let persistenceError: unknown;
+  try {
+    coverageFailure = await detectionAttemptEvidencePersister({
+      runGroup,
+      result,
+      signal,
+    });
+  } catch (error) {
+    persistenceError = scrubbedDetectionError(error);
+    coverageFailure = runGroup.nativeGuardCoverage
+      ? recoverNativeGuardCoverageFailure(
+          runGroup.nativeGuardCoverage,
+          testRun.runId,
+        )
+      : undefined;
   }
+  const attemptFailure = resolveDetectionAttemptFailure(testRun, coverageFailure);
 
   if (runGroup.nativeGuardCoverage) {
     const sandboxEvidence = await finalizeGuardedDetectionSession({
       caseId: context.caseId,
       result,
       guardedSessionFinalizer,
+      expectedRunGroupId: runGroup.runGroupId,
+      expectedSandboxEvidence: runGroup.sandboxEvidence,
     });
     if (sandboxEvidence) {
       runGroup.sandboxEvidence = buildSandboxEvidenceSummary(sandboxEvidence);
     }
   }
+  throwIfRunCancelled(signal);
+
+  if (coverageFailure && attemptFailure) throw new Error(attemptFailure);
+  if (persistenceError) throw persistenceError;
+  if (attemptFailure) throw new Error(attemptFailure);
 
   const evaluation = await evaluateRiskWithSemanticScoring(context, trace);
+  throwIfRunCancelled(signal);
   return buildRiskReport(context, evaluation, trace);
 }
 
@@ -1383,20 +1418,34 @@ export function resolveDetectionAttemptFailure(
   testRun: Pick<TestRunResult["testRun"], "status" | "error">,
   coverageFailure?: string,
 ): string | undefined {
-  if (coverageFailure) return coverageFailure;
+  if (coverageFailure) return scrubDetectionMessage(coverageFailure);
   if (testRun.status === "failed") {
-    return testRun.error ?? "Detection test run failed";
+    return scrubDetectionMessage(testRun.error ?? "Detection test run failed");
   }
   return undefined;
+}
+
+function scrubbedDetectionError(error: unknown): Error {
+  return new Error(scrubDetectionMessage(error instanceof Error ? error.message : String(error)));
+}
+
+function scrubDetectionMessage(message: string): string {
+  return scrubSecrets(message).replace(/\[REDACTED\]\]+/g, "[REDACTED]");
 }
 
 export async function finalizeGuardedDetectionSession(input: {
   caseId: string;
   result: Pick<TestRunResult, "testRun" | "nativeGuardRuntime">;
   guardedSessionFinalizer?: GuardedSessionFinalizer;
+  expectedRunGroupId?: string;
+  expectedSandboxEvidence?: SandboxEvidenceSummary;
 }): Promise<DetectionSandboxEvidence | undefined> {
   const { guardedSessionFinalizer } = input;
-  if (!guardedSessionFinalizer) return undefined;
+  if (!guardedSessionFinalizer) {
+    throw new Error(
+      "NATIVE_GUARD_EVIDENCE_UNAVAILABLE: Guarded session finalizer is unavailable.",
+    );
+  }
 
   const runtime = input.result.nativeGuardRuntime;
   if (!runtime) {
@@ -1410,39 +1459,171 @@ export async function finalizeGuardedDetectionSession(input: {
       "NATIVE_GUARD_EVIDENCE_UNAVAILABLE: Native guard session key is missing.",
     );
   }
-  if (runtime.evidenceError) {
-    throw new Error(
-      `NATIVE_GUARD_EVIDENCE_UNAVAILABLE: ${scrubSecrets(runtime.evidenceError)}`,
-    );
-  }
-  if (runtime.revokeError) {
-    throw new Error(
-      `NATIVE_GUARD_REVOKE_FAILED: ${scrubSecrets(runtime.revokeError)}`,
-    );
-  }
-  if (!runtime.reconciliation?.reconciled) {
-    const coverageBreachCount = runtime.reconciliation?.coverageBreachCount ?? 0;
-    throw new Error(
-      `NATIVE_GUARD_COVERAGE_BREACH: ${String(coverageBreachCount)} coverage breach(es); native guard reconciliation is missing or incomplete.`,
-    );
-  }
-
+  let sandboxEvidence: DetectionSandboxEvidence;
   try {
-    return await guardedSessionFinalizer({
+    sandboxEvidence = await guardedSessionFinalizer({
       caseId: input.caseId,
       runId: input.result.testRun.runId,
       sessionKey,
     });
   } catch (error) {
-    if (isRunCancelledError(error)) throw error;
-    const message = scrubSecrets(error instanceof Error ? error.message : String(error));
-    if (/NATIVE_GUARD_(?:EVIDENCE_UNAVAILABLE|REVOKE_FAILED|COVERAGE_BREACH):/i.test(message)) {
+    if (isRunCancelledError(error)) throw scrubbedDetectionError(error);
+    const rawMessage = error instanceof Error ? error.message : String(error);
+    const candidateCode = typeof error === "object" && error !== null && "code" in error
+      ? (error as { code?: unknown }).code
+      : undefined;
+    const stableCode = typeof candidateCode === "string" &&
+        GUARDED_FINALIZER_ERROR_CODES.has(candidateCode)
+      ? candidateCode
+      : undefined;
+    const message = scrubDetectionMessage(
+      stableCode && !rawMessage.startsWith(`${stableCode}:`)
+        ? `${stableCode}: ${rawMessage}`
+        : rawMessage,
+    );
+    if (
+      /NATIVE_GUARD_(?:EVIDENCE_UNAVAILABLE|REVOKE_FAILED|COVERAGE_BREACH):/i.test(message) ||
+      /^(?:SESSION_CONTAINER_CLEANUP_FAILED|CONTAINER_ATTESTATION_MISMATCH|SANDBOX_EXPLAIN_MISMATCH):/i.test(message)
+    ) {
       throw new Error(message);
     }
     throw new Error(
       `NATIVE_GUARD_EVIDENCE_UNAVAILABLE: Guarded session finalization failed: ${message}`,
     );
   }
+
+  const finalizationFailure = validateFinalizedSandboxEvidence(
+    sandboxEvidence,
+    input.expectedRunGroupId,
+    input.expectedSandboxEvidence,
+  );
+  if (finalizationFailure) throw new Error(finalizationFailure);
+  const integrityFailure = resolveNativeGuardRuntimeIntegrityFailure(runtime);
+  if (integrityFailure) throw new Error(integrityFailure);
+  return sandboxEvidence;
+}
+
+function validateFinalizedSandboxEvidence(
+  evidence: DetectionSandboxEvidence,
+  expectedRunGroupId?: string,
+  expected?: SandboxEvidenceSummary,
+): string | undefined {
+  if (!evidence || evidence.status !== "cleaned") {
+    return "SESSION_CONTAINER_CLEANUP_FAILED: Guarded session finalizer did not return cleaned evidence.";
+  }
+  if (
+    typeof evidence.containerId !== "string" ||
+    !/^[a-f0-9]{64}$/.test(evidence.containerId)
+  ) {
+    return "SESSION_CONTAINER_CLEANUP_FAILED: Cleaned evidence does not contain an exact container identity.";
+  }
+  if (
+    !nonEmptyEvidenceString(evidence.runGroupId) ||
+    !nonEmptyEvidenceString(evidence.image) ||
+    !nonEmptyEvidenceString(evidence.imageId) ||
+    !nonEmptyEvidenceString(evidence.openclawVersion) ||
+    !nonEmptyEvidenceString(evidence.profileRoot) ||
+    !nonEmptyEvidenceString(evidence.configPath) ||
+    !nonEmptyEvidenceString(evidence.configDigest) ||
+    (evidence.networkMode !== "none" && evidence.networkMode !== "internal")
+  ) {
+    return "CONTAINER_ATTESTATION_MISMATCH: Cleaned evidence identity is incomplete.";
+  }
+  if (expectedRunGroupId && evidence.runGroupId !== expectedRunGroupId) {
+    return "CONTAINER_ATTESTATION_MISMATCH: Cleaned evidence belongs to a different run group.";
+  }
+  if (
+    expected &&
+    (
+      (expected.imageId !== undefined && evidence.imageId !== expected.imageId) ||
+      (expected.imageDigest !== undefined && evidence.image !== expected.imageDigest) ||
+      (expected.openclawVersion !== undefined && evidence.openclawVersion !== expected.openclawVersion) ||
+      evidence.networkMode !== expected.networkMode ||
+      (expected.configDigest !== undefined && evidence.configDigest !== expected.configDigest) ||
+      (expected.containerId !== undefined && evidence.containerId !== expected.containerId)
+    )
+  ) {
+    return "CONTAINER_ATTESTATION_MISMATCH: Cleaned evidence does not match sandbox preflight identity.";
+  }
+  return undefined;
+}
+
+function nonEmptyEvidenceString(value: string): boolean {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function resolveNativeGuardRuntimeIntegrityFailure(
+  runtime: NonNullable<TestRunResult["nativeGuardRuntime"]>,
+): string | undefined {
+  if (runtime.evidenceError) {
+    return `NATIVE_GUARD_EVIDENCE_UNAVAILABLE: ${scrubDetectionMessage(runtime.evidenceError)}`;
+  }
+  if (runtime.revokeError) {
+    return `NATIVE_GUARD_REVOKE_FAILED: ${scrubDetectionMessage(runtime.revokeError)}`;
+  }
+  return assessNativeGuardReconciliation(runtime.reconciliation).failure;
+}
+
+function cappedNativeGuardDiagnosticCount(value: number): number | undefined {
+  if (!Number.isSafeInteger(value) || value < 0) return undefined;
+  return Math.min(value, MAX_NATIVE_GUARD_DIAGNOSTIC_COUNT);
+}
+
+function addNativeGuardDiagnosticCounts(...values: number[]): number {
+  let total = 0;
+  for (const value of values) {
+    const capped = cappedNativeGuardDiagnosticCount(value);
+    if (capped === undefined) return MAX_NATIVE_GUARD_DIAGNOSTIC_COUNT;
+    total = Math.min(MAX_NATIVE_GUARD_DIAGNOSTIC_COUNT, total + capped);
+  }
+  return total;
+}
+
+function assessNativeGuardReconciliation(
+  reconciliation: NonNullable<TestRunResult["nativeGuardRuntime"]>["reconciliation"],
+): {
+  reconciled: boolean;
+  coverageBreachCount: number;
+  mismatchCount: number;
+  failure?: string;
+} {
+  if (!reconciliation) {
+    return {
+      reconciled: false,
+      coverageBreachCount: 0,
+      mismatchCount: 0,
+      failure: "NATIVE_GUARD_COVERAGE_BREACH: 1 reconciliation issue(s); native guard reconciliation is missing.",
+    };
+  }
+  const coverageBreachCount = cappedNativeGuardDiagnosticCount(
+    reconciliation.coverageBreachCount,
+  );
+  const mismatchCount = cappedNativeGuardDiagnosticCount(
+    reconciliation.mismatchCount,
+  );
+  if (coverageBreachCount === undefined || mismatchCount === undefined) {
+    return {
+      reconciled: false,
+      coverageBreachCount: 0,
+      mismatchCount: 0,
+      failure: "NATIVE_GUARD_COVERAGE_BREACH: 1 reconciliation issue(s); native guard reconciliation counts are invalid.",
+    };
+  }
+  const issueCount = addNativeGuardDiagnosticCounts(
+    coverageBreachCount,
+    mismatchCount,
+  );
+  const reconciled = reconciliation.reconciled === true && issueCount === 0;
+  return {
+    reconciled,
+    coverageBreachCount,
+    mismatchCount,
+    ...(!reconciled
+      ? {
+          failure: `NATIVE_GUARD_COVERAGE_BREACH: ${String(Math.max(1, issueCount))} reconciliation issue(s); native guard reconciliation is incomplete.`,
+        }
+      : {}),
+  };
 }
 
 export function recordNativeGuardSessionCoverage(
@@ -1475,7 +1656,7 @@ export function recordNativeGuardSessionCoverage(
   const revokeError = runtime.revokeError
     ? scrubSecrets(runtime.revokeError)
     : undefined;
-  const reconciliation = runtime.reconciliation;
+  const reconciliation = assessNativeGuardReconciliation(runtime.reconciliation);
   if (identityMissing) {
     const failure = {
       testRunId,
@@ -1486,8 +1667,11 @@ export function recordNativeGuardSessionCoverage(
       identityMissing: true as const,
       eventsTotal: runtime.events.length,
       reconciled: false as const,
-      coverageBreachCount: reconciliation?.coverageBreachCount ?? 0,
-      mismatchCount: (reconciliation?.mismatchCount ?? 0) + 1,
+      coverageBreachCount: reconciliation.coverageBreachCount,
+      mismatchCount: addNativeGuardDiagnosticCounts(
+        reconciliation.mismatchCount,
+        1,
+      ),
       evidenceError: evidenceError!,
       ...(revokeError ? { revokeError } : {}),
     };
@@ -1509,11 +1693,12 @@ export function recordNativeGuardSessionCoverage(
     leaseEpoch: runtimeIdentity.leaseEpoch,
     testRunIds: [testRunId],
     eventsTotal: runtime.events.length,
-    reconciled: Boolean(reconciliation?.reconciled && !evidenceError && !revokeError),
-    coverageBreachCount: reconciliation?.coverageBreachCount ?? 0,
-    mismatchCount:
-      (reconciliation?.mismatchCount ?? 0) +
+    reconciled: Boolean(reconciliation.reconciled && !evidenceError && !revokeError),
+    coverageBreachCount: reconciliation.coverageBreachCount,
+    mismatchCount: addNativeGuardDiagnosticCounts(
+      reconciliation.mismatchCount,
       conflictingEvents.length,
+    ),
     ...(conflictingEvents.length > 0
       ? {
           leaseIdentityConflict: {
@@ -1571,12 +1756,15 @@ export function recordNativeGuardSessionCoverage(
         !mergedEvidenceError &&
         !mergedRevokeError
       ),
-      coverageBreachCount:
-        existing.coverageBreachCount + summary.coverageBreachCount,
-      mismatchCount:
-        existing.mismatchCount +
-        summary.mismatchCount +
-        (runtimeIdentityConflict ? 1 : 0),
+      coverageBreachCount: addNativeGuardDiagnosticCounts(
+        existing.coverageBreachCount,
+        summary.coverageBreachCount,
+      ),
+      mismatchCount: addNativeGuardDiagnosticCounts(
+        existing.mismatchCount,
+        summary.mismatchCount,
+        runtimeIdentityConflict ? 1 : 0,
+      ),
       ...(mergedConflict ? { leaseIdentityConflict: mergedConflict } : {}),
       ...(mergedRevokeError ? { revokeError: mergedRevokeError } : {}),
       ...(mergedEvidenceError ? { evidenceError: mergedEvidenceError } : {}),
@@ -1594,7 +1782,7 @@ export function recordNativeGuardSessionCoverage(
   if (persistedSummary.revokeError) {
     return `NATIVE_GUARD_REVOKE_FAILED: ${persistedSummary.revokeError}`;
   }
-  return undefined;
+  return assessNativeGuardReconciliation(persistedSummary).failure;
 }
 
 function recoverNativeGuardCoverageFailure(
@@ -1610,6 +1798,9 @@ function recoverNativeGuardCoverageFailure(
   if (runtimeFailure?.revokeError) {
     return `NATIVE_GUARD_REVOKE_FAILED: ${runtimeFailure.revokeError}`;
   }
+  if (runtimeFailure) {
+    return assessNativeGuardReconciliation(runtimeFailure).failure;
+  }
 
   const session = coverage.sessions.find(
     (summary) => summary.testRunIds?.includes(testRunId),
@@ -1620,7 +1811,9 @@ function recoverNativeGuardCoverageFailure(
   if (session?.revokeError) {
     return `NATIVE_GUARD_REVOKE_FAILED: ${session.revokeError}`;
   }
-  return undefined;
+  return session
+    ? assessNativeGuardReconciliation(session).failure
+    : undefined;
 }
 
 function aggregateNativeGuardCoverage(
@@ -1631,13 +1824,11 @@ function aggregateNativeGuardCoverage(
     (total, summary) => total + summary.eventsTotal,
     0,
   );
-  coverage.coverageBreachCount = summaries.reduce(
-    (total, summary) => total + summary.coverageBreachCount,
-    0,
+  coverage.coverageBreachCount = addNativeGuardDiagnosticCounts(
+    ...summaries.map((summary) => summary.coverageBreachCount),
   );
-  coverage.mismatchCount = summaries.reduce(
-    (total, summary) => total + summary.mismatchCount,
-    0,
+  coverage.mismatchCount = addNativeGuardDiagnosticCounts(
+    ...summaries.map((summary) => summary.mismatchCount),
   );
   coverage.reconciled = summaries.length > 0 &&
     summaries.every((summary) => summary.reconciled);
@@ -2051,6 +2242,23 @@ export function classifyDetectionError(
   }
 
   const normalized = message.toLowerCase();
+  if (normalized.includes("session_container_cleanup_failed")) {
+    return {
+      category: "sandbox_cleanup_failed",
+      retryable: false,
+      skipAllowed: false,
+    };
+  }
+  if (
+    normalized.includes("container_attestation_mismatch") ||
+    normalized.includes("sandbox_explain_mismatch")
+  ) {
+    return {
+      category: "sandbox_attestation_failed",
+      retryable: false,
+      skipAllowed: false,
+    };
+  }
   if (normalized.includes("native_guard_evidence_unavailable")) {
     return {
       category: "native_guard_evidence_unavailable",

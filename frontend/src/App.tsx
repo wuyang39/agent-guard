@@ -25,6 +25,7 @@ import { RuntimeConfigPage } from "./pages/RuntimeConfig/RuntimeConfigPage";
 import { RunWorkflowPage } from "./pages/RunWorkflow/RunWorkflowPage";
 import { ReportWorkspacePage } from "./pages/ReportWorkspace/ReportWorkspacePage";
 import { LiveSupervisionPage } from "./pages/Supervision/LiveSupervisionPage";
+import { DEFAULT_SELECTION_CASE_COUNT } from "./selectionDefaults";
 
 type ViewKey =
   | "agent"
@@ -40,11 +41,10 @@ const AGENT_CONFIG_STORAGE_KEY = "agent-guard.agent-config";
 const SELECTION_CASE_COUNT_STORAGE_KEY = "agent-guard.selection-case-count";
 const REALTIME_TOAST_LIMIT = 3;
 const REALTIME_TOAST_TTL_MS = 7000;
-const DEFAULT_SELECTION_CASE_COUNT = 30;
 const MIN_SELECTION_CASE_COUNT = 3;
 const MAX_SELECTION_CASE_COUNT = 500;
 const DEFAULT_AGENT_TIMEOUT_MS = 120000;
-const DEFAULT_OPENCLAW_TIMEOUT_MS = 300000;
+const DEFAULT_OPENCLAW_TIMEOUT_MS = 90000;
 const PRODUCT_NAME = "AgentSleuth";
 
 const defaultOpenClawCliPath = import.meta.env.VITE_OPENCLAW_CLI_PATH ?? "";

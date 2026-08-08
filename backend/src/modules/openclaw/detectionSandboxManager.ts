@@ -7,7 +7,10 @@ import path from "node:path";
 import os from "node:os";
 import net from "node:net";
 import type { NativeGuardStatus } from "@agent-guard/contracts";
-import { resolveOpenClawCliInvocation } from "../agent/openclawAdapter";
+import {
+  resolveOpenClawCliInvocation,
+  resolveOpenClawCliPath,
+} from "../agent/openclawAdapter";
 import { generateDetectionOpenClawConfig, detectionConfigDigest, type DetectionOpenClawConfig } from "./detectionOpenClawConfig";
 import { createOpenClawControlClient, type NativeGuardCapability } from "./openclawControlClient";
 import {
@@ -32,6 +35,7 @@ const MAX_MODEL_STATE_FILE_BYTES = 32 * 1024 * 1024;
 const MAX_MODEL_STATE_TOTAL_BYTES = 64 * 1024 * 1024;
 const MODEL_STATE_READ_CHUNK_BYTES = 1024 * 1024;
 export const DETECTION_SANDBOX_COMMAND_TIMEOUT_MS = 30_000;
+export const DETECTION_SANDBOX_CAPABILITY_TIMEOUT_MS = 90_000;
 const MAX_COMMAND_OUTPUT_BYTES = 256 * 1024;
 const MAX_GATEWAY_BOOTSTRAP_BYTES = 8 * 1024;
 const GATEWAY_BOOTSTRAP_TIMEOUT_MS = 60_000;
@@ -219,6 +223,12 @@ export class DetectionSandboxManager {
       : undefined;
   }
 
+  getAttestedCapabilitySnapshot(): NativeGuardCapability | undefined {
+    return this.liveValidated && this.staticCapability && !this.gatewayFailure
+      ? cloneNativeGuardCapability(this.staticCapability)
+      : undefined;
+  }
+
   waitForGatewayFailure(): Promise<SandboxPreflightError> {
     return this.gatewayLifetimeFailure ?? new Promise<SandboxPreflightError>(() => undefined);
   }
@@ -342,7 +352,7 @@ export class DetectionSandboxManager {
     const token = randomBytes(32).toString("base64url");
     const port = await ephemeralPort();
     const gatewayUrl = `http://127.0.0.1:${port}`;
-    const cliPath = this.options.cliPath ?? "openclaw";
+    const cliPath = resolveOpenClawCliPath(this.options.cliPath);
     const env: NodeJS.ProcessEnv = {
       ...strictBaseEnv(),
       OPENCLAW_CONFIG_PATH: this.configPath,
@@ -434,12 +444,15 @@ export class DetectionSandboxManager {
       [...cli.argsPrefix, "sandbox", "explain", "--session", sessionKey, "--json"],
       { ...cli.env, ...env },
     );
-    if (explain.exitCode !== 0 || !matchesSandboxExplain(explain.stdout)) {
+    const expectedWorkspaceRoot = explain.exitCode === 0
+      ? parseSandboxExplainWorkspaceRoot(explain.stdout)
+      : undefined;
+    if (!expectedWorkspaceRoot) {
       throw new SandboxAttestationError("SANDBOX_EXPLAIN_MISMATCH", "OpenClaw sandbox explain did not match the detection profile.");
     }
     let containerId: string | undefined;
     if (phase === "after") {
-      const inspected = await this.inspectLabeledContainer();
+      const inspected = await this.inspectLabeledContainer(sessionKey, expectedWorkspaceRoot);
       containerId = inspected.containerId;
       if (!inspected.matches) {
         throw new SandboxAttestationError("CONTAINER_ATTESTATION_MISMATCH", "Labeled detection container did not match the requested limits.");
@@ -666,7 +679,7 @@ export class DetectionSandboxManager {
         `Detection model state exceeds the allowlisted file count under ${sourceAgentDir}.`,
       );
     }
-    for (const required of ["models.json", "openclaw-agent.sqlite"]) {
+    for (const required of ["openclaw-agent.sqlite"]) {
       if (!allowed.some((entry) => entry.name === required && entry.isFile() && !entry.isSymbolicLink())) {
         throw new SandboxPreflightError(
           "MODEL_PROFILE_SEED_INVALID",
@@ -713,25 +726,6 @@ export class DetectionSandboxManager {
       await assertSeedSnapshotUnchanged(sourceDirectory, openFiles);
 
       const snapshots = new Map(openFiles.map((entry) => [entry.name, entry.content!]));
-      let modelCatalog: unknown;
-      try {
-        modelCatalog = JSON.parse(snapshots.get("models.json")!.toString("utf8")) as unknown;
-      } catch {
-        throw new SandboxPreflightError(
-          "MODEL_PROFILE_SEED_INVALID",
-          `Detection model state models.json is not valid JSON under ${sourceAgentDir}.`,
-        );
-      }
-      if (
-        !isRecord(modelCatalog) ||
-        !isRecord(modelCatalog.providers) ||
-        Object.keys(modelCatalog.providers).length === 0
-      ) {
-        throw new SandboxPreflightError(
-          "MODEL_PROFILE_SEED_INVALID",
-          `Detection model state models.json does not contain a provider catalog under ${sourceAgentDir}.`,
-        );
-      }
       const modelRef = parseSeedModelRef(this.options.profileSeed?.userConfig.model);
       if (!modelRef) {
         throw new SandboxPreflightError(
@@ -739,24 +733,46 @@ export class DetectionSandboxManager {
           "Detection model profile does not contain a valid provider/model primary reference.",
         );
       }
-      const providerEntry = Object.entries(modelCatalog.providers).find(
-        ([provider]) => provider.trim().toLowerCase() === modelRef.provider,
-      )?.[1];
-      if (!isRecord(providerEntry)) {
-        throw new SandboxPreflightError(
-          "MODEL_PROFILE_SEED_INVALID",
-          `Detection model provider ${modelRef.provider} is absent from models.json.`,
+      const modelCatalogSnapshot = snapshots.get("models.json");
+      if (modelCatalogSnapshot) {
+        let modelCatalog: unknown;
+        try {
+          modelCatalog = JSON.parse(modelCatalogSnapshot.toString("utf8")) as unknown;
+        } catch {
+          throw new SandboxPreflightError(
+            "MODEL_PROFILE_SEED_INVALID",
+            `Detection model state models.json is not valid JSON under ${sourceAgentDir}.`,
+          );
+        }
+        if (
+          !isRecord(modelCatalog) ||
+          !isRecord(modelCatalog.providers) ||
+          Object.keys(modelCatalog.providers).length === 0
+        ) {
+          throw new SandboxPreflightError(
+            "MODEL_PROFILE_SEED_INVALID",
+            `Detection model state models.json does not contain a provider catalog under ${sourceAgentDir}.`,
+          );
+        }
+        const providerEntry = Object.entries(modelCatalog.providers).find(
+          ([provider]) => provider.trim().toLowerCase() === modelRef.provider,
+        )?.[1];
+        if (!isRecord(providerEntry)) {
+          throw new SandboxPreflightError(
+            "MODEL_PROFILE_SEED_INVALID",
+            `Detection model provider ${modelRef.provider} is absent from models.json.`,
+          );
+        }
+        const providerModels = Array.isArray(providerEntry.models) ? providerEntry.models : [];
+        const hasModel = providerModels.some(
+          (entry) => isRecord(entry) && typeof entry.id === "string" && entry.id === modelRef.model,
         );
-      }
-      const providerModels = Array.isArray(providerEntry.models) ? providerEntry.models : [];
-      const hasModel = providerModels.some(
-        (entry) => isRecord(entry) && typeof entry.id === "string" && entry.id === modelRef.model,
-      );
-      if (!hasModel) {
-        throw new SandboxPreflightError(
-          "MODEL_PROFILE_SEED_INVALID",
-          `Detection model ${modelRef.model} is absent from provider ${modelRef.provider} in models.json.`,
-        );
+        if (!hasModel) {
+          throw new SandboxPreflightError(
+            "MODEL_PROFILE_SEED_INVALID",
+            `Detection model ${modelRef.model} is absent from provider ${modelRef.provider} in models.json.`,
+          );
+        }
       }
       const expectedHeader = Buffer.from("SQLite format 3\0", "utf8");
       const sqlite = snapshots.get("openclaw-agent.sqlite")!;
@@ -850,7 +866,7 @@ export class DetectionSandboxManager {
     }
     const client = createOpenClawControlClient({
       gatewayToken: "detection-capability-probe",
-      timeoutMs: DETECTION_SANDBOX_COMMAND_TIMEOUT_MS,
+      capabilityTimeoutMs: DETECTION_SANDBOX_CAPABILITY_TIMEOUT_MS,
       commandRunner: async (input) => this.run({
         command: input.command,
         args: input.args,
@@ -989,7 +1005,10 @@ export class DetectionSandboxManager {
     };
   }
 
-  private async inspectLabeledContainer(): Promise<{ containerId?: string; matches: boolean }> {
+  private async inspectLabeledContainer(
+    sessionKey: string,
+    expectedWorkspaceRoot: string,
+  ): Promise<{ containerId?: string; matches: boolean }> {
     const listed = await this.command("docker", ["ps", "-aq", "--filter", `label=${RUN_LABEL_KEY}=${this.options.runGroupId}`]);
     if (listed.exitCode !== 0) return { matches: false };
     const ids = parseDockerIds(listed.stdout, "container");
@@ -1010,15 +1029,29 @@ export class DetectionSandboxManager {
     const agentRecords = records.filter((record) => roleOf(record) === "agent");
     const sinkRecords = records.filter((record) => roleOf(record) === "sink");
     if (
-      agentRecords.length !== 1 ||
+      agentRecords.length < 1 ||
       records.length !== agentRecords.length + sinkRecords.length ||
       (this.options.networkCase
         ? sinkRecords.length !== 1 || sinkRecords[0].Id !== this.sinkContainerId
         : sinkRecords.length !== 0)
     ) return { matches: false };
     if (this.options.networkCase && !this.sinkMatches(sinkRecords[0])) return { matches: false };
-    const matches = agentRecords.every((record) => this.containerMatches(record));
-    return { containerId: typeof agentRecords[0].Id === "string" ? agentRecords[0].Id : undefined, matches };
+    if (!agentRecords.every((record) => this.containerMatches(record))) {
+      return { matches: false };
+    }
+    const workspaceRecords = agentRecords.filter(
+      (record) => sameHostPath(containerWorkspaceSource(record), expectedWorkspaceRoot),
+    );
+    if (workspaceRecords.length > 1) return { matches: false };
+    const sessionRecords = workspaceRecords.length === 1
+      ? workspaceRecords
+      : agentRecords.filter((record) => containerSessionKey(record) === sessionKey);
+    if (sessionRecords.length !== 1) return { matches: false };
+    const sessionRecord = sessionRecords[0];
+    return {
+      containerId: typeof sessionRecord.Id === "string" ? sessionRecord.Id : undefined,
+      matches: typeof sessionRecord.Id === "string",
+    };
   }
 
   private containerMatches(record: Record<string, unknown>): boolean {
@@ -1385,15 +1418,15 @@ function isDirectChildPath(candidate: string, parent: string): boolean {
     path.dirname(relative) === ".";
 }
 
-function matchesSandboxExplain(raw: string): boolean {
+function parseSandboxExplainWorkspaceRoot(raw: string): string | undefined {
   let value: unknown;
-  try { value = JSON.parse(raw); } catch { return false; }
+  try { value = JSON.parse(raw); } catch { return undefined; }
   const sandbox = isRecord(value) && isRecord(value.sandbox)
     ? value.sandbox
     : isRecord(value) && isRecord(value.agents) && isRecord(value.agents.defaults) && isRecord(value.agents.defaults.sandbox)
       ? value.agents.defaults.sandbox
       : value;
-  if (!isRecord(sandbox) || !Array.isArray(sandbox.workspaceMounts)) return false;
+  if (!isRecord(sandbox) || !Array.isArray(sandbox.workspaceMounts)) return undefined;
   const mounts = sandbox.workspaceMounts;
   const mountsAreReadOnly = mounts.every(
     (mount) => isRecord(mount) && mount.writable === false,
@@ -1406,10 +1439,40 @@ function matchesSandboxExplain(raw: string): boolean {
         mount.containerRoot === containerRoot &&
         mount.writable === false,
     );
-  return sandbox.mode === "all" && sandbox.scope === "session" && sandbox.backend === "docker" &&
+  const valid = sandbox.mode === "all" && sandbox.scope === "session" && sandbox.backend === "docker" &&
     sandbox.workspaceAccess === "ro" && sandbox.sessionIsSandboxed === true &&
     sandbox.runtimeWorkdir === "/workspace" && mountsAreReadOnly &&
     hasReadOnlyMount("workspace", "/workspace") && hasReadOnlyMount("agent", "/agent");
+  if (!valid || typeof sandbox.effectiveHostWorkspaceRoot !== "string") return undefined;
+  const workspaceMount = mounts.find(
+    (mount) => isRecord(mount) && mount.source === "workspace" && mount.containerRoot === "/workspace",
+  );
+  if (
+    !isRecord(workspaceMount) ||
+    typeof workspaceMount.hostRoot !== "string" ||
+    !sameHostPath(workspaceMount.hostRoot, sandbox.effectiveHostWorkspaceRoot)
+  ) {
+    return undefined;
+  }
+  return path.resolve(sandbox.effectiveHostWorkspaceRoot);
+}
+
+function containerWorkspaceSource(record: Record<string, unknown>): string {
+  if (!Array.isArray(record.Mounts)) return "";
+  const workspaceMount = record.Mounts.find(
+    (mount) => isRecord(mount) && mount.Type === "bind" && mount.Destination === "/workspace",
+  );
+  return isRecord(workspaceMount) && typeof workspaceMount.Source === "string"
+    ? workspaceMount.Source
+    : "";
+}
+
+function containerSessionKey(record: Record<string, unknown>): string {
+  const config = isRecord(record.Config) ? record.Config : {};
+  const labels = isRecord(config.Labels) ? config.Labels : {};
+  return typeof labels["openclaw.sessionKey"] === "string"
+    ? labels["openclaw.sessionKey"]
+    : "";
 }
 
 function isSafeTempRoot(root: string): boolean {
@@ -1709,6 +1772,15 @@ function sameSerializedSeedDirectoryIdentity(
 function isPathInsideDirectory(candidate: string, root: string): boolean {
   const relative = path.relative(path.resolve(root), path.resolve(candidate));
   return relative.length > 0 && relative !== ".." && !path.isAbsolute(relative) && !relative.startsWith(`..${path.sep}`);
+}
+
+function cloneNativeGuardCapability(
+  capability: NativeGuardCapability,
+): NativeGuardCapability {
+  return {
+    ...capability,
+    conflictingPluginIds: [...capability.conflictingPluginIds],
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

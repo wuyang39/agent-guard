@@ -45,6 +45,8 @@ test("generates a Docker-only detection profile with destructive features disabl
   assert.deepEqual(config.agents.defaults.sandbox.docker.binds, []);
   assert.deepEqual(config.agents.defaults.sandbox.docker.securityOpt, ["no-new-privileges:true"]);
   assert.equal(config.agents.defaults.sandbox.browser.enabled, false);
+  assert.equal(config.agents.defaults.thinkingDefault, "off");
+  assert.deepEqual(config.agents.defaults.params, { maxTokens: 2048 });
   assert.equal(config.tools.elevated.enabled, false);
   assert.deepEqual(config.gateway, { mode: "local" });
   assert.deepEqual(config.plugins, {
@@ -452,7 +454,9 @@ function isSymlinkPrivilegeError(error: unknown): boolean {
 }
 
 function assertEquivalentStrictAgentDefaultsModelSchema(defaults: Record<string, unknown>): void {
-  assert.deepEqual(Object.keys(defaults).sort(), ["model", "sandbox"]);
+  assert.deepEqual(Object.keys(defaults).sort(), ["model", "params", "sandbox", "thinkingDefault"]);
+  assert.deepEqual(defaults.params, { maxTokens: 2048 });
+  assert.equal(defaults.thinkingDefault, "off");
   const model = defaults.model;
   assert.ok(typeof model === "string" || (isPlainRecord(model) &&
     Object.keys(model).every((key) => key === "primary" || key === "fallbacks") &&

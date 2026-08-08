@@ -137,6 +137,37 @@ test("required runtime evidence without reconciliation is fatal", async () => {
   assert.match(result.nativeGuardRuntime?.evidenceError ?? "", /reconciliation/i);
 });
 
+test("provider failure before a session result is not replaced by missing reconciliation", async () => {
+  const providerError =
+    "GatewayClientRequestError: FailoverError: LLM request failed: network connection error.";
+  const result = await runTestCase(AGENT, ADAPTER_CONFIG, CONTEXT, {
+    requireNativeGuardRuntimeEvidence: true,
+    customAdapter: adapterWithSession({
+      async sendTask() {
+        return {
+          ...completedRun(),
+          status: "failed",
+          error: providerError,
+          finalMessage: providerError,
+        };
+      },
+      async drainRuntimeEvidence() {
+        return {
+          sessionKey: "agent:main:run.native-guard-test",
+          leaseId: "lease.provider-failure",
+          leaseEpoch: 1,
+          nativeGuardEvents: [],
+          supervisionRecords: [],
+        };
+      },
+    }),
+  });
+
+  assert.equal(result.testRun.status, "failed");
+  assert.equal(result.testRun.error, providerError);
+  assert.equal(result.nativeGuardRuntime?.evidenceError, undefined);
+});
+
 test("required runtime evidence makes a scrubbed revoke error fatal", async () => {
   const result = await runTestCase(AGENT, ADAPTER_CONFIG, CONTEXT, {
     requireNativeGuardRuntimeEvidence: true,

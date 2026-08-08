@@ -1,0 +1,1 @@
+export const DEFAULT_SELECTION_CASE_COUNT = 5;

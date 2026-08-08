@@ -15,7 +15,7 @@ type RunE2EOptions = {
 };
 
 const DEFAULT_AGENT_TIMEOUT_MS = 120000;
-const DEFAULT_OPENCLAW_TIMEOUT_MS = 300000;
+const DEFAULT_OPENCLAW_TIMEOUT_MS = 90000;
 
 export const runsApi = {
   dashboardSummary() {

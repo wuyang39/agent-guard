@@ -11,7 +11,7 @@ import { Readable } from "node:stream";
 import { gzipSync } from "node:zlib";
 import { signNativeGuardPayload } from "@agent-guard/native-guard-protocol";
 import { registerControlRoutes } from "../../../../plugins/agent-guard-supervision/src/controlRoutes";
-import { OpenClawAdapter } from "../agent/openclawAdapter";
+import { OpenClawAdapter, resolveOpenClawCliPath } from "../agent/openclawAdapter";
 import { resolveDetectionProfileSeed } from "./detectionProfileSeed";
 import {
   DetectionSandboxManager,
@@ -142,17 +142,23 @@ function realSandboxExplain() {
   };
 }
 
-function realAgentContainerInspect(profileRoot: string, runGroupId: string) {
-  const sandboxRoot = path.join(profileRoot, "state", "sandboxes", "session-1");
+function realAgentContainerInspect(
+  profileRoot: string,
+  runGroupId: string,
+  sessionId = "session-1",
+  containerId = "agent-1",
+) {
+  const sandboxRoot = path.join(profileRoot, "state", "sandboxes", sessionId);
   const agentRoot = path.join(profileRoot, "workspace");
   return {
-    Id: "agent-1",
+    Id: containerId,
     Image: `sha256:${"a".repeat(64)}`,
     Config: {
       User: "65532:65532",
       Labels: {
         "agent-guard.run-group": runGroupId,
         "agent-guard.role": "agent",
+        "openclaw.sessionKey": sessionId,
       },
     },
     HostConfig: {
@@ -288,6 +294,33 @@ test("profile seed snapshots only allowlisted main-agent model state files", asy
   });
   assert.equal(Object.hasOwn(isolatedConfig.agents?.defaults ?? {}, "models"), false);
   assert.equal(Object.hasOwn(isolatedConfig, "models"), false);
+});
+
+test("profile seed accepts built-in model state without optional models.json", async (t) => {
+  const sourceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-builtin-model-state-"));
+  const sourceAgentDir = path.join(sourceRoot, "agents", "main", "agent");
+  await fs.mkdir(sourceAgentDir, { recursive: true });
+  await fs.writeFile(
+    path.join(sourceAgentDir, "openclaw-agent.sqlite"),
+    Buffer.from("SQLite format 3\0seed"),
+  );
+  const profileSeed = await resolveTestProfileSeed(sourceRoot, {
+    model: { primary: "deepseek/deepseek-v4-flash" },
+  });
+  t.after(() => fs.rm(sourceRoot, { recursive: true, force: true }));
+
+  const { runner } = runnerFor();
+  const manager = new DetectionSandboxManager({
+    runGroupId: "run-profile-seed-builtin-model",
+    image: `openclaw@sha256:${"a".repeat(64)}`,
+    commandRunner: runner,
+    profileSeed,
+  });
+  t.after(() => manager.cleanup().catch(() => undefined));
+
+  const evidence = await manager.preflight();
+  const isolatedAgentDir = path.join(evidence.profileRoot, "state", "agents", "main", "agent");
+  assert.deepEqual(await fs.readdir(isolatedAgentDir), ["openclaw-agent.sqlite"]);
 });
 
 test("profile seed destination copying checks cancellation before each chunk", async () => {
@@ -1592,6 +1625,28 @@ test("start reuses healthy static capability and still validates the live Gatewa
   }
 });
 
+test("exposes detached capability snapshots only while the live Gateway is validated", async () => {
+  const { runner } = runnerFor();
+  const manager = new DetectionSandboxManager({
+    runGroupId: "run-attested-capability-snapshot",
+    image: `openclaw@sha256:${"a".repeat(64)}`,
+    commandRunner: runner,
+    ...readyGatewayTestOptions(),
+  });
+
+  assert.equal(manager.getAttestedCapabilitySnapshot(), undefined);
+  try {
+    await manager.start();
+    const first = manager.getAttestedCapabilitySnapshot();
+    assert.deepEqual(first, readyCapability());
+    first!.conflictingPluginIds.push("mutated-outside-manager");
+    assert.deepEqual(manager.getAttestedCapabilitySnapshot(), readyCapability());
+  } finally {
+    await manager.cleanup().catch(() => undefined);
+  }
+  assert.equal(manager.getAttestedCapabilitySnapshot(), undefined);
+});
+
 test("production start binds host identity through direct core HTTP and checks plugin status", async () => {
   const { runner } = runnerFor();
   const hostChallenges: string[] = [];
@@ -2307,6 +2362,7 @@ test("cleans a partial start when the gateway launcher fails", async () => {
 test("retains the resolved OpenClaw version and starts an isolated gateway", async () => {
   const { runner } = runnerFor();
   let launchEnv: NodeJS.ProcessEnv | undefined;
+  let launchCliPath: string | undefined;
   let capabilityInput: DetectionCommandInput | undefined;
   const manager = new DetectionSandboxManager({
     runGroupId: "run-version", image: `openclaw@sha256:${"a".repeat(64)}`,
@@ -2316,6 +2372,7 @@ test("retains the resolved OpenClaw version and starts an isolated gateway", asy
     },
     gatewayLauncher: async (input) => {
       launchEnv = input.env;
+      launchCliPath = input.cliPath;
       return {
         url: input.gatewayUrl,
         token: input.token,
@@ -2331,13 +2388,14 @@ test("retains the resolved OpenClaw version and starts an isolated gateway", asy
   assert.match(evidence.gatewayUrl ?? "", /^http:\/\/127\.0\.0\.1:\d+$/);
   assert.equal("gatewayToken" in evidence, false);
   assert.ok(manager.getGatewayCredentials()?.gatewayToken);
+  assert.equal(launchCliPath, resolveOpenClawCliPath());
   assert.equal(launchEnv?.OPENCLAW_CONFIG_PATH, evidence.configPath);
   assert.equal(launchEnv?.OPENCLAW_WORKSPACE_DIR, path.join(evidence.profileRoot, "workspace"));
   assert.equal(launchEnv?.OPENCLAW_PLUGIN_DIRS, "");
   assert.equal(launchEnv?.OPENCLAW_GATEWAY_URL, evidence.gatewayUrl);
   assert.equal(capabilityInput?.env?.OPENCLAW_GATEWAY_URL, undefined);
   assert.equal(capabilityInput?.env?.OPENCLAW_GATEWAY_TOKEN, undefined);
-  assert.equal(capabilityInput?.timeoutMs, 30_000);
+  assert.equal(capabilityInput?.timeoutMs, 90_000);
   assert.deepEqual((await fs.readdir(evidence.profileRoot ? `${process.cwd()}/outputs/openclaw-detection/run-version` : "")).sort(), ["config.json", "hashes.json"]);
   const persisted = JSON.parse(await fs.readFile(`${process.cwd()}/outputs/openclaw-detection/run-version/config.json`, "utf8"));
   assert.deepEqual(persisted.agents.defaults.sandbox.docker.labels, { "agent-guard.run-group": "run-version", "agent-guard.role": "agent" });
@@ -2569,6 +2627,14 @@ test("accepts the two read-only OpenClaw profile bind mounts during container at
     image: `openclaw@sha256:${"a".repeat(64)}`,
     commandRunner: async (input) => {
       const result = await runner(input);
+      if (input.args.includes("sandbox") && input.args.includes("explain") && profileRoot) {
+        const payload = realSandboxExplain();
+        const workspaceRoot = path.join(profileRoot, "state", "sandboxes", "session-1");
+        payload.sandbox.effectiveHostWorkspaceRoot = workspaceRoot;
+        payload.sandbox.workspaceMounts[0].hostRoot = workspaceRoot;
+        payload.sandbox.workspaceMounts[1].hostRoot = path.join(profileRoot, "workspace");
+        return { ...result, stdout: JSON.stringify(payload) };
+      }
       if (input.args[0] === "inspect" && profileRoot) {
         return {
           ...result,
@@ -2584,6 +2650,98 @@ test("accepts the two read-only OpenClaw profile bind mounts during container at
     const evidence = await manager.attestSession("session-1", "after");
     assert.equal(evidence.status, "attested");
     assert.equal(evidence.containerId, "agent-1");
+  } finally {
+    await manager.cleanup().catch(() => undefined);
+  }
+});
+
+test("attests the requested session when a run owns multiple compliant agent containers", async () => {
+  const { runner } = runnerFor();
+  const runGroupId = "run-multiple-session-containers";
+  let profileRoot: string | undefined;
+  const manager = new DetectionSandboxManager({
+    ...readyGatewayTestOptions(),
+    runGroupId,
+    image: `openclaw@sha256:${"a".repeat(64)}`,
+    commandRunner: async (input) => {
+      const result = await runner(input);
+      if (input.args[0] === "ps" && input.args.includes(`label=agent-guard.run-group=${runGroupId}`)) {
+        return { ...result, stdout: "agent-1\nagent-2\n" };
+      }
+      if (input.args[0] === "inspect" && profileRoot) {
+        return {
+          ...result,
+          stdout: JSON.stringify([
+            realAgentContainerInspect(profileRoot, runGroupId, "session-1", "agent-1"),
+            realAgentContainerInspect(profileRoot, runGroupId, "session-2", "agent-2"),
+          ]),
+        };
+      }
+      if (input.args.includes("sandbox") && input.args.includes("explain") && profileRoot) {
+        const payload = realSandboxExplain();
+        const workspaceRoot = path.join(profileRoot, "state", "sandboxes", "session-2");
+        payload.sessionKey = "session-2";
+        payload.sandbox.effectiveHostWorkspaceRoot = workspaceRoot;
+        payload.sandbox.workspaceMounts[0].hostRoot = workspaceRoot;
+        payload.sandbox.workspaceMounts[1].hostRoot = path.join(profileRoot, "workspace");
+        return { ...result, stdout: JSON.stringify(payload) };
+      }
+      return result;
+    },
+  });
+
+  try {
+    profileRoot = (await manager.start()).profileRoot;
+    const evidence = await manager.attestSession("session-2", "after");
+    assert.equal(evidence.status, "attested");
+    assert.equal(evidence.containerId, "agent-2");
+  } finally {
+    await manager.cleanup().catch(() => undefined);
+  }
+});
+
+test("attests a live probe whose CLI explain canonicalizes the container session key", async () => {
+  const { runner } = runnerFor();
+  const runGroupId = "run-canonicalized-probe-session";
+  const sessionKey = "run-canonicalized-probe-session.benign";
+  let profileRoot: string | undefined;
+  const manager = new DetectionSandboxManager({
+    ...readyGatewayTestOptions(),
+    runGroupId,
+    image: `openclaw@sha256:${"a".repeat(64)}`,
+    commandRunner: async (input) => {
+      const result = await runner(input);
+      if (input.args[0] === "inspect" && profileRoot) {
+        return {
+          ...result,
+          stdout: JSON.stringify([
+            realAgentContainerInspect(profileRoot, runGroupId, sessionKey, "agent-probe"),
+          ]),
+        };
+      }
+      if (input.args.includes("sandbox") && input.args.includes("explain") && profileRoot) {
+        const payload = realSandboxExplain();
+        const canonicalWorkspace = path.join(
+          profileRoot,
+          "state",
+          "sandboxes",
+          "agent-main-run-canonicalized-probe-session",
+        );
+        payload.sessionKey = `agent:main:${sessionKey}`;
+        payload.sandbox.effectiveHostWorkspaceRoot = canonicalWorkspace;
+        payload.sandbox.workspaceMounts[0].hostRoot = canonicalWorkspace;
+        payload.sandbox.workspaceMounts[1].hostRoot = path.join(profileRoot, "workspace");
+        return { ...result, stdout: JSON.stringify(payload) };
+      }
+      return result;
+    },
+  });
+
+  try {
+    profileRoot = (await manager.start()).profileRoot;
+    const evidence = await manager.attestSession(sessionKey, "after");
+    assert.equal(evidence.status, "attested");
+    assert.equal(evidence.containerId, "agent-probe");
   } finally {
     await manager.cleanup().catch(() => undefined);
   }
@@ -2801,7 +2959,7 @@ function readyCapability() {
     openclawVersion: "2026.7.2",
     supportsNativeGuard: true,
     finalizerAssurance: "isolated_profile" as const,
-    conflictingPluginIds: [],
+    conflictingPluginIds: [] as string[],
   };
 }
 

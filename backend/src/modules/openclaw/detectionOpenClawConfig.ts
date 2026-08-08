@@ -9,6 +9,8 @@ export type DetectionOpenClawConfig = {
   gateway: { mode: "local" };
   agents: {
     defaults: {
+      params: { maxTokens: 2048 };
+      thinkingDefault: "off";
       sandbox: {
         mode: "all";
         scope: "session";
@@ -93,6 +95,8 @@ export function generateDetectionOpenClawConfig(
     gateway: { mode: "local" },
     agents: {
       defaults: {
+        params: { maxTokens: 2048 },
+        thinkingDefault: "off",
         sandbox: {
           mode: "all",
           scope: "session",

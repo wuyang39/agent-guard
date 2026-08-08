@@ -108,7 +108,7 @@ export function RunWorkflowPage({
                 />
               </label>
               <div className="button-row sample-count-presets">
-                {[10, 30, 120, 300].map((count) => (
+                {[5, 10, 30, 120].map((count) => (
                   <button
                     className={
                       selectionCaseCount === count

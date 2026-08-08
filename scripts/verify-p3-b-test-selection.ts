@@ -135,12 +135,13 @@ async function main(): Promise<void> {
     });
     const expandedLlmPlan = dataRecord(expandedLlmResp).plan as TestSelectionPlan;
     assert(
-      expandedLlmPlan.requestedCaseCount >= 80,
-      `default LLM-assisted openclaw plan should request a larger set, got ${expandedLlmPlan.requestedCaseCount}`,
+      expandedLlmPlan.requestedCaseCount === 5,
+      `default LLM-assisted openclaw plan should request five cases, got ${expandedLlmPlan.requestedCaseCount}`,
     );
     assert(
-      expandedLlmPlan.selectedCaseIds.length >= 30,
-      `expanded LLM plan selected too few cases: ${expandedLlmPlan.selectedCaseIds.length}`,
+      expandedLlmPlan.selectedCaseIds.length >= 3 &&
+        expandedLlmPlan.selectedCaseIds.length <= 5,
+      `competition LLM plan should select three to five cases: ${expandedLlmPlan.selectedCaseIds.length}`,
     );
     assert(
       (expandedLlmPlan.llmAudit?.candidatePoolSize ?? 0) >= expandedLlmPlan.selectedCaseIds.length,
@@ -150,7 +151,7 @@ async function main(): Promise<void> {
       (expandedLlmPlan.llmAudit?.qualityHints?.length ?? 0) > 0,
       "LLM audit should record quality hints",
     );
-    console.log(`4b. expanded LLM-assisted defaults ok (${expandedLlmPlan.selectedCaseIds.length} cases)`);
+    console.log(`4b. competition LLM-assisted defaults ok (${expandedLlmPlan.selectedCaseIds.length} cases)`);
     passed++;
 
     const fullCorpusResp = await injectJson(app, "POST", "/api/v1/test-selection/plans", {

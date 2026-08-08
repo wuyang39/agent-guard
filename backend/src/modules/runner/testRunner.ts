@@ -134,6 +134,7 @@ export async function runTestCase(
   });
 
   // 7. try/catch/finally
+  let agentTaskCompleted = false;
   try {
     const result = await session.sendTask(task, activeBridge, {
       runId,
@@ -150,6 +151,7 @@ export async function runTestCase(
       message: result.finalMessage ?? "",
     });
     testRun.status = "completed";
+    agentTaskCompleted = true;
   } catch (error) {
     recorder.record("system_error", "system", {
       code: "RUNNER_ERROR",
@@ -210,6 +212,7 @@ export async function runTestCase(
 
     if (
       options?.requireNativeGuardRuntimeEvidence &&
+      agentTaskCompleted &&
       nativeGuardRuntime &&
       !nativeGuardRuntime.evidenceError &&
       !nativeGuardRuntime.reconciliation

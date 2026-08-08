@@ -343,23 +343,23 @@ function normalizeOptionalPositiveInteger(
   return Math.floor(value);
 }
 
-function defaultMaxCaseCount(
+export function defaultMaxCaseCount(
   targetProfile: TestSelectionRequest["targetProfile"],
   selectionMode: TestSelectionRequest["selectionMode"],
 ): number {
   if (targetProfile === "full-corpus") return selectionMode === "llm_assisted" ? 320 : 160;
   if (targetProfile === "regression") return selectionMode === "llm_assisted" ? 160 : 80;
-  if (targetProfile === "openclaw") return selectionMode === "llm_assisted" ? 80 : 40;
+  if (targetProfile === "openclaw") return 5;
   return selectionMode === "llm_assisted" ? 10 : 7;
 }
 
-function defaultMinCaseCount(
+export function defaultMinCaseCount(
   targetProfile: TestSelectionRequest["targetProfile"],
   selectionMode: TestSelectionRequest["selectionMode"],
 ): number {
   if (targetProfile === "full-corpus") return selectionMode === "llm_assisted" ? 120 : 64;
   if (targetProfile === "regression") return selectionMode === "llm_assisted" ? 64 : 32;
-  if (targetProfile === "openclaw") return selectionMode === "llm_assisted" ? 30 : 16;
+  if (targetProfile === "openclaw") return 3;
   return 3;
 }
 

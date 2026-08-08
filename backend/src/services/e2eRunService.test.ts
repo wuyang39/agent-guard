@@ -30,6 +30,78 @@ const OPENCLAW_REQUEST = {
   generateDefenseReport: false,
 } as const;
 
+test("OpenClaw competition detection uses bounded default attempt budgets", (t) => {
+  const previousAttempts = process.env.AGENT_GUARD_OPENCLAW_CASE_MAX_ATTEMPTS;
+  const previousRetryBase = process.env.AGENT_GUARD_OPENCLAW_RETRY_BASE_MS;
+  delete process.env.AGENT_GUARD_OPENCLAW_CASE_MAX_ATTEMPTS;
+  delete process.env.AGENT_GUARD_OPENCLAW_RETRY_BASE_MS;
+  t.after(() => {
+    if (previousAttempts === undefined) delete process.env.AGENT_GUARD_OPENCLAW_CASE_MAX_ATTEMPTS;
+    else process.env.AGENT_GUARD_OPENCLAW_CASE_MAX_ATTEMPTS = previousAttempts;
+    if (previousRetryBase === undefined) delete process.env.AGENT_GUARD_OPENCLAW_RETRY_BASE_MS;
+    else process.env.AGENT_GUARD_OPENCLAW_RETRY_BASE_MS = previousRetryBase;
+  });
+  const performance = e2eRunServiceModule as unknown as {
+    getOpenClawDetectionTimeoutMs?: (request: typeof OPENCLAW_REQUEST & {
+      connection?: { timeoutMs?: number };
+    }) => number;
+    getDetectionMaxAttempts?: (request: typeof OPENCLAW_REQUEST) => number;
+    getDetectionRetryDelayMs?: (attempt: number) => number;
+  };
+
+  assert.equal(performance.getOpenClawDetectionTimeoutMs?.(OPENCLAW_REQUEST), 90_000);
+  assert.equal(performance.getOpenClawDetectionTimeoutMs?.({
+    ...OPENCLAW_REQUEST,
+    connection: { timeoutMs: 45_000 },
+  }), 45_000);
+  assert.equal(performance.getDetectionMaxAttempts?.(OPENCLAW_REQUEST), 2);
+  assert.equal(performance.getDetectionRetryDelayMs?.(1), 3_000);
+  assert.equal(performance.getDetectionRetryDelayMs?.(2), 6_000);
+});
+
+test("OpenClaw execution stably defers encoded and obfuscated cases", () => {
+  const orderCases = (e2eRunServiceModule as unknown as {
+    orderDetectionCasesForExecution?: <T>(cases: T[]) => T[];
+  }).orderDetectionCasesForExecution;
+  assert.equal(typeof orderCases, "function");
+  const cases = [
+    detectionOrderCase("case.normal.first", "manual.frame.safe_fixture"),
+    detectionOrderCase("case.encoded.base32", "pyrit.converter.base32"),
+    detectionOrderCase("case.normal.second", "pyrit.executor.role_play"),
+    detectionOrderCase("case.obfuscated.math", "pyrit.converter.math_obfuscation"),
+    detectionOrderCase("case.encoded.smuggling", "aig.encoding.ascii_smuggling"),
+  ];
+
+  const ordered = orderCases!(cases);
+  assert.deepEqual(ordered.map((item) => item.caseId), [
+    "case.normal.first",
+    "case.normal.second",
+    "case.encoded.base32",
+    "case.obfuscated.math",
+    "case.encoded.smuggling",
+  ]);
+  assert.deepEqual(cases.map((item) => item.caseId), [
+    "case.normal.first",
+    "case.encoded.base32",
+    "case.normal.second",
+    "case.obfuscated.math",
+    "case.encoded.smuggling",
+  ]);
+});
+
+function detectionOrderCase(caseId: string, operatorId: string) {
+  return {
+    caseId,
+    caseName: caseId,
+    testCase: {
+      caseId,
+      caseName: caseId,
+      description: caseId,
+      task: { metadata: { operatorId } },
+    },
+  };
+}
+
 test("a conflicting detection run cannot release the active owner's reservation", () => {
   const owner = reserveDetectionRun();
   let contender: DetectionRunReservation | undefined;

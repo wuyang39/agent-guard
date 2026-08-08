@@ -10,6 +10,15 @@ import {
 } from "./app";
 import { createNativeGuardEventStore } from "./storage/nativeGuardEventStore";
 
+function attestedCapability() {
+  return {
+    openclawVersion: "2026.7.2",
+    supportsNativeGuard: true,
+    finalizerAssurance: "isolated_profile" as const,
+    conflictingPluginIds: [],
+  };
+}
+
 test("default native guard composition exposes one runtime event store to the sandbox factory", () => {
   const runtimeEventStore = createNativeGuardEventStore();
   const dependencies = createNativeGuardRouteDependencies({
@@ -26,6 +35,7 @@ test("default native guard composition exposes one runtime event store to the sa
     gatewayUrl: "http://127.0.0.1:18789",
     gatewayToken: "sandbox-token",
     profileEnv: {},
+    capabilitySnapshot: attestedCapability(),
   });
   assert.equal(runGuard.eventStore, runtimeEventStore);
 });
@@ -80,6 +90,7 @@ test("sandbox activation gives cold capability inspection the preflight command 
     gatewayToken: "sandbox-token",
     cliPath,
     profileEnv: {},
+    capabilitySnapshot: attestedCapability(),
   });
 
   const lease = await runGuard.activate({
@@ -88,4 +99,44 @@ test("sandbox activation gives cold capability inspection the preflight command 
   });
 
   assert.deepEqual(lease, { leaseId: "lease-cold-start", leaseEpoch: 1 });
+});
+
+test("sandbox activation reuses the run-scoped attested capability snapshot", async () => {
+  let capabilityInspections = 0;
+  const runtimeEventStore = createNativeGuardEventStore();
+  const dependencies = createNativeGuardRouteDependencies({
+    coordinator: {
+      async activate(input: Parameters<ReturnType<typeof createNativeGuardRouteDependencies>["coordinator"]["activate"]>[0]) {
+        const first = await input.sandbox!.controlClient.inspectCapabilities(
+          input.sandbox!.capabilityInput,
+        );
+        const second = await input.sandbox!.controlClient.inspectCapabilities(
+          input.sandbox!.capabilityInput,
+        );
+        capabilityInspections += 2;
+        assert.notEqual(first, second);
+        first.conflictingPluginIds.push("mutated-outside-cache");
+        assert.deepEqual(second.conflictingPluginIds, []);
+        return { activeLease: { leaseId: "lease-cached", leaseEpoch: 1 } } as never;
+      },
+    } as never,
+    leaseService: {} as never,
+    eventStore: runtimeEventStore,
+    createDecisionService() {
+      return { async decide() { throw new Error("not called"); } };
+    },
+  });
+  const runGuard = createSandboxCoordinatorFactory(dependencies)({
+    gatewayUrl: "http://127.0.0.1:18789",
+    gatewayToken: "sandbox-token",
+    cliPath: "missing-openclaw-cli",
+    profileEnv: {},
+    capabilitySnapshot: attestedCapability(),
+  } as never);
+
+  assert.deepEqual(await runGuard.activate({
+    rootSessionKey: "agent:cached-capability",
+    runGroupId: "run-cached-capability",
+  }), { leaseId: "lease-cached", leaseEpoch: 1 });
+  assert.equal(capabilityInspections, 2);
 });

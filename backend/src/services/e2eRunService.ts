@@ -78,6 +78,7 @@ import type {
 } from "../api/types";
 import type { TestRunResult } from "../modules/runner/runTypes";
 import { scrubSecrets } from "../shared/scrubSecrets";
+import type { NativeGuardCapability } from "../modules/openclaw/openclawControlClient";
 
 const CONFIGS_DIR = path.resolve(process.cwd(), "configs");
 const P2_DEMO_CASES_FILE = path.join(CONFIGS_DIR, "p2_demo_cases.json");
@@ -169,6 +170,7 @@ export type SandboxCoordinatorFactory = (input: {
   gatewayUrl: string;
   gatewayToken: string;
   cliPath?: string;
+  capabilitySnapshot: NativeGuardCapability;
   /** Isolated profile env: OPENCLAW_CONFIG_PATH, OPENCLAW_STATE_DIR, etc. */
   profileEnv: Record<string, string>;
 }) => {
@@ -250,7 +252,7 @@ function buildCustomAdapter(request: RunE2ERequest): AgentAdapter | undefined {
           process.env.OPENCLAW_GATEWAY_URL ??
           "http://localhost:18789",
         cliPath: request.connection?.cliPath,
-        timeoutMs: request.connection?.timeoutMs ?? 300_000,
+        timeoutMs: getOpenClawDetectionTimeoutMs(request),
       });
     }
     default:
@@ -448,9 +450,12 @@ export async function runE2E(
       }
     }
 
-    const targetCases = selectedCaseIds.length
+    const matchedCases = selectedCaseIds.length
       ? contexts.filter((ctx: (typeof contexts)[number]) => selectedCaseIds.includes(ctx.caseId))
       : contexts;
+    const targetCases = request.adapterKind === "openclaw"
+      ? orderDetectionCasesForExecution(matchedCases)
+      : matchedCases;
 
     if (targetCases.length === 0) {
       throw new CaseIdValidationError(
@@ -611,8 +616,9 @@ export async function runE2E(
         // targets the sandbox Gateway (not the host Gateway) for all
         // lease activate/revoke operations during this detection run.
         const sandboxCreds = sandboxManager.getGatewayCredentials();
-        if (!sandboxCreds) {
-          throw new Error("Sandbox started but no Gateway credentials returned.");
+        const capabilitySnapshot = sandboxManager.getAttestedCapabilitySnapshot();
+        if (!sandboxCreds || !capabilitySnapshot) {
+          throw new Error("Sandbox started but no attested Gateway capability returned.");
         }
         if (!(customAdapter instanceof OpenClawAdapter)) {
           throw new Error("Sandbox requires an OpenClaw adapter.");
@@ -637,13 +643,14 @@ export async function runE2E(
           gatewayToken: sandboxCreds.gatewayToken,
           cliPath: request.connection?.cliPath,
           profileEnv,
+          capabilitySnapshot,
         });
         eventStore = runGuard.eventStore;
         customAdapter = new OpenClawAdapter({
           gatewayUrl: sandboxCreds.gatewayUrl,
           gatewayToken: sandboxCreds.gatewayToken,
           cliPath: request.connection?.cliPath,
-          timeoutMs: request.connection?.timeoutMs ?? 300_000,
+          timeoutMs: getOpenClawDetectionTimeoutMs(request),
           env: profileEnv,
           signal: sandboxManager.signal,
           nativeGuardRequired: true,
@@ -1845,21 +1852,63 @@ function getDetectionConcurrency(request: RunE2ERequest): number {
   return 6;
 }
 
-function getDetectionMaxAttempts(request: RunE2ERequest): number {
+export function getOpenClawDetectionTimeoutMs(request: RunE2ERequest): number {
+  return request.connection?.timeoutMs ?? 90_000;
+}
+
+type DetectionCaseOrderInput = {
+  caseId: string;
+  caseName?: string;
+  testCase: {
+    description?: string;
+    task: {
+      instruction?: string;
+      metadata?: unknown;
+    };
+  };
+};
+
+const DEFERRED_DETECTION_CASE_PATTERN =
+  /(?:encoding|obfuscat|smuggl|base(?:32|64|85|2048)|braille|unicode|morse|rot\d*|caesar|vigenere|binary|bin_ascii|hex|octal|a1z26|atbash|ecoji|zero_width|character_(?:space|split)|ascii_art|leetspeak|superscript|variation_selector|sneaky_bits|percent_double_encode|python_chr|powershell_join)/i;
+
+export function orderDetectionCasesForExecution<T extends DetectionCaseOrderInput>(
+  cases: readonly T[],
+): T[] {
+  return cases
+    .map((item, index) => ({ item, index, deferred: isDeferredDetectionCase(item) }))
+    .sort((left, right) => Number(left.deferred) - Number(right.deferred) || left.index - right.index)
+    .map(({ item }) => item);
+}
+
+function isDeferredDetectionCase(testContext: DetectionCaseOrderInput): boolean {
+  const metadata = testContext.testCase.task.metadata;
+  const operatorId =
+    typeof metadata === "object" && metadata !== null && !Array.isArray(metadata) &&
+    typeof (metadata as Record<string, unknown>).operatorId === "string"
+      ? (metadata as Record<string, string>).operatorId
+      : "";
+  return DEFERRED_DETECTION_CASE_PATTERN.test([
+    operatorId,
+    testContext.caseName,
+    testContext.testCase.description,
+  ].filter((value): value is string => typeof value === "string").join(" "));
+}
+
+export function getDetectionMaxAttempts(request: RunE2ERequest): number {
   if (request.adapterKind !== "openclaw") return 1;
   const configured = Number(process.env.AGENT_GUARD_OPENCLAW_CASE_MAX_ATTEMPTS);
   if (Number.isFinite(configured) && configured > 0) {
     return Math.max(1, Math.min(Math.floor(configured), 5));
   }
-  return 3;
+  return 2;
 }
 
-function getDetectionRetryDelayMs(attempt: number): number {
+export function getDetectionRetryDelayMs(attempt: number): number {
   const configured = Number(process.env.AGENT_GUARD_OPENCLAW_RETRY_BASE_MS);
   const baseMs =
     Number.isFinite(configured) && configured >= 0
       ? configured
-      : 15_000;
+      : 3_000;
   const cappedAttempt = Math.max(1, Math.min(attempt, 4));
   return Math.min(120_000, baseMs * 2 ** (cappedAttempt - 1));
 }

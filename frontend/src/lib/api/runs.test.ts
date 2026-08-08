@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { mockBundle } from "./mockData";
 import { runsApi } from "./runs";
+import { agentsApi } from "./agents";
 import type { CLineRunGroup } from "./types";
 
 const sessionCoverage = {
@@ -118,4 +119,41 @@ test("run group API defensively normalizes legacy native guard coverage", async 
     sessions: [],
     runtimeFailures: [],
   });
+});
+
+test("OpenClaw API defaults use the competition 90-second timeout", async (t) => {
+  const previousFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = previousFetch;
+  });
+  let runPayload: Record<string, unknown> | undefined;
+  globalThis.fetch = (async (
+    _url: string | URL | Request,
+    init?: RequestInit,
+  ) => {
+    if (init?.method === "POST") {
+      runPayload = JSON.parse(String(init.body)) as Record<string, unknown>;
+      return {
+        async json() {
+          return { ok: true, data: { runGroup: {} } };
+        },
+      };
+    }
+    return {
+      async json() {
+        return {
+          ok: true,
+          data: { agents: [{}], activeAgent: {} },
+        };
+      },
+    };
+  }) as unknown as typeof fetch;
+
+  const agents = await agentsApi.agents();
+  assert.equal(agents.activeAgent.timeoutMs, 90_000);
+  await runsApi.runE2E();
+  assert.equal(
+    (runPayload?.connection as { timeoutMs?: number } | undefined)?.timeoutMs,
+    90_000,
+  );
 });

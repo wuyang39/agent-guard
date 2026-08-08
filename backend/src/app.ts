@@ -20,8 +20,11 @@ import { reportRoutes, artifactRoutes, policyRoutes } from "./api/v1/reports/han
 import { openClawRealtimeMcpRoutes } from "./api/v1/openclaw/realtime-mcp-handlers";
 import { runtimeConfigRoutes } from "./api/v1/runtime-config/handlers";
 import { openClawPyritOpenAiRoutes } from "./api/v1/openclaw/pyrit-openai-handlers";
-import { createOpenClawControlClient } from "./modules/openclaw/openclawControlClient";
-import { DETECTION_SANDBOX_COMMAND_TIMEOUT_MS } from "./modules/openclaw/detectionSandboxManager";
+import {
+  createOpenClawControlClient,
+  type NativeGuardCapability,
+} from "./modules/openclaw/openclawControlClient";
+import { DETECTION_SANDBOX_CAPABILITY_TIMEOUT_MS } from "./modules/openclaw/detectionSandboxManager";
 import { createNativeGuardLeaseService } from "./modules/openclaw/nativeGuardLeaseService";
 import { createNativeGuardEventStore } from "./storage/nativeGuardEventStore";
 import type { NativeGuardEventStore } from "./storage/nativeGuardEventStore";
@@ -52,10 +55,16 @@ export function createSandboxCoordinatorFactory(
   );
 
   return (input) => {
-    const sandboxControlClient = createOpenClawControlClient({
+    const liveControlClient = createOpenClawControlClient({
       gatewayToken: input.gatewayToken,
-      capabilityTimeoutMs: DETECTION_SANDBOX_COMMAND_TIMEOUT_MS,
+      capabilityTimeoutMs: DETECTION_SANDBOX_CAPABILITY_TIMEOUT_MS,
     });
+    const sandboxControlClient = {
+      ...liveControlClient,
+      async inspectCapabilities() {
+        return cloneNativeGuardCapability(input.capabilitySnapshot);
+      },
+    };
     return {
       activate: async (actInput) => {
         const status = await nativeGuardDependencies.coordinator.activate({
@@ -81,6 +90,15 @@ export function createSandboxCoordinatorFactory(
       },
       eventStore: runtimeEventStore,
     };
+  };
+}
+
+function cloneNativeGuardCapability(
+  capability: NativeGuardCapability,
+): NativeGuardCapability {
+  return {
+    ...capability,
+    conflictingPluginIds: [...capability.conflictingPluginIds],
   };
 }
 

@@ -71,9 +71,14 @@ function runnerFor(result: Partial<DetectionCommandResult> = {}) {
     if (command.includes("--version")) return { exitCode: 0, stdout: "openclaw 2026.7.2", stderr: "" };
     if (command.includes("docker image inspect")) return { exitCode: 0, stdout: JSON.stringify({ Id: `sha256:${"a".repeat(64)}`, RepoDigests: [`openclaw@sha256:${"a".repeat(64)}`] }), stderr: "" };
     if (command.includes("sandbox explain")) {
+      const payload = realSandboxExplain();
+      const sessionFlag = input.args.indexOf("--session");
+      if (sessionFlag >= 0 && input.args[sessionFlag + 1]) {
+        payload.sessionKey = input.args[sessionFlag + 1];
+      }
       return {
         exitCode: 0,
-        stdout: JSON.stringify(realSandboxExplain()),
+        stdout: JSON.stringify(payload),
         stderr: "",
       };
     }
@@ -2868,6 +2873,158 @@ test("attestAndCleanupSession rejects zero or multiple matching session identiti
         await manager.cleanup().catch(() => undefined);
       }
     });
+  }
+});
+
+test("attestAndCleanupSession rejects a workspace match with a missing or contradictory session label", async (t) => {
+  for (const fixture of [
+    {
+      name: "missing label",
+      mutate(record: ReturnType<typeof realAgentContainerInspect>) {
+        delete (record.Config.Labels as Record<string, unknown>)["openclaw.sessionKey"];
+      },
+    },
+    {
+      name: "contradictory label",
+      mutate(record: ReturnType<typeof realAgentContainerInspect>) {
+        record.Config.Labels["openclaw.sessionKey"] = "session-2";
+      },
+    },
+  ]) {
+    await t.test(fixture.name, async () => {
+      const { runner } = runnerFor();
+      const runGroupId = `run-session-cleanup-label-${fixture.name.replaceAll(" ", "-")}`;
+      let removeCalls = 0;
+      let profileRoot: string | undefined;
+      const manager = new DetectionSandboxManager({
+        ...readyGatewayTestOptions(),
+        runGroupId,
+        image: `openclaw@sha256:${"a".repeat(64)}`,
+        commandRunner: async (input) => {
+          const result = await runner(input);
+          if (input.args.includes("sandbox") && input.args.includes("explain") && profileRoot) {
+            return { ...result, stdout: JSON.stringify(sandboxExplainForSession(profileRoot, "session-1")) };
+          }
+          if (input.args[0] === "ps") return { ...result, stdout: "agent-1\n" };
+          if (input.args[0] === "inspect" && profileRoot) {
+            const record = realAgentContainerInspect(profileRoot, runGroupId);
+            fixture.mutate(record);
+            return { ...result, stdout: JSON.stringify([record]) };
+          }
+          if (input.args[0] === "rm" && input.args[1] === "-f") removeCalls += 1;
+          return result;
+        },
+      });
+
+      try {
+        profileRoot = (await manager.start()).profileRoot;
+        await assert.rejects(
+          manager.attestAndCleanupSession("session-1"),
+          (error: unknown) =>
+            error instanceof SandboxAttestationError &&
+            error.code === "CONTAINER_ATTESTATION_MISMATCH",
+        );
+        assert.equal(removeCalls, 0);
+      } finally {
+        await manager.cleanup().catch(() => undefined);
+      }
+    });
+  }
+});
+
+test("attestAndCleanupSession rejects a matching label mounted from an unrelated session workspace", async () => {
+  const { runner } = runnerFor();
+  const runGroupId = "run-session-cleanup-workspace-mismatch";
+  let removeCalls = 0;
+  let profileRoot: string | undefined;
+  const manager = new DetectionSandboxManager({
+    ...readyGatewayTestOptions(),
+    runGroupId,
+    image: `openclaw@sha256:${"a".repeat(64)}`,
+    commandRunner: async (input) => {
+      const result = await runner(input);
+      if (input.args.includes("sandbox") && input.args.includes("explain") && profileRoot) {
+        return { ...result, stdout: JSON.stringify(sandboxExplainForSession(profileRoot, "session-1")) };
+      }
+      if (input.args[0] === "ps") return { ...result, stdout: "agent-1\n" };
+      if (input.args[0] === "inspect" && profileRoot) {
+        const record = realAgentContainerInspect(profileRoot, runGroupId, "session-2");
+        record.Config.Labels["openclaw.sessionKey"] = "session-1";
+        return { ...result, stdout: JSON.stringify([record]) };
+      }
+      if (input.args[0] === "rm" && input.args[1] === "-f") removeCalls += 1;
+      return result;
+    },
+  });
+
+  try {
+    profileRoot = (await manager.start()).profileRoot;
+    await assert.rejects(
+      manager.attestAndCleanupSession("session-1"),
+      (error: unknown) =>
+        error instanceof SandboxAttestationError &&
+        error.code === "CONTAINER_ATTESTATION_MISMATCH",
+    );
+    assert.equal(removeCalls, 0);
+  } finally {
+    await manager.cleanup().catch(() => undefined);
+  }
+});
+
+test("concurrent attestAndCleanupSession calls share one removal and return detached evidence", async () => {
+  const { runner } = runnerFor();
+  const runGroupId = "run-session-cleanup-concurrent";
+  const removalStarted = deferred<void>();
+  const allowRemoval = deferred<void>();
+  let containerPresent = true;
+  let removeCalls = 0;
+  let profileRoot: string | undefined;
+  const manager = new DetectionSandboxManager({
+    ...readyGatewayTestOptions(),
+    runGroupId,
+    image: `openclaw@sha256:${"a".repeat(64)}`,
+    commandRunner: async (input) => {
+      const result = await runner(input);
+      if (input.args.includes("sandbox") && input.args.includes("explain") && profileRoot) {
+        return { ...result, stdout: JSON.stringify(sandboxExplainForSession(profileRoot, "session-1")) };
+      }
+      if (input.args[0] === "ps") {
+        return { ...result, stdout: containerPresent ? "agent-1\n" : "" };
+      }
+      if (input.args[0] === "inspect" && profileRoot) {
+        return containerPresent
+          ? { ...result, stdout: JSON.stringify([realAgentContainerInspect(profileRoot, runGroupId)]) }
+          : { ...result, exitCode: 1, stdout: "" };
+      }
+      if (input.args[0] === "rm" && input.args[1] === "-f") {
+        removeCalls += 1;
+        removalStarted.resolve();
+        await allowRemoval.promise;
+        containerPresent = false;
+        return result;
+      }
+      return result;
+    },
+  });
+
+  try {
+    profileRoot = (await manager.start()).profileRoot;
+    const firstCall = manager.attestAndCleanupSession("session-1");
+    const secondCall = manager.attestAndCleanupSession("session-1");
+    await removalStarted.promise;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    allowRemoval.resolve();
+
+    const [first, second] = await Promise.all([firstCall, secondCall]);
+
+    assert.equal(removeCalls, 1);
+    assert.deepEqual(second, first);
+    assert.notStrictEqual(second, first);
+    first.containerId = "mutated-container";
+    assert.equal(second.containerId, "agent-1");
+  } finally {
+    allowRemoval.resolve();
+    await manager.cleanup().catch(() => undefined);
   }
 });
 

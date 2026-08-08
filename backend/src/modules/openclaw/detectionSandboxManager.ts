@@ -508,15 +508,24 @@ export class DetectionSandboxManager {
       [...cli.argsPrefix, "sandbox", "explain", "--session", sessionKey, "--json"],
       { ...cli.env, ...env },
     );
-    const expectedWorkspaceRoot = explain.exitCode === 0
-      ? parseSandboxExplainWorkspaceRoot(explain.stdout)
+    const sandboxExplain = explain.exitCode === 0
+      ? parseSandboxExplainAttestation(explain.stdout)
       : undefined;
-    if (!expectedWorkspaceRoot) {
+    const requestedSessionIdentity = canonicalSessionIdentity(sessionKey);
+    if (
+      !sandboxExplain ||
+      !requestedSessionIdentity ||
+      (sandboxExplain.sessionIdentity !== undefined &&
+        sandboxExplain.sessionIdentity !== requestedSessionIdentity)
+    ) {
       throw new SandboxAttestationError("SANDBOX_EXPLAIN_MISMATCH", "OpenClaw sandbox explain did not match the detection profile.");
     }
     let containerId: string | undefined;
     if (phase === "after") {
-      const inspected = await this.inspectLabeledContainer(sessionKey, expectedWorkspaceRoot);
+      const inspected = await this.inspectLabeledContainer(
+        sandboxExplain.sessionIdentity ?? requestedSessionIdentity,
+        sandboxExplain.workspaceRoot,
+      );
       containerId = inspected.containerId;
       if (!inspected.matches) {
         throw new SandboxAttestationError("CONTAINER_ATTESTATION_MISMATCH", "Labeled detection container did not match the requested limits.");
@@ -1070,7 +1079,7 @@ export class DetectionSandboxManager {
   }
 
   private async inspectLabeledContainer(
-    sessionKey: string,
+    sessionIdentity: string,
     expectedWorkspaceRoot: string,
   ): Promise<{ containerId?: string; matches: boolean }> {
     const listed = await this.command("docker", ["ps", "-aq", "--filter", `label=${RUN_LABEL_KEY}=${this.options.runGroupId}`]);
@@ -1104,14 +1113,17 @@ export class DetectionSandboxManager {
       return { matches: false };
     }
     const workspaceRecords = agentRecords.filter(
-      (record) => sameHostPath(containerWorkspaceSource(record), expectedWorkspaceRoot),
+      (record) => {
+        const workspaceSource = containerWorkspaceSource(record);
+        return sameHostPath(workspaceSource, expectedWorkspaceRoot) ||
+          canonicalSessionIdentity(path.basename(workspaceSource)) === sessionIdentity;
+      },
     );
-    if (workspaceRecords.length > 1) return { matches: false };
-    const sessionRecords = workspaceRecords.length === 1
-      ? workspaceRecords
-      : agentRecords.filter((record) => containerSessionKey(record) === sessionKey);
-    if (sessionRecords.length !== 1) return { matches: false };
-    const sessionRecord = sessionRecords[0];
+    if (workspaceRecords.length !== 1) return { matches: false };
+    const sessionRecord = workspaceRecords[0];
+    if (canonicalSessionIdentity(containerSessionKey(sessionRecord)) !== sessionIdentity) {
+      return { matches: false };
+    }
     return {
       containerId: typeof sessionRecord.Id === "string" ? sessionRecord.Id : undefined,
       matches: typeof sessionRecord.Id === "string",
@@ -1486,7 +1498,10 @@ function isDirectChildPath(candidate: string, parent: string): boolean {
     path.dirname(relative) === ".";
 }
 
-function parseSandboxExplainWorkspaceRoot(raw: string): string | undefined {
+function parseSandboxExplainAttestation(raw: string): {
+  workspaceRoot: string;
+  sessionIdentity?: string;
+} | undefined {
   let value: unknown;
   try { value = JSON.parse(raw); } catch { return undefined; }
   const sandbox = isRecord(value) && isRecord(value.sandbox)
@@ -1522,7 +1537,23 @@ function parseSandboxExplainWorkspaceRoot(raw: string): string | undefined {
   ) {
     return undefined;
   }
-  return path.resolve(sandbox.effectiveHostWorkspaceRoot);
+  let sessionIdentity: string | undefined;
+  if (isRecord(value) && Object.prototype.hasOwnProperty.call(value, "sessionKey")) {
+    if (typeof value.sessionKey !== "string") return undefined;
+    sessionIdentity = canonicalSessionIdentity(value.sessionKey);
+    if (!sessionIdentity) return undefined;
+  }
+  return {
+    workspaceRoot: path.resolve(sandbox.effectiveHostWorkspaceRoot),
+    ...(sessionIdentity ? { sessionIdentity } : {}),
+  };
+}
+
+function canonicalSessionIdentity(value: string): string | undefined {
+  const normalized = value.trim();
+  if (!normalized) return undefined;
+  const agentScoped = /^agent:[^:]+:(.+)$/.exec(normalized);
+  return agentScoped?.[1] || normalized;
 }
 
 function containerWorkspaceSource(record: Record<string, unknown>): string {

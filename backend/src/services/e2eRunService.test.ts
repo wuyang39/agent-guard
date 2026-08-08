@@ -451,6 +451,22 @@ function cleanedSandboxFinalization(
   return {
     outcome: "cleaned" as const,
     evidence: cleanedSandboxEvidence(sessionKey, runGroupId, containerId),
+    sessionKey,
+  };
+}
+
+function notCreatedSandboxFinalization(
+  sessionKey: string,
+  runGroupId = "run_group.finalizer",
+) {
+  const { containerId: _containerId, ...evidence } = cleanedSandboxEvidence(
+    sessionKey,
+    runGroupId,
+  );
+  return {
+    outcome: "not_created" as const,
+    evidence: { ...evidence, status: "attested" as const },
+    sessionKey,
   };
 }
 
@@ -734,6 +750,7 @@ test("non-cleaned finalizer evidence cannot commit risk or success", async (t) =
             ...cleanedSandboxEvidence(input.sessionKey, runGroup.runGroupId),
             status: "attested",
           },
+          sessionKey: input.sessionKey,
         };
       },
     }),
@@ -835,6 +852,7 @@ test("a failed pre-container attempt can retry after proven not-created cleanup"
         { status: "failed", error: "429 Too many requests" },
         { status: "completed" },
       ],
+      runtimePatches: [{ reconciliation: undefined }, {}],
       onDrain({ sessionKey }) { drained.push(sessionKey); },
     }),
     runGroup,
@@ -843,7 +861,7 @@ test("a failed pre-container attempt can retry after proven not-created cleanup"
     async guardedSessionFinalizer(input) {
       finalized.push(input.sessionKey);
       return finalized.length === 1
-        ? { outcome: "not_created", sessionKey: input.sessionKey }
+        ? notCreatedSandboxFinalization(input.sessionKey, runGroup.runGroupId)
         : {
             outcome: "cleaned",
             evidence: cleanedSandboxEvidence(
@@ -851,6 +869,7 @@ test("a failed pre-container attempt can retry after proven not-created cleanup"
               runGroup.runGroupId,
               "b".repeat(64),
             ),
+            sessionKey: input.sessionKey,
           };
     },
   });
@@ -864,6 +883,45 @@ test("a failed pre-container attempt can retry after proven not-created cleanup"
   assert.equal(runGroup.traceIds.length, 2);
   assert.equal(runGroup.riskReportIds.length, 1);
   assert.equal(runGroup.sandboxEvidence?.containerId, "b".repeat(64));
+});
+
+test("a partial manager identity failure remains fatal before provider retry", async (t) => {
+  const previousRetryBase = process.env.AGENT_GUARD_OPENCLAW_RETRY_BASE_MS;
+  process.env.AGENT_GUARD_OPENCLAW_RETRY_BASE_MS = "0";
+  t.after(() => restoreEnv("AGENT_GUARD_OPENCLAW_RETRY_BASE_MS", previousRetryBase));
+  const { agent, adapterConfig, context } = await guardedDetectionFixture();
+  const runGroup = guardedRunGroup();
+  let finalizerCalls = 0;
+
+  await assert.rejects(
+    runDetectionCasesConcurrently({
+      targetCases: [context],
+      agent,
+      adapterConfig,
+      customAdapter: guardedAttemptAdapter({
+        results: [
+          { status: "failed", error: "429 Too many requests" },
+          { status: "completed" },
+        ],
+      }),
+      runGroup,
+      request: { ...OPENCLAW_REQUEST, caseIds: [context.caseId] },
+      signal: new AbortController().signal,
+      async guardedSessionFinalizer() {
+        finalizerCalls += 1;
+        throw Object.assign(
+          new Error("workspace and session label identify different containers"),
+          { code: "CONTAINER_ATTESTATION_MISMATCH" },
+        );
+      },
+    }),
+    /CONTAINER_ATTESTATION_MISMATCH: workspace and session label identify different containers/,
+  );
+
+  assert.equal(finalizerCalls, 1);
+  assert.equal(runGroup.testRunIds.length, 1);
+  assert.equal(runGroup.progress?.caseFailures?.[0]?.category, "sandbox_attestation_failed");
+  assert.equal(runGroup.progress?.caseFailures?.[0]?.attempts, 1);
 });
 
 test("a guarded persistence timeout finalizes before the persistence error propagates", async (t) => {
@@ -1136,6 +1194,33 @@ test("guarded finalization fails closed when its callback is absent", async () =
   );
 });
 
+test("guarded finalization rejects a fabricated not-created outcome without evidence", async () => {
+  const result = completedAttemptResult({
+    runId: "run.finalizer.not-created-fabricated",
+    traceId: "trace.finalizer.not-created-fabricated",
+    sessionKey: "agent:main:run.finalizer.not-created-fabricated",
+    leaseId: "lease.finalizer.not-created-fabricated",
+    leaseEpoch: 8,
+  });
+  result.testRun.status = "failed";
+  result.testRun.error = "429 Too many requests";
+  result.nativeGuardRuntime!.events = [];
+
+  await assert.rejects(
+    finalizeGuardedDetectionSession({
+      caseId: "case.resource_injection",
+      result,
+      async guardedSessionFinalizer() {
+        return {
+          outcome: "not_created",
+          sessionKey: result.nativeGuardRuntime!.sessionKey!,
+        } as never;
+      },
+    }),
+    /CONTAINER_ATTESTATION_MISMATCH: Not-created evidence identity is incomplete/,
+  );
+});
+
 test("a successful guarded attempt rejects a not-created outcome", async () => {
   const result = completedAttemptResult({
     runId: "run.finalizer.not-created-success",
@@ -1151,10 +1236,7 @@ test("a successful guarded attempt rejects a not-created outcome", async () => {
       caseId: "case.resource_injection",
       result,
       async guardedSessionFinalizer() {
-        return {
-          outcome: "not_created",
-          sessionKey: result.nativeGuardRuntime!.sessionKey!,
-        };
+        return notCreatedSandboxFinalization(result.nativeGuardRuntime!.sessionKey!);
       },
     }),
     /SESSION_CONTAINER_CLEANUP_FAILED: Successful guarded attempt cannot use a not-created outcome/,
@@ -1177,10 +1259,7 @@ test("persistence failure cannot authorize not-created for a successful agent", 
       result,
       persistenceError: new Error("trace persistence timed out"),
       async guardedSessionFinalizer() {
-        return {
-          outcome: "not_created",
-          sessionKey: result.nativeGuardRuntime!.sessionKey!,
-        };
+        return notCreatedSandboxFinalization(result.nativeGuardRuntime!.sessionKey!);
       },
     }),
     /SESSION_CONTAINER_CLEANUP_FAILED: Successful guarded attempt cannot use a not-created outcome/,
@@ -1205,12 +1284,49 @@ test("a not-created outcome must match the guarded session", async () => {
       attemptFailure: "429 Too many requests",
       async guardedSessionFinalizer() {
         return {
-          outcome: "not_created",
+          ...notCreatedSandboxFinalization(result.nativeGuardRuntime!.sessionKey!),
           sessionKey: "agent:main:different-session",
         };
       },
     }),
     /CONTAINER_ATTESTATION_MISMATCH: Not-created proof does not match the guarded session/,
+  );
+});
+
+test("a not-created outcome must match the immutable sandbox identity", async () => {
+  const result = completedAttemptResult({
+    runId: "run.finalizer.not-created-evidence-mismatch",
+    traceId: "trace.finalizer.not-created-evidence-mismatch",
+    sessionKey: "agent:main:run.finalizer.not-created-evidence-mismatch",
+    leaseId: "lease.finalizer.not-created-evidence-mismatch",
+    leaseEpoch: 8,
+  });
+  result.testRun.status = "failed";
+  result.testRun.error = "429 Too many requests";
+  result.nativeGuardRuntime!.events = [];
+
+  await assert.rejects(
+    finalizeGuardedDetectionSession({
+      caseId: "case.resource_injection",
+      result,
+      expectedRunGroupId: "run_group.finalizer",
+      expectedSandboxEvidence: {
+        preflightPassed: true,
+        attested: false,
+        networkMode: "none",
+        imageId: "sha256:finalized",
+      },
+      async guardedSessionFinalizer() {
+        const finalization = notCreatedSandboxFinalization(
+          result.nativeGuardRuntime!.sessionKey!,
+        );
+        return {
+          ...finalization,
+          evidence: { ...finalization.evidence, imageId: "sha256:other-image" },
+        };
+      },
+    }),
+    /CONTAINER_ATTESTATION_MISMATCH: Not-created evidence does not match sandbox preflight identity/,
   );
 });
 
@@ -1232,10 +1348,7 @@ test("guard integrity outranks a matching not-created outcome", async () => {
       result,
       attemptFailure: "429 Too many requests",
       async guardedSessionFinalizer() {
-        return {
-          outcome: "not_created",
-          sessionKey: result.nativeGuardRuntime!.sessionKey!,
-        };
+        return notCreatedSandboxFinalization(result.nativeGuardRuntime!.sessionKey!);
       },
     }),
     /NATIVE_GUARD_EVIDENCE_UNAVAILABLE: event store unavailable/,
@@ -1409,6 +1522,7 @@ for (const invalidEvidence of [
               ...cleanedSandboxEvidence(input.sessionKey),
               ...invalidEvidence.patch,
             },
+            sessionKey: input.sessionKey,
           };
         },
       }),

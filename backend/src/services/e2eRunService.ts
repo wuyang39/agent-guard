@@ -63,6 +63,7 @@ import {
   createDetectionSandboxManager,
   type DetectionSandboxEvidence,
   type DetectionSandboxManagerOptions,
+  type DetectionSessionContainerFinalization,
 } from "../modules/openclaw/detectionSandboxManager";
 import {
   DetectionProfileSeedError,
@@ -170,9 +171,7 @@ export type GuardLeaseDeps = {
   revoke: (leaseId: string) => Promise<void>;
 };
 
-export type GuardedSessionFinalizationResult =
-  | { outcome: "cleaned"; evidence: DetectionSandboxEvidence }
-  | { outcome: "not_created"; sessionKey: string };
+export type GuardedSessionFinalizationResult = DetectionSessionContainerFinalization;
 
 export type GuardedSessionFinalizer = (input: {
   caseId: string;
@@ -1358,7 +1357,7 @@ async function runSingleDetectionAttempt(input: {
         )
       : undefined;
   }
-  const attemptFailure = resolveDetectionAttemptFailure(testRun, coverageFailure);
+  let attemptFailure = resolveDetectionAttemptFailure(testRun, coverageFailure);
 
   if (runGroup.nativeGuardCoverage) {
     const sandboxEvidence = await finalizeGuardedDetectionSession({
@@ -1372,6 +1371,12 @@ async function runSingleDetectionAttempt(input: {
     });
     if (sandboxEvidence) {
       runGroup.sandboxEvidence = buildSandboxEvidenceSummary(sandboxEvidence);
+    } else if (
+      testRun.status === "failed" &&
+      result.nativeGuardRuntime?.reconciliation === undefined
+    ) {
+      coverageFailure = undefined;
+      attemptFailure = resolveDetectionAttemptFailure(testRun);
     }
   }
   throwIfRunCancelled(signal);
@@ -1509,13 +1514,27 @@ export async function finalizeGuardedDetectionSession(input: {
       "SESSION_CONTAINER_CLEANUP_FAILED: Guarded session finalizer returned an invalid outcome.",
     );
   }
+  if (finalizationResult.outcome !== "cleaned" && finalizationResult.outcome !== "not_created") {
+    throw new Error(
+      "SESSION_CONTAINER_CLEANUP_FAILED: Guarded session finalizer returned an ambiguous outcome.",
+    );
+  }
+  if (finalizationResult.sessionKey !== sessionKey) {
+    throw new Error(
+      finalizationResult.outcome === "not_created"
+        ? "CONTAINER_ATTESTATION_MISMATCH: Not-created proof does not match the guarded session."
+        : "CONTAINER_ATTESTATION_MISMATCH: Cleaned proof does not match the guarded session.",
+    );
+  }
   if (finalizationResult.outcome === "not_created") {
-    if (finalizationResult.sessionKey !== sessionKey) {
-      throw new Error(
-        "CONTAINER_ATTESTATION_MISMATCH: Not-created proof does not match the guarded session.",
-      );
-    }
-    const integrityFailure = resolveNativeGuardRuntimeIntegrityFailure(runtime);
+    const finalizationFailure = validateFinalizedSandboxEvidence(
+      finalizationResult.evidence,
+      "not_created",
+      input.expectedRunGroupId,
+      input.expectedSandboxEvidence,
+    );
+    if (finalizationFailure) throw new Error(finalizationFailure);
+    const integrityFailure = resolveNativeGuardRuntimeDiagnosticFailure(runtime);
     if (integrityFailure) throw new Error(integrityFailure);
     if (!Array.isArray(runtime.events) || runtime.events.length !== 0) {
       const eventCount = Array.isArray(runtime.events)
@@ -1530,16 +1549,18 @@ export async function finalizeGuardedDetectionSession(input: {
         "SESSION_CONTAINER_CLEANUP_FAILED: Successful guarded attempt cannot use a not-created outcome.",
       );
     }
+    if (runtime.reconciliation) {
+      const reconciliationFailure = assessNativeGuardReconciliation(
+        runtime.reconciliation,
+      ).failure;
+      if (reconciliationFailure) throw new Error(reconciliationFailure);
+    }
     return undefined;
-  }
-  if (finalizationResult.outcome !== "cleaned") {
-    throw new Error(
-      "SESSION_CONTAINER_CLEANUP_FAILED: Guarded session finalizer returned an ambiguous outcome.",
-    );
   }
   const sandboxEvidence = finalizationResult.evidence;
   const finalizationFailure = validateFinalizedSandboxEvidence(
     sandboxEvidence,
+    "cleaned",
     input.expectedRunGroupId,
     input.expectedSandboxEvidence,
   );
@@ -1550,18 +1571,14 @@ export async function finalizeGuardedDetectionSession(input: {
 }
 
 function validateFinalizedSandboxEvidence(
-  evidence: DetectionSandboxEvidence,
+  evidence: DetectionSandboxEvidence | undefined,
+  outcome: DetectionSessionContainerFinalization["outcome"],
   expectedRunGroupId?: string,
   expected?: SandboxEvidenceSummary,
 ): string | undefined {
-  if (!evidence || evidence.status !== "cleaned") {
-    return "SESSION_CONTAINER_CLEANUP_FAILED: Guarded session finalizer did not return cleaned evidence.";
-  }
-  if (
-    typeof evidence.containerId !== "string" ||
-    !/^[a-f0-9]{64}$/.test(evidence.containerId)
-  ) {
-    return "SESSION_CONTAINER_CLEANUP_FAILED: Cleaned evidence does not contain an exact container identity.";
+  const label = outcome === "cleaned" ? "Cleaned" : "Not-created";
+  if (!evidence || typeof evidence !== "object") {
+    return `CONTAINER_ATTESTATION_MISMATCH: ${label} evidence identity is incomplete.`;
   }
   if (
     !nonEmptyEvidenceString(evidence.runGroupId) ||
@@ -1573,10 +1590,23 @@ function validateFinalizedSandboxEvidence(
     !nonEmptyEvidenceString(evidence.configDigest) ||
     (evidence.networkMode !== "none" && evidence.networkMode !== "internal")
   ) {
-    return "CONTAINER_ATTESTATION_MISMATCH: Cleaned evidence identity is incomplete.";
+    return `CONTAINER_ATTESTATION_MISMATCH: ${label} evidence identity is incomplete.`;
+  }
+  if (outcome === "cleaned") {
+    if (evidence.status !== "cleaned") {
+      return "SESSION_CONTAINER_CLEANUP_FAILED: Guarded session finalizer did not return cleaned evidence.";
+    }
+    if (
+      typeof evidence.containerId !== "string" ||
+      !/^[a-f0-9]{64}$/.test(evidence.containerId)
+    ) {
+      return "SESSION_CONTAINER_CLEANUP_FAILED: Cleaned evidence does not contain an exact container identity.";
+    }
+  } else if (evidence.status !== "attested" || evidence.containerId !== undefined) {
+    return "CONTAINER_ATTESTATION_MISMATCH: Not-created evidence does not prove container absence.";
   }
   if (expectedRunGroupId && evidence.runGroupId !== expectedRunGroupId) {
-    return "CONTAINER_ATTESTATION_MISMATCH: Cleaned evidence belongs to a different run group.";
+    return `CONTAINER_ATTESTATION_MISMATCH: ${label} evidence belongs to a different run group.`;
   }
   if (
     expected &&
@@ -1588,7 +1618,7 @@ function validateFinalizedSandboxEvidence(
       (expected.configDigest !== undefined && evidence.configDigest !== expected.configDigest)
     )
   ) {
-    return "CONTAINER_ATTESTATION_MISMATCH: Cleaned evidence does not match sandbox preflight identity.";
+    return `CONTAINER_ATTESTATION_MISMATCH: ${label} evidence does not match sandbox preflight identity.`;
   }
   return undefined;
 }
@@ -1600,13 +1630,20 @@ function nonEmptyEvidenceString(value: string): boolean {
 function resolveNativeGuardRuntimeIntegrityFailure(
   runtime: NonNullable<TestRunResult["nativeGuardRuntime"]>,
 ): string | undefined {
+  return resolveNativeGuardRuntimeDiagnosticFailure(runtime) ??
+    assessNativeGuardReconciliation(runtime.reconciliation).failure;
+}
+
+function resolveNativeGuardRuntimeDiagnosticFailure(
+  runtime: NonNullable<TestRunResult["nativeGuardRuntime"]>,
+): string | undefined {
   if (runtime.evidenceError) {
     return `NATIVE_GUARD_EVIDENCE_UNAVAILABLE: ${scrubDetectionMessage(runtime.evidenceError)}`;
   }
   if (runtime.revokeError) {
     return `NATIVE_GUARD_REVOKE_FAILED: ${scrubDetectionMessage(runtime.revokeError)}`;
   }
-  return assessNativeGuardReconciliation(runtime.reconciliation).failure;
+  return undefined;
 }
 
 function cappedNativeGuardDiagnosticCount(value: number): number | undefined {

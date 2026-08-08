@@ -132,6 +132,18 @@ export type DetectionSandboxEvidence = {
   status: "preflight_passed" | "attested" | "cleaned";
 };
 
+export type DetectionSessionContainerFinalization =
+  | {
+      outcome: "cleaned";
+      evidence: DetectionSandboxEvidence;
+      sessionKey: string;
+    }
+  | {
+      outcome: "not_created";
+      evidence: DetectionSandboxEvidence;
+      sessionKey: string;
+    };
+
 type SessionContainerCleanupState = {
   evidence: DetectionSandboxEvidence;
   containerId: string;
@@ -141,6 +153,10 @@ type SessionContainerVerification =
   | { status: "absent" }
   | { status: "present" }
   | { status: "failed"; error: Error };
+
+type SessionContainerInventory =
+  | { status: "exact"; containerId: string }
+  | { status: "absent" };
 
 export class DetectionSandboxError extends Error {
   constructor(public readonly code: string, message: string) {
@@ -192,7 +208,10 @@ export class DetectionSandboxManager {
   private sinkLogs?: string;
   private readonly sessionCleanupEvidence = new Map<string, DetectionSandboxEvidence>();
   private readonly sessionCleanupState = new Map<string, SessionContainerCleanupState>();
-  private readonly sessionCleanupPromises = new Map<string, Promise<DetectionSandboxEvidence>>();
+  private readonly sessionCleanupPromises = new Map<
+    string,
+    Promise<DetectionSessionContainerFinalization>
+  >();
   private cleanupErrors: { operation: string; error: unknown }[] = [];
   private externalAbortListener?: () => void;
 
@@ -443,21 +462,54 @@ export class DetectionSandboxManager {
   }
 
   async attestAndCleanupSession(sessionKey: string): Promise<DetectionSandboxEvidence> {
+    const result = await this.finalizeSessionContainer(
+      sessionKey,
+      { allowNotCreated: false },
+    );
+    if (result.outcome !== "cleaned") {
+      throw new SandboxAttestationError(
+        "CONTAINER_ATTESTATION_MISMATCH",
+        "Labeled detection container did not match the requested session.",
+      );
+    }
+    return cloneDetectionSandboxEvidence(result.evidence);
+  }
+
+  async finalizeSessionContainer(
+    sessionKey: string,
+    options: { allowNotCreated: boolean },
+  ): Promise<DetectionSessionContainerFinalization> {
     return this.runWhileGatewayAlive(async () => {
       const sessionIdentity = canonicalSessionIdentity(sessionKey);
       if (!sessionIdentity) {
         throw new SandboxAttestationError("INVALID_SESSION_KEY", "Session key is required.");
       }
       const existing = this.sessionCleanupEvidence.get(sessionIdentity);
-      if (existing) return cloneDetectionSandboxEvidence(existing);
+      if (existing) {
+        return {
+          outcome: "cleaned",
+          evidence: cloneDetectionSandboxEvidence(existing),
+          sessionKey: sessionIdentity,
+        };
+      }
 
       let cleanup = this.sessionCleanupPromises.get(sessionIdentity);
       if (!cleanup) {
-        cleanup = this.attestAndCleanupSessionWhileAlive(sessionKey, sessionIdentity);
+        cleanup = this.finalizeSessionContainerWhileAlive(
+          sessionKey,
+          sessionIdentity,
+        );
         this.sessionCleanupPromises.set(sessionIdentity, cleanup);
       }
       try {
-        return cloneDetectionSandboxEvidence(await cleanup);
+        const result = await cleanup;
+        if (result.outcome === "not_created" && !options.allowNotCreated) {
+          throw new SandboxAttestationError(
+            "CONTAINER_ATTESTATION_MISMATCH",
+            "Labeled detection container did not match the requested session.",
+          );
+        }
+        return cloneSessionContainerFinalization(result);
       } finally {
         if (this.sessionCleanupPromises.get(sessionIdentity) === cleanup) {
           this.sessionCleanupPromises.delete(sessionIdentity);
@@ -466,15 +518,19 @@ export class DetectionSandboxManager {
     });
   }
 
-  private async attestAndCleanupSessionWhileAlive(
+  private async finalizeSessionContainerWhileAlive(
     sessionKey: string,
     sessionIdentity: string,
-  ): Promise<DetectionSandboxEvidence> {
+  ): Promise<DetectionSessionContainerFinalization> {
     let state = this.sessionCleanupState.get(sessionIdentity);
     if (state) {
       const retainedVerification = await this.verifySessionContainer(state.containerId);
       if (retainedVerification.status === "absent") {
-        return this.promoteSessionCleanupState(sessionIdentity, state);
+        return {
+          outcome: "cleaned",
+          evidence: this.promoteSessionCleanupState(sessionIdentity, state),
+          sessionKey: sessionIdentity,
+        };
       }
       if (retainedVerification.status === "failed") {
         this.recordSessionCleanupError("session-container-verify", retainedVerification.error);
@@ -483,22 +539,21 @@ export class DetectionSandboxManager {
     }
 
     if (!state) {
-      const evidence = await this.attestSessionWhileAlive(sessionKey, "after");
-      const containerId = evidence.containerId;
-      let exactIds: string[];
-      try {
-        exactIds = containerId ? parseDockerIds(containerId, "container") : [];
-      } catch {
-        exactIds = [];
+      const target = await this.resolveSessionAttestationTarget(sessionKey);
+      const inventory = await this.inspectSessionContainerInventory(
+        target.sessionIdentity,
+        target.workspaceRoot,
+      );
+      if (inventory.status === "absent") {
+        return {
+          outcome: "not_created",
+          evidence: await this.buildSessionEvidence(undefined),
+          sessionKey: target.sessionIdentity,
+        };
       }
-      if (exactIds.length !== 1 || exactIds[0] !== containerId) {
-        throw new SandboxAttestationError(
-          "CONTAINER_ATTESTATION_MISMATCH",
-          "Attested session evidence did not identify exactly one container.",
-        );
-      }
+      const containerId = inventory.containerId;
       state = {
-        evidence: cloneDetectionSandboxEvidence(evidence),
+        evidence: await this.buildSessionEvidence(containerId),
         containerId,
       };
       this.sessionCleanupState.set(sessionIdentity, state);
@@ -520,7 +575,11 @@ export class DetectionSandboxManager {
     if (removeError || verification.status !== "absent") {
       throw this.sessionContainerCleanupFailed();
     }
-    return this.promoteSessionCleanupState(sessionIdentity, state);
+    return {
+      outcome: "cleaned",
+      evidence: this.promoteSessionCleanupState(sessionIdentity, state),
+      sessionKey: sessionIdentity,
+    };
   }
 
   private async removeSessionContainer(containerId: string): Promise<Error | undefined> {
@@ -587,11 +646,13 @@ export class DetectionSandboxManager {
     );
   }
 
-  private async attestSessionWhileAlive(
-    sessionKey: string,
-    phase: "before" | "after",
-  ): Promise<DetectionSandboxEvidence> {
-    if (!sessionKey.trim()) throw new SandboxAttestationError("INVALID_SESSION_KEY", "Session key is required.");
+  private async resolveSessionAttestationTarget(sessionKey: string): Promise<{
+    sessionIdentity: string;
+    workspaceRoot: string;
+  }> {
+    if (!sessionKey.trim()) {
+      throw new SandboxAttestationError("INVALID_SESSION_KEY", "Session key is required.");
+    }
     if (!this.profileRoot || !this.config || !this.imageId) {
       throw new SandboxAttestationError("NOT_STARTED", "Detection sandbox has not passed preflight.");
     }
@@ -612,27 +673,56 @@ export class DetectionSandboxManager {
       (sandboxExplain.sessionIdentity !== undefined &&
         sandboxExplain.sessionIdentity !== requestedSessionIdentity)
     ) {
-      throw new SandboxAttestationError("SANDBOX_EXPLAIN_MISMATCH", "OpenClaw sandbox explain did not match the detection profile.");
+      throw new SandboxAttestationError(
+        "SANDBOX_EXPLAIN_MISMATCH",
+        "OpenClaw sandbox explain did not match the detection profile.",
+      );
     }
+    return {
+      sessionIdentity: sandboxExplain.sessionIdentity ?? requestedSessionIdentity,
+      workspaceRoot: sandboxExplain.workspaceRoot,
+    };
+  }
+
+  private async buildSessionEvidence(
+    containerId: string | undefined,
+  ): Promise<DetectionSandboxEvidence> {
+    const evidence = await this.currentEvidence();
+    let sinkLogs: string | undefined;
+    if (this.sinkContainerId) {
+      const logs = await this.command(
+        "docker",
+        ["logs", "--tail", "8192", this.sinkContainerId],
+      );
+      sinkLogs = `${logs.stdout}${logs.stderr}`.slice(0, 65_536);
+      this.sinkLogs = sinkLogs;
+    }
+    return {
+      ...evidence,
+      ...(containerId !== undefined ? { containerId } : {}),
+      ...(sinkLogs !== undefined ? { sinkLogs } : {}),
+      status: "attested",
+    };
+  }
+
+  private async attestSessionWhileAlive(
+    sessionKey: string,
+    phase: "before" | "after",
+  ): Promise<DetectionSandboxEvidence> {
+    const target = await this.resolveSessionAttestationTarget(sessionKey);
     let containerId: string | undefined;
     if (phase === "after") {
       const inspected = await this.inspectLabeledContainer(
-        sandboxExplain.sessionIdentity ?? requestedSessionIdentity,
-        sandboxExplain.workspaceRoot,
+        target.sessionIdentity,
+        target.workspaceRoot,
       );
       containerId = inspected.containerId;
       if (!inspected.matches) {
         throw new SandboxAttestationError("CONTAINER_ATTESTATION_MISMATCH", "Labeled detection container did not match the requested limits.");
       }
     }
-    const evidence = await this.currentEvidence();
-    let sinkLogs: string | undefined;
-    if (phase === "after" && this.sinkContainerId) {
-      const logs = await this.command("docker", ["logs", "--tail", "8192", this.sinkContainerId]);
-      sinkLogs = `${logs.stdout}${logs.stderr}`.slice(0, 65_536);
-      this.sinkLogs = sinkLogs;
-    }
-    return { ...evidence, containerId, ...(sinkLogs !== undefined ? { sinkLogs } : {}), status: "attested" as const };
+    if (phase === "after") return this.buildSessionEvidence(containerId);
+    return { ...(await this.currentEvidence()), status: "attested" };
   }
 
   async runSession<T>(sessionKey: string, operation: () => Promise<T>): Promise<T> {
@@ -1184,18 +1274,39 @@ export class DetectionSandboxManager {
     sessionIdentity: string,
     expectedWorkspaceRoot: string,
   ): Promise<{ containerId?: string; matches: boolean }> {
+    const inventory = await this.inspectSessionContainerInventory(
+      sessionIdentity,
+      expectedWorkspaceRoot,
+    );
+    return inventory.status === "exact"
+      ? { containerId: inventory.containerId, matches: true }
+      : { matches: false };
+  }
+
+  private async inspectSessionContainerInventory(
+    sessionIdentity: string,
+    expectedWorkspaceRoot: string,
+  ): Promise<SessionContainerInventory> {
     const listed = await this.command("docker", ["ps", "-aq", "--filter", `label=${RUN_LABEL_KEY}=${this.options.runGroupId}`]);
-    if (listed.exitCode !== 0) return { matches: false };
-    const ids = parseDockerIds(listed.stdout, "container");
-    if (!ids.length) return { matches: false };
+    if (listed.exitCode !== 0) throw this.containerInventoryMismatch();
+    let ids: string[];
+    try {
+      ids = parseDockerIds(listed.stdout, "container");
+    } catch {
+      throw this.containerInventoryMismatch();
+    }
+    if (!ids.length) {
+      if (this.options.networkCase) throw this.containerInventoryMismatch();
+      return { status: "absent" };
+    }
     const result = await this.command("docker", ["inspect", "--format", "{{json .}}", ...ids]);
-    if (result.exitCode !== 0) return { matches: false };
+    if (result.exitCode !== 0) throw this.containerInventoryMismatch();
     const records = parseInspectRecords(result.stdout);
     if (records.length !== ids.length || records.some((record) => {
       const config = isRecord(record.Config) ? record.Config : {};
       const labels = isRecord(config.Labels) ? config.Labels : {};
       return labels[RUN_LABEL_KEY] !== this.options.runGroupId;
-    })) return { matches: false };
+    })) throw this.containerInventoryMismatch();
     const roleOf = (record: Record<string, unknown>): unknown => {
       const config = isRecord(record.Config) ? record.Config : {};
       const labels = isRecord(config.Labels) ? config.Labels : {};
@@ -1204,28 +1315,45 @@ export class DetectionSandboxManager {
     const agentRecords = records.filter((record) => roleOf(record) === "agent");
     const sinkRecords = records.filter((record) => roleOf(record) === "sink");
     if (
-      agentRecords.length < 1 ||
       records.length !== agentRecords.length + sinkRecords.length ||
       (this.options.networkCase
         ? sinkRecords.length !== 1 || sinkRecords[0].Id !== this.sinkContainerId
         : sinkRecords.length !== 0)
-    ) return { matches: false };
-    if (this.options.networkCase && !this.sinkMatches(sinkRecords[0])) return { matches: false };
+    ) throw this.containerInventoryMismatch();
+    if (this.options.networkCase && !this.sinkMatches(sinkRecords[0])) {
+      throw this.containerInventoryMismatch();
+    }
     if (!agentRecords.every((record) => this.containerMatches(record))) {
-      return { matches: false };
+      throw this.containerInventoryMismatch();
     }
     const workspaceRecords = agentRecords.filter(
       (record) => sameHostPath(containerWorkspaceSource(record), expectedWorkspaceRoot),
     );
-    if (workspaceRecords.length !== 1) return { matches: false };
-    const sessionRecord = workspaceRecords[0];
-    if (canonicalSessionIdentity(containerSessionKey(sessionRecord)) !== sessionIdentity) {
-      return { matches: false };
+    const sessionRecords = agentRecords.filter(
+      (record) => canonicalSessionIdentity(containerSessionKey(record)) === sessionIdentity,
+    );
+    if (workspaceRecords.length === 0 && sessionRecords.length === 0) {
+      return { status: "absent" };
     }
-    return {
-      containerId: typeof sessionRecord.Id === "string" ? sessionRecord.Id : undefined,
-      matches: typeof sessionRecord.Id === "string",
-    };
+    if (
+      workspaceRecords.length !== 1 ||
+      sessionRecords.length !== 1 ||
+      workspaceRecords[0] !== sessionRecords[0]
+    ) {
+      throw this.containerInventoryMismatch();
+    }
+    const containerId = workspaceRecords[0].Id;
+    if (typeof containerId !== "string" || !ids.includes(containerId)) {
+      throw this.containerInventoryMismatch();
+    }
+    return { status: "exact", containerId };
+  }
+
+  private containerInventoryMismatch(): SandboxAttestationError {
+    return new SandboxAttestationError(
+      "CONTAINER_ATTESTATION_MISMATCH",
+      "Labeled detection container inventory did not prove the requested session state.",
+    );
   }
 
   private containerMatches(record: Record<string, unknown>): boolean {
@@ -1537,6 +1665,15 @@ function firstLine(value: string): string { return value.trim().split(/\r?\n/, 1
 
 function cloneDetectionSandboxEvidence(evidence: DetectionSandboxEvidence): DetectionSandboxEvidence {
   return { ...evidence };
+}
+
+function cloneSessionContainerFinalization(
+  result: DetectionSessionContainerFinalization,
+): DetectionSessionContainerFinalization {
+  return {
+    ...result,
+    evidence: cloneDetectionSandboxEvidence(result.evidence),
+  };
 }
 
 function parseDockerIds(raw: string, kind: "container" | "network"): string[] {

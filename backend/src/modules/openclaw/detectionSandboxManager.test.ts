@@ -2722,6 +2722,7 @@ test("accepts the two read-only OpenClaw profile bind mounts during container at
         payload.sandbox.workspaceMounts[1].hostRoot = path.join(profileRoot, "workspace");
         return { ...result, stdout: JSON.stringify(payload) };
       }
+      if (input.args[0] === "ps") return { ...result, stdout: "agent-1\n" };
       if (input.args[0] === "inspect" && profileRoot) {
         return {
           ...result,
@@ -2784,6 +2785,238 @@ test("attests the requested session when a run owns multiple compliant agent con
     assert.equal(evidence.containerId, "agent-2");
   } finally {
     await manager.cleanup().catch(() => undefined);
+  }
+});
+
+test("finalizeSessionContainer proves target absence with zero containers", async () => {
+  const { runner } = runnerFor();
+  const runGroupId = "run-session-finalize-absent-zero";
+  let profileRoot: string | undefined;
+  const manager = new DetectionSandboxManager({
+    ...readyGatewayTestOptions(),
+    runGroupId,
+    image: `openclaw@sha256:${"a".repeat(64)}`,
+    commandRunner: async (input) => {
+      const result = await runner(input);
+      if (input.args.includes("sandbox") && input.args.includes("explain") && profileRoot) {
+        return { ...result, stdout: JSON.stringify(sandboxExplainForSession(profileRoot, "session-1")) };
+      }
+      if (input.args[0] === "ps") return { ...result, stdout: "" };
+      return result;
+    },
+  });
+
+  try {
+    profileRoot = (await manager.start()).profileRoot;
+    const first = await manager.finalizeSessionContainer(
+      "session-1",
+      { allowNotCreated: true },
+    );
+    assert.equal(first.outcome, "not_created");
+    assert.equal(first.sessionKey, "agent:main:session-1");
+    assert.equal(first.evidence.status, "attested");
+    assert.equal(first.evidence.containerId, undefined);
+    const expectedEvidence = { ...first.evidence };
+    first.evidence.imageId = "mutated";
+
+    const second = await manager.finalizeSessionContainer(
+      "agent:main:session-1",
+      { allowNotCreated: true },
+    );
+    assert.deepEqual(second.evidence, expectedEvidence);
+    assert.notStrictEqual(second.evidence, first.evidence);
+
+    await assert.rejects(
+      manager.attestAndCleanupSession("session-1"),
+      (error: unknown) =>
+        error instanceof SandboxAttestationError &&
+        error.code === "CONTAINER_ATTESTATION_MISMATCH",
+    );
+  } finally {
+    await manager.cleanup().catch(() => undefined);
+  }
+});
+
+test("finalizeSessionContainer proves target absence among unrelated sessions", async () => {
+  const { runner } = runnerFor();
+  const runGroupId = "run-session-finalize-absent-unrelated";
+  let profileRoot: string | undefined;
+  const manager = new DetectionSandboxManager({
+    ...readyGatewayTestOptions(),
+    runGroupId,
+    image: `openclaw@sha256:${"a".repeat(64)}`,
+    commandRunner: async (input) => {
+      const result = await runner(input);
+      if (input.args.includes("sandbox") && input.args.includes("explain") && profileRoot) {
+        return { ...result, stdout: JSON.stringify(sandboxExplainForSession(profileRoot, "session-1")) };
+      }
+      if (input.args[0] === "ps") return { ...result, stdout: "agent-2\n" };
+      if (input.args[0] === "inspect" && profileRoot) {
+        return {
+          ...result,
+          stdout: JSON.stringify([
+            realAgentContainerInspect(profileRoot, runGroupId, "session-2", "agent-2"),
+          ]),
+        };
+      }
+      return result;
+    },
+  });
+
+  try {
+    profileRoot = (await manager.start()).profileRoot;
+    const result = await manager.finalizeSessionContainer(
+      "session-1",
+      { allowNotCreated: true },
+    );
+    assert.equal(result.outcome, "not_created");
+    assert.equal(result.sessionKey, "agent:main:session-1");
+  } finally {
+    await manager.cleanup().catch(() => undefined);
+  }
+});
+
+test("concurrent strict and permissive finalization apply absence policy per caller", async () => {
+  const { runner } = runnerFor();
+  const runGroupId = "run-session-finalize-absent-concurrent";
+  const inventoryStarted = deferred<void>();
+  const allowInventory = deferred<void>();
+  let profileRoot: string | undefined;
+  const manager = new DetectionSandboxManager({
+    ...readyGatewayTestOptions(),
+    runGroupId,
+    image: `openclaw@sha256:${"a".repeat(64)}`,
+    commandRunner: async (input) => {
+      const result = await runner(input);
+      if (input.args.includes("sandbox") && input.args.includes("explain") && profileRoot) {
+        return { ...result, stdout: JSON.stringify(sandboxExplainForSession(profileRoot, "session-1")) };
+      }
+      if (input.args[0] === "ps") {
+        inventoryStarted.resolve();
+        await allowInventory.promise;
+        return { ...result, stdout: "" };
+      }
+      return result;
+    },
+  });
+
+  try {
+    profileRoot = (await manager.start()).profileRoot;
+    const strict = manager.attestAndCleanupSession("session-1");
+    await inventoryStarted.promise;
+    const permissive = manager.finalizeSessionContainer(
+      "agent:main:session-1",
+      { allowNotCreated: true },
+    );
+    allowInventory.resolve();
+
+    await assert.rejects(
+      strict,
+      (error: unknown) =>
+        error instanceof SandboxAttestationError &&
+        error.code === "CONTAINER_ATTESTATION_MISMATCH",
+    );
+    assert.equal((await permissive).outcome, "not_created");
+  } finally {
+    allowInventory.resolve();
+    await manager.cleanup().catch(() => undefined);
+  }
+});
+
+test("finalizeSessionContainer rejects partial target identity", async (t) => {
+  for (const fixture of [
+    {
+      name: "workspace only",
+      build(profileRoot: string, runGroupId: string) {
+        const record = realAgentContainerInspect(profileRoot, runGroupId, "session-1", "agent-1");
+        record.Config.Labels["openclaw.sessionKey"] = "session-2";
+        return record;
+      },
+    },
+    {
+      name: "label only",
+      build(profileRoot: string, runGroupId: string) {
+        const record = realAgentContainerInspect(profileRoot, runGroupId, "session-2", "agent-1");
+        record.Config.Labels["openclaw.sessionKey"] = "session-1";
+        return record;
+      },
+    },
+  ]) {
+    await t.test(fixture.name, async () => {
+      const { runner } = runnerFor();
+      const runGroupId = `run-session-finalize-partial-${fixture.name.replaceAll(" ", "-")}`;
+      let profileRoot: string | undefined;
+      const manager = new DetectionSandboxManager({
+        ...readyGatewayTestOptions(),
+        runGroupId,
+        image: `openclaw@sha256:${"a".repeat(64)}`,
+        commandRunner: async (input) => {
+          const result = await runner(input);
+          if (input.args.includes("sandbox") && input.args.includes("explain") && profileRoot) {
+            return { ...result, stdout: JSON.stringify(sandboxExplainForSession(profileRoot, "session-1")) };
+          }
+          if (input.args[0] === "ps") return { ...result, stdout: "agent-1\n" };
+          if (input.args[0] === "inspect" && profileRoot) {
+            return { ...result, stdout: JSON.stringify([fixture.build(profileRoot, runGroupId)]) };
+          }
+          return result;
+        },
+      });
+
+      try {
+        profileRoot = (await manager.start()).profileRoot;
+        await assert.rejects(
+          manager.finalizeSessionContainer("session-1", { allowNotCreated: true }),
+          (error: unknown) =>
+            error instanceof SandboxAttestationError &&
+            error.code === "CONTAINER_ATTESTATION_MISMATCH",
+        );
+      } finally {
+        await manager.cleanup().catch(() => undefined);
+      }
+    });
+  }
+});
+
+test("finalizeSessionContainer rejects failed Docker inventory", async (t) => {
+  for (const operation of ["list", "inspect"] as const) {
+    await t.test(operation, async () => {
+      const { runner } = runnerFor();
+      const runGroupId = `run-session-finalize-inventory-${operation}`;
+      let profileRoot: string | undefined;
+      const manager = new DetectionSandboxManager({
+        ...readyGatewayTestOptions(),
+        runGroupId,
+        image: `openclaw@sha256:${"a".repeat(64)}`,
+        commandRunner: async (input) => {
+          const result = await runner(input);
+          if (input.args.includes("sandbox") && input.args.includes("explain") && profileRoot) {
+            return { ...result, stdout: JSON.stringify(sandboxExplainForSession(profileRoot, "session-1")) };
+          }
+          if (input.args[0] === "ps") {
+            return operation === "list"
+              ? { ...result, exitCode: 1, stdout: "" }
+              : { ...result, stdout: "agent-1\n" };
+          }
+          if (input.args[0] === "inspect") {
+            return { ...result, exitCode: 1, stdout: "" };
+          }
+          return result;
+        },
+      });
+
+      try {
+        profileRoot = (await manager.start()).profileRoot;
+        await assert.rejects(
+          manager.finalizeSessionContainer("session-1", { allowNotCreated: true }),
+          (error: unknown) =>
+            error instanceof SandboxAttestationError &&
+            error.code === "CONTAINER_ATTESTATION_MISMATCH",
+        );
+      } finally {
+        await manager.cleanup().catch(() => undefined);
+      }
+    });
   }
 });
 
@@ -3437,6 +3670,7 @@ test("attests a live probe whose CLI explain canonicalizes the container session
     image: `openclaw@sha256:${"a".repeat(64)}`,
     commandRunner: async (input) => {
       const result = await runner(input);
+      if (input.args[0] === "ps") return { ...result, stdout: "agent-probe\n" };
       if (input.args[0] === "inspect" && profileRoot) {
         const record = realAgentContainerInspect(
           profileRoot,

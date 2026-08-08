@@ -132,6 +132,16 @@ export type DetectionSandboxEvidence = {
   status: "preflight_passed" | "attested" | "cleaned";
 };
 
+type SessionContainerCleanupState = {
+  evidence: DetectionSandboxEvidence;
+  containerId: string;
+};
+
+type SessionContainerVerification =
+  | { status: "absent" }
+  | { status: "present" }
+  | { status: "failed"; error: Error };
+
 export class DetectionSandboxError extends Error {
   constructor(public readonly code: string, message: string) {
     super(message);
@@ -181,6 +191,7 @@ export class DetectionSandboxManager {
   private sinkContainerId?: string;
   private sinkLogs?: string;
   private readonly sessionCleanupEvidence = new Map<string, DetectionSandboxEvidence>();
+  private readonly sessionCleanupState = new Map<string, SessionContainerCleanupState>();
   private readonly sessionCleanupPromises = new Map<string, Promise<DetectionSandboxEvidence>>();
   private cleanupErrors: { operation: string; error: unknown }[] = [];
   private externalAbortListener?: () => void;
@@ -433,19 +444,23 @@ export class DetectionSandboxManager {
 
   async attestAndCleanupSession(sessionKey: string): Promise<DetectionSandboxEvidence> {
     return this.runWhileGatewayAlive(async () => {
-      const existing = this.sessionCleanupEvidence.get(sessionKey);
+      const sessionIdentity = canonicalSessionIdentity(sessionKey);
+      if (!sessionIdentity) {
+        throw new SandboxAttestationError("INVALID_SESSION_KEY", "Session key is required.");
+      }
+      const existing = this.sessionCleanupEvidence.get(sessionIdentity);
       if (existing) return cloneDetectionSandboxEvidence(existing);
 
-      let cleanup = this.sessionCleanupPromises.get(sessionKey);
+      let cleanup = this.sessionCleanupPromises.get(sessionIdentity);
       if (!cleanup) {
-        cleanup = this.attestAndCleanupSessionWhileAlive(sessionKey);
-        this.sessionCleanupPromises.set(sessionKey, cleanup);
+        cleanup = this.attestAndCleanupSessionWhileAlive(sessionKey, sessionIdentity);
+        this.sessionCleanupPromises.set(sessionIdentity, cleanup);
       }
       try {
         return cloneDetectionSandboxEvidence(await cleanup);
       } finally {
-        if (this.sessionCleanupPromises.get(sessionKey) === cleanup) {
-          this.sessionCleanupPromises.delete(sessionKey);
+        if (this.sessionCleanupPromises.get(sessionIdentity) === cleanup) {
+          this.sessionCleanupPromises.delete(sessionIdentity);
         }
       }
     });
@@ -453,44 +468,123 @@ export class DetectionSandboxManager {
 
   private async attestAndCleanupSessionWhileAlive(
     sessionKey: string,
+    sessionIdentity: string,
   ): Promise<DetectionSandboxEvidence> {
-    const evidence = await this.attestSessionWhileAlive(sessionKey, "after");
-    const containerId = evidence.containerId;
-    let exactIds: string[];
-    try {
-      exactIds = containerId ? parseDockerIds(containerId, "container") : [];
-    } catch {
-      exactIds = [];
-    }
-    if (exactIds.length !== 1 || exactIds[0] !== containerId) {
-      throw new SandboxAttestationError(
-        "CONTAINER_ATTESTATION_MISMATCH",
-        "Attested session evidence did not identify exactly one container.",
-      );
+    let state = this.sessionCleanupState.get(sessionIdentity);
+    if (state) {
+      const retainedVerification = await this.verifySessionContainer(state.containerId);
+      if (retainedVerification.status === "absent") {
+        return this.promoteSessionCleanupState(sessionIdentity, state);
+      }
+      if (retainedVerification.status === "failed") {
+        this.recordSessionCleanupError("session-container-verify", retainedVerification.error);
+        throw this.sessionContainerCleanupFailed();
+      }
     }
 
+    if (!state) {
+      const evidence = await this.attestSessionWhileAlive(sessionKey, "after");
+      const containerId = evidence.containerId;
+      let exactIds: string[];
+      try {
+        exactIds = containerId ? parseDockerIds(containerId, "container") : [];
+      } catch {
+        exactIds = [];
+      }
+      if (exactIds.length !== 1 || exactIds[0] !== containerId) {
+        throw new SandboxAttestationError(
+          "CONTAINER_ATTESTATION_MISMATCH",
+          "Attested session evidence did not identify exactly one container.",
+        );
+      }
+      state = {
+        evidence: cloneDetectionSandboxEvidence(evidence),
+        containerId,
+      };
+      this.sessionCleanupState.set(sessionIdentity, state);
+    }
+
+    const removeError = await this.removeSessionContainer(state.containerId);
+    const verification = await this.verifySessionContainer(state.containerId);
+    if (removeError) {
+      this.recordSessionCleanupError("session-container-remove", removeError);
+    }
+    if (verification.status === "failed") {
+      this.recordSessionCleanupError("session-container-verify", verification.error);
+    } else if (verification.status === "present") {
+      this.recordSessionCleanupError(
+        "session-container-verify",
+        new Error("Session container verification found the exact container still present."),
+      );
+    }
+    if (removeError || verification.status !== "absent") {
+      throw this.sessionContainerCleanupFailed();
+    }
+    return this.promoteSessionCleanupState(sessionIdentity, state);
+  }
+
+  private async removeSessionContainer(containerId: string): Promise<Error | undefined> {
+    let removed: DetectionCommandResult;
     try {
-      const removed = await this.command("docker", ["rm", "-f", containerId]);
-      if (removed.exitCode !== 0) throw new Error("Docker did not remove the attested session container.");
-      const remaining = await this.command(
+      removed = await this.command("docker", ["rm", "-f", containerId]);
+    } catch {
+      return new Error("Session container remove command failed.");
+    }
+    return removed.exitCode === 0
+      ? undefined
+      : new Error("Session container remove command returned a nonzero exit code.");
+  }
+
+  private async verifySessionContainer(containerId: string): Promise<SessionContainerVerification> {
+    let remaining: DetectionCommandResult;
+    try {
+      remaining = await this.command(
         "docker",
         ["ps", "-aq", "--no-trunc", "--filter", `id=${containerId}`],
       );
-      if (remaining.exitCode !== 0) throw new Error("Docker could not verify session container removal.");
-      const remainingIds = parseDockerIds(remaining.stdout, "container");
-      if (remainingIds.includes(containerId)) {
-        throw new Error("The attested session container remained after removal.");
-      }
     } catch {
-      throw new SandboxAttestationError(
-        "SESSION_CONTAINER_CLEANUP_FAILED",
-        "Attested session container cleanup could not be verified.",
-      );
+      return {
+        status: "failed",
+        error: new Error("Session container verification command failed."),
+      };
     }
+    if (remaining.exitCode !== 0) {
+      return {
+        status: "failed",
+        error: new Error("Session container verification command returned a nonzero exit code."),
+      };
+    }
+    let remainingIds: string[];
+    try {
+      remainingIds = parseDockerIds(remaining.stdout, "container");
+    } catch {
+      return {
+        status: "failed",
+        error: new Error("Session container verification returned malformed container identity output."),
+      };
+    }
+    return remainingIds.includes(containerId) ? { status: "present" } : { status: "absent" };
+  }
 
-    const tombstone = cloneDetectionSandboxEvidence({ ...evidence, status: "cleaned" });
-    this.sessionCleanupEvidence.set(sessionKey, tombstone);
+  private promoteSessionCleanupState(
+    sessionIdentity: string,
+    state: SessionContainerCleanupState,
+  ): DetectionSandboxEvidence {
+    const tombstone = cloneDetectionSandboxEvidence({ ...state.evidence, status: "cleaned" });
+    this.sessionCleanupState.delete(sessionIdentity);
+    this.sessionCleanupEvidence.set(sessionIdentity, tombstone);
     return cloneDetectionSandboxEvidence(tombstone);
+  }
+
+  private recordSessionCleanupError(operation: string, error: Error): void {
+    this.cleanupErrors.push({ operation, error });
+  }
+
+  private sessionContainerCleanupFailed(): SandboxAttestationError {
+    return new SandboxAttestationError(
+      "SESSION_CONTAINER_CLEANUP_FAILED",
+      "Attested session container cleanup could not be verified.",
+    );
   }
 
   private async attestSessionWhileAlive(
@@ -560,6 +654,7 @@ export class DetectionSandboxManager {
     if (this.cleanupPromise) return this.cleanupPromise;
     this.liveValidated = false;
     this.staticCapability = undefined;
+    this.clearSessionCleanupMaps();
     this.expectedGatewayShutdownGeneration = this.activeGatewayGeneration;
     this.cleanupPromise = this.performCleanupWithRetry();
     try {
@@ -578,8 +673,15 @@ export class DetectionSandboxManager {
         this.externalAbortListener = undefined;
       }
     } finally {
+      this.clearSessionCleanupMaps();
       this.cleanupPromise = undefined;
     }
+  }
+
+  private clearSessionCleanupMaps(): void {
+    this.sessionCleanupEvidence.clear();
+    this.sessionCleanupState.clear();
+    this.sessionCleanupPromises.clear();
   }
 
   private async performCleanupWithRetry(): Promise<void> {
@@ -1113,11 +1215,7 @@ export class DetectionSandboxManager {
       return { matches: false };
     }
     const workspaceRecords = agentRecords.filter(
-      (record) => {
-        const workspaceSource = containerWorkspaceSource(record);
-        return sameHostPath(workspaceSource, expectedWorkspaceRoot) ||
-          canonicalSessionIdentity(path.basename(workspaceSource)) === sessionIdentity;
-      },
+      (record) => sameHostPath(containerWorkspaceSource(record), expectedWorkspaceRoot),
     );
     if (workspaceRecords.length !== 1) return { matches: false };
     const sessionRecord = workspaceRecords[0];

@@ -214,6 +214,19 @@ function sandboxExplainForSession(profileRoot: string, sessionId: string) {
   return payload;
 }
 
+function assertCleanupDiagnostic(
+  manager: DetectionSandboxManager,
+  operation: string,
+  expectedMessage: string,
+  forbiddenText: string,
+) {
+  const diagnostic = manager.getCleanupErrors().find((entry) => entry.operation === operation);
+  assert.ok(diagnostic?.error instanceof Error);
+  assert.equal(diagnostic.error.message, expectedMessage);
+  assert.ok(diagnostic.error.message.length <= 256);
+  assert.doesNotMatch(diagnostic.error.message, new RegExp(forbiddenText, "i"));
+}
+
 test("writes the canonical isolated plugin profile with run-scoped marker and spool directories", async () => {
   const fixtureRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-plugin-profile-"));
   const pluginRoot = path.join(fixtureRoot, "plugin");
@@ -2944,13 +2957,20 @@ test("attestAndCleanupSession rejects a matching label mounted from an unrelated
     commandRunner: async (input) => {
       const result = await runner(input);
       if (input.args.includes("sandbox") && input.args.includes("explain") && profileRoot) {
-        return { ...result, stdout: JSON.stringify(sandboxExplainForSession(profileRoot, "session-1")) };
+        const payload = sandboxExplainForSession(profileRoot, "session-1");
+        const unrelatedWorkspace = path.join(
+          profileRoot,
+          "state",
+          "unrelated-sandboxes",
+          "session-1",
+        );
+        payload.sandbox.effectiveHostWorkspaceRoot = unrelatedWorkspace;
+        payload.sandbox.workspaceMounts[0].hostRoot = unrelatedWorkspace;
+        return { ...result, stdout: JSON.stringify(payload) };
       }
       if (input.args[0] === "ps") return { ...result, stdout: "agent-1\n" };
       if (input.args[0] === "inspect" && profileRoot) {
-        const record = realAgentContainerInspect(profileRoot, runGroupId, "session-2");
-        record.Config.Labels["openclaw.sessionKey"] = "session-1";
-        return { ...result, stdout: JSON.stringify([record]) };
+        return { ...result, stdout: JSON.stringify([realAgentContainerInspect(profileRoot, runGroupId)]) };
       }
       if (input.args[0] === "rm" && input.args[1] === "-f") removeCalls += 1;
       return result;
@@ -3010,7 +3030,7 @@ test("concurrent attestAndCleanupSession calls share one removal and return deta
   try {
     profileRoot = (await manager.start()).profileRoot;
     const firstCall = manager.attestAndCleanupSession("session-1");
-    const secondCall = manager.attestAndCleanupSession("session-1");
+    const secondCall = manager.attestAndCleanupSession("agent:main:session-1");
     await removalStarted.promise;
     await new Promise<void>((resolve) => setImmediate(resolve));
     allowRemoval.resolve();
@@ -3024,6 +3044,247 @@ test("concurrent attestAndCleanupSession calls share one removal and return deta
     assert.equal(second.containerId, "agent-1");
   } finally {
     allowRemoval.resolve();
+    await manager.cleanup().catch(() => undefined);
+  }
+});
+
+test("session cleanup recovers when a failed remove already removed the exact container", async (t) => {
+  for (const fixture of [
+    {
+      name: "nonzero result",
+      expectedDiagnostic: "Session container remove command returned a nonzero exit code.",
+      fail(): DetectionCommandResult {
+        return { exitCode: 1, stdout: "", stderr: "remove-secret" };
+      },
+    },
+    {
+      name: "thrown command",
+      expectedDiagnostic: "Session container remove command failed.",
+      fail(): never {
+        throw new Error("remove-secret");
+      },
+    },
+  ]) {
+    await t.test(fixture.name, async () => {
+      const { runner } = runnerFor();
+      const runGroupId = `run-session-remove-recovery-${fixture.name.replaceAll(" ", "-")}`;
+      let containerPresent = true;
+      let inspectCalls = 0;
+      let removeCalls = 0;
+      let verifyCalls = 0;
+      let profileRoot: string | undefined;
+      const manager = new DetectionSandboxManager({
+        ...readyGatewayTestOptions(),
+        runGroupId,
+        image: `openclaw@sha256:${"a".repeat(64)}`,
+        commandRunner: async (input) => {
+          const result = await runner(input);
+          if (input.args.includes("sandbox") && input.args.includes("explain") && profileRoot) {
+            return { ...result, stdout: JSON.stringify(sandboxExplainForSession(profileRoot, "session-1")) };
+          }
+          if (input.args[0] === "ps") {
+            if (input.args.some((arg) => arg === "id=agent-1")) verifyCalls += 1;
+            return { ...result, stdout: containerPresent ? "agent-1\n" : "" };
+          }
+          if (input.args[0] === "inspect" && profileRoot) {
+            inspectCalls += 1;
+            return { ...result, stdout: JSON.stringify([realAgentContainerInspect(profileRoot, runGroupId)]) };
+          }
+          if (input.args[0] === "rm" && input.args[1] === "-f") {
+            removeCalls += 1;
+            containerPresent = false;
+            return fixture.fail();
+          }
+          return result;
+        },
+      });
+
+      try {
+        profileRoot = (await manager.start()).profileRoot;
+        await assert.rejects(
+          manager.attestAndCleanupSession("session-1"),
+          (error: unknown) =>
+            error instanceof SandboxAttestationError &&
+            error.code === "SESSION_CONTAINER_CLEANUP_FAILED" &&
+            !error.message.includes("remove-secret"),
+        );
+        assert.equal(verifyCalls, 1);
+        assertCleanupDiagnostic(
+          manager,
+          "session-container-remove",
+          fixture.expectedDiagnostic,
+          "remove-secret",
+        );
+
+        const evidence = await manager.attestAndCleanupSession("agent:main:session-1");
+
+        assert.equal(evidence.status, "cleaned");
+        assert.equal(evidence.containerId, "agent-1");
+        assert.equal(inspectCalls, 1);
+        assert.equal(removeCalls, 1);
+        assert.equal(verifyCalls, 2);
+      } finally {
+        await manager.cleanup().catch(() => undefined);
+      }
+    });
+  }
+});
+
+test("session cleanup recovers after exact-container verification uncertainty", async (t) => {
+  for (const fixture of [
+    {
+      name: "nonzero result",
+      expectedDiagnostic: "Session container verification command returned a nonzero exit code.",
+      fail(result: DetectionCommandResult): DetectionCommandResult {
+        return { ...result, exitCode: 1, stdout: "", stderr: "verify-secret" };
+      },
+    },
+    {
+      name: "thrown command",
+      expectedDiagnostic: "Session container verification command failed.",
+      fail(): never {
+        throw new Error("verify-secret");
+      },
+    },
+    {
+      name: "malformed output",
+      expectedDiagnostic: "Session container verification returned malformed container identity output.",
+      fail(result: DetectionCommandResult): DetectionCommandResult {
+        return { ...result, stdout: "malformed id verify-secret\n" };
+      },
+    },
+  ]) {
+    await t.test(fixture.name, async () => {
+      const { runner } = runnerFor();
+      const runGroupId = `run-session-verify-recovery-${fixture.name.replaceAll(" ", "-")}`;
+      let containerPresent = true;
+      let inspectCalls = 0;
+      let removeCalls = 0;
+      let verifyCalls = 0;
+      let profileRoot: string | undefined;
+      const manager = new DetectionSandboxManager({
+        ...readyGatewayTestOptions(),
+        runGroupId,
+        image: `openclaw@sha256:${"a".repeat(64)}`,
+        commandRunner: async (input) => {
+          const result = await runner(input);
+          if (input.args.includes("sandbox") && input.args.includes("explain") && profileRoot) {
+            return { ...result, stdout: JSON.stringify(sandboxExplainForSession(profileRoot, "session-1")) };
+          }
+          if (input.args[0] === "ps") {
+            if (input.args.some((arg) => arg === "id=agent-1")) {
+              verifyCalls += 1;
+              if (verifyCalls === 1) return fixture.fail(result);
+            }
+            return { ...result, stdout: containerPresent ? "agent-1\n" : "" };
+          }
+          if (input.args[0] === "inspect" && profileRoot) {
+            inspectCalls += 1;
+            return { ...result, stdout: JSON.stringify([realAgentContainerInspect(profileRoot, runGroupId)]) };
+          }
+          if (input.args[0] === "rm" && input.args[1] === "-f") {
+            removeCalls += 1;
+            containerPresent = false;
+            return result;
+          }
+          return result;
+        },
+      });
+
+      try {
+        profileRoot = (await manager.start()).profileRoot;
+        await assert.rejects(
+          manager.attestAndCleanupSession("session-1"),
+          (error: unknown) =>
+            error instanceof SandboxAttestationError &&
+            error.code === "SESSION_CONTAINER_CLEANUP_FAILED" &&
+            !error.message.includes("verify-secret"),
+        );
+        assertCleanupDiagnostic(
+          manager,
+          "session-container-verify",
+          fixture.expectedDiagnostic,
+          "verify-secret",
+        );
+
+        const evidence = await manager.attestAndCleanupSession("agent:main:session-1");
+
+        assert.equal(evidence.status, "cleaned");
+        assert.equal(inspectCalls, 1);
+        assert.equal(removeCalls, 1);
+        assert.equal(verifyCalls, 2);
+      } finally {
+        await manager.cleanup().catch(() => undefined);
+      }
+    });
+  }
+});
+
+test("session cleanup retries the retained exact ID when a failed remove leaves it present", async () => {
+  const { runner } = runnerFor();
+  const runGroupId = "run-session-remove-retry-present";
+  const removedIds: string[] = [];
+  let containerPresent = true;
+  let inspectCalls = 0;
+  let verifyCalls = 0;
+  let profileRoot: string | undefined;
+  const manager = new DetectionSandboxManager({
+    ...readyGatewayTestOptions(),
+    runGroupId,
+    image: `openclaw@sha256:${"a".repeat(64)}`,
+    commandRunner: async (input) => {
+      const result = await runner(input);
+      if (input.args.includes("sandbox") && input.args.includes("explain") && profileRoot) {
+        return { ...result, stdout: JSON.stringify(sandboxExplainForSession(profileRoot, "session-1")) };
+      }
+      if (input.args[0] === "ps") {
+        if (input.args.some((arg) => arg === "id=agent-1")) verifyCalls += 1;
+        return { ...result, stdout: containerPresent ? "agent-1\n" : "" };
+      }
+      if (input.args[0] === "inspect" && profileRoot) {
+        inspectCalls += 1;
+        return { ...result, stdout: JSON.stringify([realAgentContainerInspect(profileRoot, runGroupId)]) };
+      }
+      if (input.args[0] === "rm" && input.args[1] === "-f") {
+        removedIds.push(...input.args.slice(2));
+        if (removedIds.length === 1) {
+          return { ...result, exitCode: 1, stderr: "remove-secret" };
+        }
+        containerPresent = false;
+        return result;
+      }
+      return result;
+    },
+  });
+
+  try {
+    profileRoot = (await manager.start()).profileRoot;
+    await assert.rejects(
+      manager.attestAndCleanupSession("session-1"),
+      (error: unknown) =>
+        error instanceof SandboxAttestationError &&
+        error.code === "SESSION_CONTAINER_CLEANUP_FAILED",
+    );
+    assertCleanupDiagnostic(
+      manager,
+      "session-container-remove",
+      "Session container remove command returned a nonzero exit code.",
+      "remove-secret",
+    );
+    assertCleanupDiagnostic(
+      manager,
+      "session-container-verify",
+      "Session container verification found the exact container still present.",
+      "remove-secret",
+    );
+
+    const evidence = await manager.attestAndCleanupSession("agent:main:session-1");
+
+    assert.equal(evidence.status, "cleaned");
+    assert.deepEqual(removedIds, ["agent-1", "agent-1"]);
+    assert.equal(inspectCalls, 1);
+    assert.equal(verifyCalls, 3);
+  } finally {
     await manager.cleanup().catch(() => undefined);
   }
 });
@@ -3077,11 +3338,16 @@ test("attests a live probe whose CLI explain canonicalizes the container session
     commandRunner: async (input) => {
       const result = await runner(input);
       if (input.args[0] === "inspect" && profileRoot) {
+        const record = realAgentContainerInspect(
+          profileRoot,
+          runGroupId,
+          "agent-main-run-canonicalized-probe-session",
+          "agent-probe",
+        );
+        record.Config.Labels["openclaw.sessionKey"] = sessionKey;
         return {
           ...result,
-          stdout: JSON.stringify([
-            realAgentContainerInspect(profileRoot, runGroupId, sessionKey, "agent-probe"),
-          ]),
+          stdout: JSON.stringify([record]),
         };
       }
       if (input.args.includes("sandbox") && input.args.includes("explain") && profileRoot) {

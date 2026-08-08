@@ -220,6 +220,45 @@ test("dispose cleans the current manager once and is idempotent", async () => {
   assert.equal(controller.current(), undefined);
 });
 
+test("failed disposal can retry cleanup while concurrent retry callers share one attempt", async () => {
+  const retryCleanupEntered = deferred<void>();
+  const releaseRetryCleanup = deferred<void>();
+  let cleanupAttempt = 0;
+  const manager = new FakeDetectionSandboxManager(async () => {
+    cleanupAttempt += 1;
+    if (cleanupAttempt === 1) throw new Error("dispose cleanup failed");
+    retryCleanupEntered.resolve();
+    await releaseRetryCleanup.promise;
+  });
+  let startCalls = 0;
+  const controller = createOpenClawDetectionRuntimeController({
+    async start() {
+      startCalls += 1;
+      return runtimeResources(manager);
+    },
+  });
+  await controller.run(async () => undefined);
+
+  const failedDisposal = controller.dispose();
+  await assert.rejects(failedDisposal, /dispose cleanup failed/);
+  assert.equal(manager.cleanupCalls, 1);
+  assert.equal(controller.current(), undefined);
+
+  const firstRetry = controller.dispose();
+  assert.notEqual(firstRetry, failedDisposal);
+  await retryCleanupEntered.promise;
+  const secondRetry = controller.dispose();
+  assert.equal(firstRetry, secondRetry);
+  releaseRetryCleanup.resolve();
+  await Promise.all([firstRetry, secondRetry]);
+  await controller.dispose();
+
+  assert.equal(manager.cleanupCalls, 2);
+  assert.equal(startCalls, 1);
+  await assert.rejects(controller.ensure(), /disposed/i);
+  await assert.rejects(controller.restart(), /disposed/i);
+});
+
 test("run, ensure, and restart reject after disposal without starting a runtime", async () => {
   let startCalls = 0;
   const controller = createOpenClawDetectionRuntimeController({
@@ -411,6 +450,25 @@ test("does not reuse a runtime whose manager signal is aborted", async () => {
   assert.equal(generation, 2);
   assert.equal(firstManager.cleanupCalls, 1);
   assert.equal(controller.current()?.manager, secondManager);
+});
+
+test("current omits an aborted runtime without mutating its ownership", async () => {
+  const manager = new FakeDetectionSandboxManager();
+  let startCalls = 0;
+  const controller = createOpenClawDetectionRuntimeController({
+    async start() {
+      startCalls += 1;
+      return runtimeResources(manager);
+    },
+  });
+  const runtime = await controller.ensure();
+  assert.equal(controller.current(), runtime);
+
+  manager.abortController.abort();
+
+  assert.equal(controller.current(), undefined);
+  assert.equal(manager.cleanupCalls, 0);
+  assert.equal(startCalls, 1);
 });
 
 class FakeDetectionSandboxManager {

@@ -19,6 +19,15 @@ export type OpenClawDetectionRuntimeResources = Omit<
   "generation"
 >;
 
+/**
+ * Creates a complete runtime and transfers its ownership only on fulfillment.
+ * The starter must release every resource allocated by a failed attempt before
+ * rejecting because the controller never receives partial runtime resources.
+ */
+export type StartOpenClawDetectionRuntime = (
+  generation: number,
+) => Promise<OpenClawDetectionRuntimeResources>;
+
 export type OpenClawDetectionRuntimeController = {
   current(): OpenClawDetectionRuntime | undefined;
   dispose(): Promise<void>;
@@ -40,9 +49,7 @@ export class OpenClawDetectionRuntimeDisposedError extends Error {
 }
 
 export function createOpenClawDetectionRuntimeController(options: {
-  start(
-    generation: number,
-  ): Promise<OpenClawDetectionRuntimeResources>;
+  start: StartOpenClawDetectionRuntime;
 }): OpenClawDetectionRuntimeController {
   let currentRuntime: OpenClawDetectionRuntime | undefined;
   let managerAwaitingCleanup: DetectionSandboxManager | undefined;
@@ -109,18 +116,24 @@ export function createOpenClawDetectionRuntimeController(options: {
   }
 
   return {
-    current: () => currentRuntime,
+    current: () => currentRuntime?.manager.signal.aborted
+      ? undefined
+      : currentRuntime,
     dispose() {
       if (disposePromise) return disposePromise;
       disposed = true;
-      disposePromise = lifecycle.run(async () => {
+      const attempt = lifecycle.run(async () => {
         await waitForOperationsToDrain();
         const previous = currentRuntime;
         currentRuntime = undefined;
         if (previous) managerAwaitingCleanup = previous.manager;
         await cleanupRetiredManager();
       });
-      return disposePromise;
+      disposePromise = attempt;
+      void attempt.then(undefined, () => {
+        if (disposePromise === attempt) disposePromise = undefined;
+      });
+      return attempt;
     },
     ensure() {
       return lifecycle.run(ensureRuntime);

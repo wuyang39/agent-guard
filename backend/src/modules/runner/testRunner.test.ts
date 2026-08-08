@@ -106,6 +106,27 @@ test("runtime evidence drain failure remains non-fatal when evidence is not requ
   assert.equal(result.nativeGuardRuntime, undefined);
 });
 
+test("agent failures are scrubbed before entering the test run and trace", async () => {
+  const result = await runTestCase(AGENT, ADAPTER_CONFIG, CONTEXT, {
+    customAdapter: adapterWithSession({
+      async sendTask() {
+        throw new Error(
+          "gatewayToken=super-secret OPENAI_API_KEY=sk-test-secret request failed",
+        );
+      },
+    }),
+  });
+
+  const serializedTrace = JSON.stringify(result.trace);
+  assert.equal(result.testRun.status, "failed");
+  assert.match(result.testRun.error ?? "", /gatewayToken=\[REDACTED\]/);
+  assert.match(result.testRun.error ?? "", /OPENAI_API_KEY=\[REDACTED\]/);
+  assert.doesNotMatch(result.testRun.error ?? "", /super-secret|sk-test-secret/);
+  assert.match(serializedTrace, /gatewayToken=\[REDACTED\]/);
+  assert.match(serializedTrace, /OPENAI_API_KEY=\[REDACTED\]/);
+  assert.doesNotMatch(serializedTrace, /super-secret|sk-test-secret/);
+});
+
 test("required runtime evidence drain failure is fatal and scrubbed", async () => {
   const result = await runTestCase(AGENT, ADAPTER_CONFIG, CONTEXT, {
     requireNativeGuardRuntimeEvidence: true,

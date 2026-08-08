@@ -153,12 +153,15 @@ export async function runTestCase(
     testRun.status = "completed";
     agentTaskCompleted = true;
   } catch (error) {
+    const message = scrubSecrets(
+      error instanceof Error ? error.message : String(error),
+    );
     recorder.record("system_error", "system", {
       code: "RUNNER_ERROR",
-      message: error instanceof Error ? error.message : String(error),
+      message,
     });
     testRun.status = "failed";
-    testRun.error = error instanceof Error ? error.message : String(error);
+    testRun.error = message;
   } finally {
     // Drain native guard runtime evidence before the session is destroyed.
     let nativeGuardRuntime: TestRunResult["nativeGuardRuntime"];

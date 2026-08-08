@@ -170,11 +170,15 @@ export type GuardLeaseDeps = {
   revoke: (leaseId: string) => Promise<void>;
 };
 
+export type GuardedSessionFinalizationResult =
+  | { outcome: "cleaned"; evidence: DetectionSandboxEvidence }
+  | { outcome: "not_created"; sessionKey: string };
+
 export type GuardedSessionFinalizer = (input: {
   caseId: string;
   runId: string;
   sessionKey: string;
-}) => Promise<DetectionSandboxEvidence>;
+}) => Promise<GuardedSessionFinalizationResult>;
 
 /** Factory provided by app.ts. Shares the API's lease service and backend
  *  PDP URL, creates a per-run coordinator targeting the sandbox Gateway. */
@@ -1342,7 +1346,11 @@ async function runSingleDetectionAttempt(input: {
       signal,
     });
   } catch (error) {
-    persistenceError = scrubbedDetectionError(error);
+    persistenceError = new Error(
+      `DETECTION_EVIDENCE_PERSISTENCE_FAILED: ${scrubDetectionMessage(
+        error instanceof Error ? error.message : String(error),
+      )}`,
+    );
     coverageFailure = runGroup.nativeGuardCoverage
       ? recoverNativeGuardCoverageFailure(
           runGroup.nativeGuardCoverage,
@@ -1359,6 +1367,8 @@ async function runSingleDetectionAttempt(input: {
       guardedSessionFinalizer,
       expectedRunGroupId: runGroup.runGroupId,
       expectedSandboxEvidence: runGroup.sandboxEvidence,
+      attemptFailure,
+      persistenceError,
     });
     if (sandboxEvidence) {
       runGroup.sandboxEvidence = buildSandboxEvidenceSummary(sandboxEvidence);
@@ -1439,6 +1449,8 @@ export async function finalizeGuardedDetectionSession(input: {
   guardedSessionFinalizer?: GuardedSessionFinalizer;
   expectedRunGroupId?: string;
   expectedSandboxEvidence?: SandboxEvidenceSummary;
+  attemptFailure?: string;
+  persistenceError?: unknown;
 }): Promise<DetectionSandboxEvidence | undefined> {
   const { guardedSessionFinalizer } = input;
   if (!guardedSessionFinalizer) {
@@ -1459,9 +1471,9 @@ export async function finalizeGuardedDetectionSession(input: {
       "NATIVE_GUARD_EVIDENCE_UNAVAILABLE: Native guard session key is missing.",
     );
   }
-  let sandboxEvidence: DetectionSandboxEvidence;
+  let finalizationResult: GuardedSessionFinalizationResult;
   try {
-    sandboxEvidence = await guardedSessionFinalizer({
+    finalizationResult = await guardedSessionFinalizer({
       caseId: input.caseId,
       runId: input.result.testRun.runId,
       sessionKey,
@@ -1492,6 +1504,40 @@ export async function finalizeGuardedDetectionSession(input: {
     );
   }
 
+  if (!finalizationResult || typeof finalizationResult !== "object") {
+    throw new Error(
+      "SESSION_CONTAINER_CLEANUP_FAILED: Guarded session finalizer returned an invalid outcome.",
+    );
+  }
+  if (finalizationResult.outcome === "not_created") {
+    if (finalizationResult.sessionKey !== sessionKey) {
+      throw new Error(
+        "CONTAINER_ATTESTATION_MISMATCH: Not-created proof does not match the guarded session.",
+      );
+    }
+    const integrityFailure = resolveNativeGuardRuntimeIntegrityFailure(runtime);
+    if (integrityFailure) throw new Error(integrityFailure);
+    if (!Array.isArray(runtime.events) || runtime.events.length !== 0) {
+      const eventCount = Array.isArray(runtime.events)
+        ? Math.min(runtime.events.length, MAX_NATIVE_GUARD_DIAGNOSTIC_COUNT)
+        : 1;
+      throw new Error(
+        `NATIVE_GUARD_COVERAGE_BREACH: ${String(Math.max(1, eventCount))} reconciliation issue(s); not-created proof contains runtime events.`,
+      );
+    }
+    if (input.result.testRun.status !== "failed") {
+      throw new Error(
+        "SESSION_CONTAINER_CLEANUP_FAILED: Successful guarded attempt cannot use a not-created outcome.",
+      );
+    }
+    return undefined;
+  }
+  if (finalizationResult.outcome !== "cleaned") {
+    throw new Error(
+      "SESSION_CONTAINER_CLEANUP_FAILED: Guarded session finalizer returned an ambiguous outcome.",
+    );
+  }
+  const sandboxEvidence = finalizationResult.evidence;
   const finalizationFailure = validateFinalizedSandboxEvidence(
     sandboxEvidence,
     input.expectedRunGroupId,
@@ -1539,8 +1585,7 @@ function validateFinalizedSandboxEvidence(
       (expected.imageDigest !== undefined && evidence.image !== expected.imageDigest) ||
       (expected.openclawVersion !== undefined && evidence.openclawVersion !== expected.openclawVersion) ||
       evidence.networkMode !== expected.networkMode ||
-      (expected.configDigest !== undefined && evidence.configDigest !== expected.configDigest) ||
-      (expected.containerId !== undefined && evidence.containerId !== expected.containerId)
+      (expected.configDigest !== undefined && evidence.configDigest !== expected.configDigest)
     )
   ) {
     return "CONTAINER_ATTESTATION_MISMATCH: Cleaned evidence does not match sandbox preflight identity.";
@@ -2242,6 +2287,13 @@ export function classifyDetectionError(
   }
 
   const normalized = message.toLowerCase();
+  if (normalized.startsWith("detection_evidence_persistence_failed:")) {
+    return {
+      category: "fatal",
+      retryable: false,
+      skipAllowed: false,
+    };
+  }
   if (normalized.includes("session_container_cleanup_failed")) {
     return {
       category: "sandbox_cleanup_failed",

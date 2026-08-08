@@ -199,6 +199,16 @@ function realAgentContainerInspect(
   };
 }
 
+function sandboxExplainForSession(profileRoot: string, sessionId: string) {
+  const payload = realSandboxExplain();
+  const workspaceRoot = path.join(profileRoot, "state", "sandboxes", sessionId);
+  payload.sessionKey = sessionId;
+  payload.sandbox.effectiveHostWorkspaceRoot = workspaceRoot;
+  payload.sandbox.workspaceMounts[0].hostRoot = workspaceRoot;
+  payload.sandbox.workspaceMounts[1].hostRoot = path.join(profileRoot, "workspace");
+  return payload;
+}
+
 test("writes the canonical isolated plugin profile with run-scoped marker and spool directories", async () => {
   const fixtureRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-plugin-profile-"));
   const pluginRoot = path.join(fixtureRoot, "plugin");
@@ -2695,6 +2705,204 @@ test("attests the requested session when a run owns multiple compliant agent con
     const evidence = await manager.attestSession("session-2", "after");
     assert.equal(evidence.status, "attested");
     assert.equal(evidence.containerId, "agent-2");
+  } finally {
+    await manager.cleanup().catch(() => undefined);
+  }
+});
+
+test("attestAndCleanupSession removes only the exact attested session container", async () => {
+  const { runner } = runnerFor();
+  const runGroupId = "run-session-cleanup-exact";
+  const activeContainerIds = new Set(["agent-1", "agent-2"]);
+  const removeCalls: string[][] = [];
+  let profileRoot: string | undefined;
+  const manager = new DetectionSandboxManager({
+    ...readyGatewayTestOptions(),
+    runGroupId,
+    image: `openclaw@sha256:${"a".repeat(64)}`,
+    commandRunner: async (input) => {
+      const result = await runner(input);
+      if (input.args.includes("sandbox") && input.args.includes("explain") && profileRoot) {
+        return { ...result, stdout: JSON.stringify(sandboxExplainForSession(profileRoot, "session-1")) };
+      }
+      if (input.args[0] === "ps") {
+        const idFilter = input.args.find((arg) => arg.startsWith("id="));
+        const ids = idFilter
+          ? (activeContainerIds.has(idFilter.slice(3)) ? [idFilter.slice(3)] : [])
+          : [...activeContainerIds];
+        return { ...result, stdout: ids.length ? `${ids.join("\n")}\n` : "" };
+      }
+      if (input.args[0] === "inspect" && profileRoot) {
+        const currentProfileRoot = profileRoot;
+        const requestedIds = input.args.slice(3);
+        const records = requestedIds
+          .filter((id) => activeContainerIds.has(id))
+          .map((id) => realAgentContainerInspect(
+            currentProfileRoot,
+            runGroupId,
+            id === "agent-1" ? "session-1" : "session-2",
+            id,
+          ));
+        return {
+          ...result,
+          exitCode: records.length === requestedIds.length ? 0 : 1,
+          stdout: JSON.stringify(records),
+        };
+      }
+      if (input.args[0] === "rm" && input.args[1] === "-f") {
+        const ids = input.args.slice(2);
+        removeCalls.push(ids);
+        ids.forEach((id) => activeContainerIds.delete(id));
+        return result;
+      }
+      return result;
+    },
+  });
+
+  try {
+    profileRoot = (await manager.start()).profileRoot;
+    const evidence = await manager.attestAndCleanupSession("session-1");
+
+    assert.equal(evidence.containerId, "agent-1");
+    assert.deepEqual(removeCalls, [["agent-1"]]);
+    assert.deepEqual([...activeContainerIds], ["agent-2"]);
+  } finally {
+    await manager.cleanup().catch(() => undefined);
+  }
+});
+
+test("attestAndCleanupSession returns detached tombstone evidence without removing twice", async () => {
+  const { runner } = runnerFor();
+  const runGroupId = "run-session-cleanup-idempotent";
+  let containerPresent = true;
+  let removeCalls = 0;
+  let profileRoot: string | undefined;
+  const manager = new DetectionSandboxManager({
+    ...readyGatewayTestOptions(),
+    runGroupId,
+    image: `openclaw@sha256:${"a".repeat(64)}`,
+    commandRunner: async (input) => {
+      const result = await runner(input);
+      if (input.args.includes("sandbox") && input.args.includes("explain") && profileRoot) {
+        return { ...result, stdout: JSON.stringify(sandboxExplainForSession(profileRoot, "session-1")) };
+      }
+      if (input.args[0] === "ps") {
+        return { ...result, stdout: containerPresent ? "agent-1\n" : "" };
+      }
+      if (input.args[0] === "inspect" && profileRoot) {
+        return containerPresent
+          ? { ...result, stdout: JSON.stringify([realAgentContainerInspect(profileRoot, runGroupId)]) }
+          : { ...result, exitCode: 1, stdout: "" };
+      }
+      if (input.args[0] === "rm" && input.args[1] === "-f") {
+        removeCalls += 1;
+        containerPresent = false;
+        return result;
+      }
+      return result;
+    },
+  });
+
+  try {
+    profileRoot = (await manager.start()).profileRoot;
+    const first = await manager.attestAndCleanupSession("session-1");
+    const expected = { ...first };
+    first.containerId = "mutated-container";
+    first.status = "preflight_passed";
+
+    const second = await manager.attestAndCleanupSession("session-1");
+
+    assert.deepEqual(second, expected);
+    assert.notStrictEqual(second, first);
+    assert.equal(removeCalls, 1);
+  } finally {
+    await manager.cleanup().catch(() => undefined);
+  }
+});
+
+test("attestAndCleanupSession rejects zero or multiple matching session identities without removal", async (t) => {
+  for (const fixture of [
+    { name: "zero matches", sessions: ["session-2"] },
+    { name: "multiple matches", sessions: ["session-1", "session-1"] },
+  ]) {
+    await t.test(fixture.name, async () => {
+      const { runner } = runnerFor();
+      const runGroupId = `run-session-cleanup-${fixture.name.replaceAll(" ", "-")}`;
+      const containerIds = fixture.sessions.map((_session, index) => `agent-${index + 1}`);
+      let removeCalls = 0;
+      let profileRoot: string | undefined;
+      const manager = new DetectionSandboxManager({
+        ...readyGatewayTestOptions(),
+        runGroupId,
+        image: `openclaw@sha256:${"a".repeat(64)}`,
+        commandRunner: async (input) => {
+          const result = await runner(input);
+          if (input.args.includes("sandbox") && input.args.includes("explain") && profileRoot) {
+            return { ...result, stdout: JSON.stringify(sandboxExplainForSession(profileRoot, "session-1")) };
+          }
+          if (input.args[0] === "ps") {
+            return { ...result, stdout: `${containerIds.join("\n")}\n` };
+          }
+          if (input.args[0] === "inspect" && profileRoot) {
+            return {
+              ...result,
+              stdout: JSON.stringify(fixture.sessions.map((sessionId, index) =>
+                realAgentContainerInspect(profileRoot!, runGroupId, sessionId, containerIds[index]))),
+            };
+          }
+          if (input.args[0] === "rm" && input.args[1] === "-f") removeCalls += 1;
+          return result;
+        },
+      });
+
+      try {
+        profileRoot = (await manager.start()).profileRoot;
+        await assert.rejects(
+          manager.attestAndCleanupSession("session-1"),
+          (error: unknown) =>
+            error instanceof SandboxAttestationError &&
+            error.code === "CONTAINER_ATTESTATION_MISMATCH",
+        );
+        assert.equal(removeCalls, 0);
+      } finally {
+        await manager.cleanup().catch(() => undefined);
+      }
+    });
+  }
+});
+
+test("attestAndCleanupSession fails closed when the removed container remains visible", async () => {
+  const { runner } = runnerFor();
+  const runGroupId = "run-session-cleanup-verification";
+  let removeCalls = 0;
+  let profileRoot: string | undefined;
+  const manager = new DetectionSandboxManager({
+    ...readyGatewayTestOptions(),
+    runGroupId,
+    image: `openclaw@sha256:${"a".repeat(64)}`,
+    commandRunner: async (input) => {
+      const result = await runner(input);
+      if (input.args.includes("sandbox") && input.args.includes("explain") && profileRoot) {
+        return { ...result, stdout: JSON.stringify(sandboxExplainForSession(profileRoot, "session-1")) };
+      }
+      if (input.args[0] === "ps") return { ...result, stdout: "agent-1\n" };
+      if (input.args[0] === "inspect" && profileRoot) {
+        return { ...result, stdout: JSON.stringify([realAgentContainerInspect(profileRoot, runGroupId)]) };
+      }
+      if (input.args[0] === "rm" && input.args[1] === "-f") removeCalls += 1;
+      return result;
+    },
+  });
+
+  try {
+    profileRoot = (await manager.start()).profileRoot;
+    await assert.rejects(
+      manager.attestAndCleanupSession("session-1"),
+      (error: unknown) =>
+        error instanceof SandboxAttestationError &&
+        error.code === "SESSION_CONTAINER_CLEANUP_FAILED",
+    );
+    assert.equal(removeCalls, 1);
   } finally {
     await manager.cleanup().catch(() => undefined);
   }

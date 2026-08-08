@@ -180,6 +180,8 @@ export class DetectionSandboxManager {
   private networkName?: string;
   private sinkContainerId?: string;
   private sinkLogs?: string;
+  private readonly sessionCleanupEvidence = new Map<string, DetectionSandboxEvidence>();
+  private readonly sessionCleanupPromises = new Map<string, Promise<DetectionSandboxEvidence>>();
   private cleanupErrors: { operation: string; error: unknown }[] = [];
   private externalAbortListener?: () => void;
 
@@ -427,6 +429,68 @@ export class DetectionSandboxManager {
     return this.runWhileGatewayAlive(
       async () => this.attestSessionWhileAlive(sessionKey, phase),
     );
+  }
+
+  async attestAndCleanupSession(sessionKey: string): Promise<DetectionSandboxEvidence> {
+    return this.runWhileGatewayAlive(async () => {
+      const existing = this.sessionCleanupEvidence.get(sessionKey);
+      if (existing) return cloneDetectionSandboxEvidence(existing);
+
+      let cleanup = this.sessionCleanupPromises.get(sessionKey);
+      if (!cleanup) {
+        cleanup = this.attestAndCleanupSessionWhileAlive(sessionKey);
+        this.sessionCleanupPromises.set(sessionKey, cleanup);
+      }
+      try {
+        return cloneDetectionSandboxEvidence(await cleanup);
+      } finally {
+        if (this.sessionCleanupPromises.get(sessionKey) === cleanup) {
+          this.sessionCleanupPromises.delete(sessionKey);
+        }
+      }
+    });
+  }
+
+  private async attestAndCleanupSessionWhileAlive(
+    sessionKey: string,
+  ): Promise<DetectionSandboxEvidence> {
+    const evidence = await this.attestSessionWhileAlive(sessionKey, "after");
+    const containerId = evidence.containerId;
+    let exactIds: string[];
+    try {
+      exactIds = containerId ? parseDockerIds(containerId, "container") : [];
+    } catch {
+      exactIds = [];
+    }
+    if (exactIds.length !== 1 || exactIds[0] !== containerId) {
+      throw new SandboxAttestationError(
+        "CONTAINER_ATTESTATION_MISMATCH",
+        "Attested session evidence did not identify exactly one container.",
+      );
+    }
+
+    try {
+      const removed = await this.command("docker", ["rm", "-f", containerId]);
+      if (removed.exitCode !== 0) throw new Error("Docker did not remove the attested session container.");
+      const remaining = await this.command(
+        "docker",
+        ["ps", "-aq", "--no-trunc", "--filter", `id=${containerId}`],
+      );
+      if (remaining.exitCode !== 0) throw new Error("Docker could not verify session container removal.");
+      const remainingIds = parseDockerIds(remaining.stdout, "container");
+      if (remainingIds.includes(containerId)) {
+        throw new Error("The attested session container remained after removal.");
+      }
+    } catch {
+      throw new SandboxAttestationError(
+        "SESSION_CONTAINER_CLEANUP_FAILED",
+        "Attested session container cleanup could not be verified.",
+      );
+    }
+
+    const tombstone = cloneDetectionSandboxEvidence({ ...evidence, status: "cleaned" });
+    this.sessionCleanupEvidence.set(sessionKey, tombstone);
+    return cloneDetectionSandboxEvidence(tombstone);
   }
 
   private async attestSessionWhileAlive(
@@ -1360,6 +1424,10 @@ export function createDetectionSandboxManager(options: DetectionSandboxManagerOp
 }
 
 function firstLine(value: string): string { return value.trim().split(/\r?\n/, 1)[0] ?? ""; }
+
+function cloneDetectionSandboxEvidence(evidence: DetectionSandboxEvidence): DetectionSandboxEvidence {
+  return { ...evidence };
+}
 
 function parseDockerIds(raw: string, kind: "container" | "network"): string[] {
   if (!raw.trim()) return [];

@@ -883,6 +883,139 @@ test("a failed pre-container attempt can retry after proven not-created cleanup"
   assert.equal(runGroup.traceIds.length, 2);
   assert.equal(runGroup.riskReportIds.length, 1);
   assert.equal(runGroup.sandboxEvidence?.containerId, "b".repeat(64));
+  assert.deepEqual(runGroup.nativeGuardCoverage && {
+    eventsTotal: runGroup.nativeGuardCoverage.eventsTotal,
+    reconciled: runGroup.nativeGuardCoverage.reconciled,
+    coverageBreachCount: runGroup.nativeGuardCoverage.coverageBreachCount,
+    mismatchCount: runGroup.nativeGuardCoverage.mismatchCount,
+    runtimeFailures: runGroup.nativeGuardCoverage.runtimeFailures,
+    sessions: runGroup.nativeGuardCoverage.sessions.map((session) => ({
+      sessionKey: session.sessionKey,
+      leaseId: session.leaseId,
+      leaseEpoch: session.leaseEpoch,
+      eventsTotal: session.eventsTotal,
+      reconciled: session.reconciled,
+      coverageBreachCount: session.coverageBreachCount,
+      mismatchCount: session.mismatchCount,
+    })),
+  }, {
+    eventsTotal: 0,
+    reconciled: true,
+    coverageBreachCount: 0,
+    mismatchCount: 0,
+    runtimeFailures: [],
+    sessions: [
+      {
+        sessionKey: drained[0],
+        leaseId: "lease.finalizer.1",
+        leaseEpoch: 1,
+        eventsTotal: 0,
+        reconciled: true,
+        coverageBreachCount: 0,
+        mismatchCount: 0,
+      },
+      {
+        sessionKey: drained[1],
+        leaseId: "lease.finalizer.2",
+        leaseEpoch: 2,
+        eventsTotal: 0,
+        reconciled: true,
+        coverageBreachCount: 0,
+        mismatchCount: 0,
+      },
+    ],
+  });
+});
+
+test("not-created proof cannot waive missing lease identity or trigger provider retry", async (t) => {
+  const previousRetryBase = process.env.AGENT_GUARD_OPENCLAW_RETRY_BASE_MS;
+  process.env.AGENT_GUARD_OPENCLAW_RETRY_BASE_MS = "0";
+  t.after(() => restoreEnv("AGENT_GUARD_OPENCLAW_RETRY_BASE_MS", previousRetryBase));
+  const { agent, adapterConfig, context } = await guardedDetectionFixture();
+  const runGroup = guardedRunGroup();
+  let finalizerCalls = 0;
+
+  await assert.rejects(
+    runDetectionCasesConcurrently({
+      targetCases: [context],
+      agent,
+      adapterConfig,
+      customAdapter: guardedAttemptAdapter({
+        results: [
+          { status: "failed", error: "429 Too many requests" },
+          { status: "completed" },
+        ],
+        runtimePatches: [{ leaseId: undefined, reconciliation: undefined }, {}],
+      }),
+      runGroup,
+      request: { ...OPENCLAW_REQUEST, caseIds: [context.caseId] },
+      signal: new AbortController().signal,
+      async guardedSessionFinalizer(input) {
+        finalizerCalls += 1;
+        return finalizerCalls === 1
+          ? notCreatedSandboxFinalization(input.sessionKey, runGroup.runGroupId)
+          : cleanedSandboxFinalization(input.sessionKey, runGroup.runGroupId);
+      },
+    }),
+    /NATIVE_GUARD_EVIDENCE_UNAVAILABLE: Native guard session lease identity is missing/,
+  );
+
+  assert.equal(finalizerCalls, 1);
+  assert.equal(runGroup.testRunIds.length, 1);
+  assert.equal(runGroup.progress?.caseFailures?.[0]?.attempts, 1);
+  assert.equal(runGroup.nativeGuardCoverage?.sessions.length, 0);
+  assert.equal(runGroup.nativeGuardCoverage?.runtimeFailures.length, 1);
+});
+
+test("not-created normalization preserves an unrelated runtime failure", async (t) => {
+  const previousRetryBase = process.env.AGENT_GUARD_OPENCLAW_RETRY_BASE_MS;
+  process.env.AGENT_GUARD_OPENCLAW_RETRY_BASE_MS = "0";
+  t.after(() => restoreEnv("AGENT_GUARD_OPENCLAW_RETRY_BASE_MS", previousRetryBase));
+  const { agent, adapterConfig, context } = await guardedDetectionFixture();
+  const runGroup = guardedRunGroup();
+  const unrelatedFailure = {
+    testRunId: "run.unrelated.identity-failure",
+    sessionKey: "agent:main:run.unrelated.identity-failure",
+    kind: "identity_missing" as const,
+    identityMissing: true as const,
+    eventsTotal: 0,
+    reconciled: false as const,
+    coverageBreachCount: 0,
+    mismatchCount: 1,
+    evidenceError: "Native guard session lease identity is missing.",
+  };
+  runGroup.nativeGuardCoverage!.runtimeFailures.push(unrelatedFailure);
+  let finalizerCalls = 0;
+
+  await assert.rejects(
+    runDetectionCasesConcurrently({
+      targetCases: [context],
+      agent,
+      adapterConfig,
+      customAdapter: guardedAttemptAdapter({
+        results: [
+          { status: "failed", error: "429 Too many requests" },
+          { status: "completed" },
+        ],
+        runtimePatches: [{ reconciliation: undefined }, {}],
+      }),
+      runGroup,
+      request: { ...OPENCLAW_REQUEST, caseIds: [context.caseId] },
+      signal: new AbortController().signal,
+      async guardedSessionFinalizer(input) {
+        finalizerCalls += 1;
+        return finalizerCalls === 1
+          ? notCreatedSandboxFinalization(input.sessionKey, runGroup.runGroupId)
+          : cleanedSandboxFinalization(input.sessionKey, runGroup.runGroupId);
+      },
+    }),
+    /NATIVE_GUARD_COVERAGE_BREACH: 1 reconciliation issue/,
+  );
+
+  assert.equal(finalizerCalls, 1);
+  assert.equal(runGroup.testRunIds.length, 1);
+  assert.deepEqual(runGroup.nativeGuardCoverage?.runtimeFailures, [unrelatedFailure]);
+  assert.equal(runGroup.nativeGuardCoverage?.sessions[0]?.reconciled, false);
 });
 
 test("a partial manager identity failure remains fatal before provider retry", async (t) => {
@@ -1243,29 +1376,6 @@ test("a successful guarded attempt rejects a not-created outcome", async () => {
   );
 });
 
-test("persistence failure cannot authorize not-created for a successful agent", async () => {
-  const result = completedAttemptResult({
-    runId: "run.finalizer.not-created-persistence",
-    traceId: "trace.finalizer.not-created-persistence",
-    sessionKey: "agent:main:run.finalizer.not-created-persistence",
-    leaseId: "lease.finalizer.not-created-persistence",
-    leaseEpoch: 8,
-  });
-  result.nativeGuardRuntime!.events = [];
-
-  await assert.rejects(
-    finalizeGuardedDetectionSession({
-      caseId: "case.resource_injection",
-      result,
-      persistenceError: new Error("trace persistence timed out"),
-      async guardedSessionFinalizer() {
-        return notCreatedSandboxFinalization(result.nativeGuardRuntime!.sessionKey!);
-      },
-    }),
-    /SESSION_CONTAINER_CLEANUP_FAILED: Successful guarded attempt cannot use a not-created outcome/,
-  );
-});
-
 test("a not-created outcome must match the guarded session", async () => {
   const result = completedAttemptResult({
     runId: "run.finalizer.not-created-mismatch",
@@ -1281,7 +1391,6 @@ test("a not-created outcome must match the guarded session", async () => {
     finalizeGuardedDetectionSession({
       caseId: "case.resource_injection",
       result,
-      attemptFailure: "429 Too many requests",
       async guardedSessionFinalizer() {
         return {
           ...notCreatedSandboxFinalization(result.nativeGuardRuntime!.sessionKey!),
@@ -1346,7 +1455,6 @@ test("guard integrity outranks a matching not-created outcome", async () => {
     finalizeGuardedDetectionSession({
       caseId: "case.resource_injection",
       result,
-      attemptFailure: "429 Too many requests",
       async guardedSessionFinalizer() {
         return notCreatedSandboxFinalization(result.nativeGuardRuntime!.sessionKey!);
       },

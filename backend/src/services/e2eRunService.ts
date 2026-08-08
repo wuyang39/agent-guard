@@ -87,6 +87,8 @@ const OUTPUT_DIR = path.resolve(process.cwd(), "outputs", "reports");
 const TRACES_DIR = path.resolve(process.cwd(), "outputs", "traces");
 const MAX_PROGRESS_FAILURES = 24;
 const MAX_NATIVE_GUARD_DIAGNOSTIC_COUNT = 1_000_000;
+const MISSING_NATIVE_GUARD_RECONCILIATION_FAILURE =
+  "NATIVE_GUARD_COVERAGE_BREACH: 1 reconciliation issue(s); native guard reconciliation is missing.";
 const GUARDED_FINALIZER_ERROR_CODES = new Set([
   "SESSION_CONTAINER_CLEANUP_FAILED",
   "CONTAINER_ATTESTATION_MISMATCH",
@@ -1357,8 +1359,6 @@ async function runSingleDetectionAttempt(input: {
         )
       : undefined;
   }
-  let attemptFailure = resolveDetectionAttemptFailure(testRun, coverageFailure);
-
   if (runGroup.nativeGuardCoverage) {
     const sandboxEvidence = await finalizeGuardedDetectionSession({
       caseId: context.caseId,
@@ -1366,21 +1366,23 @@ async function runSingleDetectionAttempt(input: {
       guardedSessionFinalizer,
       expectedRunGroupId: runGroup.runGroupId,
       expectedSandboxEvidence: runGroup.sandboxEvidence,
-      attemptFailure,
-      persistenceError,
     });
     if (sandboxEvidence) {
       runGroup.sandboxEvidence = buildSandboxEvidenceSummary(sandboxEvidence);
-    } else if (
-      testRun.status === "failed" &&
-      result.nativeGuardRuntime?.reconciliation === undefined
-    ) {
+    } else if (normalizeProvenAbsentNativeGuardCoverage({
+      coverage: runGroup.nativeGuardCoverage,
+      runtime: result.nativeGuardRuntime!,
+      testRunId: testRun.runId,
+      testRunStatus: testRun.status,
+      coverageFailure,
+      persistenceError,
+    })) {
       coverageFailure = undefined;
-      attemptFailure = resolveDetectionAttemptFailure(testRun);
     }
   }
   throwIfRunCancelled(signal);
 
+  const attemptFailure = resolveDetectionAttemptFailure(testRun, coverageFailure);
   if (coverageFailure && attemptFailure) throw new Error(attemptFailure);
   if (persistenceError) throw persistenceError;
   if (attemptFailure) throw new Error(attemptFailure);
@@ -1454,8 +1456,6 @@ export async function finalizeGuardedDetectionSession(input: {
   guardedSessionFinalizer?: GuardedSessionFinalizer;
   expectedRunGroupId?: string;
   expectedSandboxEvidence?: SandboxEvidenceSummary;
-  attemptFailure?: string;
-  persistenceError?: unknown;
 }): Promise<DetectionSandboxEvidence | undefined> {
   const { guardedSessionFinalizer } = input;
   if (!guardedSessionFinalizer) {
@@ -1674,7 +1674,7 @@ function assessNativeGuardReconciliation(
       reconciled: false,
       coverageBreachCount: 0,
       mismatchCount: 0,
-      failure: "NATIVE_GUARD_COVERAGE_BREACH: 1 reconciliation issue(s); native guard reconciliation is missing.",
+      failure: MISSING_NATIVE_GUARD_RECONCILIATION_FAILURE,
     };
   }
   const coverageBreachCount = cappedNativeGuardDiagnosticCount(
@@ -1864,6 +1864,9 @@ export function recordNativeGuardSessionCoverage(
   if (persistedSummary.revokeError) {
     return `NATIVE_GUARD_REVOKE_FAILED: ${persistedSummary.revokeError}`;
   }
+  if (runtime.reconciliation === undefined) {
+    return MISSING_NATIVE_GUARD_RECONCILIATION_FAILURE;
+  }
   return assessNativeGuardReconciliation(persistedSummary).failure;
 }
 
@@ -1918,6 +1921,83 @@ function aggregateNativeGuardCoverage(
   const primary = coverage.sessions[0];
   coverage.leaseId = primary?.leaseId;
   coverage.leaseEpoch = primary?.leaseEpoch;
+}
+
+function normalizeProvenAbsentNativeGuardCoverage(input: {
+  coverage: NativeGuardCoverageSummary;
+  runtime: NonNullable<TestRunResult["nativeGuardRuntime"]>;
+  testRunId: string;
+  testRunStatus: TestRunResult["testRun"]["status"];
+  coverageFailure?: string;
+  persistenceError?: unknown;
+}): boolean {
+  const {
+    coverage,
+    runtime,
+    testRunId,
+    testRunStatus,
+    coverageFailure,
+    persistenceError,
+  } = input;
+  const identity = compactLeaseIdentity(runtime);
+  let canonicalSessionKey = false;
+  if (identity.sessionKey) {
+    try {
+      canonicalSessionKey = canonicalizeOpenClawSessionKey(identity.sessionKey) === identity.sessionKey;
+    } catch {
+      canonicalSessionKey = false;
+    }
+  }
+  if (
+    testRunStatus !== "failed" ||
+    persistenceError !== undefined ||
+    (coverageFailure !== undefined &&
+      coverageFailure !== MISSING_NATIVE_GUARD_RECONCILIATION_FAILURE) ||
+    !canonicalSessionKey ||
+    !hasCompleteLeaseIdentity(identity) ||
+    runtime.events.length !== 0 ||
+    runtime.reconciliation !== undefined ||
+    Boolean(runtime.evidenceError) ||
+    Boolean(runtime.revokeError) ||
+    coverage.runtimeFailures.length !== 0
+  ) {
+    return false;
+  }
+
+  const matchingIndexes = coverage.sessions
+    .map((session, index) => session.testRunIds?.includes(testRunId) ? index : -1)
+    .filter((index) => index >= 0);
+  if (matchingIndexes.length !== 1) return false;
+  const matchingIndex = matchingIndexes[0]!;
+  const session = coverage.sessions[matchingIndex]!;
+  if (
+    session.sessionKey !== identity.sessionKey ||
+    session.leaseId !== identity.leaseId ||
+    session.leaseEpoch !== identity.leaseEpoch ||
+    session.eventsTotal !== 0 ||
+    session.coverageBreachCount !== 0 ||
+    session.mismatchCount !== 0 ||
+    Boolean(session.evidenceError) ||
+    Boolean(session.revokeError) ||
+    session.leaseIdentityConflict !== undefined ||
+    coverage.sessions.some((candidate, index) =>
+      index !== matchingIndex &&
+      (
+        !candidate.reconciled ||
+        candidate.coverageBreachCount !== 0 ||
+        candidate.mismatchCount !== 0 ||
+        Boolean(candidate.evidenceError) ||
+        Boolean(candidate.revokeError) ||
+        candidate.leaseIdentityConflict !== undefined
+      )
+    )
+  ) {
+    return false;
+  }
+
+  coverage.sessions[matchingIndex] = { ...session, reconciled: true };
+  aggregateNativeGuardCoverage(coverage);
+  return true;
 }
 
 type NativeGuardLeaseIdentitySummary = {

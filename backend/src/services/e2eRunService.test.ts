@@ -3,15 +3,22 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import type { DetectionSandboxManager } from "../modules/openclaw/detectionSandboxManager";
+import type {
+  DetectionSandboxEvidence,
+  DetectionSandboxManager,
+} from "../modules/openclaw/detectionSandboxManager";
 import type { DetectionProfileSeed } from "../modules/openclaw/detectionProfileSeed";
+import { loadTestContexts } from "../modules/config/loadTestContext";
+import type { AgentAdapter } from "../modules/agent/agentAdapter";
 import {
   DetectionRunConflictError,
   classifyDetectionError,
   createInitialE2ERunGroup,
+  finalizeGuardedDetectionSession,
   finalizeDetectionRunReservation,
   releaseDetectionRunReservation,
   reserveDetectionRun,
+  runDetectionCasesConcurrently,
   resolveNativeGuardSessionKeys,
   runDetectionWithSandboxLifetime,
   type DetectionRunReservation,
@@ -23,6 +30,7 @@ import type {
   P2RunGroup,
 } from "../api/types";
 import type { TestRunResult } from "../modules/runner/runTypes";
+import type { AgentAdapterConfig, AgentUnderTest } from "@agent-guard/contracts";
 
 const OPENCLAW_REQUEST = {
   adapterKind: "openclaw",
@@ -371,6 +379,404 @@ function completedAttemptResult(input: {
       },
     },
   };
+}
+
+function cleanedSandboxEvidence(sessionKey: string): DetectionSandboxEvidence {
+  return {
+    runGroupId: "run_group.finalizer",
+    image: `openclaw@sha256:${"a".repeat(64)}`,
+    imageId: "sha256:finalized",
+    openclawVersion: "2026.8.0",
+    profileRoot: "C:\\sandbox\\profile",
+    configPath: "C:\\sandbox\\profile\\openclaw.json",
+    configDigest: `sha256:${sessionKey}`,
+    networkMode: "none",
+    containerId: "a".repeat(64),
+    status: "cleaned",
+  };
+}
+
+async function guardedDetectionFixture() {
+  const agent = {
+    schemaVersion: "mvp-1",
+    agentId: "agent.finalizer",
+    name: "Finalizer fixture",
+    adapterType: "openclaw" as AgentUnderTest["adapterType"],
+  } satisfies AgentUnderTest;
+  const adapterConfig = {
+    schemaVersion: "mvp-1",
+    adapterId: "adapter.finalizer",
+    agentId: agent.agentId,
+    adapterType: agent.adapterType,
+    timeoutMs: 1_000,
+  } satisfies AgentAdapterConfig;
+  const { contexts } = await loadTestContexts(path.resolve("configs"), agent);
+  const context = contexts.find((item) => item.caseId === "case.resource_injection");
+  assert.ok(context);
+  return { agent, adapterConfig, context };
+}
+
+function guardedAttemptAdapter(input: {
+  results: Array<{ status: "completed" | "failed"; error?: string }>;
+  onDrain?: (input: { attempt: number; runId: string; sessionKey: string }) => void;
+}): AgentAdapter {
+  let sessionIndex = 0;
+  return {
+    adapterType: "openclaw" as AgentAdapter["adapterType"],
+    async createSession(agent, config) {
+      const attempt = sessionIndex++;
+      let runId = "";
+      return {
+        agent,
+        config,
+        async sendTask(_task, _bridge, runMeta) {
+          assert.ok(runMeta);
+          runId = runMeta.runId;
+          const configured = input.results[attempt] ?? input.results.at(-1)!;
+          return {
+            schemaVersion: "mvp-1",
+            runId,
+            agentId: agent.agentId,
+            caseId: runMeta.caseId,
+            status: configured.status,
+            finalMessage: configured.status === "completed" ? "completed" : undefined,
+            error: configured.error,
+            startedAt: "2026-08-09T00:00:00.000Z",
+            endedAt: "2026-08-09T00:00:01.000Z",
+          };
+        },
+        async drainRuntimeEvidence() {
+          assert.ok(runId);
+          const sessionKey = `agent:main:${runId}`;
+          input.onDrain?.({ attempt, runId, sessionKey });
+          return {
+            sessionKey,
+            leaseId: `lease.finalizer.${String(attempt + 1)}`,
+            leaseEpoch: attempt + 1,
+            nativeGuardEvents: [],
+            supervisionRecords: [],
+            reconciliation: {
+              reconciled: true,
+              coverageBreachCount: 0,
+              mismatchCount: 0,
+            },
+          };
+        },
+      };
+    },
+  };
+}
+
+test("guarded case finalization updates sandbox evidence before accepting risk", async () => {
+  const { agent, adapterConfig, context } = await guardedDetectionFixture();
+  const runGroup = guardedRunGroup();
+  const order: string[] = [];
+  const finalized: Array<{ caseId: string; runId: string; sessionKey: string }> = [];
+
+  const result = await runDetectionCasesConcurrently({
+    targetCases: [context],
+    agent,
+    adapterConfig,
+    customAdapter: guardedAttemptAdapter({
+      results: [{ status: "completed" }],
+      onDrain() { order.push("evidence_drained"); },
+    }),
+    runGroup,
+    request: { ...OPENCLAW_REQUEST, caseIds: [context.caseId] },
+    signal: new AbortController().signal,
+    async guardedSessionFinalizer(input) {
+      order.push("finalized");
+      finalized.push(input);
+      assert.deepEqual(runGroup.testRunIds, [input.runId]);
+      assert.equal(runGroup.traceIds.length, 1);
+      assert.deepEqual(runGroup.riskReportIds, []);
+      assert.equal(runGroup.progress?.completedCases, 0);
+      return cleanedSandboxEvidence(input.sessionKey);
+    },
+  });
+  order.push("risk_accepted");
+
+  assert.deepEqual(order, ["evidence_drained", "finalized", "risk_accepted"]);
+  assert.equal(finalized.length, 1);
+  assert.equal(finalized[0]?.caseId, context.caseId);
+  assert.equal(finalized[0]?.sessionKey, `agent:main:${finalized[0]?.runId}`);
+  assert.equal(result.completedCases, 1);
+  assert.equal(result.riskReports.length, 1);
+  assert.equal(runGroup.riskReportIds.length, 1);
+  assert.deepEqual(runGroup.sandboxEvidence && {
+    preflightPassed: runGroup.sandboxEvidence.preflightPassed,
+    attested: runGroup.sandboxEvidence.attested,
+    containerId: runGroup.sandboxEvidence.containerId,
+  }, {
+    preflightPassed: true,
+    attested: true,
+    containerId: "a".repeat(64),
+  });
+});
+
+test("guarded finalizer failure is fatal without retry, risk report, or success count", async (t) => {
+  const previousRetryBase = process.env.AGENT_GUARD_OPENCLAW_RETRY_BASE_MS;
+  process.env.AGENT_GUARD_OPENCLAW_RETRY_BASE_MS = "0";
+  t.after(() => restoreEnv("AGENT_GUARD_OPENCLAW_RETRY_BASE_MS", previousRetryBase));
+  const { agent, adapterConfig, context } = await guardedDetectionFixture();
+  const runGroup = guardedRunGroup();
+  let drainedAttempts = 0;
+  let finalizerCalls = 0;
+
+  await assert.rejects(
+    runDetectionCasesConcurrently({
+      targetCases: [context],
+      agent,
+      adapterConfig,
+      customAdapter: guardedAttemptAdapter({
+        results: [{ status: "completed" }],
+        onDrain() { drainedAttempts += 1; },
+      }),
+      runGroup,
+      request: { ...OPENCLAW_REQUEST, caseIds: [context.caseId] },
+      signal: new AbortController().signal,
+      async guardedSessionFinalizer() {
+        finalizerCalls += 1;
+        throw new Error("sandbox cleanup timed out");
+      },
+    }),
+    /Detection pass failed.*NATIVE_GUARD_EVIDENCE_UNAVAILABLE.*sandbox cleanup timed out/,
+  );
+
+  assert.equal(drainedAttempts, 1);
+  assert.equal(finalizerCalls, 1);
+  assert.equal(runGroup.testRunIds.length, 1);
+  assert.equal(runGroup.traceIds.length, 1);
+  assert.deepEqual(runGroup.riskReportIds, []);
+  assert.equal(runGroup.progress?.completedCases, 0);
+  assert.equal(runGroup.progress?.failedCases, 1);
+  assert.deepEqual(runGroup.progress?.caseFailures?.map((failure) => ({
+    caseId: failure.caseId,
+    reason: failure.reason,
+    category: failure.category,
+    skipped: failure.skipped,
+  })), [{
+    caseId: context.caseId,
+    reason: "NATIVE_GUARD_EVIDENCE_UNAVAILABLE: Guarded session finalization failed: sandbox cleanup timed out",
+    category: "native_guard_evidence_unavailable",
+    skipped: false,
+  }]);
+});
+
+test("a successful retry finalizes its new guarded session exactly once", async (t) => {
+  const previousRetryBase = process.env.AGENT_GUARD_OPENCLAW_RETRY_BASE_MS;
+  process.env.AGENT_GUARD_OPENCLAW_RETRY_BASE_MS = "0";
+  t.after(() => restoreEnv("AGENT_GUARD_OPENCLAW_RETRY_BASE_MS", previousRetryBase));
+  const { agent, adapterConfig, context } = await guardedDetectionFixture();
+  const runGroup = guardedRunGroup();
+  const drained: string[] = [];
+  const finalized: string[] = [];
+
+  const result = await runDetectionCasesConcurrently({
+    targetCases: [context],
+    agent,
+    adapterConfig,
+    customAdapter: guardedAttemptAdapter({
+      results: [
+        { status: "failed", error: "429 Too many requests" },
+        { status: "completed" },
+      ],
+      onDrain({ sessionKey }) { drained.push(sessionKey); },
+    }),
+    runGroup,
+    request: { ...OPENCLAW_REQUEST, caseIds: [context.caseId] },
+    signal: new AbortController().signal,
+    async guardedSessionFinalizer(input) {
+      finalized.push(input.sessionKey);
+      return cleanedSandboxEvidence(input.sessionKey);
+    },
+  });
+
+  assert.equal(result.completedCases, 1);
+  assert.equal(result.retriedCases, 1);
+  assert.equal(drained.length, 2);
+  assert.notEqual(drained[0], drained[1]);
+  assert.deepEqual(finalized, [drained[1]]);
+  assert.equal(runGroup.testRunIds.length, 2);
+  assert.equal(runGroup.traceIds.length, 2);
+  assert.equal(runGroup.riskReportIds.length, 1);
+});
+
+test("guarded detection finalizes only after runtime evidence persistence", async () => {
+  const runGroup = guardedRunGroup();
+  const result = completedAttemptResult({
+    runId: "run.finalizer.order",
+    traceId: "trace.finalizer.order",
+    sessionKey: "agent:main:run.finalizer.order",
+    leaseId: "lease.finalizer.order",
+    leaseEpoch: 3,
+  });
+  const order: string[] = [];
+  let traceWriteAttempts = 0;
+  const traceWriter = async () => {
+    traceWriteAttempts += 1;
+    if (traceWriteAttempts === 1) {
+      throw new Error("trace disk unavailable");
+    }
+    order.push("persisted");
+  };
+  await assert.rejects(
+    persistAttemptEvidence({
+      runGroup,
+      result,
+      signal: new AbortController().signal,
+      traceWriter,
+    }),
+    /trace disk unavailable/,
+  );
+  await persistAttemptEvidence({
+    runGroup,
+    result,
+    signal: new AbortController().signal,
+    traceWriter,
+  });
+
+  let finalizerCalls = 0;
+  const evidence = await finalizeGuardedDetectionSession({
+    caseId: "case.resource_injection",
+    result,
+    async guardedSessionFinalizer(input) {
+      finalizerCalls += 1;
+      order.push("finalized");
+      assert.deepEqual(input, {
+        caseId: "case.resource_injection",
+        runId: "run.finalizer.order",
+        sessionKey: "agent:main:run.finalizer.order",
+      });
+      assert.deepEqual(runGroup.testRunIds, ["run.finalizer.order"]);
+      assert.deepEqual(runGroup.traceIds, ["trace.finalizer.order"]);
+      return cleanedSandboxEvidence(input.sessionKey);
+    },
+  });
+  order.push("risk_accepted");
+
+  assert.equal(evidence?.status, "cleaned");
+  assert.equal(finalizerCalls, 1);
+  assert.deepEqual(order, ["persisted", "finalized", "risk_accepted"]);
+});
+
+test("optional guarded finalizer leaves an unguarded attempt unchanged", async () => {
+  assert.equal(
+    await finalizeGuardedDetectionSession({
+      caseId: "case.unguarded",
+      result: {
+        testRun: { runId: "run.unguarded", status: "completed" } as TestRunResult["testRun"],
+      },
+    }),
+    undefined,
+  );
+});
+
+test("classified finalizer failures preserve category without leaking secrets", async () => {
+  const result = completedAttemptResult({
+    runId: "run.finalizer.scrubbed-error",
+    traceId: "trace.finalizer.scrubbed-error",
+    sessionKey: "agent:main:run.finalizer.scrubbed-error",
+    leaseId: "lease.finalizer.scrubbed-error",
+    leaseEpoch: 6,
+  });
+
+  await assert.rejects(
+    finalizeGuardedDetectionSession({
+      caseId: "case.resource_injection",
+      result,
+      async guardedSessionFinalizer() {
+        throw new Error(
+          "NATIVE_GUARD_REVOKE_FAILED: gatewayToken=super-secret revoke unavailable",
+        );
+      },
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(
+        error.message,
+        /^NATIVE_GUARD_REVOKE_FAILED: gatewayToken=\[REDACTED\] revoke unavailable$/,
+      );
+      assert.doesNotMatch(error.message, /super-secret/);
+      return true;
+    },
+  );
+});
+
+for (const invalidRuntime of [
+  {
+    name: "missing runtime evidence",
+    patch(result: ReturnType<typeof completedAttemptResult>) {
+      result.nativeGuardRuntime = undefined;
+    },
+    expected: /NATIVE_GUARD_EVIDENCE_UNAVAILABLE:/,
+  },
+  {
+    name: "missing session identity",
+    patch(result: ReturnType<typeof completedAttemptResult>) {
+      result.nativeGuardRuntime!.sessionKey = undefined;
+    },
+    expected: /NATIVE_GUARD_EVIDENCE_UNAVAILABLE:/,
+  },
+  {
+    name: "missing reconciliation",
+    patch(result: ReturnType<typeof completedAttemptResult>) {
+      result.nativeGuardRuntime!.reconciliation = undefined;
+    },
+    expected: /NATIVE_GUARD_COVERAGE_BREACH: 0\b/,
+  },
+  {
+    name: "unreconciled runtime",
+    patch(result: ReturnType<typeof completedAttemptResult>) {
+      result.nativeGuardRuntime!.reconciliation = {
+        reconciled: false,
+        coverageBreachCount: 4,
+        mismatchCount: 1,
+      };
+    },
+    expected: /NATIVE_GUARD_COVERAGE_BREACH: 4\b/,
+  },
+  {
+    name: "evidence error",
+    patch(result: ReturnType<typeof completedAttemptResult>) {
+      result.nativeGuardRuntime!.reconciliation!.reconciled = false;
+      result.nativeGuardRuntime!.evidenceError = "event store unavailable";
+    },
+    expected: /NATIVE_GUARD_EVIDENCE_UNAVAILABLE: event store unavailable/,
+  },
+  {
+    name: "revoke error",
+    patch(result: ReturnType<typeof completedAttemptResult>) {
+      result.nativeGuardRuntime!.reconciliation!.reconciled = false;
+      result.nativeGuardRuntime!.revokeError = "lease revoke unavailable";
+    },
+    expected: /NATIVE_GUARD_REVOKE_FAILED: lease revoke unavailable/,
+  },
+] as const) {
+  test(`guarded finalization fails closed for ${invalidRuntime.name}`, async () => {
+    const result = completedAttemptResult({
+      runId: `run.finalizer.${invalidRuntime.name.replaceAll(" ", ".")}`,
+      traceId: `trace.finalizer.${invalidRuntime.name.replaceAll(" ", ".")}`,
+      sessionKey: `agent:main:run.finalizer.${invalidRuntime.name.replaceAll(" ", ".")}`,
+      leaseId: "lease.finalizer.invalid",
+      leaseEpoch: 5,
+    });
+    invalidRuntime.patch(result);
+    let finalizerCalls = 0;
+
+    await assert.rejects(
+      finalizeGuardedDetectionSession({
+        caseId: "case.resource_injection",
+        result,
+        async guardedSessionFinalizer(input) {
+          finalizerCalls += 1;
+          return cleanedSandboxEvidence(input.sessionKey);
+        },
+      }),
+      invalidRuntime.expected,
+    );
+    assert.equal(finalizerCalls, 0);
+  });
 }
 
 test("single guarded session persists authoritative lease and reconciliation coverage", () => {

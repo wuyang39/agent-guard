@@ -164,6 +164,12 @@ export type GuardLeaseDeps = {
   revoke: (leaseId: string) => Promise<void>;
 };
 
+export type GuardedSessionFinalizer = (input: {
+  caseId: string;
+  runId: string;
+  sessionKey: string;
+}) => Promise<DetectionSandboxEvidence>;
+
 /** Factory provided by app.ts. Shares the API's lease service and backend
  *  PDP URL, creates a per-run coordinator targeting the sandbox Gateway. */
 export type SandboxCoordinatorFactory = (input: {
@@ -190,6 +196,7 @@ export type E2ERunDependencies = {
   createDetectionSandboxManager?: (
     options: DetectionSandboxManagerOptions,
   ) => DetectionSandboxManager;
+  guardedSessionFinalizer?: GuardedSessionFinalizer;
 };
 
 export class CaseIdValidationError extends Error {
@@ -712,6 +719,7 @@ export async function runE2E(
       runGroup,
       request,
       signal,
+      guardedSessionFinalizer: dependencies.guardedSessionFinalizer,
     });
     const detectionResult = sandboxManager
       ? await runDetectionWithSandboxLifetime(sandboxManager, runDetection)
@@ -1001,7 +1009,7 @@ class DetectionCaseError extends Error {
   }
 }
 
-async function runDetectionCasesConcurrently(input: {
+export async function runDetectionCasesConcurrently(input: {
   targetCases: TestContext[];
   agent: AgentUnderTest;
   adapterConfig: AgentAdapterConfig;
@@ -1009,6 +1017,7 @@ async function runDetectionCasesConcurrently(input: {
   runGroup: P2RunGroup;
   request: RunE2ERequest;
   signal: AbortSignal;
+  guardedSessionFinalizer?: GuardedSessionFinalizer;
 }): Promise<DetectionBatchResult> {
   const {
     targetCases,
@@ -1018,6 +1027,7 @@ async function runDetectionCasesConcurrently(input: {
     runGroup,
     request,
     signal,
+    guardedSessionFinalizer,
   } = input;
   const concurrency = runGroup.progress?.concurrency ?? getDetectionConcurrency(request);
   const runningCaseIds = new Set<string>();
@@ -1054,6 +1064,7 @@ async function runDetectionCasesConcurrently(input: {
           runGroup,
           request,
           signal,
+          guardedSessionFinalizer,
           getCounters: () => ({ completedCases, failedCases, skippedCases, retriedCases }),
           setRetried: () => {
             retriedCases++;
@@ -1174,6 +1185,7 @@ async function runDetectionCaseWithRetry(input: {
   runGroup: P2RunGroup;
   request: RunE2ERequest;
   signal: AbortSignal;
+  guardedSessionFinalizer?: GuardedSessionFinalizer;
   getCounters: () => {
     completedCases: number;
     failedCases: number;
@@ -1190,6 +1202,7 @@ async function runDetectionCaseWithRetry(input: {
     runGroup,
     request,
     signal,
+    guardedSessionFinalizer,
     getCounters,
     setRetried,
   } = input;
@@ -1216,6 +1229,7 @@ async function runDetectionCaseWithRetry(input: {
           customAdapter,
           runGroup,
           signal,
+          guardedSessionFinalizer,
         }),
       };
     } catch (error) {
@@ -1281,8 +1295,17 @@ async function runSingleDetectionAttempt(input: {
   customAdapter?: AgentAdapter;
   runGroup: P2RunGroup;
   signal: AbortSignal;
+  guardedSessionFinalizer?: GuardedSessionFinalizer;
 }): Promise<ReturnType<typeof buildRiskReport>> {
-  const { agent, adapterConfig, context, customAdapter, runGroup, signal } = input;
+  const {
+    agent,
+    adapterConfig,
+    context,
+    customAdapter,
+    runGroup,
+    signal,
+    guardedSessionFinalizer,
+  } = input;
   throwIfRunCancelled(signal);
   const result = await runTestCase(agent, adapterConfig, context, {
     customAdapter,
@@ -1300,6 +1323,17 @@ async function runSingleDetectionAttempt(input: {
   const attemptFailure = resolveDetectionAttemptFailure(testRun, coverageFailure);
   if (attemptFailure) {
     throw new Error(attemptFailure);
+  }
+
+  if (runGroup.nativeGuardCoverage) {
+    const sandboxEvidence = await finalizeGuardedDetectionSession({
+      caseId: context.caseId,
+      result,
+      guardedSessionFinalizer,
+    });
+    if (sandboxEvidence) {
+      runGroup.sandboxEvidence = buildSandboxEvidenceSummary(sandboxEvidence);
+    }
   }
 
   const evaluation = await evaluateRiskWithSemanticScoring(context, trace);
@@ -1354,6 +1388,61 @@ export function resolveDetectionAttemptFailure(
     return testRun.error ?? "Detection test run failed";
   }
   return undefined;
+}
+
+export async function finalizeGuardedDetectionSession(input: {
+  caseId: string;
+  result: Pick<TestRunResult, "testRun" | "nativeGuardRuntime">;
+  guardedSessionFinalizer?: GuardedSessionFinalizer;
+}): Promise<DetectionSandboxEvidence | undefined> {
+  const { guardedSessionFinalizer } = input;
+  if (!guardedSessionFinalizer) return undefined;
+
+  const runtime = input.result.nativeGuardRuntime;
+  if (!runtime) {
+    throw new Error(
+      "NATIVE_GUARD_EVIDENCE_UNAVAILABLE: Native guard runtime evidence is missing.",
+    );
+  }
+  const sessionKey = runtime.sessionKey?.trim();
+  if (!sessionKey) {
+    throw new Error(
+      "NATIVE_GUARD_EVIDENCE_UNAVAILABLE: Native guard session key is missing.",
+    );
+  }
+  if (runtime.evidenceError) {
+    throw new Error(
+      `NATIVE_GUARD_EVIDENCE_UNAVAILABLE: ${scrubSecrets(runtime.evidenceError)}`,
+    );
+  }
+  if (runtime.revokeError) {
+    throw new Error(
+      `NATIVE_GUARD_REVOKE_FAILED: ${scrubSecrets(runtime.revokeError)}`,
+    );
+  }
+  if (!runtime.reconciliation?.reconciled) {
+    const coverageBreachCount = runtime.reconciliation?.coverageBreachCount ?? 0;
+    throw new Error(
+      `NATIVE_GUARD_COVERAGE_BREACH: ${String(coverageBreachCount)} coverage breach(es); native guard reconciliation is missing or incomplete.`,
+    );
+  }
+
+  try {
+    return await guardedSessionFinalizer({
+      caseId: input.caseId,
+      runId: input.result.testRun.runId,
+      sessionKey,
+    });
+  } catch (error) {
+    if (isRunCancelledError(error)) throw error;
+    const message = scrubSecrets(error instanceof Error ? error.message : String(error));
+    if (/NATIVE_GUARD_(?:EVIDENCE_UNAVAILABLE|REVOKE_FAILED|COVERAGE_BREACH):/i.test(message)) {
+      throw new Error(message);
+    }
+    throw new Error(
+      `NATIVE_GUARD_EVIDENCE_UNAVAILABLE: Guarded session finalization failed: ${message}`,
+    );
+  }
 }
 
 export function recordNativeGuardSessionCoverage(
@@ -2426,8 +2515,8 @@ function buildSandboxEvidenceSummary(
 ): SandboxEvidenceSummary {
   if (evidence) {
     return {
-      preflightPassed: evidence.status !== "cleaned",
-      attested: evidence.status === "attested",
+      preflightPassed: true,
+      attested: evidence.status === "attested" || evidence.status === "cleaned",
       imageId: evidence.imageId,
       imageDigest: evidence.image,
       openclawVersion: evidence.openclawVersion,

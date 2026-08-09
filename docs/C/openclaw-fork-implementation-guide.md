@@ -356,7 +356,7 @@ npm run verify:native-guard:real
 npm run verify:native-guard:docker -- --required
 ```
 
-`d895b2d...` artifact 已完成正式 targeted build 和 buildstamp 绑定。real registry gate 与新 artifact 的 required Docker default/controlled gate 必须在当前收口工作树 fresh 重跑；旧 `2d55b95...` artifact 的 122.2 秒结果不能外推到新基线。
+`d895b2d...` artifact 已完成正式 targeted build 和 buildstamp 绑定。当前收口工作树已 fresh 完成 real registry gate（28.4 秒），并以新 `01630c...` digest 完成 required Docker default/controlled gate（120.3 秒、两轮 cleanup 残留为 0）。旧 `2d55b95...` artifact 的结果不能外推到新基线。
 
 Agent Guard 最终收口提交：
 
@@ -377,7 +377,7 @@ Agent Guard 最终收口提交：
 - [x] attestation route 是插件不可覆盖的 reserved core route。
 - [x] launcher 原子 spawn 真实 child，maintenance 不 spawn。
 - [x] Dockerfile、README 和本地 build 脚本已提供；脚本输出固定本机 digest。
-- [ ] 在 `d895b2d...` artifact 上 fresh 重跑新 `01630c...` digest 的 required Docker default/controlled gate，并证明两轮 cleanup 残留为 0。
+- [x] 在 `d895b2d...` artifact 上 fresh 重跑 real registry gate，并以新 `01630c...` digest 完成 required Docker default/controlled gate；两轮 cleanup 残留为 0。
 - [ ] 推送正式 registry 镜像。
 - [ ] 生成并归档 SBOM/provenance。
 - [ ] 执行并归档完整人工场景矩阵。

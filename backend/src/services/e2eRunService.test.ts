@@ -663,7 +663,7 @@ function formalOpenClawRuntimeFixture(input: {
   runGroup: P2RunGroup;
   adapter(signal: AbortSignal): AgentAdapter;
   startFailure?: Error;
-  cleanupFailure?: Error;
+  cleanupFailure?: (cleanupCall: number) => Error | undefined;
   onCleanup?: () => void;
 }) {
   const calls = { cleanup: 0, finalize: 0, postBatchAttest: 0, generations: 0 };
@@ -702,7 +702,8 @@ function formalOpenClawRuntimeFixture(input: {
         async cleanup() {
           calls.cleanup += 1;
           input.onCleanup?.();
-          if (input.cleanupFailure) throw input.cleanupFailure;
+          const cleanupFailure = input.cleanupFailure?.(calls.cleanup);
+          if (cleanupFailure) throw cleanupFailure;
         },
       } as unknown as DetectionSandboxManager;
     },
@@ -3047,7 +3048,12 @@ test("initial runtime factory cleanup keeps its typed cleanup classification", a
     runGroup,
     adapter: () => guardedAttemptAdapter({ results: [{ status: "completed" }] }),
     startFailure: new Error("Gateway start setup failed"),
-    cleanupFailure: new Error("Runtime manager teardown timed out"),
+    cleanupFailure: (cleanupCall) => cleanupCall === 1
+      ? new Error("Runtime manager teardown timed out")
+      : undefined,
+    onCleanup() {
+      assert.throws(() => reserveDetectionRun(), DetectionRunConflictError);
+    },
   });
 
   await assert.rejects(
@@ -3061,11 +3067,13 @@ test("initial runtime factory cleanup keeps its typed cleanup classification", a
     /Runtime manager teardown timed out/,
   );
 
-  assert.equal(fixture.calls.cleanup, 1);
+  assert.equal(fixture.calls.cleanup, 2);
   assert.equal(
     runGroup.progress?.caseFailures?.[0]?.category,
     "sandbox_cleanup_failed",
   );
+  const nextReservation = reserveDetectionRun();
+  assert.equal(releaseDetectionRunReservation(nextReservation), true);
 });
 
 test("formal OpenClaw runE2E binds guarded finalization to the active runtime manager", async (t) => {

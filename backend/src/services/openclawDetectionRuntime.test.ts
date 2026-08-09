@@ -9,6 +9,7 @@ import { SandboxPreflightError } from "../modules/openclaw/detectionSandboxManag
 import type { NativeGuardEventStore } from "../storage/nativeGuardEventStore";
 import {
   createOpenClawDetectionRuntimeController,
+  OpenClawDetectionRuntimeCleanupError,
   type OpenClawDetectionRuntimeResources,
 } from "./openclawDetectionRuntime";
 
@@ -129,6 +130,39 @@ test("recovers from a failed start without publishing or skipping a generation",
   assert.equal(controller.current()?.manager, manager);
 });
 
+test("dispose retries cleanup ownership transferred by a failed initial starter", async () => {
+  let cleanupAttempts = 0;
+  const manager = new FakeDetectionSandboxManager(async () => {
+    cleanupAttempts += 1;
+    if (cleanupAttempts <= 2) throw new Error("partial manager teardown failed");
+  });
+  let startCalls = 0;
+  const controller = createOpenClawDetectionRuntimeController({
+    async start() {
+      startCalls += 1;
+      try {
+        await manager.cleanup();
+      } catch (error) {
+        throw new OpenClawDetectionRuntimeCleanupError(
+          error,
+          manager as unknown as DetectionSandboxManager,
+        );
+      }
+      return runtimeResources(manager);
+    },
+  });
+
+  await assert.rejects(controller.ensure(), /partial manager teardown failed/);
+  assert.equal(manager.cleanupCalls, 1);
+  await assert.rejects(controller.dispose(), /partial manager teardown failed/);
+  assert.equal(manager.cleanupCalls, 2);
+  await controller.dispose();
+
+  assert.equal(manager.cleanupCalls, 3);
+  assert.equal(startCalls, 1);
+  assert.equal(controller.current(), undefined);
+});
+
 test("recovers from a failed replacement start after the old manager is clean", async () => {
   const firstManager = new FakeDetectionSandboxManager();
   const secondManager = new FakeDetectionSandboxManager();
@@ -153,6 +187,43 @@ test("recovers from a failed replacement start after the old manager is clean", 
   assert.equal((await controller.ensure()).generation, 2);
   assert.deepEqual(requestedGenerations, [1, 2, 2]);
   assert.equal(controller.current()?.manager, secondManager);
+});
+
+test("dispose retries partial replacement cleanup transferred by restart", async () => {
+  const firstManager = new FakeDetectionSandboxManager();
+  let replacementCleanupAttempts = 0;
+  const replacementManager = new FakeDetectionSandboxManager(async () => {
+    replacementCleanupAttempts += 1;
+    if (replacementCleanupAttempts === 1) {
+      throw new Error("replacement teardown failed");
+    }
+  });
+  let startCalls = 0;
+  const controller = createOpenClawDetectionRuntimeController({
+    async start(generation) {
+      startCalls += 1;
+      if (generation === 1) return runtimeResources(firstManager);
+      try {
+        await replacementManager.cleanup();
+      } catch (error) {
+        throw new OpenClawDetectionRuntimeCleanupError(
+          error,
+          replacementManager as unknown as DetectionSandboxManager,
+        );
+      }
+      return runtimeResources(replacementManager);
+    },
+  });
+  await controller.ensure();
+
+  await assert.rejects(controller.restart(), /replacement teardown failed/);
+  assert.equal(firstManager.cleanupCalls, 1);
+  assert.equal(replacementManager.cleanupCalls, 1);
+  await controller.dispose();
+
+  assert.equal(replacementManager.cleanupCalls, 2);
+  assert.equal(startCalls, 2);
+  assert.equal(controller.current(), undefined);
 });
 
 test("does not replace a runtime until failed cleanup succeeds on retry", async () => {

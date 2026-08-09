@@ -21,8 +21,8 @@ export type OpenClawDetectionRuntimeResources = Omit<
 
 /**
  * Creates a complete runtime and transfers its ownership only on fulfillment.
- * The starter must release every resource allocated by a failed attempt before
- * rejecting because the controller never receives partial runtime resources.
+ * If releasing a partial manager fails, the starter transfers that cleanup
+ * ownership with OpenClawDetectionRuntimeCleanupError before rejecting.
  */
 export type StartOpenClawDetectionRuntime = (
   generation: number,
@@ -50,11 +50,22 @@ export class OpenClawDetectionRuntimeDisposedError extends Error {
 
 export class OpenClawDetectionRuntimeCleanupError extends Error {
   readonly cleanupCause: unknown;
+  private cleanupManager: DetectionSandboxManager | undefined;
 
-  constructor(cause: unknown) {
+  constructor(
+    cause: unknown,
+    cleanupManager?: DetectionSandboxManager,
+  ) {
     super(cause instanceof Error ? cause.message : String(cause));
     this.name = "OpenClawDetectionRuntimeCleanupError";
     this.cleanupCause = cause;
+    this.cleanupManager = cleanupManager;
+  }
+
+  takeCleanupManagerOwnership(): DetectionSandboxManager | undefined {
+    const manager = this.cleanupManager;
+    this.cleanupManager = undefined;
+    return manager;
   }
 }
 
@@ -86,6 +97,16 @@ export function createOpenClawDetectionRuntimeController(options: {
     operationsDrained.clear();
   }
 
+  function retainManagerForCleanup(manager: DetectionSandboxManager): void {
+    if (
+      managerAwaitingCleanup &&
+      managerAwaitingCleanup !== manager
+    ) {
+      throw new Error("OpenClaw runtime cleanup ownership conflict");
+    }
+    managerAwaitingCleanup = manager;
+  }
+
   async function cleanupRetiredManager(): Promise<void> {
     if (!managerAwaitingCleanup) return;
     const manager = managerAwaitingCleanup;
@@ -102,9 +123,18 @@ export function createOpenClawDetectionRuntimeController(options: {
   async function startRuntime(): Promise<OpenClawDetectionRuntime> {
     assertNotDisposed();
     const generation = publishedGeneration + 1;
-    const resources = await options.start(generation);
+    let resources: OpenClawDetectionRuntimeResources;
+    try {
+      resources = await options.start(generation);
+    } catch (error) {
+      if (error instanceof OpenClawDetectionRuntimeCleanupError) {
+        const partialManager = error.takeCleanupManagerOwnership();
+        if (partialManager) retainManagerForCleanup(partialManager);
+      }
+      throw error;
+    }
     if (disposed) {
-      managerAwaitingCleanup = resources.manager;
+      retainManagerForCleanup(resources.manager);
       await cleanupRetiredManager();
       throw new OpenClawDetectionRuntimeDisposedError();
     }
@@ -124,7 +154,7 @@ export function createOpenClawDetectionRuntimeController(options: {
     }
     if (currentRuntime) {
       await waitForOperationsToDrain();
-      managerAwaitingCleanup = currentRuntime.manager;
+      retainManagerForCleanup(currentRuntime.manager);
       currentRuntime = undefined;
     }
     await cleanupRetiredManager();
@@ -142,7 +172,7 @@ export function createOpenClawDetectionRuntimeController(options: {
         await waitForOperationsToDrain();
         const previous = currentRuntime;
         currentRuntime = undefined;
-        if (previous) managerAwaitingCleanup = previous.manager;
+        if (previous) retainManagerForCleanup(previous.manager);
         await cleanupRetiredManager();
       });
       disposePromise = attempt;
@@ -161,7 +191,7 @@ export function createOpenClawDetectionRuntimeController(options: {
         assertNotDisposed();
         const previous = currentRuntime;
         currentRuntime = undefined;
-        if (previous) managerAwaitingCleanup = previous.manager;
+        if (previous) retainManagerForCleanup(previous.manager);
         await cleanupRetiredManager();
         return startRuntime();
       });

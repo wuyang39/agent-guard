@@ -305,9 +305,10 @@ function createOpenClawRuntimeGenerationFactory(input: {
         try {
           await manager.cleanup();
         } catch (cleanupError) {
-          throw cleanupError instanceof OpenClawDetectionRuntimeCleanupError
-            ? cleanupError
-            : new OpenClawDetectionRuntimeCleanupError(cleanupError);
+          throw new OpenClawDetectionRuntimeCleanupError(
+            cleanupError,
+            manager,
+          );
         }
       }
       throw error;

@@ -1255,6 +1255,8 @@ export class DetectionSandboxManager {
       OPENCLAW_HOME: this.profileRoot,
       OPENCLAW_CONFIG_DIR: this.profileRoot,
       OPENCLAW_PLUGIN_DIRS: "",
+      OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
+      OPENCLAW_DISABLE_PERSISTED_PLUGIN_REGISTRY: "1",
       ...(this.gateway?.token ? { OPENCLAW_GATEWAY_TOKEN: this.gateway.token } : {}),
       ...(this.gateway?.url ? { OPENCLAW_GATEWAY_URL: this.gateway.url } : {}),
     };

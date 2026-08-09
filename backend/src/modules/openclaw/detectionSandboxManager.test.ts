@@ -1618,6 +1618,11 @@ test("preflight probes static native guard capability in an isolated profile", a
     assert.equal(probeInputs[0]?.isolatedProfile, true);
     assert.equal(probeInputs[0]?.env.OPENCLAW_GATEWAY_TOKEN, undefined);
     assert.equal(probeInputs[0]?.env.OPENCLAW_GATEWAY_URL, undefined);
+    assert.equal(probeInputs[0]?.env.OPENCLAW_DISABLE_BUNDLED_PLUGINS, "1");
+    assert.equal(
+      probeInputs[0]?.env.OPENCLAW_DISABLE_PERSISTED_PLUGIN_REGISTRY,
+      "1",
+    );
   } finally {
     if (previousToken === undefined) delete process.env.OPENCLAW_GATEWAY_TOKEN;
     else process.env.OPENCLAW_GATEWAY_TOKEN = previousToken;

@@ -62,6 +62,7 @@ import { updateSelectionPlanStatus } from "../modules/runner/selectionPlanStore"
 import { resolveInsideDirectory } from "../storage/pathSafety";
 import {
   DetectionSandboxManager,
+  DetectionSandboxError,
   SandboxPreflightError,
   createDetectionSandboxManager,
   type DetectionSandboxEvidence,
@@ -85,6 +86,7 @@ import { scrubSecrets } from "../shared/scrubSecrets";
 import type { NativeGuardCapability } from "../modules/openclaw/openclawControlClient";
 import {
   createOpenClawDetectionRuntimeController,
+  OpenClawDetectionRuntimeCleanupError,
   type OpenClawDetectionRuntimeController,
   type StartOpenClawDetectionRuntime,
 } from "./openclawDetectionRuntime";
@@ -103,6 +105,8 @@ const GUARDED_FINALIZER_ERROR_CODES = new Set([
   "SANDBOX_EXPLAIN_MISMATCH",
 ]);
 const RUN_CANCELLED_MESSAGE = "Run cancelled by user.";
+const OPENCLAW_DETECTION_RUNTIME_FAILED_PREFIX =
+  "OPENCLAW_DETECTION_RUNTIME_FAILED:";
 const activeRunControllers = new Map<string, AbortController>();
 
 // ---- Task 14: detection run serialization ----
@@ -301,7 +305,9 @@ function createOpenClawRuntimeGenerationFactory(input: {
         try {
           await manager.cleanup();
         } catch (cleanupError) {
-          throw cleanupError;
+          throw cleanupError instanceof OpenClawDetectionRuntimeCleanupError
+            ? cleanupError
+            : new OpenClawDetectionRuntimeCleanupError(cleanupError);
         }
       }
       throw error;
@@ -1295,7 +1301,11 @@ async function runDetectionCaseWithRetry(input: {
       lastMessage = scrubDetectionMessage(
         error instanceof Error ? error.message : String(error),
       );
-      lastClassification = classifyDetectionError(lastMessage, request);
+      lastClassification = classifyDetectionErrorWithProvenance(
+        error,
+        lastMessage,
+        request,
+      );
       if (!lastClassification.restartRuntime) {
         providerAttempts += 1;
       }
@@ -1320,16 +1330,16 @@ async function runDetectionCaseWithRetry(input: {
         } catch (restartError) {
           const normalizedError = normalizeOpenClawRuntimeError(restartError);
           const message = scrubDetectionMessage(normalizedError.message);
-          const classified = classifyDetectionError(message, request);
-          const isCleanupFailure = /cleanup/i.test(message);
-          const category = isCleanupFailure
-            ? "sandbox_cleanup_failed"
-            : classified.category;
+          const classified = classifyDetectionErrorWithProvenance(
+            normalizedError,
+            message,
+            request,
+          );
           throw new DetectionCaseError({
             message,
-            category,
+            category: classified.category,
             attempts: attempt,
-            retryable: isCleanupFailure ? false : classified.retryable,
+            retryable: classified.retryable,
             skipAllowed: false,
           });
         }
@@ -1382,6 +1392,13 @@ async function runDetectionCaseWithRetry(input: {
   });
 }
 
+class OpenClawDetectionRuntimeFailure extends Error {
+  constructor(message: string) {
+    super(`${OPENCLAW_DETECTION_RUNTIME_FAILED_PREFIX} ${message}`);
+    this.name = "OpenClawDetectionRuntimeFailure";
+  }
+}
+
 async function runOpenClawDetectionAttempt<T>(
   runtimeController: OpenClawDetectionRuntimeController,
   operation: (input: {
@@ -1409,11 +1426,75 @@ function normalizeOpenClawRuntimeError(error: unknown): Error {
     error instanceof SandboxPreflightError &&
     (error.code === "GATEWAY_EXITED" || error.code === "GATEWAY_LIFETIME_UNAVAILABLE")
   ) {
-    return new Error(
-      `OPENCLAW_DETECTION_RUNTIME_FAILED: ${scrubDetectionMessage(error.message)}`,
+    return new OpenClawDetectionRuntimeFailure(
+      scrubDetectionMessage(error.message),
     );
   }
   return error instanceof Error ? error : new Error(String(error));
+}
+
+function classifyDetectionErrorWithProvenance(
+  error: unknown,
+  message: string,
+  request: RunE2ERequest,
+): ReturnType<typeof classifyDetectionError> {
+  if (error instanceof OpenClawDetectionRuntimeFailure) {
+    return classifyDetectionError(message, request);
+  }
+  if (error instanceof OpenClawDetectionRuntimeCleanupError) {
+    return nonRestartingDetectionClassification("sandbox_cleanup_failed");
+  }
+  if (error instanceof DetectionProfileSeedError) {
+    return nonRestartingDetectionClassification("sandbox_profile_seed_failed");
+  }
+  if (error instanceof DetectionSandboxError) {
+    if (error.code === "MODEL_PROFILE_SEED_INVALID") {
+      return nonRestartingDetectionClassification("sandbox_profile_seed_failed");
+    }
+    if (error.code === "SESSION_CONTAINER_CLEANUP_FAILED") {
+      return nonRestartingDetectionClassification("sandbox_cleanup_failed");
+    }
+    if (
+      error.code === "CONTAINER_ATTESTATION_MISMATCH" ||
+      error.code === "SANDBOX_EXPLAIN_MISMATCH"
+    ) {
+      return nonRestartingDetectionClassification("sandbox_attestation_failed");
+    }
+    if (
+      error.code === "OPENCLAW_CAPABILITY_UNAVAILABLE" ||
+      error.code === "OPENCLAW_UNSUPPORTED"
+    ) {
+      return nonRestartingDetectionClassification("native_guard_unavailable");
+    }
+    if (error instanceof SandboxPreflightError) {
+      return nonRestartingDetectionClassification("sandbox_preflight_failed");
+    }
+  }
+  if (
+    message.toLowerCase().startsWith(
+      OPENCLAW_DETECTION_RUNTIME_FAILED_PREFIX.toLowerCase(),
+    )
+  ) {
+    const untrustedMessage = message
+      .slice(OPENCLAW_DETECTION_RUNTIME_FAILED_PREFIX.length)
+      .trim();
+    const classified = classifyDetectionError(untrustedMessage, request);
+    return classified.restartRuntime
+      ? nonRestartingDetectionClassification("agent_error")
+      : { ...classified, restartRuntime: false };
+  }
+  return classifyDetectionError(message, request);
+}
+
+function nonRestartingDetectionClassification(
+  category: P2RunCaseFailure["category"],
+): ReturnType<typeof classifyDetectionError> {
+  return {
+    category,
+    retryable: false,
+    skipAllowed: false,
+    restartRuntime: false,
+  };
 }
 
 async function runSingleDetectionAttempt(input: {
@@ -2512,7 +2593,11 @@ export function classifyDetectionError(
   }
 
   const normalized = message.toLowerCase();
-  if (normalized.startsWith("openclaw_detection_runtime_failed:")) {
+  if (
+    normalized.startsWith(
+      OPENCLAW_DETECTION_RUNTIME_FAILED_PREFIX.toLowerCase(),
+    )
+  ) {
     return {
       category: "sandbox_runtime_failed",
       retryable: true,
@@ -2999,6 +3084,9 @@ async function readP2DemoCasesConfig(): Promise<P2DemoCasesConfig> {
 function sandboxPreflightFailureCategory(
   error: unknown,
 ): P2RunCaseFailure["category"] {
+  if (error instanceof OpenClawDetectionRuntimeCleanupError) {
+    return "sandbox_cleanup_failed";
+  }
   if (
     error instanceof DetectionProfileSeedError ||
     (error instanceof SandboxPreflightError && error.code === "MODEL_PROFILE_SEED_INVALID")

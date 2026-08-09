@@ -5,6 +5,7 @@ import type {
   DetectionSandboxEvidence,
   DetectionSandboxManager,
 } from "../modules/openclaw/detectionSandboxManager";
+import { SandboxPreflightError } from "../modules/openclaw/detectionSandboxManager";
 import type { NativeGuardEventStore } from "../storage/nativeGuardEventStore";
 import {
   createOpenClawDetectionRuntimeController,
@@ -430,7 +431,7 @@ test("a run submitted after restart captures only the replacement runtime", asyn
   assert.equal(secondManager.runWhileGatewayAliveCalls, 1);
 });
 
-test("does not reuse a runtime whose manager signal is aborted", async () => {
+test("run exposes an aborted runtime before explicit ensure replaces it", async () => {
   const firstManager = new FakeDetectionSandboxManager();
   const secondManager = new FakeDetectionSandboxManager();
   let startCalls = 0;
@@ -443,11 +444,15 @@ test("does not reuse a runtime whose manager signal is aborted", async () => {
   await controller.run(async () => undefined);
   firstManager.abortController.abort();
 
-  const generation = await controller.run(
-    async (runtime) => runtime.generation,
+  await assert.rejects(
+    controller.run(async (runtime) => runtime.generation),
+    (error: unknown) =>
+      error instanceof SandboxPreflightError && error.code === "GATEWAY_EXITED",
   );
 
-  assert.equal(generation, 2);
+  assert.equal(startCalls, 1);
+  assert.equal(firstManager.cleanupCalls, 0);
+  assert.equal((await controller.ensure()).generation, 2);
   assert.equal(firstManager.cleanupCalls, 1);
   assert.equal(controller.current()?.manager, secondManager);
 });
@@ -488,6 +493,12 @@ class FakeDetectionSandboxManager {
     operation: (signal: AbortSignal) => Promise<T>,
   ): Promise<T> {
     this.runWhileGatewayAliveCalls += 1;
+    if (this.signal.aborted) {
+      throw new SandboxPreflightError(
+        "GATEWAY_EXITED",
+        "Detection Gateway exited unexpectedly.",
+      );
+    }
     return operation(this.signal);
   }
 

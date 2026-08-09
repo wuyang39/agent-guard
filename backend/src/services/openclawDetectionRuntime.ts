@@ -48,6 +48,16 @@ export class OpenClawDetectionRuntimeDisposedError extends Error {
   }
 }
 
+export class OpenClawDetectionRuntimeCleanupError extends Error {
+  readonly cleanupCause: unknown;
+
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = "OpenClawDetectionRuntimeCleanupError";
+    this.cleanupCause = cause;
+  }
+}
+
 export function createOpenClawDetectionRuntimeController(options: {
   start: StartOpenClawDetectionRuntime;
 }): OpenClawDetectionRuntimeController {
@@ -79,7 +89,13 @@ export function createOpenClawDetectionRuntimeController(options: {
   async function cleanupRetiredManager(): Promise<void> {
     if (!managerAwaitingCleanup) return;
     const manager = managerAwaitingCleanup;
-    await manager.cleanup();
+    try {
+      await manager.cleanup();
+    } catch (error) {
+      throw error instanceof OpenClawDetectionRuntimeCleanupError
+        ? error
+        : new OpenClawDetectionRuntimeCleanupError(error);
+    }
     if (managerAwaitingCleanup === manager) managerAwaitingCleanup = undefined;
   }
 
@@ -153,7 +169,7 @@ export function createOpenClawDetectionRuntimeController(options: {
     async run(operation) {
       const runtime = await lifecycle.run(async () => {
         assertNotDisposed();
-        const acquired = await ensureRuntime();
+        const acquired = currentRuntime ?? await ensureRuntime();
         assertNotDisposed();
         activeOperations += 1;
         return acquired;

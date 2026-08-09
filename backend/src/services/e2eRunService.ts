@@ -48,7 +48,10 @@ import { saveSessionRecords } from "../storage/fileRunStore";
 import { getReportEntry, indexReport, indexArtifact } from "../storage/fileReportStore";
 import type { AgentAdapter } from "../modules/agent/agentAdapter";
 import { HttpAgentAdapter } from "../modules/agent/httpAgentAdapter";
-import { OpenClawAdapter } from "../modules/agent/openclawAdapter";
+import {
+  OpenClawAdapter,
+  type OpenClawAdapterOptions,
+} from "../modules/agent/openclawAdapter";
 import { canonicalizeOpenClawSessionKey } from "../modules/agent/openclawSessionIdentity";
 import { buildRuleBasedToolCapabilityProfile } from "../modules/gateway/toolCapabilityProfiler";
 import {
@@ -80,6 +83,11 @@ import type {
 import type { TestRunResult } from "../modules/runner/runTypes";
 import { scrubSecrets } from "../shared/scrubSecrets";
 import type { NativeGuardCapability } from "../modules/openclaw/openclawControlClient";
+import {
+  createOpenClawDetectionRuntimeController,
+  type OpenClawDetectionRuntimeController,
+  type StartOpenClawDetectionRuntime,
+} from "./openclawDetectionRuntime";
 
 const CONFIGS_DIR = path.resolve(process.cwd(), "configs");
 const P2_DEMO_CASES_FILE = path.join(CONFIGS_DIR, "p2_demo_cases.json");
@@ -207,8 +215,99 @@ export type E2ERunDependencies = {
   createDetectionSandboxManager?: (
     options: DetectionSandboxManagerOptions,
   ) => DetectionSandboxManager;
+  createOpenClawAdapter?: (options: OpenClawAdapterOptions) => AgentAdapter;
   guardedSessionFinalizer?: GuardedSessionFinalizer;
 };
+
+function createOpenClawRuntimeGenerationFactory(input: {
+  request: RunE2ERequest;
+  runGroupId: string;
+  image: string;
+  signal: AbortSignal;
+  sandboxCoordinatorFactory?: SandboxCoordinatorFactory;
+  resolveProfileSeed: NonNullable<E2ERunDependencies["resolveDetectionProfileSeed"]>;
+  createManager: NonNullable<E2ERunDependencies["createDetectionSandboxManager"]>;
+  createAdapter: NonNullable<E2ERunDependencies["createOpenClawAdapter"]>;
+  onRuntimeStarted: (input: {
+    eventStore: ReturnType<typeof createNativeGuardEventStore>;
+    preflightEvidence: DetectionSandboxEvidence;
+  }) => void;
+}): StartOpenClawDetectionRuntime {
+  return async () => {
+    let manager: DetectionSandboxManager | undefined;
+    try {
+      throwIfRunCancelled(input.signal);
+      const profileSeed = await input.resolveProfileSeed({
+        cliPath: input.request.connection?.cliPath,
+      });
+      throwIfRunCancelled(input.signal);
+      manager = input.createManager({
+        runGroupId: input.runGroupId,
+        image: input.image,
+        cliPath: input.request.connection?.cliPath,
+        signal: input.signal,
+        commandRunner: undefined,
+        profileSeed,
+      });
+      const evidence = await manager.preflight();
+      await manager.start();
+      const sandboxCreds = manager.getGatewayCredentials();
+      const capabilitySnapshot = manager.getAttestedCapabilitySnapshot();
+      if (!sandboxCreds || !capabilitySnapshot) {
+        throw new Error("Sandbox started but no attested Gateway capability returned.");
+      }
+      if (!input.sandboxCoordinatorFactory) {
+        throw new Error(
+          "Sandbox detection requires sandboxCoordinatorFactory. " +
+          "Wire it from app.ts via runE2E().",
+        );
+      }
+      const profileEnv: Record<string, string> = {
+        OPENCLAW_CONFIG_PATH: evidence.configPath,
+        OPENCLAW_STATE_DIR: path.join(evidence.profileRoot, "state"),
+        OPENCLAW_WORKSPACE_DIR: path.join(evidence.profileRoot, "workspace"),
+        OPENCLAW_HOME: evidence.profileRoot,
+      };
+      const runGuard = input.sandboxCoordinatorFactory({
+        gatewayUrl: sandboxCreds.gatewayUrl,
+        gatewayToken: sandboxCreds.gatewayToken,
+        cliPath: input.request.connection?.cliPath,
+        profileEnv,
+        capabilitySnapshot,
+      });
+      const adapter = input.createAdapter({
+        gatewayUrl: sandboxCreds.gatewayUrl,
+        gatewayToken: sandboxCreds.gatewayToken,
+        cliPath: input.request.connection?.cliPath,
+        timeoutMs: getOpenClawDetectionTimeoutMs(input.request),
+        env: profileEnv,
+        signal: manager.signal,
+        nativeGuardRequired: true,
+        nativeGuardEventStore: runGuard.eventStore,
+        guardLease: { activate: runGuard.activate, revoke: runGuard.revoke },
+      });
+      input.onRuntimeStarted({
+        eventStore: runGuard.eventStore,
+        preflightEvidence: evidence,
+      });
+      return {
+        manager,
+        adapter,
+        nativeGuardEventStore: runGuard.eventStore,
+        preflightEvidence: evidence,
+      };
+    } catch (error) {
+      if (manager) {
+        try {
+          await manager.cleanup();
+        } catch (cleanupError) {
+          throw cleanupError;
+        }
+      }
+      throw error;
+    }
+  };
+}
 
 export class CaseIdValidationError extends Error {
   constructor(message: string) {
@@ -354,7 +453,7 @@ export async function runE2E(
 ): Promise<RunE2EResult> {
   // P2 adapterKind 映射到 contracts adapterType + 自定义 adapter。
   const adapterType = mapAdapterKind(request.adapterKind);
-  let customAdapter = buildCustomAdapter(request);
+  const customAdapter = buildCustomAdapter(request);
   const provisionalAgentId =
     existingRunGroup?.agentId ?? request.agent.agentId ?? createId("agent");
   const runGroup =
@@ -362,8 +461,8 @@ export async function runE2E(
   runGroup.selectionPlanId = request.selectionPlanId;
   const controller = new AbortController();
   activeRunControllers.set(runGroup.runGroupId, controller);
-  let sandboxManager: DetectionSandboxManager | undefined;
-  let eventStore: ReturnType<typeof createNativeGuardEventStore> | undefined;
+  let openClawRuntimeController: OpenClawDetectionRuntimeController | undefined;
+  const runtimeEventStores: Array<ReturnType<typeof createNativeGuardEventStore>> = [];
   let isOpenClaw = false;
   let detectionRunReservation = reservedDetectionRun;
 
@@ -579,7 +678,6 @@ export async function runE2E(
     await saveRunGroup(runGroup);
 
     // ====== Task 12: OpenClaw sandbox lifecycle ======
-    sandboxManager = undefined;
     isOpenClaw = request.adapterKind === "openclaw";
     const detectionImage = process.env.AGENT_GUARD_DETECTION_IMAGE;
 
@@ -611,72 +709,29 @@ export async function runE2E(
       }
 
       try {
-        const profileSeed = await (
-          dependencies.resolveDetectionProfileSeed ?? resolveDetectionProfileSeed
-        )({
-          cliPath: request.connection?.cliPath,
+        openClawRuntimeController = createOpenClawDetectionRuntimeController({
+          start: createOpenClawRuntimeGenerationFactory({
+            request,
+            runGroupId: runGroup.runGroupId,
+            image: detectionImage,
+            signal: controller.signal,
+            sandboxCoordinatorFactory,
+            resolveProfileSeed:
+              dependencies.resolveDetectionProfileSeed ?? resolveDetectionProfileSeed,
+            createManager:
+              dependencies.createDetectionSandboxManager ?? createDetectionSandboxManager,
+            createAdapter: dependencies.createOpenClawAdapter ??
+              ((options) => new OpenClawAdapter(options)),
+            onRuntimeStarted: ({ eventStore, preflightEvidence }) => {
+              runtimeEventStores.push(eventStore);
+              runGroup.sandboxEvidence = buildSandboxEvidenceSummary(
+                preflightEvidence,
+                undefined,
+              );
+            },
+          }),
         });
-        sandboxManager = (
-          dependencies.createDetectionSandboxManager ?? createDetectionSandboxManager
-        )({
-          runGroupId: runGroup.runGroupId,
-          image: detectionImage,
-          cliPath: request.connection?.cliPath,
-          signal: controller.signal,
-          commandRunner: undefined, // use real Docker
-          profileSeed,
-        });
-        const evidence = await sandboxManager.preflight();
-        await sandboxManager.start();
-
-        // Wire sandbox Gateway credentials and shared event store into
-        // the adapter. Creates a run-scoped NativeGuardCoordinator that
-        // targets the sandbox Gateway (not the host Gateway) for all
-        // lease activate/revoke operations during this detection run.
-        const sandboxCreds = sandboxManager.getGatewayCredentials();
-        const capabilitySnapshot = sandboxManager.getAttestedCapabilitySnapshot();
-        if (!sandboxCreds || !capabilitySnapshot) {
-          throw new Error("Sandbox started but no attested Gateway capability returned.");
-        }
-        if (!(customAdapter instanceof OpenClawAdapter)) {
-          throw new Error("Sandbox requires an OpenClaw adapter.");
-        }
-        // Use the app-provided factory to create a run-scoped coordinator.
-        // The factory shares the API's lease service and real backend PDP
-        // URL, so decision/event handlers recognize the lease credential.
-        if (!sandboxCoordinatorFactory) {
-          throw new Error(
-            "Sandbox detection requires sandboxCoordinatorFactory. " +
-            "Wire it from app.ts via runE2E().",
-          );
-        }
-        const profileEnv: Record<string, string> = {
-          OPENCLAW_CONFIG_PATH: evidence.configPath,
-          OPENCLAW_STATE_DIR: path.join(evidence.profileRoot, "state"),
-          OPENCLAW_WORKSPACE_DIR: path.join(evidence.profileRoot, "workspace"),
-          OPENCLAW_HOME: evidence.profileRoot,
-        };
-        const runGuard = sandboxCoordinatorFactory({
-          gatewayUrl: sandboxCreds.gatewayUrl,
-          gatewayToken: sandboxCreds.gatewayToken,
-          cliPath: request.connection?.cliPath,
-          profileEnv,
-          capabilitySnapshot,
-        });
-        eventStore = runGuard.eventStore;
-        customAdapter = new OpenClawAdapter({
-          gatewayUrl: sandboxCreds.gatewayUrl,
-          gatewayToken: sandboxCreds.gatewayToken,
-          cliPath: request.connection?.cliPath,
-          timeoutMs: getOpenClawDetectionTimeoutMs(request),
-          env: profileEnv,
-          signal: sandboxManager.signal,
-          nativeGuardRequired: true,
-          nativeGuardEventStore: eventStore,
-          guardLease: { activate: runGuard.activate, revoke: runGuard.revoke },
-        });
-
-        runGroup.sandboxEvidence = buildSandboxEvidenceSummary(evidence, undefined);
+        await openClawRuntimeController.ensure();
         runGroup.nativeGuardCoverage = {
           coverage: "conditional",
           eventsTotal: 0,
@@ -722,67 +777,35 @@ export async function runE2E(
       }
     }
 
-    const runDetection = (signal: AbortSignal) => runDetectionCasesConcurrently({
+    const detectionResult = await runDetectionCasesConcurrently({
       targetCases,
       agent,
       adapterConfig,
-      customAdapter,
+      customAdapter: isOpenClaw ? undefined : customAdapter,
       runGroup,
       request,
-      signal,
+      signal: controller.signal,
       guardedSessionFinalizer: dependencies.guardedSessionFinalizer,
+      openClawRuntimeController,
     });
-    const detectionResult = sandboxManager
-      ? await runDetectionWithSandboxLifetime(sandboxManager, runDetection)
-      : await runDetection(controller.signal);
 
-    // Attest sandbox integrity after all cases. Reconciliation of Hook
-    // events against JSONL is performed per-session inside
-    // runOpenClawSession via the native guard trace projector.
-    if (sandboxManager && !controller.signal.aborted) {
+    if (openClawRuntimeController && !controller.signal.aborted) {
       const sessionKeys = resolveNativeGuardSessionKeys(runGroup);
-
-      for (const sessionKey of sessionKeys) {
-        try {
-          const attested = await sandboxManager.attestSession(sessionKey, "after");
-          runGroup.sandboxEvidence = buildSandboxEvidenceSummary(attested, undefined);
-        } catch (attestError) {
-          const category = sandboxPreflightFailureCategory(attestError);
-          const message = attestError instanceof Error ? attestError.message : String(attestError);
-          runGroup.sandboxEvidence = buildSandboxEvidenceSummary(undefined, category);
-          runGroup.status = "failed";
-          runGroup.phase = "failed";
-          runGroup.error = `Sandbox attestation failed for ${sessionKey}: ${message}`;
-          if (runGroup.nativeGuardCoverage) {
-            runGroup.nativeGuardCoverage.coverage = "misconfigured";
-            runGroup.nativeGuardCoverage.reconciled = false;
-          }
-          updateRunProgress(runGroup, { phase: "failed", runningCaseIds: [], retryingCaseIds: [] });
-          appendDetectionFailure(runGroup, {
-            caseId: "sandbox_attestation",
-            phase: "detecting",
-            reason: runGroup.error!,
-            category,
-            attempts: 1, retryable: false, skipped: false,
-            occurredAt: nowIso(),
-          });
-          await saveRunGroup(runGroup);
-          throw attestError;
-        }
-      }
-
       // Verify guard produced real decisions and no coverage breaches.
       // Per-session reconciliation against JSONL happens inside
       // runOpenClawSession; breaches cause the session to fail.
-      if (runGroup.nativeGuardCoverage && eventStore) {
+      if (runGroup.nativeGuardCoverage && runtimeEventStores.length > 0) {
         let anyDecisions = false;
         for (const sessionKey of sessionKeys) {
-          try {
-            const events = await eventStore.listBySession(sessionKey);
-            if (events.some((e: NativeGuardEvent) => e.type === "decision")) {
-              anyDecisions = true;
-            }
-          } catch { /* store unavailable — leave coverage as-is */ }
+          for (const eventStore of runtimeEventStores) {
+            try {
+              const events = await eventStore.listBySession(sessionKey);
+              if (events.some((e: NativeGuardEvent) => e.type === "decision")) {
+                anyDecisions = true;
+                break;
+              }
+            } catch { /* store unavailable — leave coverage as-is */ }
+          }
         }
         const reconciled = runGroup.nativeGuardCoverage.sessions.length > 0 &&
           runGroup.nativeGuardCoverage.sessions.every((session) => session.reconciled);
@@ -953,9 +976,9 @@ export async function runE2E(
   } finally {
     try {
       await finalizeDetectionRunReservation(detectionRunReservation, async () => {
-        if (sandboxManager) {
+        if (openClawRuntimeController) {
           try {
-            await sandboxManager.cleanup();
+            await openClawRuntimeController.dispose();
           } catch (cleanupError) {
             const message = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
             appendDetectionFailure(runGroup, {
@@ -1032,6 +1055,7 @@ export async function runDetectionCasesConcurrently(input: {
   signal: AbortSignal;
   guardedSessionFinalizer?: GuardedSessionFinalizer;
   detectionAttemptEvidencePersister?: DetectionAttemptEvidencePersister;
+  openClawRuntimeController?: OpenClawDetectionRuntimeController;
 }): Promise<DetectionBatchResult> {
   const {
     targetCases,
@@ -1043,6 +1067,7 @@ export async function runDetectionCasesConcurrently(input: {
     signal,
     guardedSessionFinalizer,
     detectionAttemptEvidencePersister,
+    openClawRuntimeController,
   } = input;
   const concurrency = runGroup.progress?.concurrency ?? getDetectionConcurrency(request);
   const runningCaseIds = new Set<string>();
@@ -1081,6 +1106,7 @@ export async function runDetectionCasesConcurrently(input: {
           signal,
           guardedSessionFinalizer,
           detectionAttemptEvidencePersister,
+          openClawRuntimeController,
           getCounters: () => ({ completedCases, failedCases, skippedCases, retriedCases }),
           setRetried: () => {
             retriedCases++;
@@ -1204,6 +1230,7 @@ async function runDetectionCaseWithRetry(input: {
   signal: AbortSignal;
   guardedSessionFinalizer?: GuardedSessionFinalizer;
   detectionAttemptEvidencePersister?: DetectionAttemptEvidencePersister;
+  openClawRuntimeController?: OpenClawDetectionRuntimeController;
   getCounters: () => {
     completedCases: number;
     failedCases: number;
@@ -1222,16 +1249,19 @@ async function runDetectionCaseWithRetry(input: {
     signal,
     guardedSessionFinalizer,
     detectionAttemptEvidencePersister,
+    openClawRuntimeController,
     getCounters,
     setRetried,
   } = input;
   const maxAttempts = getDetectionMaxAttempts(request);
   let attempt = 0;
+  let providerAttempts = 0;
   let countedRetry = false;
   let lastClassification: ReturnType<typeof classifyDetectionError> | undefined;
   let lastMessage = "unknown error";
+  let restartedRuntime = false;
 
-  while (attempt < maxAttempts) {
+  while (true) {
     throwIfRunCancelled(signal);
     attempt++;
     const spacingMs = getOpenClawCaseSpacingMs(request, attempt);
@@ -1240,28 +1270,70 @@ async function runDetectionCaseWithRetry(input: {
     }
 
     try {
-      return {
-        riskReport: await runSingleDetectionAttempt({
-          agent,
-          adapterConfig,
-          context,
-          customAdapter,
-          runGroup,
-          signal,
-          guardedSessionFinalizer,
-          detectionAttemptEvidencePersister,
-        }),
-      };
+      const runAttempt = (attemptInput: {
+        customAdapter?: AgentAdapter;
+        signal: AbortSignal;
+        guardedSessionFinalizer?: GuardedSessionFinalizer;
+      }) => runSingleDetectionAttempt({
+        agent,
+        adapterConfig,
+        context,
+        customAdapter: attemptInput.customAdapter,
+        runGroup,
+        signal: attemptInput.signal,
+        guardedSessionFinalizer: attemptInput.guardedSessionFinalizer,
+        detectionAttemptEvidencePersister,
+      });
+      const riskReport = openClawRuntimeController
+        ? await runOpenClawDetectionAttempt(
+            openClawRuntimeController,
+            runAttempt,
+          )
+        : await runAttempt({ customAdapter, signal, guardedSessionFinalizer });
+      return { riskReport };
     } catch (error) {
       lastMessage = scrubDetectionMessage(
         error instanceof Error ? error.message : String(error),
       );
       lastClassification = classifyDetectionError(lastMessage, request);
-      const shouldRetry =
-        lastClassification.retryable && attempt < maxAttempts;
+      if (!lastClassification.restartRuntime) {
+        providerAttempts += 1;
+      }
+      const shouldRestartRuntime =
+        lastClassification.restartRuntime &&
+        !restartedRuntime &&
+        Boolean(openClawRuntimeController) &&
+        !signal.aborted;
+      const shouldRetry = lastClassification.restartRuntime
+        ? shouldRestartRuntime
+        : lastClassification.retryable && providerAttempts < maxAttempts;
 
       if (!shouldRetry) {
         break;
+      }
+
+      if (shouldRestartRuntime) {
+        restartedRuntime = true;
+        throwIfRunCancelled(signal);
+        try {
+          await openClawRuntimeController!.restart();
+        } catch (restartError) {
+          const normalizedError = normalizeOpenClawRuntimeError(restartError);
+          const message = scrubDetectionMessage(normalizedError.message);
+          const classified = classifyDetectionError(message, request);
+          const isCleanupFailure = /cleanup/i.test(message);
+          const category = isCleanupFailure
+            ? "sandbox_cleanup_failed"
+            : classified.category;
+          throw new DetectionCaseError({
+            message,
+            category,
+            attempts: attempt,
+            retryable: isCleanupFailure ? false : classified.retryable,
+            skipAllowed: false,
+          });
+        }
+        throwIfRunCancelled(signal);
       }
 
       if (!countedRetry) {
@@ -1308,6 +1380,40 @@ async function runDetectionCaseWithRetry(input: {
     retryable: classification.retryable,
     skipAllowed: classification.skipAllowed,
   });
+}
+
+async function runOpenClawDetectionAttempt<T>(
+  runtimeController: OpenClawDetectionRuntimeController,
+  operation: (input: {
+    customAdapter: AgentAdapter;
+    signal: AbortSignal;
+    guardedSessionFinalizer: GuardedSessionFinalizer;
+  }) => Promise<T>,
+): Promise<T> {
+  try {
+    return await runtimeController.run(async (runtime, signal) => operation({
+      customAdapter: runtime.adapter,
+      signal,
+      guardedSessionFinalizer: ({ sessionKey }) =>
+        runtime.manager.finalizeSessionContainer(sessionKey, {
+          allowNotCreated: true,
+        }),
+    }));
+  } catch (error) {
+    throw normalizeOpenClawRuntimeError(error);
+  }
+}
+
+function normalizeOpenClawRuntimeError(error: unknown): Error {
+  if (
+    error instanceof SandboxPreflightError &&
+    (error.code === "GATEWAY_EXITED" || error.code === "GATEWAY_LIFETIME_UNAVAILABLE")
+  ) {
+    return new Error(
+      `OPENCLAW_DETECTION_RUNTIME_FAILED: ${scrubDetectionMessage(error.message)}`,
+    );
+  }
+  return error instanceof Error ? error : new Error(String(error));
 }
 
 async function runSingleDetectionAttempt(input: {
@@ -2394,21 +2500,32 @@ export function classifyDetectionError(
   category: P2RunCaseFailure["category"];
   retryable: boolean;
   skipAllowed: boolean;
+  restartRuntime: boolean;
 } {
   if (request.adapterKind !== "openclaw") {
     return {
       category: "fatal",
       retryable: false,
       skipAllowed: false,
+      restartRuntime: false,
     };
   }
 
   const normalized = message.toLowerCase();
+  if (normalized.startsWith("openclaw_detection_runtime_failed:")) {
+    return {
+      category: "sandbox_runtime_failed",
+      retryable: true,
+      skipAllowed: false,
+      restartRuntime: true,
+    };
+  }
   if (normalized.startsWith("detection_evidence_persistence_failed:")) {
     return {
       category: "fatal",
       retryable: false,
       skipAllowed: false,
+      restartRuntime: false,
     };
   }
   if (normalized.includes("session_container_cleanup_failed")) {
@@ -2416,6 +2533,7 @@ export function classifyDetectionError(
       category: "sandbox_cleanup_failed",
       retryable: false,
       skipAllowed: false,
+      restartRuntime: false,
     };
   }
   if (
@@ -2426,6 +2544,7 @@ export function classifyDetectionError(
       category: "sandbox_attestation_failed",
       retryable: false,
       skipAllowed: false,
+      restartRuntime: false,
     };
   }
   if (normalized.includes("native_guard_evidence_unavailable")) {
@@ -2433,6 +2552,7 @@ export function classifyDetectionError(
       category: "native_guard_evidence_unavailable",
       retryable: false,
       skipAllowed: false,
+      restartRuntime: false,
     };
   }
   if (normalized.includes("native_guard_revoke_failed")) {
@@ -2440,6 +2560,7 @@ export function classifyDetectionError(
       category: "native_guard_revoke_failed",
       retryable: false,
       skipAllowed: false,
+      restartRuntime: false,
     };
   }
   // Coverage breach: Hook missed tool calls. Fatal per spec —
@@ -2452,6 +2573,7 @@ export function classifyDetectionError(
       category: "native_guard_coverage_breach",
       retryable: false,
       skipAllowed: false,
+      restartRuntime: false,
     };
   }
   if (
@@ -2462,6 +2584,7 @@ export function classifyDetectionError(
       category: "provider_cooldown",
       retryable: true,
       skipAllowed: true,
+      restartRuntime: false,
     };
   }
   if (
@@ -2473,6 +2596,7 @@ export function classifyDetectionError(
       category: "provider_timeout",
       retryable: true,
       skipAllowed: true,
+      restartRuntime: false,
     };
   }
   if (
@@ -2484,6 +2608,7 @@ export function classifyDetectionError(
       category: "provider_rate_limit",
       retryable: true,
       skipAllowed: true,
+      restartRuntime: false,
     };
   }
   if (
@@ -2496,6 +2621,7 @@ export function classifyDetectionError(
       category: "transient_provider",
       retryable: true,
       skipAllowed: true,
+      restartRuntime: false,
     };
   }
   if (
@@ -2508,12 +2634,14 @@ export function classifyDetectionError(
       category: "fatal",
       retryable: false,
       skipAllowed: false,
+      restartRuntime: false,
     };
   }
   return {
     category: "agent_error",
     retryable: false,
     skipAllowed: false,
+    restartRuntime: false,
   };
 }
 

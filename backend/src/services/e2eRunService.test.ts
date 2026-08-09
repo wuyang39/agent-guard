@@ -7,6 +7,7 @@ import type {
   DetectionSandboxEvidence,
   DetectionSandboxManager,
 } from "../modules/openclaw/detectionSandboxManager";
+import { SandboxPreflightError } from "../modules/openclaw/detectionSandboxManager";
 import type { DetectionProfileSeed } from "../modules/openclaw/detectionProfileSeed";
 import { loadTestContexts } from "../modules/config/loadTestContext";
 import type {
@@ -15,6 +16,7 @@ import type {
 } from "../modules/agent/agentAdapter";
 import {
   DetectionRunConflictError,
+  cancelRunGroup,
   classifyDetectionError,
   createInitialE2ERunGroup,
   finalizeGuardedDetectionSession,
@@ -28,6 +30,7 @@ import {
   runE2E,
 } from "./e2eRunService";
 import * as e2eRunServiceModule from "./e2eRunService";
+import { createOpenClawDetectionRuntimeController } from "./openclawDetectionRuntime";
 import type {
   NativeGuardSessionCoverageSummary,
   P2RunGroup,
@@ -156,6 +159,7 @@ test("native guard evidence failures are fatal and use a stable category", () =>
       category: "native_guard_evidence_unavailable",
       retryable: false,
       skipAllowed: false,
+      restartRuntime: false,
     },
   );
 });
@@ -170,6 +174,7 @@ test("native guard revoke failures are fatal and use a stable category", () => {
       category: "native_guard_revoke_failed",
       retryable: false,
       skipAllowed: false,
+      restartRuntime: false,
     },
   );
 });
@@ -195,6 +200,7 @@ for (const sandboxIntegrityFailure of [
         category: sandboxIntegrityFailure.category,
         retryable: false,
         skipAllowed: false,
+        restartRuntime: false,
       },
     );
   });
@@ -210,6 +216,34 @@ test("persistence provenance outranks embedded integrity and timeout text", () =
       category: "fatal",
       retryable: false,
       skipAllowed: false,
+      restartRuntime: false,
+    },
+  );
+});
+
+test("Gateway lifetime failures request one non-skippable runtime restart", () => {
+  assert.deepEqual(
+    classifyDetectionError(
+      "OPENCLAW_DETECTION_RUNTIME_FAILED: Detection Gateway exited unexpectedly.",
+      OPENCLAW_REQUEST,
+    ),
+    {
+      category: "sandbox_runtime_failed",
+      retryable: true,
+      skipAllowed: false,
+      restartRuntime: true,
+    },
+  );
+});
+
+test("provider failures remain retryable without requesting a runtime restart", () => {
+  assert.deepEqual(
+    classifyDetectionError("429 Too many requests", OPENCLAW_REQUEST),
+    {
+      category: "provider_rate_limit",
+      retryable: true,
+      skipAllowed: true,
+      restartRuntime: false,
     },
   );
 });
@@ -494,6 +528,8 @@ function guardedAttemptAdapter(input: {
   results: Array<{ status: "completed" | "failed"; error?: string }>;
   adapterType?: AgentAdapter["adapterType"];
   runtimePatches?: Array<Partial<AgentNativeGuardRuntimeEvidence>>;
+  onRun?: (caseId: string) => void;
+  beforeResult?: (caseId: string) => Promise<void>;
   onDrain?: (input: { attempt: number; runId: string; sessionKey: string }) => void;
 }): AgentAdapter {
   let sessionIndex = 0;
@@ -508,6 +544,8 @@ function guardedAttemptAdapter(input: {
         async sendTask(_task, _bridge, runMeta) {
           assert.ok(runMeta);
           runId = runMeta.runId;
+          input.onRun?.(runMeta.caseId);
+          await input.beforeResult?.(runMeta.caseId);
           const configured = input.results[attempt] ?? input.results.at(-1)!;
           return {
             schemaVersion: "mvp-1",
@@ -543,6 +581,397 @@ function guardedAttemptAdapter(input: {
     },
   };
 }
+
+function runtimeControllerFixture(input: {
+  runGroupId: string;
+  adapter(generation: number): AgentAdapter;
+  signal?: AbortSignal;
+  gatewayFailure?: (generation: number, lifetimeRun: number) => SandboxPreflightError | undefined;
+  startFailure?: (generation: number) => Error | undefined;
+  cleanupFailure?: (generation: number, cleanupCall: number) => Error | undefined;
+  finalize?: (sessionKey: string) => ReturnType<typeof cleanedSandboxFinalization> | Promise<ReturnType<typeof cleanedSandboxFinalization>>;
+}) {
+  let starts = 0;
+  const cleanupCalls: number[] = [];
+  const controller = createOpenClawDetectionRuntimeController({
+    async start(generation) {
+      starts += 1;
+      const startFailure = input.startFailure?.(generation);
+      if (startFailure) throw startFailure;
+      let lifetimeRuns = 0;
+      const signal = input.signal ?? new AbortController().signal;
+      return {
+        manager: {
+          signal,
+          runWhileGatewayAlive<T>(operation: (runtimeSignal: AbortSignal) => Promise<T>) {
+            lifetimeRuns += 1;
+            const failure = input.gatewayFailure?.(generation, lifetimeRuns);
+            if (failure) throw failure;
+            return operation(signal);
+          },
+          async finalizeSessionContainer(sessionKey: string, options: { allowNotCreated: boolean }) {
+            assert.equal(options.allowNotCreated, true);
+            return input.finalize
+              ? input.finalize(sessionKey)
+              : cleanedSandboxFinalization(sessionKey, input.runGroupId);
+          },
+          async cleanup() {
+            cleanupCalls[generation] = (cleanupCalls[generation] ?? 0) + 1;
+            const failure = input.cleanupFailure?.(
+              generation,
+              cleanupCalls[generation]!,
+            );
+            if (failure) throw failure;
+          },
+        } as unknown as DetectionSandboxManager,
+        adapter: input.adapter(generation),
+        nativeGuardEventStore: {} as never,
+        preflightEvidence: cleanedSandboxEvidence("agent:main:preflight", input.runGroupId),
+      };
+    },
+  });
+  return {
+    controller,
+    cleanupCalls,
+    startCount: () => starts,
+  };
+}
+
+function formalOpenClawRuntimeFixture(input: {
+  runGroup: P2RunGroup;
+  adapter(signal: AbortSignal): AgentAdapter;
+  onCleanup?: () => void;
+}) {
+  const calls = { cleanup: 0, finalize: 0, postBatchAttest: 0, generations: 0 };
+  const preflightEvidence = {
+    ...cleanedSandboxEvidence("agent:main:preflight", input.runGroup.runGroupId),
+    containerId: undefined,
+    status: "preflight_passed" as const,
+  };
+  const dependencies: Parameters<typeof runE2E>[4] = {
+    async resolveDetectionProfileSeed() { return {} as DetectionProfileSeed; },
+    createDetectionSandboxManager(options) {
+      calls.generations += 1;
+      const signal = options.signal ?? new AbortController().signal;
+      return {
+        signal,
+        async preflight() { return preflightEvidence; },
+        async start() {},
+        getGatewayCredentials() {
+          return { gatewayUrl: "http://127.0.0.1:18789", gatewayToken: "test-token" };
+        },
+        getAttestedCapabilitySnapshot() { return {} as never; },
+        runWhileGatewayAlive<T>(operation: (runtimeSignal: AbortSignal) => Promise<T>) {
+          return operation(signal);
+        },
+        async finalizeSessionContainer(sessionKey: string, finalizerOptions: { allowNotCreated: boolean }) {
+          calls.finalize += 1;
+          assert.equal(finalizerOptions.allowNotCreated, true);
+          return cleanedSandboxFinalization(sessionKey, input.runGroup.runGroupId);
+        },
+        async attestSession() {
+          calls.postBatchAttest += 1;
+          throw new Error("post-batch attestSession must not run");
+        },
+        async cleanup() {
+          calls.cleanup += 1;
+          input.onCleanup?.();
+        },
+      } as unknown as DetectionSandboxManager;
+    },
+    createOpenClawAdapter(options) {
+      assert.ok(options.signal);
+      return input.adapter(options.signal);
+    },
+  };
+  const coordinatorFactory = (() => ({
+    async activate() { return { leaseId: "lease.formal", leaseEpoch: 1 }; },
+    async revoke() {},
+    eventStore: {
+      async listBySession() { return []; },
+      async listRecordsBySession() { return []; },
+    },
+  })) as unknown as NonNullable<Parameters<typeof runE2E>[2]>;
+  return { calls, coordinatorFactory, dependencies };
+}
+
+test("runtime restart retries only the uncommitted OpenClaw case", async (t) => {
+  const previousRetryBase = process.env.AGENT_GUARD_OPENCLAW_RETRY_BASE_MS;
+  process.env.AGENT_GUARD_OPENCLAW_RETRY_BASE_MS = "0";
+  t.after(() => restoreEnv("AGENT_GUARD_OPENCLAW_RETRY_BASE_MS", previousRetryBase));
+  const { agent, adapterConfig, context } = await guardedDetectionFixture();
+  const { contexts } = await loadTestContexts(path.resolve("configs"), agent);
+  const secondContext = contexts.find((item) => item.caseId === "case.tool_response_injection");
+  assert.ok(secondContext);
+  const runGroup = guardedRunGroup();
+  const executed: string[] = [];
+  const fixture = runtimeControllerFixture({
+    runGroupId: runGroup.runGroupId,
+    adapter: (generation) => guardedAttemptAdapter({
+      results: [{ status: "completed" }],
+      onRun(caseId) { executed.push(`${generation}:${caseId}`); },
+    }),
+    gatewayFailure(generation, lifetimeRun) {
+      return generation === 1 && lifetimeRun === 2
+        ? new SandboxPreflightError(
+            "GATEWAY_EXITED",
+            "Detection Gateway exited unexpectedly.",
+          )
+        : undefined;
+    },
+  });
+
+  try {
+    const result = await runDetectionCasesConcurrently({
+      targetCases: [context, secondContext],
+      agent,
+      adapterConfig,
+      runGroup,
+      request: {
+        ...OPENCLAW_REQUEST,
+        caseIds: [context.caseId, secondContext.caseId],
+      },
+      signal: new AbortController().signal,
+      openClawRuntimeController: fixture.controller,
+    });
+
+    assert.equal(result.completedCases, 2);
+    assert.equal(result.retriedCases, 1);
+    assert.equal(fixture.startCount(), 2);
+    assert.deepEqual(executed, [
+      `1:${context.caseId}`,
+      `2:${secondContext.caseId}`,
+    ]);
+    assert.equal(runGroup.riskReportIds.length, 2);
+    assert.equal(fixture.cleanupCalls[1], 1);
+  } finally {
+    await fixture.controller.dispose();
+  }
+  assert.equal(fixture.cleanupCalls[2], 1);
+});
+
+test("runtime failure gets one restart even when the provider attempt budget is one", async (t) => {
+  const previousAttempts = process.env.AGENT_GUARD_OPENCLAW_CASE_MAX_ATTEMPTS;
+  const previousRetryBase = process.env.AGENT_GUARD_OPENCLAW_RETRY_BASE_MS;
+  process.env.AGENT_GUARD_OPENCLAW_CASE_MAX_ATTEMPTS = "1";
+  process.env.AGENT_GUARD_OPENCLAW_RETRY_BASE_MS = "0";
+  t.after(() => {
+    restoreEnv("AGENT_GUARD_OPENCLAW_CASE_MAX_ATTEMPTS", previousAttempts);
+    restoreEnv("AGENT_GUARD_OPENCLAW_RETRY_BASE_MS", previousRetryBase);
+  });
+  const { agent, adapterConfig, context } = await guardedDetectionFixture();
+  const runGroup = guardedRunGroup();
+  const fixture = runtimeControllerFixture({
+    runGroupId: runGroup.runGroupId,
+    adapter: () => guardedAttemptAdapter({ results: [{ status: "completed" }] }),
+    gatewayFailure() {
+      return new SandboxPreflightError(
+        "GATEWAY_LIFETIME_UNAVAILABLE",
+        "Detection Gateway process lifetime is unavailable.",
+      );
+    },
+  });
+
+  try {
+    await assert.rejects(
+      runDetectionCasesConcurrently({
+        targetCases: [context],
+        agent,
+        adapterConfig,
+        runGroup,
+        request: { ...OPENCLAW_REQUEST, caseIds: [context.caseId] },
+        signal: new AbortController().signal,
+        openClawRuntimeController: fixture.controller,
+      }),
+      /OPENCLAW_DETECTION_RUNTIME_FAILED:/,
+    );
+  } finally {
+    await fixture.controller.dispose();
+  }
+
+  assert.equal(fixture.startCount(), 2);
+  assert.equal(runGroup.progress?.caseFailures?.[0]?.attempts, 2);
+  assert.equal(runGroup.progress?.caseFailures?.[0]?.category, "sandbox_runtime_failed");
+});
+
+test("runtime failure does not consume the provider retry budget", async (t) => {
+  const previousAttempts = process.env.AGENT_GUARD_OPENCLAW_CASE_MAX_ATTEMPTS;
+  const previousRetryBase = process.env.AGENT_GUARD_OPENCLAW_RETRY_BASE_MS;
+  process.env.AGENT_GUARD_OPENCLAW_CASE_MAX_ATTEMPTS = "2";
+  process.env.AGENT_GUARD_OPENCLAW_RETRY_BASE_MS = "0";
+  t.after(() => {
+    restoreEnv("AGENT_GUARD_OPENCLAW_CASE_MAX_ATTEMPTS", previousAttempts);
+    restoreEnv("AGENT_GUARD_OPENCLAW_RETRY_BASE_MS", previousRetryBase);
+  });
+  const { agent, adapterConfig, context } = await guardedDetectionFixture();
+  const runGroup = guardedRunGroup();
+  const fixture = runtimeControllerFixture({
+    runGroupId: runGroup.runGroupId,
+    adapter: () => guardedAttemptAdapter({
+      results: [
+        { status: "failed", error: "429 Too many requests" },
+        { status: "completed" },
+      ],
+    }),
+    gatewayFailure(generation, lifetimeRun) {
+      return generation === 1 && lifetimeRun === 1
+        ? new SandboxPreflightError("GATEWAY_EXITED", "Gateway exited")
+        : undefined;
+    },
+  });
+
+  try {
+    const result = await runDetectionCasesConcurrently({
+      targetCases: [context],
+      agent,
+      adapterConfig,
+      runGroup,
+      request: { ...OPENCLAW_REQUEST, caseIds: [context.caseId] },
+      signal: new AbortController().signal,
+      openClawRuntimeController: fixture.controller,
+    });
+    assert.equal(result.completedCases, 1);
+    assert.equal(result.retriedCases, 1);
+    assert.equal(fixture.startCount(), 2);
+  } finally {
+    await fixture.controller.dispose();
+  }
+});
+
+test("replacement start failure keeps runtime classification and attempt count", async (t) => {
+  const previousAttempts = process.env.AGENT_GUARD_OPENCLAW_CASE_MAX_ATTEMPTS;
+  const previousRetryBase = process.env.AGENT_GUARD_OPENCLAW_RETRY_BASE_MS;
+  process.env.AGENT_GUARD_OPENCLAW_CASE_MAX_ATTEMPTS = "2";
+  process.env.AGENT_GUARD_OPENCLAW_RETRY_BASE_MS = "0";
+  t.after(() => {
+    restoreEnv("AGENT_GUARD_OPENCLAW_CASE_MAX_ATTEMPTS", previousAttempts);
+    restoreEnv("AGENT_GUARD_OPENCLAW_RETRY_BASE_MS", previousRetryBase);
+  });
+  const { agent, adapterConfig, context } = await guardedDetectionFixture();
+  const runGroup = guardedRunGroup();
+  const fixture = runtimeControllerFixture({
+    runGroupId: runGroup.runGroupId,
+    adapter: () => guardedAttemptAdapter({
+      results: [{ status: "failed", error: "429 Too many requests" }],
+    }),
+    gatewayFailure(generation, lifetimeRun) {
+      return generation === 1 && lifetimeRun === 2
+        ? new SandboxPreflightError("GATEWAY_EXITED", "Gateway exited")
+        : undefined;
+    },
+    startFailure(generation) {
+      return generation === 2
+        ? new SandboxPreflightError("GATEWAY_EXITED", "Replacement Gateway exited")
+        : undefined;
+    },
+  });
+
+  try {
+    await assert.rejects(
+      runDetectionCasesConcurrently({
+        targetCases: [context],
+        agent,
+        adapterConfig,
+        runGroup,
+        request: { ...OPENCLAW_REQUEST, caseIds: [context.caseId] },
+        signal: new AbortController().signal,
+        openClawRuntimeController: fixture.controller,
+      }),
+      /OPENCLAW_DETECTION_RUNTIME_FAILED:/,
+    );
+    assert.equal(fixture.startCount(), 2);
+    assert.equal(runGroup.progress?.caseFailures?.[0]?.category, "sandbox_runtime_failed");
+    assert.equal(runGroup.progress?.caseFailures?.[0]?.attempts, 2);
+  } finally {
+    await fixture.controller.dispose();
+  }
+});
+
+test("restart cleanup failure keeps cleanup classification and attempt count", async (t) => {
+  const previousAttempts = process.env.AGENT_GUARD_OPENCLAW_CASE_MAX_ATTEMPTS;
+  const previousRetryBase = process.env.AGENT_GUARD_OPENCLAW_RETRY_BASE_MS;
+  process.env.AGENT_GUARD_OPENCLAW_CASE_MAX_ATTEMPTS = "1";
+  process.env.AGENT_GUARD_OPENCLAW_RETRY_BASE_MS = "0";
+  t.after(() => {
+    restoreEnv("AGENT_GUARD_OPENCLAW_CASE_MAX_ATTEMPTS", previousAttempts);
+    restoreEnv("AGENT_GUARD_OPENCLAW_RETRY_BASE_MS", previousRetryBase);
+  });
+  const { agent, adapterConfig, context } = await guardedDetectionFixture();
+  const runGroup = guardedRunGroup();
+  const fixture = runtimeControllerFixture({
+    runGroupId: runGroup.runGroupId,
+    adapter: () => guardedAttemptAdapter({ results: [{ status: "completed" }] }),
+    gatewayFailure(generation, lifetimeRun) {
+      return generation === 1 && lifetimeRun === 1
+        ? new SandboxPreflightError("GATEWAY_EXITED", "Gateway exited")
+        : undefined;
+    },
+    cleanupFailure(generation, cleanupCall) {
+      return generation === 1 && cleanupCall === 1
+        ? new Error("Sandbox cleanup timed out during restart")
+        : undefined;
+    },
+  });
+
+  try {
+    await assert.rejects(
+      runDetectionCasesConcurrently({
+        targetCases: [context],
+        agent,
+        adapterConfig,
+        runGroup,
+        request: { ...OPENCLAW_REQUEST, caseIds: [context.caseId] },
+        signal: new AbortController().signal,
+        openClawRuntimeController: fixture.controller,
+      }),
+      /Sandbox cleanup timed out during restart/,
+    );
+    assert.equal(runGroup.progress?.caseFailures?.[0]?.category, "sandbox_cleanup_failed");
+    assert.equal(runGroup.progress?.caseFailures?.[0]?.attempts, 1);
+  } finally {
+    await fixture.controller.dispose();
+  }
+});
+
+test("cancellation disposes the captured runtime without restarting it", async (t) => {
+  const previousImage = process.env.AGENT_GUARD_DETECTION_IMAGE;
+  process.env.AGENT_GUARD_DETECTION_IMAGE = `openclaw@sha256:${"a".repeat(64)}`;
+  t.after(() => restoreEnv("AGENT_GUARD_DETECTION_IMAGE", previousImage));
+  const request = {
+    ...OPENCLAW_REQUEST,
+    connection: { timeoutMs: 100 },
+    caseIds: ["case.resource_injection"],
+  };
+  const runGroup = createInitialE2ERunGroup(request);
+  const fixture = formalOpenClawRuntimeFixture({
+    runGroup,
+    adapter: () => guardedAttemptAdapter({
+      results: [{ status: "failed", error: "Run cancelled by user." }],
+      async beforeResult() {
+        await cancelRunGroup(runGroup.runGroupId);
+      },
+    }),
+    onCleanup() {
+      assert.throws(() => reserveDetectionRun(), DetectionRunConflictError);
+    },
+  });
+
+  await assert.rejects(
+    runE2E(
+      request,
+      runGroup,
+      fixture.coordinatorFactory,
+      undefined,
+      fixture.dependencies,
+    ),
+    /cancelled by user/i,
+  );
+
+  assert.equal(fixture.calls.generations, 1);
+  assert.equal(fixture.calls.cleanup, 1);
+  const nextReservation = reserveDetectionRun();
+  assert.equal(releaseDetectionRunReservation(nextReservation), true);
+});
 
 test("guarded case finalization updates sandbox evidence before accepting risk", async () => {
   const { agent, adapterConfig, context } = await guardedDetectionFixture();
@@ -1524,6 +1953,7 @@ test("coded sandbox finalizer failures preserve scrubbed cleanup classification"
         category: "sandbox_cleanup_failed",
         retryable: false,
         skipAllowed: false,
+        restartRuntime: false,
       });
       return true;
     },
@@ -2404,6 +2834,41 @@ test("formal OpenClaw runE2E preserves invalid profile seed classification befor
   assert.deepEqual(runGroup.testRunIds, []);
   assert.equal(runGroup.progress?.caseFailures?.[0]?.caseId, "sandbox_preflight");
   assert.equal(runGroup.progress?.caseFailures?.[0]?.category, "sandbox_profile_seed_failed");
+});
+
+test("formal OpenClaw runE2E binds guarded finalization to the active runtime manager", async (t) => {
+  const previousImage = process.env.AGENT_GUARD_DETECTION_IMAGE;
+  process.env.AGENT_GUARD_DETECTION_IMAGE = `openclaw@sha256:${"a".repeat(64)}`;
+  t.after(() => restoreEnv("AGENT_GUARD_DETECTION_IMAGE", previousImage));
+
+  const request = {
+    ...OPENCLAW_REQUEST,
+    connection: { timeoutMs: 100 },
+    caseIds: ["case.resource_injection"],
+  };
+  const runGroup = createInitialE2ERunGroup(request);
+  const fixture = formalOpenClawRuntimeFixture({
+    runGroup,
+    adapter: () => guardedAttemptAdapter({ results: [{ status: "completed" }] }),
+    onCleanup() {
+      assert.throws(() => reserveDetectionRun(), DetectionRunConflictError);
+    },
+  });
+
+  const result = await runE2E(
+    request,
+    runGroup,
+    fixture.coordinatorFactory,
+    undefined,
+    fixture.dependencies,
+  );
+
+  assert.equal(result.runGroup.status, "completed");
+  assert.equal(fixture.calls.finalize, 1);
+  assert.equal(fixture.calls.postBatchAttest, 0);
+  assert.equal(fixture.calls.cleanup, 1);
+  const nextReservation = reserveDetectionRun();
+  assert.equal(releaseDetectionRunReservation(nextReservation), true);
 });
 
 function restoreEnv(name: string, value: string | undefined): void {

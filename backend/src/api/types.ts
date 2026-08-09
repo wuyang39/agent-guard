@@ -54,6 +54,7 @@ export type P2RunCaseFailure = {
     | "sandbox_profile_seed_failed"
     | "sandbox_attestation_failed"
     | "sandbox_cleanup_failed"
+    | "sandbox_runtime_failed"
     | "native_guard_unavailable"
     | "native_guard_evidence_unavailable"
     | "native_guard_revoke_failed"

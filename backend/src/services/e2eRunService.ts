@@ -358,7 +358,7 @@ function mapAdapterKind(kind: string): AgentUnderTest["adapterType"] {
   }
 }
 
-function buildCustomAdapter(request: RunE2ERequest): AgentAdapter | undefined {
+export function buildCustomAdapter(request: RunE2ERequest): AgentAdapter | undefined {
   switch (request.adapterKind) {
     case "http_sample": {
       const endpointUrl =
@@ -368,16 +368,6 @@ function buildCustomAdapter(request: RunE2ERequest): AgentAdapter | undefined {
         endpointUrl,
         timeoutMs: request.connection?.timeoutMs ?? 15_000,
         mode: "vulnerable",
-      });
-    }
-    case "openclaw": {
-      return new OpenClawAdapter({
-        gatewayUrl:
-          request.connection?.endpointUrl ??
-          process.env.OPENCLAW_GATEWAY_URL ??
-          "http://localhost:18789",
-        cliPath: request.connection?.cliPath,
-        timeoutMs: getOpenClawDetectionTimeoutMs(request),
       });
     }
     default:

@@ -76,6 +76,27 @@ test("mock detection remains uncapped at 121 cases", () => {
   assert.doesNotThrow(() => validateOpenClawDetectionCaseLimit("mock", 121));
 });
 
+test("initial custom adapter construction skips OpenClaw and preserves http and mock paths", () => {
+  const buildAdapter = (e2eRunServiceModule as unknown as {
+    buildCustomAdapter?: (
+      request: Parameters<typeof createInitialE2ERunGroup>[0],
+    ) => AgentAdapter | undefined;
+  }).buildCustomAdapter;
+  assert.equal(typeof buildAdapter, "function");
+
+  assert.equal(buildAdapter!(OPENCLAW_REQUEST), undefined);
+  assert.equal(buildAdapter!({
+    adapterKind: "http_sample",
+    agent: { name: "HTTP sample" },
+    generateDefenseReport: false,
+  })?.adapterType, "http_sample");
+  assert.equal(buildAdapter!({
+    adapterKind: "mock",
+    agent: { name: "Mock sample" },
+    generateDefenseReport: false,
+  }), undefined);
+});
+
 test("formal OpenClaw runE2E rejects 121 cases before sandbox or sample setup", async (t) => {
   const agent: AgentUnderTest = {
     schemaVersion: "mvp-1",

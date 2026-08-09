@@ -1289,7 +1289,10 @@ export class DetectionSandboxManager {
     sessionIdentity: string,
     expectedWorkspaceRoot: string,
   ): Promise<SessionContainerInventory> {
-    const listed = await this.command("docker", ["ps", "-aq", "--filter", `label=${RUN_LABEL_KEY}=${this.options.runGroupId}`]);
+    const listed = await this.command(
+      "docker",
+      ["ps", "-aq", "--no-trunc", "--filter", `label=${RUN_LABEL_KEY}=${this.options.runGroupId}`],
+    );
     if (listed.exitCode !== 0) throw this.containerInventoryMismatch();
     let ids: string[];
     try {

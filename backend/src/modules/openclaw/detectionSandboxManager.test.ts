@@ -3086,6 +3086,57 @@ test("attestAndCleanupSession removes only the exact attested session container"
   }
 });
 
+test("attestAndCleanupSession accepts Docker short list ids for a full inspected id", async () => {
+  const { runner } = runnerFor();
+  const runGroupId = "run-session-cleanup-short-id";
+  const fullContainerId = "a".repeat(64);
+  const shortContainerId = fullContainerId.slice(0, 12);
+  let containerPresent = true;
+  const removeCalls: string[][] = [];
+  let profileRoot: string | undefined;
+  const manager = new DetectionSandboxManager({
+    ...readyGatewayTestOptions(),
+    runGroupId,
+    image: `openclaw@sha256:${"a".repeat(64)}`,
+    commandRunner: async (input) => {
+      const result = await runner(input);
+      if (input.args.includes("sandbox") && input.args.includes("explain") && profileRoot) {
+        return { ...result, stdout: JSON.stringify(sandboxExplainForSession(profileRoot, "session-1")) };
+      }
+      if (input.args[0] === "ps") {
+        const id = input.args.includes("--no-trunc") ? fullContainerId : shortContainerId;
+        return { ...result, stdout: containerPresent ? `${id}\n` : "" };
+      }
+      if (input.args[0] === "inspect" && profileRoot) {
+        return containerPresent
+          ? {
+              ...result,
+              stdout: JSON.stringify([
+                realAgentContainerInspect(profileRoot, runGroupId, "session-1", fullContainerId),
+              ]),
+            }
+          : { ...result, exitCode: 1, stdout: "" };
+      }
+      if (input.args[0] === "rm" && input.args[1] === "-f") {
+        removeCalls.push(input.args.slice(2));
+        containerPresent = false;
+        return result;
+      }
+      return result;
+    },
+  });
+
+  try {
+    profileRoot = (await manager.start()).profileRoot;
+    const evidence = await manager.attestAndCleanupSession("session-1");
+
+    assert.equal(evidence.containerId, fullContainerId);
+    assert.deepEqual(removeCalls, [[fullContainerId]]);
+  } finally {
+    await manager.cleanup().catch(() => undefined);
+  }
+});
+
 test("attestAndCleanupSession returns detached tombstone evidence without removing twice", async () => {
   const { runner } = runnerFor();
   const runGroupId = "run-session-cleanup-idempotent";

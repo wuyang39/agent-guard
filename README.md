@@ -66,7 +66,7 @@ npm run openclaw:start
 npm run verify:openclaw:load
 ```
 
-The bootstrap pins the public fork commit and immutable GHCR image declared in `configs/openclaw-distribution.json`. Model credentials stay in the ignored isolated profile and must be configured once per device. See `docs/C/openclaw-local-install-and-demo-runbook.md` for the complete workflow.
+The bootstrap pins the public fork commit and immutable GHCR image declared in `configs/openclaw-distribution.json`. Model credentials stay in the ignored isolated profile and must be configured once per device. See `docs/其他设备部署与使用说明.md` for the Chinese setup guide and `docs/C/openclaw-local-install-and-demo-runbook.md` for the detailed runtime notes.
 
 `npm run demo` starts the isolated display demo from `frontend/demo`. It is for product-flow demonstration only and is not the formal frontend implementation baseline.
 

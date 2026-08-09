@@ -3,6 +3,7 @@ import test from "node:test";
 import { mockBundle } from "./mockData";
 import { runsApi } from "./runs";
 import { agentsApi } from "./agents";
+import { ApiRequestError } from "./core";
 import type { CLineRunGroup } from "./types";
 
 const sessionCoverage = {
@@ -119,6 +120,35 @@ test("run group API defensively normalizes legacy native guard coverage", async 
     sessions: [],
     runtimeFailures: [],
   });
+});
+
+test("run group API errors preserve the backend code and HTTP status", async (t) => {
+  const previousFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = previousFetch;
+  });
+  globalThis.fetch = (async () => ({
+    status: 404,
+    async json() {
+      return {
+        ok: false,
+        error: {
+          code: "NOT_FOUND",
+          message: "Run group run_group.transient not found",
+        },
+      };
+    },
+  })) as unknown as typeof fetch;
+
+  await assert.rejects(
+    () => runsApi.runGroup("run_group.transient"),
+    (error: unknown) => {
+      assert.ok(error instanceof ApiRequestError);
+      assert.equal((error as { code?: string }).code, "NOT_FOUND");
+      assert.equal((error as { status?: number }).status, 404);
+      return true;
+    },
+  );
 });
 
 test("OpenClaw API defaults use the competition 90-second timeout", async (t) => {

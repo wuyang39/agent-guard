@@ -337,7 +337,7 @@ export function App() {
         acceptRunGroupProgress(started.runGroup);
         await waitForRunGroup(
           started.runGroup.runGroupId,
-          1_200_000,
+          undefined,
           acceptRunGroupProgress,
           () => cancelledRunIdsRef.current.has(started.runGroup.runGroupId),
         );
@@ -885,29 +885,52 @@ function loadStoredSelectionCaseCount(): number {
   return normalizeSelectionCaseCount(stored || DEFAULT_SELECTION_CASE_COUNT);
 }
 
-async function waitForRunGroup(
+const MAX_TRANSIENT_RUN_GROUP_NOT_FOUND_RETRIES = 3;
+
+export async function waitForRunGroup(
   runGroupId: string,
-  timeoutMs = 180000,
+  timeoutMs?: number,
   onProgress?: (runGroup: CLineRunGroup) => void,
   shouldStop?: () => boolean,
+  pollIntervalMs = 2000,
 ): Promise<CLineRunGroup | undefined> {
   const startedAt = Date.now();
-  while (Date.now() - startedAt < timeoutMs) {
+  let transientNotFoundCount = 0;
+  while (timeoutMs === undefined || Date.now() - startedAt < timeoutMs) {
     if (shouldStop?.()) {
       return undefined;
     }
-    const result = await agentGuardApi.runGroup(runGroupId);
+    let result: Awaited<ReturnType<typeof agentGuardApi.runGroup>>;
+    try {
+      result = await agentGuardApi.runGroup(runGroupId);
+      transientNotFoundCount = 0;
+    } catch (error) {
+      if (
+        hasApiErrorCode(error, "NOT_FOUND") &&
+        transientNotFoundCount < MAX_TRANSIENT_RUN_GROUP_NOT_FOUND_RETRIES
+      ) {
+        transientNotFoundCount += 1;
+        await sleep(Math.min(pollIntervalMs, 250));
+        continue;
+      }
+      throw error;
+    }
     onProgress?.(result.runGroup);
     if (result.runGroup.status !== "running") {
       return result.runGroup;
     }
-    await sleep(2000);
+    await sleep(pollIntervalMs);
   }
   return undefined;
 }
 
+function hasApiErrorCode(error: unknown, code: string): boolean {
+  return error instanceof Error &&
+    (error as Error & { code?: unknown }).code === code;
+}
+
 function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
+  return new Promise((resolve) => globalThis.setTimeout(resolve, ms));
 }
 
 function mergeRunGroupListState(

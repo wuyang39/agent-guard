@@ -4,6 +4,7 @@
  * 存储位置: outputs/run-index/
  */
 
+import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createId, Mutex, nowIso } from "../shared";
@@ -36,9 +37,27 @@ async function readJson<T>(filePath: string, fallback: T): Promise<T> {
   }
 }
 
-async function writeJson(filePath: string, data: unknown): Promise<void> {
+export async function writeJsonAtomically(
+  filePath: string,
+  data: unknown,
+  hooks: {
+    rename?: (source: string, destination: string) => Promise<void>;
+  } = {},
+): Promise<void> {
   await ensureDir(path.dirname(filePath));
-  await fs.writeFile(filePath, JSON.stringify(data, null, 2), "utf-8");
+  const temporary = path.join(
+    path.dirname(filePath),
+    `.${path.basename(filePath)}.tmp-${randomUUID()}`,
+  );
+  try {
+    await fs.writeFile(temporary, JSON.stringify(data, null, 2), {
+      encoding: "utf-8",
+      flag: "wx",
+    });
+    await (hooks.rename ?? fs.rename)(temporary, filePath);
+  } finally {
+    await fs.rm(temporary, { force: true }).catch(() => undefined);
+  }
 }
 
 export function createRunGroupId(): string {
@@ -84,16 +103,18 @@ export async function saveRunGroup(runGroup: P2RunGroup): Promise<void> {
     } else {
       all.push(normalized);
     }
-    await writeJson(RUN_GROUPS_FILE, all);
+    await writeJsonAtomically(RUN_GROUPS_FILE, all);
   });
 }
 
 export async function getRunGroup(
   runGroupId: string,
 ): Promise<P2RunGroup | undefined> {
-  const all = (await readJson<P2RunGroup[]>(RUN_GROUPS_FILE, []))
-    .map(normalizeStoredRunGroup);
-  return all.find((r) => r.runGroupId === runGroupId);
+  return runGroupsMutex.run(async () => {
+    const all = (await readJson<P2RunGroup[]>(RUN_GROUPS_FILE, []))
+      .map(normalizeStoredRunGroup);
+    return all.find((r) => r.runGroupId === runGroupId);
+  });
 }
 
 export async function listRunGroups(opts?: {
@@ -101,27 +122,29 @@ export async function listRunGroups(opts?: {
   status?: RunStatus;
   adapterKind?: P2AdapterKind;
 }): Promise<P2RunGroup[]> {
-  let all = (await readJson<P2RunGroup[]>(RUN_GROUPS_FILE, []))
-    .map(normalizeStoredRunGroup);
+  return runGroupsMutex.run(async () => {
+    let all = (await readJson<P2RunGroup[]>(RUN_GROUPS_FILE, []))
+      .map(normalizeStoredRunGroup);
 
-  if (opts?.status) {
-    all = all.filter((r) => r.status === opts.status);
-  }
-  if (opts?.adapterKind) {
-    all = all.filter((r) => r.adapterKind === opts.adapterKind);
-  }
+    if (opts?.status) {
+      all = all.filter((r) => r.status === opts.status);
+    }
+    if (opts?.adapterKind) {
+      all = all.filter((r) => r.adapterKind === opts.adapterKind);
+    }
 
-  // 按 startedAt 倒序
-  all.sort(
-    (a, b) =>
-      new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime(),
-  );
+    // 按 startedAt 倒序
+    all.sort(
+      (a, b) =>
+        new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime(),
+    );
 
-  if (opts?.limit && opts.limit > 0) {
-    all = all.slice(0, opts.limit);
-  }
+    if (opts?.limit && opts.limit > 0) {
+      all = all.slice(0, opts.limit);
+    }
 
-  return all;
+    return all;
+  });
 }
 
 export function normalizeStoredRunGroup(runGroup: P2RunGroup): P2RunGroup {
@@ -180,7 +203,7 @@ export async function saveSessionRecords(
   records: RuntimeSupervisionRecord[],
 ): Promise<void> {
   await ensureDir(SESSIONS_DIR);
-  await writeJson(
+  await writeJsonAtomically(
     sessionFilePath(summary.runtimeSessionId),
     { ...summary, records } satisfies SupervisionSessionFull,
   );

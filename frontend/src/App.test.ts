@@ -3,6 +3,8 @@ import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import test from "node:test";
 import type { AgentConnectionConfig } from "./lib/api/types";
+import { agentGuardApi } from "./lib/api/client";
+import { mockBundle } from "./lib/api/mockData";
 import { RunWorkflowPage } from "./pages/RunWorkflow/RunWorkflowPage";
 import {
   DEFAULT_SELECTION_CASE_COUNT,
@@ -75,4 +77,215 @@ test("OpenClaw selection budgets preserve the 80, 81, and 120 target profiles", 
     buildLlmSelectionRequest(config, 120).minCaseCount,
     MAX_SELECTION_CASE_COUNT,
   );
+});
+
+test("run polling retries a transient run-group NOT_FOUND response", async (t) => {
+  const appModule = await import("./App");
+  const candidate = (appModule as unknown as {
+    waitForRunGroup?: (
+      runGroupId: string,
+      timeoutMs: number,
+      onProgress?: (runGroup: typeof mockBundle.runGroup) => void,
+      shouldStop?: () => boolean,
+      pollIntervalMs?: number,
+    ) => Promise<typeof mockBundle.runGroup | undefined>;
+  }).waitForRunGroup;
+  assert.equal(typeof candidate, "function");
+
+  const original = agentGuardApi.runGroup;
+  t.after(() => {
+    agentGuardApi.runGroup = original;
+  });
+  let attempts = 0;
+  agentGuardApi.runGroup = async () => {
+    attempts += 1;
+    if (attempts === 1) {
+      throw Object.assign(new Error("Run group run_group.transient not found"), {
+        code: "NOT_FOUND",
+        status: 404,
+      });
+    }
+    return {
+      runGroup: {
+        ...mockBundle.runGroup,
+        runGroupId: "run_group.transient",
+        status: "completed",
+      },
+    };
+  };
+
+  const progress: string[] = [];
+  const result = await candidate!(
+    "run_group.transient",
+    1_000,
+    (runGroup) => progress.push(runGroup.status),
+    undefined,
+    0,
+  );
+
+  assert.equal(attempts, 2);
+  assert.equal(result?.status, "completed");
+  assert.deepEqual(progress, ["completed"]);
+});
+
+test("run polling stops after three transient NOT_FOUND retries", async (t) => {
+  const { waitForRunGroup } = await import("./App");
+  const original = agentGuardApi.runGroup;
+  t.after(() => {
+    agentGuardApi.runGroup = original;
+  });
+  let attempts = 0;
+  agentGuardApi.runGroup = async () => {
+    attempts += 1;
+    throw Object.assign(new Error("Run group run_group.missing not found"), {
+      code: "NOT_FOUND",
+      status: 404,
+    });
+  };
+
+  await assert.rejects(
+    () => waitForRunGroup("run_group.missing", 1_000, undefined, undefined, 0),
+    /run_group\.missing not found/,
+  );
+  assert.equal(attempts, 4);
+});
+
+test("run polling does not retry non-NOT_FOUND errors", async (t) => {
+  const { waitForRunGroup } = await import("./App");
+  const original = agentGuardApi.runGroup;
+  t.after(() => {
+    agentGuardApi.runGroup = original;
+  });
+  let attempts = 0;
+  agentGuardApi.runGroup = async () => {
+    attempts += 1;
+    throw Object.assign(new Error("backend unavailable"), {
+      code: "INTERNAL_ERROR",
+      status: 500,
+    });
+  };
+
+  await assert.rejects(
+    () => waitForRunGroup("run_group.error", 1_000, undefined, undefined, 0),
+    /backend unavailable/,
+  );
+  assert.equal(attempts, 1);
+});
+
+test("run polling stays active beyond the former twenty-minute cutoff", async (t) => {
+  const appModule = await import("./App");
+  const candidate = (appModule as unknown as {
+    waitForRunGroup?: (
+      runGroupId: string,
+      timeoutMs?: number,
+      onProgress?: (runGroup: typeof mockBundle.runGroup) => void,
+      shouldStop?: () => boolean,
+      pollIntervalMs?: number,
+    ) => Promise<typeof mockBundle.runGroup | undefined>;
+  }).waitForRunGroup;
+  assert.equal(typeof candidate, "function");
+
+  const original = agentGuardApi.runGroup;
+  const originalNow = Date.now;
+  t.after(() => {
+    agentGuardApi.runGroup = original;
+    Date.now = originalNow;
+  });
+  let now = 0;
+  let attempts = 0;
+  Date.now = () => now;
+  agentGuardApi.runGroup = async () => {
+    attempts += 1;
+    const completed = attempts > 1;
+    if (!completed) {
+      now = 1_200_001;
+    }
+    return {
+      runGroup: {
+        ...mockBundle.runGroup,
+        runGroupId: "run_group.long-running",
+        status: completed ? "completed" : "running",
+      },
+    };
+  };
+
+  const result = await candidate!(
+    "run_group.long-running",
+    undefined,
+    undefined,
+    undefined,
+    0,
+  );
+
+  assert.equal(attempts, 2);
+  assert.equal(result?.status, "completed");
+});
+
+test("unbounded run polling still exits when cancellation is requested", async (t) => {
+  const { waitForRunGroup } = await import("./App");
+  const original = agentGuardApi.runGroup;
+  t.after(() => {
+    agentGuardApi.runGroup = original;
+  });
+  let attempts = 0;
+  let stopChecks = 0;
+  agentGuardApi.runGroup = async () => {
+    attempts += 1;
+    return {
+      runGroup: {
+        ...mockBundle.runGroup,
+        runGroupId: "run_group.cancelled",
+        status: "running",
+      },
+    };
+  };
+
+  const result = await waitForRunGroup(
+    "run_group.cancelled",
+    undefined,
+    undefined,
+    () => {
+      stopChecks += 1;
+      return stopChecks > 1;
+    },
+    0,
+  );
+
+  assert.equal(result, undefined);
+  assert.equal(attempts, 1);
+});
+
+test("run polling keeps an explicit timeout for bounded callers", async (t) => {
+  const { waitForRunGroup } = await import("./App");
+  const original = agentGuardApi.runGroup;
+  const originalNow = Date.now;
+  t.after(() => {
+    agentGuardApi.runGroup = original;
+    Date.now = originalNow;
+  });
+  let now = 0;
+  let attempts = 0;
+  Date.now = () => now;
+  agentGuardApi.runGroup = async () => {
+    attempts += 1;
+    now = 1_001;
+    return {
+      runGroup: {
+        ...mockBundle.runGroup,
+        runGroupId: "run_group.bounded",
+        status: "running",
+      },
+    };
+  };
+
+  const result = await waitForRunGroup(
+    "run_group.bounded",
+    1_000,
+    undefined,
+    undefined,
+    0,
+  );
+
+  assert.equal(result, undefined);
+  assert.equal(attempts, 1);
 });

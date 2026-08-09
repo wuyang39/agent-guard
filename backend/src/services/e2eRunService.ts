@@ -97,6 +97,7 @@ const OUTPUT_DIR = path.resolve(process.cwd(), "outputs", "reports");
 const TRACES_DIR = path.resolve(process.cwd(), "outputs", "traces");
 const MAX_PROGRESS_FAILURES = 24;
 const MAX_NATIVE_GUARD_DIAGNOSTIC_COUNT = 1_000_000;
+export const MAX_OPENCLAW_DETECTION_CASES = 120;
 const MISSING_NATIVE_GUARD_RECONCILIATION_FAILURE =
   "NATIVE_GUARD_COVERAGE_BREACH: 1 reconciliation issue(s); native guard reconciliation is missing.";
 const GUARDED_FINALIZER_ERROR_CODES = new Set([
@@ -403,6 +404,21 @@ export function runDetectionWithSandboxLifetime<T>(
   return sandbox.runWhileGatewayAlive(operation);
 }
 
+export function validateOpenClawDetectionCaseLimit(
+  adapterKind: RunE2ERequest["adapterKind"],
+  caseCount: number,
+): void {
+  if (
+    adapterKind === "openclaw" &&
+    caseCount > MAX_OPENCLAW_DETECTION_CASES
+  ) {
+    throw new CaseIdValidationError(
+      `OpenClaw detection supports at most ${MAX_OPENCLAW_DETECTION_CASES} cases; ` +
+      `received ${caseCount}.`,
+    );
+  }
+}
+
 export function resolveNativeGuardSessionKeys(
   runGroup: Pick<P2RunGroup, "testRunIds" | "runGroupId">,
 ): string[] {
@@ -580,6 +596,8 @@ export async function runE2E(
     const targetCases = request.adapterKind === "openclaw"
       ? orderDetectionCasesForExecution(matchedCases)
       : matchedCases;
+
+    validateOpenClawDetectionCaseLimit(request.adapterKind, targetCases.length);
 
     if (targetCases.length === 0) {
       throw new CaseIdValidationError(

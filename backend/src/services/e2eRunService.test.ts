@@ -17,8 +17,11 @@ import type {
   AgentAdapter,
   AgentNativeGuardRuntimeEvidence,
 } from "../modules/agent/agentAdapter";
+import { saveSelectionPlan } from "../modules/runner/selectionPlanStore";
 import {
+  CaseIdValidationError,
   DetectionRunConflictError,
+  MAX_OPENCLAW_DETECTION_CASES,
   cancelRunGroup,
   classifyDetectionError,
   createInitialE2ERunGroup,
@@ -31,6 +34,7 @@ import {
   runDetectionWithSandboxLifetime,
   type DetectionRunReservation,
   runE2E,
+  validateOpenClawDetectionCaseLimit,
 } from "./e2eRunService";
 import * as e2eRunServiceModule from "./e2eRunService";
 import { createOpenClawDetectionRuntimeController } from "./openclawDetectionRuntime";
@@ -39,13 +43,115 @@ import type {
   P2RunGroup,
 } from "../api/types";
 import type { TestRunResult } from "../modules/runner/runTypes";
-import type { AgentAdapterConfig, AgentUnderTest } from "@agent-guard/contracts";
+import type {
+  AgentAdapterConfig,
+  AgentUnderTest,
+  TestSelectionPlan,
+} from "@agent-guard/contracts";
 
 const OPENCLAW_REQUEST = {
   adapterKind: "openclaw",
   agent: { name: "Native guard test" },
   generateDefenseReport: false,
 } as const;
+
+test("OpenClaw detection accepts at most 120 cases", () => {
+  assert.equal(MAX_OPENCLAW_DETECTION_CASES, 120);
+  assert.doesNotThrow(() => validateOpenClawDetectionCaseLimit("openclaw", 120));
+});
+
+test("OpenClaw detection rejects 121 cases with the received count", () => {
+  assert.throws(
+    () => validateOpenClawDetectionCaseLimit("openclaw", 121),
+    (error) => {
+      assert.ok(error instanceof CaseIdValidationError);
+      assert.match(error.message, /at most 120/i);
+      assert.match(error.message, /received 121/i);
+      return true;
+    },
+  );
+});
+
+test("mock detection remains uncapped at 121 cases", () => {
+  assert.doesNotThrow(() => validateOpenClawDetectionCaseLimit("mock", 121));
+});
+
+test("formal OpenClaw runE2E rejects 121 cases before sandbox or sample setup", async (t) => {
+  const agent: AgentUnderTest = {
+    schemaVersion: "mvp-1",
+    agentId: "agent.openclaw.case-limit",
+    name: "OpenClaw case limit",
+    adapterType: "openclaw" as AgentUnderTest["adapterType"],
+  };
+  const { contexts } = await loadTestContexts(path.resolve("configs"), agent, {
+    requireGeneratedALineCorpus: true,
+    includeDisabledGeneratedCases: true,
+  });
+  const selectedCaseIds = contexts.slice(0, 121).map((context) => context.caseId);
+  assert.equal(selectedCaseIds.length, 121);
+
+  const selectionPlanId = `selection_plan.openclaw-case-limit-${Date.now()}`;
+  const selectionPlanPath = path.resolve(
+    "outputs",
+    "test-selection",
+    "plans",
+    `${selectionPlanId}.json`,
+  );
+  t.after(() => fs.rm(selectionPlanPath, { force: true }));
+  await saveSelectionPlan({
+    schemaVersion: "mvp-1",
+    selectionPlanId,
+    agentId: agent.agentId,
+    corpusManifestId: "corpus.p3_a.generated",
+    status: "ready",
+    mode: "deterministic",
+    targetProfile: "openclaw",
+    selectionProfile: {},
+    coverageRequirements: {},
+    requestedCaseCount: selectedCaseIds.length,
+    selectedCaseIds,
+    selectedCasesSummary: [],
+    coverageSnapshot: {},
+    selectionRunSummary: {},
+    evalStyleResult: {},
+    selectionReasons: [],
+    fallbackReasons: [],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  } as unknown as TestSelectionPlan);
+
+  const request = {
+    ...OPENCLAW_REQUEST,
+    agent: { name: agent.name, agentId: agent.agentId },
+    selectionPlanId,
+  };
+  const runGroup = createInitialE2ERunGroup(request);
+  let managerConstructions = 0;
+  let adapterConstructions = 0;
+
+  await assert.rejects(
+    runE2E(request, runGroup, undefined, undefined, {
+      createDetectionSandboxManager() {
+        managerConstructions += 1;
+        throw new Error("sandbox manager must not be constructed");
+      },
+      createOpenClawAdapter() {
+        adapterConstructions += 1;
+        throw new Error("attack sample adapter must not be constructed");
+      },
+    }),
+    (error) => {
+      assert.ok(error instanceof CaseIdValidationError);
+      assert.match(error.message, /at most 120/i);
+      assert.match(error.message, /received 121/i);
+      return true;
+    },
+  );
+
+  assert.equal(managerConstructions, 0);
+  assert.equal(adapterConstructions, 0);
+  assert.deepEqual(runGroup.testRunIds, []);
+});
 
 test("OpenClaw competition detection uses bounded default attempt budgets", (t) => {
   const previousAttempts = process.env.AGENT_GUARD_OPENCLAW_CASE_MAX_ATTEMPTS;

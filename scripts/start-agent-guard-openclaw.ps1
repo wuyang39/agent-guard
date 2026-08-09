@@ -1,132 +1,224 @@
 param(
   [string]$RuntimeRoot = "",
-  [string]$ProviderKeyEnvName = "DEEPSEEK_API_KEY",
-  [string]$ExampleLocalKeyEnvName = "DeepSeek_API_2"
+  [int]$ApiPort = 3100,
+  [int]$FrontendPort = 5173,
+  [int]$SamplePort = 7001,
+  [int]$GatewayPort = 18789,
+  [switch]$NoBrowser,
+  [switch]$PrintPlan
 )
 
 $ErrorActionPreference = "Stop"
 
-$repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
-if (-not $RuntimeRoot) {
-  $RuntimeRoot = Join-Path (Resolve-Path (Join-Path $repoRoot "..")) "openclaw-runtime"
-}
-$RuntimeRoot = [System.IO.Path]::GetFullPath($RuntimeRoot)
-$openClawCli = Join-Path $RuntimeRoot "openclaw-local.cmd"
-$openClawHome = Join-Path $RuntimeRoot "home"
-$openClawWorkspace = Join-Path $RuntimeRoot "workspace"
-$logDir = Join-Path $repoRoot "outputs\runs"
-$guardLauncher = Join-Path $repoRoot "scripts\openclaw-guard-launcher.ts"
-
-if (-not (Test-Path $openClawCli)) {
-  throw "OpenClaw runtime wrapper not found: $openClawCli"
-}
-
-New-Item -ItemType Directory -Force -Path $logDir | Out-Null
-
-$env:OPENCLAW_CLI = $openClawCli
-$env:OPENCLAW_HOME = $openClawHome
-$env:OPENCLAW_WORKSPACE = $openClawWorkspace
-$env:VITE_OPENCLAW_CLI_PATH = $openClawCli
-$env:OPENCLAW_TIMEOUT_MS = "15000"
-$env:HTTP_PROXY = ""
-$env:HTTPS_PROXY = ""
-$env:ALL_PROXY = ""
-$env:http_proxy = ""
-$env:https_proxy = ""
-$env:all_proxy = ""
-$env:NO_PROXY = "*"
-$env:no_proxy = "*"
-
-if ($ProviderKeyEnvName -and -not [Environment]::GetEnvironmentVariable($ProviderKeyEnvName)) {
-  $providerKey = ""
-  if ($ExampleLocalKeyEnvName) {
-    $providerKey = [Environment]::GetEnvironmentVariable($ExampleLocalKeyEnvName)
-    if (-not $providerKey) {
-      $providerKey = [Environment]::GetEnvironmentVariable($ExampleLocalKeyEnvName, "User")
-    }
+function Resolve-FullPath([string]$Path, [string]$BasePath) {
+  if ([System.IO.Path]::IsPathRooted($Path)) {
+    return [System.IO.Path]::GetFullPath($Path)
   }
-  if ($providerKey) {
-    Set-Item -Path "env:$ProviderKeyEnvName" -Value $providerKey
-  }
+  return [System.IO.Path]::GetFullPath((Join-Path $BasePath $Path))
 }
 
 function Test-PortListening([int]$Port) {
   return [bool](Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
 }
 
-function Start-HiddenPowerShell([string]$Command) {
-  Start-Process -FilePath powershell `
-    -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $Command) `
-    -WindowStyle Hidden | Out-Null
-}
-
-Write-Host "Agent Guard + project OpenClaw runtime"
-Write-Host "Repo:          $repoRoot"
-Write-Host "OpenClaw CLI:  $openClawCli"
-Write-Host "OpenClaw HOME: $openClawHome"
-Write-Host ""
-
-if (-not (Test-PortListening 18789)) {
-  $gatewayLog = Join-Path $logDir "openclaw-gateway.log"
-  $gatewayErr = Join-Path $logDir "openclaw-gateway.err.log"
-  $gatewayCommand = @"
-`$env:OPENCLAW_HOME='$openClawHome';
-`$env:OPENCLAW_WORKSPACE='$openClawWorkspace';
-`$env:OPENCLAW_NO_ONBOARD='1';
-`$env:HTTP_PROXY='';
-`$env:HTTPS_PROXY='';
-`$env:ALL_PROXY='';
-`$env:http_proxy='';
-`$env:https_proxy='';
-`$env:all_proxy='';
-`$env:NO_PROXY='*';
-`$env:no_proxy='*';
-Set-Location '$repoRoot';
-node --import tsx '$guardLauncher' -- gateway run --port 18789 --bind loopback --allow-unconfigured *> '$gatewayLog' 2> '$gatewayErr'
-"@
-  Write-Host "[1/4] Starting OpenClaw gateway on 127.0.0.1:18789..."
-  Start-HiddenPowerShell $gatewayCommand
-  for ($i = 0; $i -lt 30 -and -not (Test-PortListening 18789); $i++) {
-    Start-Sleep -Seconds 1
+function Test-HttpReady([string]$Url) {
+  try {
+    $response = Invoke-WebRequest -UseBasicParsing -Uri $Url -TimeoutSec 2
+    return $response.StatusCode -ge 200 -and $response.StatusCode -lt 300
+  } catch {
+    return $false
   }
-  if (-not (Test-PortListening 18789)) {
-    throw "OpenClaw gateway did not become ready. Check $gatewayLog and $gatewayErr"
+}
+
+function Wait-HttpReady([string]$Name, [string]$Url, [System.Diagnostics.Process]$Process, [string]$ErrorLog) {
+  for ($i = 0; $i -lt 90; $i++) {
+    if (Test-HttpReady $Url) { return }
+    if ($Process.HasExited) {
+      $tail = if (Test-Path -LiteralPath $ErrorLog) { [string]((Get-Content -LiteralPath $ErrorLog -Tail 20) -join "`n") } else { "" }
+      throw "$Name exited before readiness. $tail"
+    }
+    Start-Sleep -Milliseconds 500
+    $Process.Refresh()
   }
-} else {
-  Write-Host "[1/4] OpenClaw gateway already listening on 127.0.0.1:18789."
+  throw "$Name did not become ready at $Url. Check $ErrorLog"
 }
 
-if (-not (Test-PortListening 5173)) {
-  $frontendLog = Join-Path $logDir "demo-frontend.log"
-  $frontendErr = Join-Path $logDir "demo-frontend.err.log"
-  $frontendCommand = @"
-`$env:OPENCLAW_CLI='$openClawCli';
-`$env:OPENCLAW_HOME='$openClawHome';
-`$env:OPENCLAW_WORKSPACE='$openClawWorkspace';
-`$env:VITE_OPENCLAW_CLI_PATH='$openClawCli';
-`$env:HTTP_PROXY='';
-`$env:HTTPS_PROXY='';
-`$env:ALL_PROXY='';
-`$env:http_proxy='';
-`$env:https_proxy='';
-`$env:all_proxy='';
-`$env:NO_PROXY='*';
-`$env:no_proxy='*';
-Set-Location '$repoRoot';
-npm run frontend *> '$frontendLog' 2> '$frontendErr'
-"@
-  Write-Host "[2/4] Starting frontend on http://127.0.0.1:5173..."
-  Start-HiddenPowerShell $frontendCommand
-} else {
-  Write-Host "[2/4] Frontend already listening on http://127.0.0.1:5173."
+function Wait-PortReady([string]$Name, [int]$Port, [System.Diagnostics.Process]$Process, [string]$ErrorLog) {
+  for ($i = 0; $i -lt 360; $i++) {
+    if (Test-PortListening $Port) { return }
+    if ($Process.HasExited) {
+      $tail = if (Test-Path -LiteralPath $ErrorLog) { [string]((Get-Content -LiteralPath $ErrorLog -Tail 20) -join "`n") } else { "" }
+      throw "$Name exited before readiness. $tail"
+    }
+    Start-Sleep -Milliseconds 500
+    $Process.Refresh()
+  }
+  throw "$Name did not listen on port $Port. Check $ErrorLog"
 }
 
-Write-Host "[3/4] Opening frontend..."
-Start-Process "http://127.0.0.1:5173"
+function Get-OrCreateRuntimeToken([string]$Path) {
+  $token = if (Test-Path -LiteralPath $Path -PathType Leaf) {
+    [string](Get-Content -Raw -LiteralPath $Path).Trim()
+  } else {
+    $bytes = New-Object byte[] 32
+    $random = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $random.GetBytes($bytes) } finally { $random.Dispose() }
+    [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+  }
+  if ($token -notmatch '^[A-Za-z0-9_-]{43}$') {
+    throw "Portable runtime token file is invalid: $Path"
+  }
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($Path, "$token`r`n", $encoding)
+  }
+  return $token
+}
 
-Write-Host "[4/4] Starting P2 backend/sample demo in this terminal..."
-Write-Host "Press Ctrl+C to stop Agent Guard backend/sample. Background frontend/gateway can be stopped from Task Manager or by closing their processes."
+function Start-NodeService(
+  [string]$Name,
+  [string[]]$Arguments,
+  [string]$WorkingDirectory,
+  [string]$LogDirectory
+) {
+  $node = Get-Command node -CommandType Application -ErrorAction Stop
+  $stdout = Join-Path $LogDirectory "$Name.stdout.log"
+  $stderr = Join-Path $LogDirectory "$Name.stderr.log"
+  $process = Start-Process -FilePath $node.Source `
+    -ArgumentList $Arguments `
+    -WorkingDirectory $WorkingDirectory `
+    -RedirectStandardOutput $stdout `
+    -RedirectStandardError $stderr `
+    -WindowStyle Hidden `
+    -PassThru
+  return [pscustomobject]@{
+    name = $Name
+    process = $process
+    stdout = $stdout
+    stderr = $stderr
+  }
+}
+
+$repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
+if (-not $RuntimeRoot) { $RuntimeRoot = Join-Path $repoRoot "outputs" }
+$RuntimeRoot = Resolve-FullPath $RuntimeRoot $repoRoot
+$manifest = Get-Content -Raw -LiteralPath (Join-Path $repoRoot "configs\openclaw-distribution.json") | ConvertFrom-Json
+$forkRoot = Join-Path $RuntimeRoot ([string]$manifest.runtime.forkDirectory)
+$environmentFile = Join-Path $RuntimeRoot ([string]$manifest.runtime.environmentFile)
+$openClawCli = Join-Path $forkRoot "openclaw.mjs"
+$guardLauncher = Join-Path $PSScriptRoot "openclaw-guard-launcher.ts"
+$runtimeStateDir = Join-Path $RuntimeRoot "runtime"
+$pidFile = Join-Path $runtimeStateDir "agent-guard-services.json"
+$controlTokenFile = Join-Path $runtimeStateDir "agent-guard-control-token.txt"
+$gatewayTokenFile = Join-Path $runtimeStateDir "openclaw-gateway-token.txt"
+$logDir = Join-Path $RuntimeRoot "runs\portable-services"
+
+$plan = [ordered]@{
+  runtimeRoot = $RuntimeRoot
+  environmentFile = $environmentFile
+  openClawCli = $openClawCli
+  sandboxImage = [string]$manifest.sandboxImage
+  gatewayLifecycle = "per-run-detection-sandbox"
+  supervisionGatewayLifecycle = "managed-guard-launcher"
+  controlTokenFile = $controlTokenFile
+  gatewayTokenFile = $gatewayTokenFile
+  services = @(
+    [ordered]@{ name = "gateway"; port = $GatewayPort },
+    [ordered]@{ name = "sample"; port = $SamplePort },
+    [ordered]@{ name = "backend"; port = $ApiPort },
+    [ordered]@{ name = "frontend"; port = $FrontendPort }
+  )
+}
+if ($PrintPlan) {
+  $plan | ConvertTo-Json -Depth 6
+  exit 0
+}
+
+if (-not (Test-Path -LiteralPath $environmentFile -PathType Leaf)) {
+  throw "Portable runtime is not bootstrapped. Run .\scripts\bootstrap-agent-guard-openclaw.ps1 first."
+}
+. $environmentFile
+
+if (-not (Test-Path -LiteralPath $openClawCli -PathType Leaf)) {
+  throw "Pinned OpenClaw CLI is missing: $openClawCli"
+}
+foreach ($port in @($GatewayPort, $SamplePort, $ApiPort, $FrontendPort)) {
+  if (Test-PortListening $port) {
+    throw "Port $port is already in use. Stop the existing service before starting this runtime."
+  }
+}
+
+$env:API_PORT = [string]$ApiPort
+$env:API_HOST = "127.0.0.1"
+$env:SAMPLE_AGENT_PORT = [string]$SamplePort
+$env:SAMPLE_AGENT_HOST = "127.0.0.1"
+$env:VITE_AGENT_GUARD_API_BASE = "http://127.0.0.1:$ApiPort"
+$env:VITE_OPENCLAW_CLI_PATH = $openClawCli
+$env:AGENT_GUARD_DETECTION_IMAGE = [string]$manifest.sandboxImage
+$env:AGENT_GUARD_OPENCLAW_ISOLATED_PROFILE = "1"
+
+New-Item -ItemType Directory -Force -Path $runtimeStateDir, $logDir | Out-Null
+$env:AGENT_GUARD_CONTROL_TOKEN = Get-OrCreateRuntimeToken $controlTokenFile
+$env:OPENCLAW_GATEWAY_TOKEN = Get-OrCreateRuntimeToken $gatewayTokenFile
+$env:OPENCLAW_GATEWAY_URL = "http://127.0.0.1:$GatewayPort"
+$started = @()
+try {
+  Write-Host "[1/4] Starting supervised OpenClaw Gateway on 127.0.0.1:$GatewayPort..."
+  $gatewayDisplayCommand = "node --import tsx $guardLauncher -- gateway run"
+  Write-Host "      $gatewayDisplayCommand"
+  $gateway = Start-NodeService "gateway" @(
+    "--import", "tsx", $guardLauncher, "--",
+    "gateway", "run", "--bind", "loopback", "--port", [string]$GatewayPort,
+    "--token", $env:OPENCLAW_GATEWAY_TOKEN, "--allow-unconfigured"
+  ) $repoRoot $logDir
+  $started += $gateway
+  Wait-PortReady "OpenClaw Gateway" $GatewayPort $gateway.process $gateway.stderr
+
+  Write-Host "[2/4] Starting sample agent on 127.0.0.1:$SamplePort..."
+  $sample = Start-NodeService "sample" @("scripts/sample-agent-server.mjs") $repoRoot $logDir
+  $started += $sample
+  Wait-HttpReady "Sample agent" "http://127.0.0.1:$SamplePort/health" $sample.process $sample.stderr
+
+  Write-Host "[3/4] Starting Agent Guard API on 127.0.0.1:$ApiPort..."
+  $backend = Start-NodeService "backend" @("--import", "tsx", "backend/src/server.ts") $repoRoot $logDir
+  $started += $backend
+  Wait-HttpReady "Agent Guard API" "http://127.0.0.1:$ApiPort/api/v1/system/status" $backend.process $backend.stderr
+
+  Write-Host "[4/4] Starting frontend on 127.0.0.1:$FrontendPort..."
+  $viteCli = Join-Path $repoRoot "node_modules\vite\bin\vite.js"
+  $frontend = Start-NodeService "frontend" @(
+    $viteCli,
+    "--config", "frontend/vite.config.ts",
+    "--host", "127.0.0.1",
+    "--port", [string]$FrontendPort,
+    "--strictPort"
+  ) $repoRoot $logDir
+  $started += $frontend
+  Wait-HttpReady "Frontend" "http://127.0.0.1:$FrontendPort" $frontend.process $frontend.stderr
+
+  $records = @($started | ForEach-Object {
+    $_.process.Refresh()
+    [ordered]@{
+      name = $_.name
+      pid = $_.process.Id
+      startedAt = $_.process.StartTime.ToUniversalTime().ToString("o")
+      stdout = $_.stdout
+      stderr = $_.stderr
+    }
+  })
+  $records | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $pidFile -Encoding utf8
+} catch {
+  foreach ($item in $started) {
+    if (-not $item.process.HasExited) { Stop-Process -Id $item.process.Id -Force -ErrorAction SilentlyContinue }
+  }
+  throw
+}
+
 Write-Host ""
-
-Set-Location $repoRoot
-npm run demo:p2
+Write-Host "Agent Guard is ready." -ForegroundColor Green
+Write-Host "Frontend: http://127.0.0.1:$FrontendPort"
+Write-Host "API:      http://127.0.0.1:$ApiPort/api/v1/system/status"
+Write-Host "OpenClaw: http://127.0.0.1:$GatewayPort"
+Write-Host "Logs:     $logDir"
+Write-Host "Stop:     .\scripts\stop-agent-guard-openclaw.ps1 -RuntimeRoot '$RuntimeRoot'"
+if (-not $NoBrowser) { Start-Process "http://127.0.0.1:$FrontendPort" }

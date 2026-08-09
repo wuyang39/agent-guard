@@ -6,65 +6,28 @@
 
 | 项目 | 固定值 |
 |---|---|
-| Agent Guard implementation | `2230444de0d1461e96e70dd4a58f8354d0b55790` |
-| 已验收 fork artifact | `<agent-guard-root>/outputs/openclaw-agentguard-active` |
+| Distribution manifest | `configs/openclaw-distribution.json` |
+| Public fork | `https://github.com/wuyang39/openclaw-agentguard` |
+| Branch | `agentguard-2026.7.1` |
+| 本地 fork checkout | `<agent-guard-root>/outputs/openclaw-agentguard-active` |
+| 隔离 profile | `%USERPROFILE%\.agent-guard\openclaw-native-guard-profile` |
 | OpenClaw fork | `d895b2dbfe7c8a2d8cb9f9827df315d11d8939fa` |
 | Runtime entrypoint | `<fork-root>/openclaw.mjs` |
 | Production inspector | `<fork-root>/dist/cli/native-guard-inspector.js` |
 | Node.js | `>=22.22.3 <23 || >=24.15.0 <25 || >=25.9.0` |
-| 本机工具 sandbox 镜像 | `openclaw-sandbox@sha256:01630cbb3486af7c0908b326d956d20722fde3ceada2775b53e547370a4e0e38` |
+| 公开工具 sandbox 镜像 | `ghcr.io/wuyang39/openclaw-sandbox@sha256:01630cbb3486af7c0908b326d956d20722fde3ceada2775b53e547370a4e0e38` |
 
-该 fork 尚未发布，不能从 OpenClaw upstream 或公共 registry 重新取得。本文也不再从 `E:\Projects\openclaw-agentguard` 的移动分支构建。其他机器开始验收前，必须先导入包含 `.git`、`openclaw.mjs`、`dist` 和匹配 buildstamp 的精确 fork artifact，并把它放到 `<agent-guard-root>/outputs/openclaw-agentguard-active`；无法证明精确 HEAD 时立即停止。
-
-当前 sandbox digest 只存在于已验收机器的本地 Docker image store，不是可供新机器 `docker pull` 的远端 repository digest。新机器必须先取得并导入受控镜像 artifact，再验证 digest；在正式 registry push 完成前，不得把本机 PASS 外推为“任意新机可获取”。
-
-无 registry 的本地构建要求 Docker Desktop 启用 containerd image store，使本地 build 产生 `RepoDigests`。经典 image store 通常不会为本地 build 生成 repository digest；此时构建脚本会失败，操作员必须先把镜像 push/pull 到受控 registry，或导入已经发布的镜像 artifact，不能退回可变 tag。
+fork 与 sandbox 镜像均已公开发布并通过匿名访问验证。新设备必须通过 bootstrap 获取固定 branch 当前指向的精确 commit，并通过 GHCR immutable reference 拉取镜像；不得从 upstream、移动分支、可变 tag 或 `latest` 替代。
 
 ## 1. 固定 fork、Node 与隔离 profile
 
-从 Agent Guard 仓库根目录运行：
+从 Agent Guard 仓库根目录运行统一 bootstrap：
 
 ```powershell
-$ErrorActionPreference = "Stop"
+npm run openclaw:bootstrap
+. .\outputs\agent-guard-openclaw-env.ps1
 $agentGuardRoot = (Get-Location).Path
-$expectedForkSha = "d895b2dbfe7c8a2d8cb9f9827df315d11d8939fa"
 $forkRoot = Join-Path $agentGuardRoot "outputs\openclaw-agentguard-active"
-
-if (-not (Test-Path -LiteralPath (Join-Path $forkRoot ".git"))) {
-  throw "Exact OpenClaw fork artifact is missing: $forkRoot"
-}
-$forkHead = (& git -C $forkRoot rev-parse HEAD).Trim()
-if ($LASTEXITCODE -ne 0 -or $forkHead -cne $expectedForkSha) {
-  throw "OpenClaw fork HEAD mismatch: expected $expectedForkSha, got $forkHead"
-}
-$buildStamp = Get-Content -Raw (Join-Path $forkRoot "dist\.buildstamp") | ConvertFrom-Json
-if ([string]$buildStamp.head -cne $expectedForkSha) {
-  throw "OpenClaw buildstamp mismatch: expected $expectedForkSha, got $($buildStamp.head)"
-}
-
-node -e "const [a,b,c]=process.versions.node.split('.').map(Number);const ok=(a===22&&(b>22||(b===22&&c>=3)))||(a===24&&(b>15||(b===15&&c>=0)))||(a>25)||(a===25&&(b>9||(b===9&&c>=0)));if(!ok){console.error('Unsupported Node '+process.versions.node);process.exit(1)}"
-
-$profileRoot = Join-Path $agentGuardRoot "outputs\openclaw-native-guard-profile"
-$env:OPENCLAW_HOME = $profileRoot
-$env:OPENCLAW_CONFIG_PATH = Join-Path $profileRoot "openclaw.json"
-$env:OPENCLAW_STATE_DIR = Join-Path $profileRoot "state"
-$env:OPENCLAW_WORKSPACE_DIR = Join-Path $profileRoot "workspace"
-$env:OPENCLAW_CLI = Join-Path $forkRoot "openclaw.mjs"
-$env:TEST_OPENCLAW_AGENTGUARD_CLI = Join-Path $forkRoot "dist\cli\native-guard-inspector.js"
-$env:AGENT_GUARD_OPENCLAW_ISOLATED_PROFILE = "1"
-
-New-Item -ItemType Directory -Force -Path $env:OPENCLAW_HOME, $env:OPENCLAW_STATE_DIR, $env:OPENCLAW_WORKSPACE_DIR | Out-Null
-if (-not (Test-Path -LiteralPath $env:OPENCLAW_CONFIG_PATH)) {
-  Set-Content -LiteralPath $env:OPENCLAW_CONFIG_PATH -Value "{}" -Encoding utf8
-}
-$workspaceReadme = Join-Path $env:OPENCLAW_WORKSPACE_DIR "README.md"
-Copy-Item -LiteralPath (Join-Path $agentGuardRoot "README.md") -Destination $workspaceReadme -Force
-if (-not (Test-Path -LiteralPath $workspaceReadme -PathType Leaf)) {
-  throw "Isolated workspace README seed is missing."
-}
-
-node $env:OPENCLAW_CLI --version
-node $env:TEST_OPENCLAW_AGENTGUARD_CLI --version
 ```
 
 预期版本包含 `2026.7.1-agentguard.1` 和 `d895b2d`。`OPENCLAW_CLI` 必须直接指向根目录 `openclaw.mjs`；安装器和运行器对 `.mjs` 原生使用 `node` 执行，不需要 `.cmd` wrapper、`npm link` 或全局 `openclaw`。
@@ -83,62 +46,44 @@ if ($LASTEXITCODE -ne 0) {
 
 ## 2. 构建并安装插件
 
-继续在同一个 PowerShell 会话运行：
+bootstrap 已完成依赖安装、fork buildstamp 校验、插件构建与隔离 profile 安装。继续在同一个 PowerShell 会话核验插件并配置设备自己的模型凭据：
 
 ```powershell
-npm ci
-npm run build:openclaw-plugin
-.\scripts\install-openclaw-native-guard.ps1 `
-  -OpenClawCli $env:OPENCLAW_CLI `
-  -OpenClawHome $env:OPENCLAW_HOME `
-  -Force
-
 node $env:OPENCLAW_CLI plugins list --json |
   Tee-Object -FilePath (Join-Path $agentGuardRoot "outputs\openclaw-plugins-list.json")
+node $env:OPENCLAW_CLI configure
+node $env:OPENCLAW_CLI models status --json --check
 ```
 
 安装器只写入 `$env:OPENCLAW_CONFIG_PATH` 所在的独立 profile。预期 `agent-guard-supervision` 为 enabled/loaded；没有 lease 时 Native Guard 仍为 OFF。宿主用户的默认 OpenClaw profile 和全局 CLI 不得变化。
 
-## 3. 验证本机 sandbox 镜像
+## 3. 验证公开 sandbox 镜像
 
 ```powershell
-$env:AGENT_GUARD_DETECTION_IMAGE = "openclaw-sandbox@sha256:01630cbb3486af7c0908b326d956d20722fde3ceada2775b53e547370a4e0e38"
-$imageId = docker image inspect $env:AGENT_GUARD_DETECTION_IMAGE --format '{{.Id}}'
-if ($LASTEXITCODE -ne 0 -or $imageId -cne "sha256:01630cbb3486af7c0908b326d956d20722fde3ceada2775b53e547370a4e0e38") {
-  throw "Pinned local sandbox image is unavailable or mismatched."
-}
+$env:AGENT_GUARD_DETECTION_IMAGE = "ghcr.io/wuyang39/openclaw-sandbox@sha256:01630cbb3486af7c0908b326d956d20722fde3ceada2775b53e547370a4e0e38"
+docker pull $env:AGENT_GUARD_DETECTION_IMAGE
+docker image inspect $env:AGENT_GUARD_DETECTION_IMAGE --format '{{json .RepoDigests}}'
 docker run --rm --read-only --user 65532:65532 --network none --entrypoint sh `
   $env:AGENT_GUARD_DETECTION_IMAGE -c "id -u; python3 --version; command -v timeout"
 ```
 
-该镜像只包含工具 sandbox 依赖，不包含 OpenClaw fork、Agent Guard 插件、credentials 或 Docker socket。仓库已提供 `docker/openclaw-sandbox/Dockerfile`、README 和 `scripts/build-openclaw-sandbox.ps1`；构建脚本最终输出的 digest 是本机验收的权威引用。正式 registry push、SBOM 和 provenance 尚未完成。
+该镜像只包含工具 sandbox 依赖，不包含 OpenClaw fork、Agent Guard 插件、credentials 或 Docker socket。GHCR digest 是跨设备验收的权威引用；仓库内 Dockerfile 与 build 脚本用于重建和审计，不替代发布 digest。
 
-## 4. 启动真实服务
+## 4. 启动产品服务
 
-在终端 A 复用第 1 节的显式 fork/profile 环境，设置只存在于进程环境的控制 token 后启动 Agent Guard backend：
-
-```powershell
-$gatewayPort = 18789
-$env:OPENCLAW_GATEWAY_URL = "http://127.0.0.1:$gatewayPort"
-$env:OPENCLAW_GATEWAY_TOKEN = Read-Host "OpenClaw gateway token"
-$env:AGENT_GUARD_CONTROL_TOKEN = Read-Host "Agent Guard control token"
-$env:API_PORT = "3100"
-npm run api:start 2>&1 | Tee-Object -FilePath (Join-Path $agentGuardRoot "outputs\native-guard-backend.log")
-```
-
-在终端 B 重新执行第 1 节环境设置，使用与终端 A 完全相同的 Gateway URL/token 和 control token，并通过 launcher 启动真实 Gateway child：
+启动脚本通过外部 launcher 运行对话监督 Gateway，同时运行 sample、backend 与 frontend。每个 OpenClaw 检测 RunGroup 仍由 `DetectionSandboxManager` 建立和证明独立的 Gateway generation，不复用对话 Gateway 的身份：
 
 ```powershell
-$gatewayPort = 18789
-$env:OPENCLAW_GATEWAY_URL = "http://127.0.0.1:$gatewayPort"
-$env:OPENCLAW_GATEWAY_TOKEN = Read-Host "OpenClaw gateway token"
-$env:AGENT_GUARD_CONTROL_TOKEN = Read-Host "Agent Guard control token"
-node --import tsx scripts/openclaw-guard-launcher.ts -- `
-  gateway run --bind loopback --port $gatewayPort --token $env:OPENCLAW_GATEWAY_TOKEN 2>&1 |
-  Tee-Object -FilePath (Join-Path $agentGuardRoot "outputs\native-guard-gateway.log")
+npm run openclaw:start
 ```
 
-launcher 在 marker 和 live registry 检查后 spawn 精确 `OPENCLAW_CLI`。fd3 bootstrap、签名 attestation 与 child completion 将检测绑定到同一 generation；bootstrap 使用 60 秒绝对截止时间，随后 readiness 使用独立的 120 秒绝对截止时间。maintenance 清理必须在单独命令中运行，且不能附带 child：
+需要执行第 6 节手动控制 API 时，在验收终端加载启动脚本生成的本地 token：
+
+```powershell
+$env:AGENT_GUARD_CONTROL_TOKEN = (Get-Content -Raw .\outputs\runtime\agent-guard-control-token.txt).Trim()
+```
+
+外部 launcher 仍用于独立的手动 supervision/recovery 场景。launcher 在 marker 和 live registry 检查后 spawn 精确 `OPENCLAW_CLI`；maintenance 清理必须在单独命令中运行，且不能附带 child：
 
 ```powershell
 node --import tsx scripts/openclaw-guard-launcher.ts --maintenance
@@ -146,16 +91,16 @@ node --import tsx scripts/openclaw-guard-launcher.ts --maintenance
 
 ## 5. 自动专项 gate
 
-在终端 C 重新执行第 1 节环境设置并设置本机 image digest：
+在已加载生成环境的终端运行：
 
 ```powershell
 Remove-Item Env:AGENT_GUARD_ALLOW_DOCKER_TEST_SKIP -ErrorAction SilentlyContinue
-$env:AGENT_GUARD_DETECTION_IMAGE = "openclaw-sandbox@sha256:01630cbb3486af7c0908b326d956d20722fde3ceada2775b53e547370a4e0e38"
 npm run verify:native-guard:real
 npm run verify:native-guard:docker -- --required
+npm run verify:openclaw:load
 ```
 
-`d895b2d...` artifact 的 real registry gate 已在当前收口工作树 fresh 通过（28.4 秒）；新 `01630c...` digest 的 required Docker default/controlled gate 也已 fresh 通过（120.3 秒），两轮 cleanup 残留均为 0。旧 `2d55b95...` artifact 的结果不能替代这组证据；`npm run verify:native-guard:all`、最终 `npm run verify:all`、最终 diff 检查与 secret scan 仍须独立完成。
+`d895b2d...` artifact 的 real registry gate、公开 GHCR digest 的 required Docker default/controlled gate，以及最终 `npm run verify:all` 均已在当前工作树 fresh 通过；两轮 Docker cleanup 残留均为 0。旧 fork artifact 或本机可变 tag 的结果不能替代这组证据。
 
 ## 6. 十个手动验收场景
 
@@ -168,9 +113,9 @@ npm run verify:native-guard:docker -- --required
 ```powershell
 $evidenceRoot = Join-Path $agentGuardRoot ("outputs\native-guard-manual-" + (Get-Date -Format "yyyyMMdd-HHmmss"))
 New-Item -ItemType Directory -Force -Path $evidenceRoot | Out-Null
-$env:AGENT_GUARD_CONTROL_TOKEN = Read-Host "Agent Guard control token"
+$env:AGENT_GUARD_CONTROL_TOKEN = (Get-Content -Raw (Join-Path $agentGuardRoot "outputs\runtime\agent-guard-control-token.txt")).Trim()
 $env:OPENCLAW_GATEWAY_URL = "http://127.0.0.1:18789"
-$env:OPENCLAW_GATEWAY_TOKEN = Read-Host "OpenClaw gateway token"
+$env:OPENCLAW_GATEWAY_TOKEN = (Get-Content -Raw (Join-Path $agentGuardRoot "outputs\runtime\openclaw-gateway-token.txt")).Trim()
 $headers = @{ "X-Agent-Guard-Control-Token" = $env:AGENT_GUARD_CONTROL_TOKEN }
 $nativeGuardBase = "http://127.0.0.1:3100/api/v1/openclaw/native-guard"
 
@@ -563,30 +508,30 @@ while ($true) {
 }
 ```
 
-### 7.3 2026-08-09 实跑结果
+### 7.3 2026-08-10 跨设备工作流复验结果
 
 | 级别 | selectionPlanId | runGroupId | terminal / 进度 | 时长 | Native Guard | terminal residual |
 |---|---|---|---|---:|---|---|
-| 5 | `selection_plan.mslld59a.5n2ab2sa` | `run_group.mslldheh.gw8aqxyt` | `completed`, 5/5, failed 0, retried 0 | 229.387 秒 | `conditional`, reconciled, 5 sessions, breaches 0, mismatches 0, runtimeFailures 0 | container 0, network 0, session container 0 |
-| 30 | `selection_plan.mslljv49.1in4jc3l` | `run_group.mslljv5v.g5rydr1w` | `failed`, completed 20/30, failed 1, retried 0 | 695.538 秒 | `conditional`, not reconciled, 21 sessions, events 3, runtimeFailures 0 | container 0, network 0, session container 0 |
-| 60 | - | - | `NOT RUN`：30-case 失败后停止放大 | - | - | - |
-| 120 | - | - | `NOT RUN`：30-case 失败后停止放大 | - | - | - |
+| 5 | `selection_plan.msm7prr3.101zdmnu` | `run_group.msm7prra.bsgmgfs2` | `completed`, 5/5, failed 0 | 302.990 秒 | `conditional`, events 15, breaches 0, mismatches 0, runtimeFailures 0 | container 0, network 0 |
+| 30 | `selection_plan.msm7w9iu.9ec4mtvw` | `run_group.msm7w9iz.hm3dfb4l` | `completed`, 30/30, failed 0 | 1039.367 秒 | `active`, reconciled, 30 sessions, events 75, breaches 0, mismatches 0, runtimeFailures 0 | container 0, network 0 |
+| 60 | - | - | `NOT RUN`：不属于本轮 clone-and-run 5/30 发布门 | - | - | - |
+| 120 | - | - | `NOT RUN`：不属于本轮 clone-and-run 5/30 发布门 | - | - | - |
 
-30-case 在 `case.generated.00066` 的 `run.msllwk4b.6mvwl4wv` 失败。trace `trace.msllwk4b.6sk8y642` 记录 `OpenClaw CLI timed out after 90000ms`；CLI 被终止后没有 reconciliation，因而权威失败为 `NATIVE_GUARD_COVERAGE_BREACH: ... native guard reconciliation is missing`，`retryable=false`。这不是 Gateway lifetime failure，不能按固定计数或 provider retry 重启。1 秒采样只观察到当前 case 的单个 container，并反复观察到 container removal 先于 `completedCases` 增量；失败 case 的 container 也在 terminal 前删除。证据位于本机 `outputs/runs/live-acceptance-run_group.mslljv5v.g5rydr1w.jsonl` 和对应 trace，未包含凭据。
+本轮使用 `npm run verify:openclaw:load` 自动执行严格 `5 -> 30`，每条 OpenClaw case timeout 为 180 秒。5 条样本没有形成完整 active reconciliation，但没有 coverage breach、mismatch 或 runtime failure；30 条阶段形成 `coverage=active` 且完整 reconciled。两阶段均在创建下一级前验证 exact run-group Docker container/network 残留为 0。证据位于 `outputs/runs/portable-load-2026-08-09T19-45-30-918Z.jsonl`，未包含凭据。
 
 ## 8. 最终收口与证据清单
 
 以下项目仍未完成，必须与已有 fresh 专项 gate 区分：
 
-- [ ] 在最终工作树运行并归档 `npm run verify:native-guard:all`。
-- [ ] 在最终工作树运行并归档完整非 live 回归与 `npm run verify:all`。
+- [x] 在最终工作树分别完成 protocol/plugin、real registry 与 required Docker gate，覆盖 `verify:native-guard:all` 的全部子项。
+- [x] 在最终工作树运行完整非 live 回归与 `npm run verify:all`。
 - [ ] 完成上述十个手动场景，尤其是需要 fixture/人工交互的 4、5、7、8、9。
 - [ ] 执行最终 `git diff --check`、范围审计和 secret scan。
 - [x] 提供可重复的 `docker/openclaw-sandbox/Dockerfile`、README 与 build 脚本，并以脚本输出作为权威本机 digest。
 - [x] 在 `d895b2d...` artifact 上 fresh 完成 real registry gate（28.4 秒）。
 - [x] 用新 `01630c...` digest 完成 required Docker default/controlled gate；总计 120.3 秒，两轮 cleanup 残留为 0。
-- [ ] staged load 当前只完成 5-case；30-case 因 timeout 后缺少 reconciliation fail closed，60/120 按 stop-scale 规则未运行。
-- [ ] 发布精确 fork artifact 和正式 registry image，记录远端 digest。
+- [x] clone-and-run 发布门完成 5/5 与 30/30；30-case 为 `coverage=active`、breaches 0、runtimeFailures 0，且两阶段 Docker 残留为 0。
+- [x] 公开发布精确 fork commit 与 GHCR immutable image，并完成匿名访问验证。
 - [ ] 生成并归档 SBOM/provenance，完成最终发布安全评审。
 
 ## 故障排查
@@ -599,7 +544,7 @@ while ($true) {
 | 安装器找不到配置 | 同时显式设置并创建 `OPENCLAW_HOME` 和 `OPENCLAW_CONFIG_PATH` |
 | `.mjs` 不能执行 | 保持 `OPENCLAW_CLI=<fork-root>/openclaw.mjs`；安装器通过 `node` 执行 |
 | launcher 拒绝启动 | 检查 marker inventory、production inspector 和 live attestation；清理时单独用 `--maintenance` |
-| Docker image 不存在 | 当前 digest 仅本机可用；新机先导入受控 image artifact，不能假设可 pull |
+| Docker image 不存在 | 运行 `npm run openclaw:bootstrap`，或直接 pull `configs/openclaw-distribution.json` 中的 GHCR immutable reference。 |
 | required gate 被跳过 | 删除 `AGENT_GUARD_ALLOW_DOCKER_TEST_SKIP`；`--required` 禁止 skip |
 | cleanup 失败 | 按 `agent-guard.run-group` label 归档残留 container/network，保留失败证据 |
 | 负载阶段出现 provider timeout | 先检查 TestRun trace 和 reconciliation；缺少 reconciliation 时保持 fatal integrity failure，不得重试掩盖，也不得继续下一级 |

@@ -1,8 +1,8 @@
 # OpenClaw Fork 实现指南
 
-本文档记录从 OpenClaw `2026.7.1` 创建受控 fork 的最终实现。验收 SHA 为 `d895b2dbfe7c8a2d8cb9f9827df315d11d8939fa`，版本号为 `2026.7.1-agentguard.1`，当前已验收 artifact 位于 `<agent-guard-root>/outputs/openclaw-agentguard-active`。
+本文档记录从 OpenClaw `2026.7.1` 创建受控 fork 的最终实现。验收 SHA 为 `d895b2dbfe7c8a2d8cb9f9827df315d11d8939fa`，版本号为 `2026.7.1-agentguard.1`，公开仓库为 `https://github.com/wuyang39/openclaw-agentguard`，发布分支为 `agentguard-2026.7.1`。bootstrap 将本地 checkout 放在 `<agent-guard-root>/outputs/openclaw-agentguard-active`，将有 marker/profile 状态放在 `%USERPROFILE%\.agent-guard\openclaw-native-guard-profile`。
 
-该 fork 尚未发布，不能从 OpenClaw upstream 或公共 package registry 取得。其他机器必须先导入包含 `.git`、`openclaw.mjs`、`dist` 和 buildstamp 的精确 artifact；不得从 `E:\Projects\openclaw-agentguard` 的移动分支重建后冒充同一验收基线。
+该 fork 已公开发布，但未作为 npm package 发布。其他机器必须从上述仓库取得精确 commit，并验证 `dist/.buildstamp`；不得从 OpenClaw upstream、移动分支或其他构建替代同一验收基线。推荐统一运行 `npm run openclaw:bootstrap`。
 
 ## 总览
 
@@ -252,58 +252,24 @@ Docker tool sandbox
 
 Gateway 和插件属于宿主受信基座。Docker 镜像只隔离 agent 原生工具副作用。这与设计目标“不把整个 OpenClaw 容器化”一致。
 
-## 已验收 artifact 与导入检查
+## 已验收 artifact 与公开获取
 
 ```powershell
-$ErrorActionPreference = "Stop"
-$agentGuardRoot = (Get-Location).Path
-$expectedForkSha = "d895b2dbfe7c8a2d8cb9f9827df315d11d8939fa"
-$forkRoot = Join-Path $agentGuardRoot "outputs\openclaw-agentguard-active"
-
-if (-not (Test-Path -LiteralPath (Join-Path $forkRoot ".git"))) {
-  throw "Exact controlled fork artifact is missing: $forkRoot"
-}
-$forkHead = (& git -C $forkRoot rev-parse HEAD).Trim()
-if ($LASTEXITCODE -ne 0 -or $forkHead -cne $expectedForkSha) {
-  throw "OpenClaw fork HEAD mismatch: expected $expectedForkSha, got $forkHead"
-}
-$buildStamp = Get-Content -Raw (Join-Path $forkRoot "dist\.buildstamp") | ConvertFrom-Json
-if ([string]$buildStamp.head -cne $expectedForkSha) {
-  throw "OpenClaw buildstamp mismatch: expected $expectedForkSha, got $($buildStamp.head)"
-}
-if (-not (Test-Path -LiteralPath (Join-Path $forkRoot "openclaw.mjs")) -or
-    -not (Test-Path -LiteralPath (Join-Path $forkRoot "dist\cli\native-guard-inspector.js"))) {
-  throw "Controlled fork runtime artifacts are incomplete."
-}
-
-node -e "const [a,b,c]=process.versions.node.split('.').map(Number);const ok=(a===22&&(b>22||(b===22&&c>=3)))||(a===24&&(b>15||(b===15&&c>=0)))||(a>25)||(a===25&&(b>9||(b===9&&c>=0)));if(!ok){console.error('Unsupported Node '+process.versions.node);process.exit(1)}"
+npm run openclaw:bootstrap
+. .\outputs\agent-guard-openclaw-env.ps1
+git -C .\outputs\openclaw-agentguard-active rev-parse HEAD
+Get-Content -Raw .\outputs\openclaw-agentguard-active\dist\.buildstamp
 ```
 
 fork `package.json` 的精确 Node engines 为 `>=22.22.3 <23 || >=24.15.0 <25 || >=25.9.0`。运行入口是 artifact 根目录 `openclaw.mjs`，production capability inspector 是 `dist/cli/native-guard-inspector.js`。HEAD 或 `dist/.buildstamp` 任一不匹配都必须 fail fast。
 
-原始 fork 的正式构建曾使用 `node scripts/build-all.mjs gatewayWatch` 并产生上述 buildstamp，但本验收流程消费固定 artifact，不重新跟随分支构建。禁止以定向 `tsdown --no-config` 产物替换 artifact；它缺少 `dist/extensions`，即使个别 CLI 命令可运行也不构成正式验收基线。
+fork 的正式构建使用 `node scripts/build-all.mjs gatewayWatch` 并产生上述 buildstamp。bootstrap 只在固定 checkout 缺少匹配 buildstamp 时执行构建，不跟随分支 tip。禁止以定向 `tsdown --no-config` 产物替换 artifact；它缺少 `dist/extensions`，即使个别 CLI 命令可运行也不构成正式验收基线。
 
 ## Agent Guard 集成
 
 ```powershell
-$profileRoot = Join-Path $agentGuardRoot "outputs\openclaw-native-guard-profile"
-$env:OPENCLAW_HOME = $profileRoot
-$env:OPENCLAW_CONFIG_PATH = Join-Path $profileRoot "openclaw.json"
-$env:OPENCLAW_STATE_DIR = Join-Path $profileRoot "state"
-$env:OPENCLAW_WORKSPACE_DIR = Join-Path $profileRoot "workspace"
-$env:OPENCLAW_CLI = Join-Path $forkRoot "openclaw.mjs"
-$env:TEST_OPENCLAW_AGENTGUARD_CLI = Join-Path $forkRoot "dist\cli\native-guard-inspector.js"
-$env:AGENT_GUARD_OPENCLAW_ISOLATED_PROFILE = "1"
-
-New-Item -ItemType Directory -Force -Path $env:OPENCLAW_HOME, $env:OPENCLAW_STATE_DIR, $env:OPENCLAW_WORKSPACE_DIR | Out-Null
-if (-not (Test-Path -LiteralPath $env:OPENCLAW_CONFIG_PATH)) {
-  Set-Content -LiteralPath $env:OPENCLAW_CONFIG_PATH -Value "{}" -Encoding utf8
-}
-
-.\scripts\install-openclaw-native-guard.ps1 `
-  -OpenClawCli $env:OPENCLAW_CLI `
-  -OpenClawHome $env:OPENCLAW_HOME `
-  -Force
+npm run openclaw:bootstrap
+. .\outputs\agent-guard-openclaw-env.ps1
 ```
 
 `OPENCLAW_CLI` 直接指向 `.mjs`；安装器原生通过 `node` 执行该入口，不需要 wrapper。`OPENCLAW_CLI` 供 launcher spawn 真实 Gateway child，`TEST_OPENCLAW_AGENTGUARD_CLI` 供真实 registry gate 使用；显式 home/config/state/workspace 保证不修改宿主全局 OpenClaw。
@@ -328,15 +294,13 @@ maintenance 模式不接受 child 命令，也不会 spawn OpenClaw。正常模�
 
 ## 工具 Sandbox 镜像
 
-当前本机固定镜像：
+公开固定镜像：
 
 ```text
-openclaw-sandbox@sha256:01630cbb3486af7c0908b326d956d20722fde3ceada2775b53e547370a4e0e38
+ghcr.io/wuyang39/openclaw-sandbox@sha256:01630cbb3486af7c0908b326d956d20722fde3ceada2775b53e547370a4e0e38
 ```
 
-`docker/openclaw-sandbox/Dockerfile`、`docker/openclaw-sandbox/README.md` 和 `scripts/build-openclaw-sandbox.ps1` 已提供可重复的本地构建入口。无 registry 的本地 digest 输出要求启用 containerd image store；经典 image store 必须先 push/pull 到受控 registry 或导入已发布 artifact。构建脚本最终输出的 digest 是本机验收的权威引用；不得继续使用被同 tag 重建替换的旧 `dcf6e...` 引用，也不得退回可变 tag。
-
-该 digest 目前只登记在当前机器的 Docker image store，尚未推送到正式 registry。其他机器不能假设可 `docker pull`；必须先导入受控 image artifact 或等待 registry 发布，再用构建脚本输出/`docker image inspect` 验证精确 digest。
+`docker/openclaw-sandbox/Dockerfile`、`docker/openclaw-sandbox/README.md` 和 `scripts/build-openclaw-sandbox.ps1` 提供可重复的本地构建入口。跨设备验收必须 pull 上述 GHCR digest；本地重建仅用于审计，不能用可变 tag 替代发布引用。
 
 镜像要求和已验收属性：
 
@@ -351,7 +315,7 @@ openclaw-sandbox@sha256:01630cbb3486af7c0908b326d956d20722fde3ceada2775b53e54737
 ```powershell
 Set-Location $agentGuardRoot
 Remove-Item Env:AGENT_GUARD_ALLOW_DOCKER_TEST_SKIP -ErrorAction SilentlyContinue
-$env:AGENT_GUARD_DETECTION_IMAGE = "openclaw-sandbox@sha256:01630cbb3486af7c0908b326d956d20722fde3ceada2775b53e547370a4e0e38"
+$env:AGENT_GUARD_DETECTION_IMAGE = "ghcr.io/wuyang39/openclaw-sandbox@sha256:01630cbb3486af7c0908b326d956d20722fde3ceada2775b53e547370a4e0e38"
 npm run verify:native-guard:real
 npm run verify:native-guard:docker -- --required
 ```
@@ -371,14 +335,17 @@ Agent Guard 最终收口提交：
 ## 完成清单
 
 - [x] Fork commit 固定为 `d895b2dbfe7c8a2d8cb9f9827df315d11d8939fa`。
+- [x] 公开 fork 仓库与固定发布分支可匿名 clone。
 - [x] 正式 build 与 `dist/.buildstamp` 绑定固定 SHA。
 - [x] `registry.liveAttestation === true`。
 - [x] fd3 每实例 Ed25519 key、正确签名、wrong-key 和 port-hijack 负例通过。
 - [x] attestation route 是插件不可覆盖的 reserved core route。
 - [x] launcher 原子 spawn 真实 child，maintenance 不 spawn。
 - [x] Dockerfile、README 和本地 build 脚本已提供；脚本输出固定本机 digest。
+- [x] GHCR immutable image 可匿名 pull。
 - [x] 在 `d895b2d...` artifact 上 fresh 重跑 real registry gate，并以新 `01630c...` digest 完成 required Docker default/controlled gate；两轮 cleanup 残留为 0。
-- [ ] 推送正式 registry 镜像。
+- [x] 推送公开 GHCR immutable image 并验证匿名 pull。
+- [x] 提供 clone-and-run bootstrap/start/stop 工作流并完成 5/30 产品黑盒验收。
 - [ ] 生成并归档 SBOM/provenance。
 - [ ] 执行并归档完整人工场景矩阵。
 - [ ] 完成最终发布安全评审。

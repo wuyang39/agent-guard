@@ -459,7 +459,7 @@ Evidence 面使用双因子：独立 evidence bearer 加每 epoch Ed25519 proof-
 
 插件的 lifecycle marker 保存有界 FIFO 和非秘密 exact proof，联网成功并完成本地事务后才弹出队首。marker 新写入携带 top-level `leaseEpoch`；legacy 无 epoch marker 不能推断 epoch，root end 继续 RECOVERY。128 项或 64 KiB 溢出会持久 fail closed 到 revoke；root end 写 `root_ended` tombstone，阻断 root/children 且不可续租，同时允许 lease 到期前排空晚到 evidence。event spool 默认从 profile marker 目录派生，并在 activation 前通过 exclusive-create、mode `0600`、PID/token owner record 获取单进程所有权；逐级拒绝 symlink ancestor，释放失败只重试私有 owner quarantine，完整坏 data 原子 quarantine 后重建空 spool，OFF 不创建 spool 或 owner。runtime stop 在保留内部 deadline 的同时传播 spool release failure，并允许后续 stop/restart 重试。outcome projection 在 canonicalization 前按 bounded normalized/scrubbed keys、JSON punctuation 和 values 统一计入 256 KiB 预算，再计算稳定 digest。
 
-官方对照基线 OpenClaw `2026.7.2` / `3edbe19fbd84ba58fdbf8e83042da9efd1d06f81` 的 registrar 返回 `void`，不能创建新的 guarded activation，只能通过 revoke 清理 recovery marker。受控 fork `agentguard/2026.7.1` 固定在 `d895b2dbfe7c8a2d8cb9f9827df315d11d8939fa`，提供受信 live attestation、fd3 bootstrap 和 Gateway core 签名证明；其正式构建使用 `node scripts/build-all.mjs gatewayWatch`，并以 `dist/.buildstamp` 绑定该提交。`session_end(reason="compaction")`、Gateway shutdown 和 restart 均保留 marker，避免生命周期切换把保护意图错误降为 OFF。
+官方对照基线 OpenClaw `2026.7.2` / `3edbe19fbd84ba58fdbf8e83042da9efd1d06f81` 的 registrar 返回 `void`，不能创建新的 guarded activation，只能通过 revoke 清理 recovery marker。公开受控 fork `https://github.com/wuyang39/openclaw-agentguard` 的 `agentguard-2026.7.1` 分支固定在 `d895b2dbfe7c8a2d8cb9f9827df315d11d8939fa`，提供受信 live attestation、fd3 bootstrap 和 Gateway core 签名证明；其正式构建使用 `node scripts/build-all.mjs gatewayWatch`，并以 `dist/.buildstamp` 绑定该提交。`session_end(reason="compaction")`、Gateway shutdown 和 restart 均保留 marker，避免生命周期切换把保护意图错误降为 OFF。
 
 进程外 launcher 是最终启动边界：若 guarded marker 存在，而 live registry query 不能同时证明 Agent Guard plugin、final `before_tool_call`、recovery service、可信的 post-approval lease recheck capability，以及 trusted JSON-only params provenance 或原子 approved-snapshot execution 参数契约，launcher 必须拒绝正常 Gateway 启动，并且只开放不调度工具的 maintenance cleanup。参数契约是审批后租约复查之外的附加门禁；固定 `3edbe19f` 宿主仍处于 unsupported/quarantined。该门禁已经实现并通过真实受控 fork 验收，插件 quarantine 仍只是纵深防御，不能替代外部门禁。
 
@@ -491,7 +491,7 @@ launcher 完成 marker 和 live registry 检查后原子 spawn `--` 后的 Gatew
 preflight → start → [run cases] → attest → revoke → cleanup
 ```
 
-**Preflight**：验证 Docker daemon 可用 → 解析纯工具 sandbox 镜像的不可变 digest → 创建宿主隔离 profile → 通过宿主 fork 的 production inspector 探测 OpenClaw 能力 → 可选创建受控 sink 网络。当前重建并验收的镜像为 `openclaw-sandbox@sha256:01630cbb3486af7c0908b326d956d20722fde3ceada2775b53e547370a4e0e38`；`scripts/build-openclaw-sandbox.ps1` 从固定 Python base 生成并输出本机权威 digest。镜像只包含 non-root、`python3`、`sh`、`timeout` 等工具运行依赖，不包含 OpenClaw 或 Agent Guard 插件。
+**Preflight**：验证 Docker daemon 可用 → 解析纯工具 sandbox 镜像的不可变 digest → 创建宿主隔离 profile → 通过宿主 fork 的 production inspector 探测 OpenClaw 能力 → 可选创建受控 sink 网络。跨设备发布镜像固定为 `ghcr.io/wuyang39/openclaw-sandbox@sha256:01630cbb3486af7c0908b326d956d20722fde3ceada2775b53e547370a4e0e38`；`scripts/build-openclaw-sandbox.ps1` 从固定 Python base 提供本地可重建入口。镜像只包含 non-root、`python3`、`sh`、`timeout` 等工具运行依赖，不包含 OpenClaw 或 Agent Guard 插件。
 
 **Start**：生成随机 Bearer token → 分配临时 loopback 端口 → 由 launcher 在宿主隔离 profile 原子启动 OpenClaw Gateway 与插件 → 在 fd3 bootstrap 完成后，于 120 秒 readiness 绝对截止时间内完成未认证 401/403、已认证 root 200、status nonce challenge 和 core 签名证明。
 

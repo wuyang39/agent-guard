@@ -1,210 +1,128 @@
-# OpenClaw 项目隔离安装与演示 Runbook
+# OpenClaw Portable Install And Runbook
 
-状态: 2026-06-16 已按当前本机路径重写
+This runbook is the supported Windows workflow for a fresh Agent Guard clone. It uses the public Agent Guard OpenClaw fork and the public immutable GHCR sandbox image. OpenClaw source, build output, profile state, credentials, logs, and generated evidence remain under ignored `outputs/` paths.
 
-这份文档面向本地演示操作。OpenClaw 本体不提交到 `agent-guard`，只作为项目旁边的私有 runtime。
+## Pinned Distribution
 
-## 1. 当前部署
+The machine-readable source of truth is `configs/openclaw-distribution.json`.
 
-当前本机路径:
+| Artifact | Pinned value |
+|---|---|
+| OpenClaw repository | `https://github.com/wuyang39/openclaw-agentguard.git` |
+| Branch | `agentguard-2026.7.1` |
+| Commit | `d895b2dbfe7c8a2d8cb9f9827df315d11d8939fa` |
+| Version | `2026.7.1-agentguard.1` |
+| Sandbox image | `ghcr.io/wuyang39/openclaw-sandbox@sha256:01630cbb3486af7c0908b326d956d20722fde3ceada2775b53e547370a4e0e38` |
+
+Do not replace the commit or digest with a branch tip, tag, or `latest`.
+
+## Prerequisites
+
+- Windows PowerShell 5.1 or PowerShell 7
+- Git
+- Docker Desktop with the Linux container daemon running
+- Node.js `>=22.22.3 <23`, `>=24.15.0 <25`, or `>=25.9.0`
+- A model-provider account and credential supported by OpenClaw
+
+The scripts use `corepack pnpm`; a global `pnpm` installation is not required.
+
+## Bootstrap
+
+From the Agent Guard repository root:
+
+```powershell
+npm run openclaw:bootstrap
+```
+
+The bootstrap performs these operations idempotently:
+
+1. Runs `npm ci` for Agent Guard.
+2. Clones the public OpenClaw fork into `outputs/openclaw-agentguard-active` and verifies the exact commit.
+3. Installs fork dependencies and builds `gatewayWatch` when the matching buildstamp is absent.
+4. Pulls and verifies the exact GHCR digest.
+5. Builds and installs `agent-guard-supervision` into the isolated profile.
+6. Creates the user-root profile `%USERPROFILE%\.agent-guard\openclaw-native-guard-profile` and writes the credential-free environment helper `outputs/agent-guard-openclaw-env.ps1`.
+
+Existing fork changes are never overwritten. A dirty or mismatched checkout fails with an explicit error. The profile deliberately lives below the OS user root because the Native Guard marker store rejects repository and drive-root locations.
+When rerunning bootstrap after the first setup, stop the four managed services first with `npm run openclaw:stop` so Windows can replace the local Node dependencies.
+
+## Configure A Model
+
+This is the only device-specific interactive step. Credentials are not part of Git, the fork, the Docker image, or the generated environment helper.
+
+```powershell
+. .\outputs\agent-guard-openclaw-env.ps1
+node $env:OPENCLAW_CLI configure
+node $env:OPENCLAW_CLI models status --json --check
+```
+
+Continue only after `models status --json --check` exits with code `0`.
+
+## Start And Stop
+
+Start the supervised OpenClaw Gateway, sample agent, backend, and frontend:
+
+```powershell
+npm run openclaw:start
+```
+
+URLs:
 
 ```txt
-E:\XinAnProject\openclaw-runtime
+Frontend:     http://127.0.0.1:5173
+API status:   http://127.0.0.1:3100/api/v1/system/status
+Sample agent: http://127.0.0.1:7001/health
+OpenClaw:     http://127.0.0.1:18789
 ```
 
-核心文件:
+The permanent Gateway is launched only through `openclaw-guard-launcher.ts` and supports normal OpenClaw conversations plus supervision. Every OpenClaw detection RunGroup still creates a separate isolated Gateway generation, attests it, uses it sequentially, and cleans it up. The conversation Gateway is never reused as a detection trust root.
 
-```txt
-E:\XinAnProject\openclaw-runtime\openclaw-local.cmd
-E:\XinAnProject\openclaw-runtime\home\.openclaw\openclaw.json
-E:\XinAnProject\openclaw-runtime\workspace
-```
-
-OpenClaw 版本:
-
-```txt
-OpenClaw 2026.6.6 (8c802aa)
-```
-
-模型配置:
-
-```txt
-Provider env: provider key from local env, for example DEEPSEEK_API_KEY
-Default model: deepseek/deepseek-v4-flash
-```
-
-隔离规则:
-
-- 不使用全局 `npm install -g`。
-- 不修改 Windows 全局 `PATH`。
-- 不把 OpenClaw 本体、workspace、token、模型 key 提交到 Git。
-- Agent Guard 运行时通过环境变量接入该 runtime。
-
-## 2. 一键启动 Agent Guard + OpenClaw Runtime
-
-在 `agent-guard` 目录运行:
+Stop all four persistent services and their child processes:
 
 ```powershell
-scripts\start-agent-guard-openclaw.cmd
+npm run openclaw:stop
 ```
 
-脚本会:
-
-1. 检查 `..\openclaw-runtime\openclaw-local.cmd`。
-2. 设置 `OPENCLAW_CLI`、`OPENCLAW_HOME`、`OPENCLAW_WORKSPACE`。
-3. 启动或复用 OpenClaw gateway: `127.0.0.1:18789`。
-4. 启动前端: `http://127.0.0.1:5173`。
-5. 运行 `npm run demo:p2` 启动 API 和 sample agent。
-
-常用地址:
-
-```txt
-Agent Guard 前端: http://127.0.0.1:5173
-Agent Guard API:  http://127.0.0.1:3100/api/v1/system/status
-OpenClaw 面板:    http://127.0.0.1:18789
-Realtime MCP:     http://127.0.0.1:3100/api/v1/openclaw/realtime/mcp
-```
-
-## 3. 当前验证状态
-
-已通过:
+Service logs and the PID registry are written below `outputs/runs/portable-services` and `outputs/runtime`.
+The local control token is generated once at `outputs/runtime/agent-guard-control-token.txt`. Load it only in a local terminal that needs to call manual Native Guard control APIs:
 
 ```powershell
-npm run verify:openclaw:realtime
+$env:AGENT_GUARD_CONTROL_TOKEN = (Get-Content -Raw .\outputs\runtime\agent-guard-control-token.txt).Trim()
 ```
 
-说明:
+## Local Acceptance
 
-- Agent Guard 的 realtime MCP endpoint 可用。
-- `agent_guard_read_file`、`agent_guard_write_file`、`agent_guard_execute_code`、`agent_guard_send_email`、`agent_guard_call_api`、`agent_guard_send_request` 可列出。
-- `deny`、`ask`、`redact` 三类监督记录可生成。
-
-普通 P2 API E2E 已通过:
+Run fast contract and integration checks first:
 
 ```powershell
-npm run verify:p2:api-e2e
+npm run test:openclaw:portable
+npm run verify:native-guard:real
+npm run verify:native-guard:docker -- --required
 ```
 
-说明:
-
-- mock/http_sample 路径通过。
-- OpenClaw CLI adapter 被识别为可用。
-- 补充 DeepSeek key 映射前，OpenClaw agent 检测因未配置模型 key 被 optional skip。
-
-required 模式在补充本机 provider key 映射后已通过:
+Then run the staged product black-box load test. It creates exactly one RunGroup for 5 cases, requires a clean terminal result, verifies Docker cleanup, and only then starts the 30-case RunGroup:
 
 ```powershell
-$env:VERIFY_OPENCLAW_REQUIRED="1"
-npm run verify:p2:api-e2e
+npm run verify:openclaw:load
 ```
 
-当前结果:
-
-```txt
-13 required passed, 0 optional skipped.
-```
-
-注意: required E2E 不要额外设置 `OPENCLAW_GATEWAY_URL`。OpenClaw `2026.6.6` 在检测到 gateway URL override 时会要求显式 gateway auth，可能报 `GatewayExplicitAuthRequiredError: gateway url override`。CLI 检测只需要 `OPENCLAW_CLI`、`OPENCLAW_HOME`、`OPENCLAW_WORKSPACE` 和模型认证。
-
-## 4. 配置模型认证
-
-真实 OpenClaw agent 检测必须有可用模型 provider。推荐使用 provider 原生环境变量，例如 `DEEPSEEK_API_KEY`。如果本机已有其他变量名，可以通过启动脚本参数把它进程内映射为 OpenClaw 识别的 provider key；`DeepSeek_API_2` 只是某个开发者本机示例名称。
-
-如果其他成员没有该用户环境变量，可以按自己的 provider 配置。示例:
+To run a single smaller stage while diagnosing provider configuration:
 
 ```powershell
-E:\XinAnProject\openclaw-runtime\openclaw-local.cmd models auth paste-api-key --provider openai
+npm run verify:openclaw:load -- --case-counts=5
 ```
 
-或:
+The verifier uses a 180-second per-case OpenClaw timeout, polls until terminal state, writes JSONL evidence to `outputs/runs/portable-load-*.jsonl`, and stops immediately on the first failed stage. It never masks a coverage breach by creating a replacement RunGroup.
 
-```powershell
-E:\XinAnProject\openclaw-runtime\openclaw-local.cmd models auth login --provider openai --set-default
-```
+## Troubleshooting
 
-配置后检查:
-
-```powershell
-E:\XinAnProject\openclaw-runtime\openclaw-local.cmd models status
-```
-
-然后重新执行:
-
-```powershell
-$env:OPENCLAW_CLI="E:\XinAnProject\openclaw-runtime\openclaw-local.cmd"
-$env:OPENCLAW_HOME="E:\XinAnProject\openclaw-runtime\home"
-$env:OPENCLAW_WORKSPACE="E:\XinAnProject\openclaw-runtime\workspace"
-$env:VERIFY_OPENCLAW_REQUIRED="1"
-npm run verify:p2:api-e2e
-```
-
-如果当前终端曾设置过 `OPENCLAW_GATEWAY_URL`，先清理:
-
-```powershell
-Remove-Item Env:OPENCLAW_GATEWAY_URL -ErrorAction SilentlyContinue
-```
-
-## 5. 演示顺序
-
-推荐顺序:
-
-1. 运行 `scripts\start-agent-guard-openclaw.cmd`。
-2. 打开 `http://127.0.0.1:5173` 查看系统状态。
-3. 确认 OpenClaw adapter 状态。
-4. 在前端跑 mock/http_sample E2E，验证完整页面链路。
-5. 跑 OpenClaw adapter required 验证，确认 `0 optional skipped`。
-6. 演示 realtime MCP 时，重点展示 `deny`、`ask`、`redact` 监督记录和 trace。
-
-## 6. 排查顺序
-
-1. 检查 OpenClaw CLI:
-
-```powershell
-E:\XinAnProject\openclaw-runtime\openclaw-local.cmd --version
-```
-
-2. 检查 OpenClaw gateway:
-
-```powershell
-Get-NetTCPConnection -LocalPort 18789 -State Listen
-```
-
-3. 检查 Agent Guard API:
-
-```txt
-http://127.0.0.1:3100/api/v1/system/status
-```
-
-4. 检查模型认证:
-
-```powershell
-E:\XinAnProject\openclaw-runtime\openclaw-local.cmd models status
-```
-
-5. 检查 realtime MCP:
-
-```powershell
-npm run verify:openclaw:realtime
-```
-
-6. 如果 gateway 可连接但 DeepSeek 请求超时，检查本机代理环境:
-
-```powershell
-Get-ChildItem Env:HTTP_PROXY,Env:HTTPS_PROXY,Env:ALL_PROXY,Env:NO_PROXY -ErrorAction SilentlyContinue
-```
-
-本项目的 `openclaw-local.cmd` 与 `scripts/start-agent-guard-openclaw.ps1` 会在项目进程内清理 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 及小写变体，并设置 `NO_PROXY=*`。这是项目级隔离处理，不会修改 Windows 用户环境变量。
-
-可用以下命令确认 DeepSeek 直连行为:
-
-```powershell
-curl.exe --noproxy "*" --connect-timeout 10 --max-time 30 https://api.deepseek.com/models
-```
-
-未带 key 时应快速返回 `401`，而不是连接超时。随后验证 OpenClaw agent:
-
-```powershell
-E:\XinAnProject\openclaw-runtime\openclaw-local.cmd agent --session-key agent-guard-smoke --message "只回复 OK" --json --timeout 90
-```
-
-预期返回 `status=ok`，并在 `agentMeta` 中看到 `provider=deepseek`、`model=deepseek-v4-flash`。
+| Symptom | Action |
+|---|---|
+| Bootstrap rejects Node.js | Install a version in the supported engine ranges. |
+| Fork buildstamp mismatch | Remove only the generated `outputs/openclaw-agentguard-active` directory after preserving any intentional local changes, then rerun bootstrap. |
+| GHCR pull fails | Confirm Docker Desktop is running and anonymous access to `ghcr.io/wuyang39/openclaw-sandbox` is allowed. |
+| `models status --check` fails | Rerun `node $env:OPENCLAW_CLI configure` in the generated isolated environment. |
+| Start reports a port in use | Stop the earlier Agent Guard instance; do not silently reuse an unknown process. |
+| Detection fails before case 1 | Check the immutable image, fork buildstamp, plugin inventory, and model authentication. |
+| Detection times out | Inspect the RunGroup trace and provider response. Missing reconciliation remains a fatal coverage failure. |
+| Load verification reports residual Docker resources | Preserve the JSONL evidence and inspect resources carrying `agent-guard.run-group=<runGroupId>`. |

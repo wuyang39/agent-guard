@@ -4,6 +4,15 @@ This image contains only the dependencies needed by Agent Guard's isolated
 native-tool probes. OpenClaw, the Agent Guard plugin, credentials, and the
 Docker socket are not included.
 
+The accepted public image is:
+
+```text
+ghcr.io/wuyang39/openclaw-sandbox@sha256:01630cbb3486af7c0908b326d956d20722fde3ceada2775b53e547370a4e0e38
+```
+
+Pull this exact digest for the portable workflow. The canonical reference is
+also recorded in `configs/openclaw-distribution.json`.
+
 Build it from the repository root:
 
 ```powershell

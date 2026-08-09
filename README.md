@@ -56,6 +56,18 @@ npm run verify:all
 npm run verify:e2e
 ```
 
+For a fresh Windows machine running the full OpenClaw Native Guard path:
+
+```powershell
+npm run openclaw:bootstrap
+. .\outputs\agent-guard-openclaw-env.ps1
+node $env:OPENCLAW_CLI configure
+npm run openclaw:start
+npm run verify:openclaw:load
+```
+
+The bootstrap pins the public fork commit and immutable GHCR image declared in `configs/openclaw-distribution.json`. Model credentials stay in the ignored isolated profile and must be configured once per device. See `docs/C/openclaw-local-install-and-demo-runbook.md` for the complete workflow.
+
 `npm run demo` starts the isolated display demo from `frontend/demo`. It is for product-flow demonstration only and is not the formal frontend implementation baseline.
 
 `npm run demo:p2` starts the P2 demo services and the formal Vite frontend. The frontend URL is `http://127.0.0.1:5173` by default.

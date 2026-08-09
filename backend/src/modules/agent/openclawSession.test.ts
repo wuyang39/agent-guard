@@ -12,7 +12,7 @@ import {
 import { scrubSecrets } from "../../shared/scrubSecrets";
 
 test("isolated OpenClaw env resolves artifacts inside the supplied state directory", () => {
-  assert.deepEqual(resolveOpenClawDataDirs({ OPENCLAW_STATE_DIR: "C:/isolated/state" }), [path.resolve("C:/isolated/state")]);
+  assert.deepEqual(resolveOpenClawDataDirs({ OPENCLAW_STATE_DIR: "C:/isolated/state" }, false), [path.resolve("C:/isolated/state")]);
   assert.deepEqual(resolveOpenClawDataDirs(undefined, false), []);
 });
 

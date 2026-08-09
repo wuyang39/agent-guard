@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import test, { type TestContext as NodeTestContext } from "node:test";
 import type {
   DetectionSandboxEvidence,
   DetectionSandboxManager,
@@ -55,6 +55,61 @@ const OPENCLAW_REQUEST = {
   generateDefenseReport: false,
 } as const;
 
+async function formalOpenClawCaseLimitFixture(
+  t: NodeTestContext,
+  caseCount: number,
+) {
+  const agent: AgentUnderTest = {
+    schemaVersion: "mvp-1",
+    agentId: `agent.openclaw.case-limit-${caseCount}`,
+    name: "OpenClaw case limit",
+    adapterType: "openclaw" as AgentUnderTest["adapterType"],
+  };
+  const { contexts } = await loadTestContexts(path.resolve("configs"), agent, {
+    requireGeneratedALineCorpus: true,
+    includeDisabledGeneratedCases: true,
+  });
+  const selectedCaseIds = contexts.slice(0, caseCount).map((context) => context.caseId);
+  assert.equal(selectedCaseIds.length, caseCount);
+
+  const selectionPlanId = `selection_plan.openclaw-case-limit-${caseCount}-${Date.now()}`;
+  const selectionPlanPath = path.resolve(
+    "outputs",
+    "test-selection",
+    "plans",
+    `${selectionPlanId}.json`,
+  );
+  t.after(() => fs.rm(selectionPlanPath, { force: true }));
+  await saveSelectionPlan({
+    schemaVersion: "mvp-1",
+    selectionPlanId,
+    agentId: agent.agentId,
+    corpusManifestId: "corpus.p3_a.generated",
+    status: "ready",
+    mode: "deterministic",
+    targetProfile: "openclaw",
+    selectionProfile: {},
+    coverageRequirements: {},
+    requestedCaseCount: selectedCaseIds.length,
+    selectedCaseIds,
+    selectedCasesSummary: [],
+    coverageSnapshot: {},
+    selectionRunSummary: {},
+    evalStyleResult: {},
+    selectionReasons: [],
+    fallbackReasons: [],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  } as unknown as TestSelectionPlan);
+
+  const request = {
+    ...OPENCLAW_REQUEST,
+    agent: { name: agent.name, agentId: agent.agentId },
+    selectionPlanId,
+  };
+  return { request, runGroup: createInitialE2ERunGroup(request) };
+}
+
 test("OpenClaw detection accepts at most 120 cases", () => {
   assert.equal(MAX_OPENCLAW_DETECTION_CASES, 120);
   assert.doesNotThrow(() => validateOpenClawDetectionCaseLimit("openclaw", 120));
@@ -97,56 +152,40 @@ test("initial custom adapter construction skips OpenClaw and preserves http and 
   }), undefined);
 });
 
-test("formal OpenClaw runE2E rejects 121 cases before sandbox or sample setup", async (t) => {
-  const agent: AgentUnderTest = {
-    schemaVersion: "mvp-1",
-    agentId: "agent.openclaw.case-limit",
-    name: "OpenClaw case limit",
-    adapterType: "openclaw" as AgentUnderTest["adapterType"],
-  };
-  const { contexts } = await loadTestContexts(path.resolve("configs"), agent, {
-    requireGeneratedALineCorpus: true,
-    includeDisabledGeneratedCases: true,
-  });
-  const selectedCaseIds = contexts.slice(0, 121).map((context) => context.caseId);
-  assert.equal(selectedCaseIds.length, 121);
+test("formal OpenClaw runE2E accepts 120 cases through sandbox manager construction", async (t) => {
+  const previousImage = process.env.AGENT_GUARD_DETECTION_IMAGE;
+  process.env.AGENT_GUARD_DETECTION_IMAGE = `openclaw@sha256:${"a".repeat(64)}`;
+  t.after(() => restoreEnv("AGENT_GUARD_DETECTION_IMAGE", previousImage));
+  const { request, runGroup } = await formalOpenClawCaseLimitFixture(t, 120);
+  const sentinel = new Error("stop at accepted 120-case sandbox manager construction");
+  let managerConstructions = 0;
+  let adapterConstructions = 0;
 
-  const selectionPlanId = `selection_plan.openclaw-case-limit-${Date.now()}`;
-  const selectionPlanPath = path.resolve(
-    "outputs",
-    "test-selection",
-    "plans",
-    `${selectionPlanId}.json`,
+  await assert.rejects(
+    runE2E(request, runGroup, undefined, undefined, {
+      async resolveDetectionProfileSeed() {
+        return {} as DetectionProfileSeed;
+      },
+      createDetectionSandboxManager() {
+        managerConstructions += 1;
+        throw sentinel;
+      },
+      createOpenClawAdapter() {
+        adapterConstructions += 1;
+        throw new Error("attack sample adapter must not be constructed");
+      },
+    }),
+    sentinel,
   );
-  t.after(() => fs.rm(selectionPlanPath, { force: true }));
-  await saveSelectionPlan({
-    schemaVersion: "mvp-1",
-    selectionPlanId,
-    agentId: agent.agentId,
-    corpusManifestId: "corpus.p3_a.generated",
-    status: "ready",
-    mode: "deterministic",
-    targetProfile: "openclaw",
-    selectionProfile: {},
-    coverageRequirements: {},
-    requestedCaseCount: selectedCaseIds.length,
-    selectedCaseIds,
-    selectedCasesSummary: [],
-    coverageSnapshot: {},
-    selectionRunSummary: {},
-    evalStyleResult: {},
-    selectionReasons: [],
-    fallbackReasons: [],
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  } as unknown as TestSelectionPlan);
 
-  const request = {
-    ...OPENCLAW_REQUEST,
-    agent: { name: agent.name, agentId: agent.agentId },
-    selectionPlanId,
-  };
-  const runGroup = createInitialE2ERunGroup(request);
+  assert.equal(runGroup.caseCount, 120);
+  assert.equal(managerConstructions, 1);
+  assert.equal(adapterConstructions, 0);
+  assert.deepEqual(runGroup.testRunIds, []);
+});
+
+test("formal OpenClaw runE2E rejects 121 cases before sandbox or sample setup", async (t) => {
+  const { request, runGroup } = await formalOpenClawCaseLimitFixture(t, 121);
   let managerConstructions = 0;
   let adapterConstructions = 0;
 

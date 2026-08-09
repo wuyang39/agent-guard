@@ -27,6 +27,8 @@ import { ReportWorkspacePage } from "./pages/ReportWorkspace/ReportWorkspacePage
 import { LiveSupervisionPage } from "./pages/Supervision/LiveSupervisionPage";
 import {
   DEFAULT_SELECTION_CASE_COUNT,
+  MAX_SELECTION_CASE_COUNT,
+  MIN_SELECTION_CASE_COUNT,
   normalizeSelectionCaseCount,
 } from "./selectionDefaults";
 
@@ -48,7 +50,7 @@ const DEFAULT_AGENT_TIMEOUT_MS = 120000;
 const DEFAULT_OPENCLAW_TIMEOUT_MS = 90000;
 const PRODUCT_NAME = "AgentSleuth";
 
-const defaultOpenClawCliPath = import.meta.env.VITE_OPENCLAW_CLI_PATH ?? "";
+const defaultOpenClawCliPath = import.meta.env?.VITE_OPENCLAW_CLI_PATH ?? "";
 
 const defaultAgentConfig: AgentConnectionConfig = {
   adapterKind: "openclaw",
@@ -751,7 +753,7 @@ function eventActionLabel(action: NonNullable<LiveSupervisionEvent["action"]>): 
   return labels[action];
 }
 
-function buildLlmSelectionRequest(
+export function buildLlmSelectionRequest(
   config: AgentConnectionConfig,
   selectionCaseCount: number,
 ): TestSelectionRequest {
@@ -765,7 +767,13 @@ function buildLlmSelectionRequest(
     targetProfile: selectionTargetProfile(config, maxCaseCount),
     selectionMode: "llm_assisted",
     maxCaseCount,
-    minCaseCount: Math.max(3, Math.min(maxCaseCount, useLargeCorpus ? 120 : 48)),
+    minCaseCount: Math.max(
+      MIN_SELECTION_CASE_COUNT,
+      Math.min(
+        maxCaseCount,
+        useLargeCorpus ? MAX_SELECTION_CASE_COUNT : 48,
+      ),
+    ),
     requiredAttackFamilies,
     requiredTargetSurfaces,
     includeExternalTools: true,
@@ -773,7 +781,7 @@ function buildLlmSelectionRequest(
   };
 }
 
-function selectionTargetProfile(
+export function selectionTargetProfile(
   config: AgentConnectionConfig,
   maxCaseCount: number,
 ): TestSelectionRequest["targetProfile"] {
@@ -781,8 +789,7 @@ function selectionTargetProfile(
     return maxCaseCount <= 30 ? "smoke" : "regression";
   }
   if (maxCaseCount <= 80) return "openclaw";
-  if (maxCaseCount <= 160) return "regression";
-  return "full-corpus";
+  return "regression";
 }
 
 function requiredAttackFamiliesForBudget(

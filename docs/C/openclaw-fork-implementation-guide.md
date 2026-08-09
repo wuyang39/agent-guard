@@ -1,6 +1,6 @@
 # OpenClaw Fork 实现指南
 
-本文档记录从 OpenClaw `2026.7.1` 创建受控 fork 的最终实现。验收 SHA 为 `2d55b950f357a8186eff433ca666a690d484a8e0`，版本号为 `2026.7.1-agentguard.1`，当前已验收 artifact 位于 `<agent-guard-root>/outputs/openclaw-agentguard-active`。
+本文档记录从 OpenClaw `2026.7.1` 创建受控 fork 的最终实现。验收 SHA 为 `d895b2dbfe7c8a2d8cb9f9827df315d11d8939fa`，版本号为 `2026.7.1-agentguard.1`，当前已验收 artifact 位于 `<agent-guard-root>/outputs/openclaw-agentguard-active`。
 
 该 fork 尚未发布，不能从 OpenClaw upstream 或公共 package registry 取得。其他机器必须先导入包含 `.git`、`openclaw.mjs`、`dist` 和 buildstamp 的精确 artifact；不得从 `E:\Projects\openclaw-agentguard` 的移动分支重建后冒充同一验收基线。
 
@@ -257,7 +257,7 @@ Gateway 和插件属于宿主受信基座。Docker 镜像只隔离 agent 原生�
 ```powershell
 $ErrorActionPreference = "Stop"
 $agentGuardRoot = (Get-Location).Path
-$expectedForkSha = "2d55b950f357a8186eff433ca666a690d484a8e0"
+$expectedForkSha = "d895b2dbfe7c8a2d8cb9f9827df315d11d8939fa"
 $forkRoot = Join-Path $agentGuardRoot "outputs\openclaw-agentguard-active"
 
 if (-not (Test-Path -LiteralPath (Join-Path $forkRoot ".git"))) {
@@ -356,7 +356,7 @@ npm run verify:native-guard:real
 npm run verify:native-guard:docker -- --required
 ```
 
-fresh real registry gate 已通过。新 `01630c...` digest 的 required Docker default/controlled gate 也已 fresh PASS，总计 122.2 秒；两轮 cleanup 的 labeled container/network 残留均为 0。
+`d895b2d...` artifact 已完成正式 targeted build 和 buildstamp 绑定。real registry gate 与新 artifact 的 required Docker default/controlled gate 必须在当前收口工作树 fresh 重跑；旧 `2d55b95...` artifact 的 122.2 秒结果不能外推到新基线。
 
 Agent Guard 最终收口提交：
 
@@ -370,14 +370,14 @@ Agent Guard 最终收口提交：
 
 ## 完成清单
 
-- [x] Fork commit 固定为 `2d55b950f357a8186eff433ca666a690d484a8e0`。
+- [x] Fork commit 固定为 `d895b2dbfe7c8a2d8cb9f9827df315d11d8939fa`。
 - [x] 正式 build 与 `dist/.buildstamp` 绑定固定 SHA。
 - [x] `registry.liveAttestation === true`。
 - [x] fd3 每实例 Ed25519 key、正确签名、wrong-key 和 port-hijack 负例通过。
 - [x] attestation route 是插件不可覆盖的 reserved core route。
 - [x] launcher 原子 spawn 真实 child，maintenance 不 spawn。
 - [x] Dockerfile、README 和本地 build 脚本已提供；脚本输出固定本机 digest。
-- [x] 新 `01630c...` digest 的 required Docker default/controlled gate fresh PASS；总计 122.2 秒，两轮 cleanup 残留为 0。
+- [ ] 在 `d895b2d...` artifact 上 fresh 重跑新 `01630c...` digest 的 required Docker default/controlled gate，并证明两轮 cleanup 残留为 0。
 - [ ] 推送正式 registry 镜像。
 - [ ] 生成并归档 SBOM/provenance。
 - [ ] 执行并归档完整人工场景矩阵。

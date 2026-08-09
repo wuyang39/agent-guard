@@ -459,7 +459,7 @@ Evidence 面使用双因子：独立 evidence bearer 加每 epoch Ed25519 proof-
 
 插件的 lifecycle marker 保存有界 FIFO 和非秘密 exact proof，联网成功并完成本地事务后才弹出队首。marker 新写入携带 top-level `leaseEpoch`；legacy 无 epoch marker 不能推断 epoch，root end 继续 RECOVERY。128 项或 64 KiB 溢出会持久 fail closed 到 revoke；root end 写 `root_ended` tombstone，阻断 root/children 且不可续租，同时允许 lease 到期前排空晚到 evidence。event spool 默认从 profile marker 目录派生，并在 activation 前通过 exclusive-create、mode `0600`、PID/token owner record 获取单进程所有权；逐级拒绝 symlink ancestor，释放失败只重试私有 owner quarantine，完整坏 data 原子 quarantine 后重建空 spool，OFF 不创建 spool 或 owner。runtime stop 在保留内部 deadline 的同时传播 spool release failure，并允许后续 stop/restart 重试。outcome projection 在 canonicalization 前按 bounded normalized/scrubbed keys、JSON punctuation 和 values 统一计入 256 KiB 预算，再计算稳定 digest。
 
-官方对照基线 OpenClaw `2026.7.2` / `3edbe19fbd84ba58fdbf8e83042da9efd1d06f81` 的 registrar 返回 `void`，不能创建新的 guarded activation，只能通过 revoke 清理 recovery marker。受控 fork `agentguard/2026.7.1` 固定在 `2d55b950f357a8186eff433ca666a690d484a8e0`，提供受信 live attestation、fd3 bootstrap 和 Gateway core 签名证明；其正式构建使用 `node scripts/build-all.mjs gatewayWatch`，并以 `dist/.buildstamp` 绑定该提交。`session_end(reason="compaction")`、Gateway shutdown 和 restart 均保留 marker，避免生命周期切换把保护意图错误降为 OFF。
+官方对照基线 OpenClaw `2026.7.2` / `3edbe19fbd84ba58fdbf8e83042da9efd1d06f81` 的 registrar 返回 `void`，不能创建新的 guarded activation，只能通过 revoke 清理 recovery marker。受控 fork `agentguard/2026.7.1` 固定在 `d895b2dbfe7c8a2d8cb9f9827df315d11d8939fa`，提供受信 live attestation、fd3 bootstrap 和 Gateway core 签名证明；其正式构建使用 `node scripts/build-all.mjs gatewayWatch`，并以 `dist/.buildstamp` 绑定该提交。`session_end(reason="compaction")`、Gateway shutdown 和 restart 均保留 marker，避免生命周期切换把保护意图错误降为 OFF。
 
 进程外 launcher 是最终启动边界：若 guarded marker 存在，而 live registry query 不能同时证明 Agent Guard plugin、final `before_tool_call`、recovery service、可信的 post-approval lease recheck capability，以及 trusted JSON-only params provenance 或原子 approved-snapshot execution 参数契约，launcher 必须拒绝正常 Gateway 启动，并且只开放不调度工具的 maintenance cleanup。参数契约是审批后租约复查之外的附加门禁；固定 `3edbe19f` 宿主仍处于 unsupported/quarantined。该门禁已经实现并通过真实受控 fork 验收，插件 quarantine 仍只是纵深防御，不能替代外部门禁。
 
@@ -471,7 +471,7 @@ launcher 完成 marker 和 live registry 检查后原子 spawn `--` 后的 Gatew
 
 #### 7.1.1 兼容 OpenClaw Fork 需要提供的能力
 
-官方对照基线 `2026.7.2/3edbe19f` 不提供以下能力。受控 fork `2d55b950f357a8186eff433ca666a690d484a8e0` 已提供：
+官方对照基线 `2026.7.2/3edbe19f` 不提供以下能力。受控 fork `d895b2dbfe7c8a2d8cb9f9827df315d11d8939fa` 已提供：
 
 1. **Registrar live contribution 结果** — `plugins list --json` 的 `registry.liveAttestation` 字段为 `true`，证明插件 hook/service/route 已 live registered。
 2. **final `before_tool_call` 顺序证明** — 插件注册的 `before_tool_call` hook 具有最高优先级且不能被其他插件覆盖。

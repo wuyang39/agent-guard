@@ -156,7 +156,7 @@ OpenClaw 当前没有公开的“所有普通 Hook 之后再次运行 Trusted Po
 
 参数输入也依赖同一受信任基座：工具参数内容可以不受信任，但承载对象必须具有宿主提供的、不可由普通 Hook 或调用方伪造的 JSON-only provenance；Agent Guard 之前的其他普通插件必须是 trusted base，不能向参数对象附加 non-enumerable key、symbol、accessor 或其他非 JSON 状态。ECMAScript 没有有界的 own-key 流式枚举接口，因此本地 validator 不能独立证明任意普通对象不存在超量 hidden/symbol fanout。若未来部署不再满足该前提，`ACTIVE` 必须保持 unsupported，直到宿主提供可信 live contract，保证原子执行 Agent Guard 已批准的 clean params snapshot（审批路径也执行同一 snapshot），或提供等价的 JSON-only params contract。
 
-官方对照基线 `3edbe19fbd84ba58fdbf8e83042da9efd1d06f81` 的 Hook、Trusted Policy、service 和 route registrar 均返回 `void`，也不提供上述参数 provenance 或原子 approved-snapshot execution contract，因此只能返回 `coverage=unsupported`、`finalizerAssurance=unverified` 和 `TRUSTED_POLICY_UNATTESTED`，并保留 revoke 作为 marker 清理入口。受控 fork `agentguard/2026.7.1` 固定在 `2d55b950f357a8186eff433ca666a690d484a8e0`，已提供显式 live contribution、JSON-only provenance、post-approval lease recheck、fd3 bootstrap 和 Gateway core 签名证明。
+官方对照基线 `3edbe19fbd84ba58fdbf8e83042da9efd1d06f81` 的 Hook、Trusted Policy、service 和 route registrar 均返回 `void`，也不提供上述参数 provenance 或原子 approved-snapshot execution contract，因此只能返回 `coverage=unsupported`、`finalizerAssurance=unverified` 和 `TRUSTED_POLICY_UNATTESTED`，并保留 revoke 作为 marker 清理入口。受控 fork `agentguard/2026.7.1` 固定在 `d895b2dbfe7c8a2d8cb9f9827df315d11d8939fa`，已提供显式 live contribution、JSON-only provenance、post-approval lease recheck、fd3 bootstrap 和 Gateway core 签名证明。
 
 插件内 quarantine 不能替代进程外启动门禁。只要存在 guarded marker，而 live registry query 不能同时证明 Agent Guard 插件、final `before_tool_call`、recovery service、可信的 post-approval lease recheck capability，以及 JSON-only provenance 或原子 approved-snapshot execution 参数契约，受管 launcher 必须拒绝正常 Gateway 启动，只开放不调度工具的 maintenance cleanup。参数契约是 post-approval lease recheck 之外的附加门禁，二者都不能来自 config、环境变量或调用方自报。该 launcher 门禁已经实现并通过真实 child 验收；正常用法为 `node --import tsx scripts/openclaw-guard-launcher.ts -- gateway run ...`，maintenance 模式不 spawn child。
 
@@ -516,7 +516,7 @@ guarded 模式要求 OpenClaw 提供：
 - 插件 Gateway HTTP route 及 gateway auth
 - Docker sandbox `mode=all`、`scope=session` 和 `sandbox explain`
 
-官方能力研究对照固定在 OpenClaw `2026.7.2` / `3edbe19f`；最终真实验收固定在受控 fork `2d55b950f357a8186eff433ca666a690d484a8e0`，并使用 capability preflight，而不是只根据版本字符串推断。
+官方能力研究对照固定在 OpenClaw `2026.7.2` / `3edbe19f`；最终真实验收固定在受控 fork `d895b2dbfe7c8a2d8cb9f9827df315d11d8939fa`，并使用 capability preflight，而不是只根据版本字符串推断。
 
 capability preflight 必须校验 Agent Guard 插件状态，以及 registry 输出的顶层 `diagnostics` 和 `registry.diagnostics`。Agent Guard 自身的 error 状态，或涉及其 route、service、Trusted Policy、Hook 的 error diagnostic，均强制 `supportsNativeGuard=false` 和 `finalizerAssurance=unverified`；畸形或超限 diagnostic 输出按无能力处理。warning 和无关插件 error 不得误杀。普通 manifest/snapshot CLI 输出不是 live contribution attestation；真实 gate 必须使用受控 fork 的 production inspector，并验证 host-produced live registry contract。
 

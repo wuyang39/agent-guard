@@ -8,7 +8,7 @@
 |---|---|
 | Agent Guard implementation | `2230444de0d1461e96e70dd4a58f8354d0b55790` |
 | 已验收 fork artifact | `<agent-guard-root>/outputs/openclaw-agentguard-active` |
-| OpenClaw fork | `2d55b950f357a8186eff433ca666a690d484a8e0` |
+| OpenClaw fork | `d895b2dbfe7c8a2d8cb9f9827df315d11d8939fa` |
 | Runtime entrypoint | `<fork-root>/openclaw.mjs` |
 | Production inspector | `<fork-root>/dist/cli/native-guard-inspector.js` |
 | Node.js | `>=22.22.3 <23 || >=24.15.0 <25 || >=25.9.0` |
@@ -27,7 +27,7 @@
 ```powershell
 $ErrorActionPreference = "Stop"
 $agentGuardRoot = (Get-Location).Path
-$expectedForkSha = "2d55b950f357a8186eff433ca666a690d484a8e0"
+$expectedForkSha = "d895b2dbfe7c8a2d8cb9f9827df315d11d8939fa"
 $forkRoot = Join-Path $agentGuardRoot "outputs\openclaw-agentguard-active"
 
 if (-not (Test-Path -LiteralPath (Join-Path $forkRoot ".git"))) {
@@ -67,7 +67,7 @@ node $env:OPENCLAW_CLI --version
 node $env:TEST_OPENCLAW_AGENTGUARD_CLI --version
 ```
 
-预期版本包含 `2026.7.1-agentguard.1` 和 `2d55b95`。`OPENCLAW_CLI` 必须直接指向根目录 `openclaw.mjs`；安装器和运行器对 `.mjs` 原生使用 `node` 执行，不需要 `.cmd` wrapper、`npm link` 或全局 `openclaw`。
+预期版本包含 `2026.7.1-agentguard.1` 和 `d895b2d`。`OPENCLAW_CLI` 必须直接指向根目录 `openclaw.mjs`；安装器和运行器对 `.mjs` 原生使用 `node` 执行，不需要 `.cmd` wrapper、`npm link` 或全局 `openclaw`。
 
 在同一隔离 profile 中完成 OpenClaw 自身的 model/provider 配置，然后执行 auth fail-fast。使用交互式 credential/SecretRef/env 流程；禁止复制宿主 `auth-profiles.json`、任意秘密文件或未筛选的用户 profile，也不要把 credential 值写入验收证据：
 
@@ -155,7 +155,7 @@ npm run verify:native-guard:real
 npm run verify:native-guard:docker -- --required
 ```
 
-real registry gate 已有新鲜 PASS 证据。新 `01630c...` digest 的 required Docker gate 也已 fresh PASS：default 与 controlled 两个 case 总计 122.2 秒，两轮 cleanup 的 labeled container/network 残留均为 0。`npm run verify:native-guard:all`、最终 `npm run verify:all`、最终 diff 检查与 secret scan 仍须在当前收口工作树重新执行，不能用专项 PASS 代替。
+`d895b2d...` artifact 的 real registry gate 和新 `01630c...` digest required Docker gate 必须在当前收口工作树 fresh 重跑。旧 `2d55b95...` artifact 的 default/controlled PASS 不能替代本轮证据；`npm run verify:native-guard:all`、最终 `npm run verify:all`、最终 diff 检查与 secret scan 也仍须独立完成。
 
 ## 6. 十个手动验收场景
 
@@ -461,7 +461,7 @@ docker network ls --filter "label=agent-guard.run-group" --format '{{json .}}' |
 | 故障 | 检查 |
 |---|---|
 | fork artifact 缺失 | 先导入精确 artifact；不要从 upstream 或移动分支替代 |
-| fork SHA/buildstamp 不符 | 两者都必须精确等于 `2d55b950...a8e0`，否则 fail fast |
+| fork SHA/buildstamp 不符 | 两者都必须精确等于 `d895b2db...39fa`，否则 fail fast |
 | Node 不兼容 | 使用 fork `package.json` 的精确 engines 范围 |
 | 安装器找不到配置 | 同时显式设置并创建 `OPENCLAW_HOME` 和 `OPENCLAW_CONFIG_PATH` |
 | `.mjs` 不能执行 | 保持 `OPENCLAW_CLI=<fork-root>/openclaw.mjs`；安装器通过 `node` 执行 |

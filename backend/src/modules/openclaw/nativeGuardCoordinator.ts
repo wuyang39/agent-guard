@@ -661,7 +661,7 @@ export function createNativeGuardCoordinator(
       if (backendStatus.activeLeaseCount > 0 || pluginStatus.activeLeaseCount > 0) {
         return setLastStatus(mismatchStatus(capability, backendStatus.activeLeaseCount));
       }
-      if (pluginStatus.coverage === "ready") {
+      if (pluginIsIdle(pluginStatus)) {
         return setLastStatus({
           ...readyStatus(capability),
           pluginVersion: pluginStatus.pluginVersion,
@@ -956,9 +956,16 @@ function pluginConfirmsRevoke(
   leaseId: string,
 ): boolean {
   return (
-    status.coverage === "ready" &&
-    status.activeLeaseCount === 0 &&
+    pluginIsIdle(status) &&
     status.activeLease?.leaseId !== leaseId
+  );
+}
+
+function pluginIsIdle(status: NativeGuardStatus): boolean {
+  return (
+    (status.coverage === "off" || status.coverage === "ready") &&
+    status.activeLeaseCount === 0 &&
+    status.activeLease === undefined
   );
 }
 

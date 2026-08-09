@@ -81,6 +81,7 @@ runTest("Backend (coordinator, routes, runtime evidence, event store, trace proj
   "backend/src/modules/agent/openclawSession.test.ts",
   "backend/src/modules/openclaw/nativeGuardCoordinator.test.ts",
   "backend/src/modules/openclaw/nativeGuardLiveCapability.test.ts",
+  "backend/src/modules/openclaw/openclawHostCapabilityCache.test.ts",
   "backend/src/modules/openclaw/openclawControlClient.test.ts",
   "backend/src/modules/runner/testRunner.test.ts",
   "backend/src/services/e2eRunService.test.ts",

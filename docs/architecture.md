@@ -453,7 +453,9 @@ P0 不要求实时阻断、流式风险判定或数据库事务。完整系统�
 
 ### 7.1 OpenClaw Native Guard 启动边界
 
-OpenClaw Native Guard 使用后端 lease/coordinator 作为控制面、OpenClaw 插件作为执行前 PEP，并用不含秘密的 guarded marker 保留异常重启后的保护意图。CLI `plugins list --json` 只提供 manifest/snapshot preflight：Agent Guard plugin error 状态，或顶层及 `registry.diagnostics` 中涉及 Agent Guard plugin、route、service、Trusted Policy、final Hook 的 error，必须将能力降为 `unsupported/unverified`；畸形和超限 diagnostics fail closed，无关 warning 不影响能力。该快照不能证明 runtime contribution 已 live。
+OpenClaw Native Guard 使用后端 lease/coordinator 作为控制面、OpenClaw 插件作为执行前 PEP，并用不含秘密的 guarded marker 保留异常重启后的保护意图。检测沙箱使用 CLI `plugins list --enabled --json` 获取 manifest/snapshot preflight；宿主普通监督使用 `plugins list --json --live` 验证真实注册贡献。Agent Guard plugin error 状态，或顶层及 `registry.diagnostics` 中涉及 Agent Guard plugin、route、service、Trusted Policy、final Hook 的 error，必须将能力降为 `unsupported/unverified`；畸形和超限 diagnostics fail closed，无关 warning 不影响能力。静态快照不能证明 runtime contribution 已 live。
+
+宿主 capability probe 有独立的 60 秒冷启动预算和 512 KiB inventory 上限，HTTP 控制响应仍保持 64 KiB 上限。API 组合完成后在后台执行只读 `status()` 预热，不创建 lease、marker 或 spool，也不阻塞服务启动。进程内 cache 使用五分钟 TTL 和 singleflight；key 绑定 active agent、CLI、Gateway URL、backend URL、profile 隔离标志、`OPENCLAW_HOME`、`OPENCLAW_CONFIG_PATH`、`OPENCLAW_STATE_DIR` 以及 live/static registry 模式。每次返回 capability 克隆，身份变化、进程重启或任一 Gateway 控制请求失败都会失效对应 cache。检测 RunGroup 的 sandbox control client 和 run-scoped attested capability snapshot 不经过宿主 cache。当前宿主 cache 没有 Gateway attestation public key，因此只能绑定运行时身份和控制连接状态，不能声称完成加密的 Gateway instance 绑定；这是比赛版的明确边界。
 
 Evidence 面使用双因子：独立 evidence bearer 加每 epoch Ed25519 proof-of-possession。proof 通过 `X-Agent-Guard-Evidence-Proof` 绑定 method、exact path、lease/epoch、canonical body digest、key ID、proof ID 和 issued time；backend 只保存 evidence public key，插件内存保存 private key。验证先 reserve exact proof，coordinator/mutation/append/sign 失败 release 匹配 reservation，成功 decision-key signed ACK commit；event ACK 还绑定 accepted count 和有序 event-ID digest。completed child bind/end ACK 只允许当前 evidence bearer 加 exact proof/path/body 重放；唯一 bearer-less 例外是 root end 已完成后的 exact ACK 重放。cache 受每 lease 4,096 项和 lease lifetime 限制，不同请求保持 401 和零 mutation。Event retry 使用 fresh proof 与 event-ID 幂等，不复用 lifecycle cache。
 
@@ -473,13 +475,13 @@ launcher 完成 marker 和 live registry 检查后原子 spawn `--` 后的 Gatew
 
 官方对照基线 `2026.7.2/3edbe19f` 不提供以下能力。受控 fork `d895b2dbfe7c8a2d8cb9f9827df315d11d8939fa` 已提供：
 
-1. **Registrar live contribution 结果** — `plugins list --json` 的 `registry.liveAttestation` 字段为 `true`，证明插件 hook/service/route 已 live registered。
+1. **Registrar live contribution 结果** — `plugins list --json --live` 的 `registry.liveAttestation` 字段为 `true`，证明插件 hook/service/route 已 live registered。
 2. **final `before_tool_call` 顺序证明** — 插件注册的 `before_tool_call` hook 具有最高优先级且不能被其他插件覆盖。
 3. **Trusted Policy 证明** — `agent-guard-admission` 作为唯一的 Trusted Tool Policy 注册。
 4. **Recovery service 证明** — `agent-guard-runtime` service 已注册并可用于 session recovery。
 5. **Post-approval lease recheck** — 审批后、执行前再次验证 lease 仍然 active/未过期。
 6. **JSON-only params provenance** — 工具参数溯源为JSON-only，无二进制/流式/外部引用注入路径。或：原子 approved-snapshot execution — 执行参数必须等于签名批准的参数快照。
-7. **Gateway live registry query** — `openclaw plugins list --json` 稳定输出上述字段。
+7. **Gateway live registry query** — `openclaw plugins list --json --live` 稳定输出上述字段。
 
 上述能力均通过时，launcher 允许完整 guarded Gateway 启动；任何必要证明缺失时仍只允许 maintenance cleanup。
 

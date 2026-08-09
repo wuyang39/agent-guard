@@ -23,6 +23,8 @@ const RENEW_PATH = "/agent-guard/native-guard/v1/leases/renew";
 const REVOKE_PATH = "/agent-guard/native-guard/v1/leases/revoke";
 const DEFAULT_TIMEOUT_MS = 2_000;
 const MAX_RESPONSE_BYTES = 64 * 1024;
+const MAX_CAPABILITY_INVENTORY_BYTES = 512 * 1024;
+const MAX_DIAGNOSTIC_MESSAGE_BYTES = 16 * 1024;
 const RESPONSE_CANCEL_TIMEOUT_MS = 25;
 const AGENT_GUARD_PLUGIN_ID = "agent-guard-supervision";
 const TRUSTED_TOOL_POLICY_ID = "agent-guard-admission";
@@ -56,6 +58,7 @@ export type InspectOpenClawCapabilitiesInput = {
   cliPath?: string;
   env?: Record<string, string>;
   isolatedProfile: boolean;
+  liveRegistry?: boolean;
   inheritProcessEnv?: boolean;
   signal?: AbortSignal;
 };
@@ -209,14 +212,20 @@ export function createOpenClawControlClient(
         ["--version"],
         env,
         capabilityTimeoutMs,
+        MAX_RESPONSE_BYTES,
         input.signal,
       );
+      const liveRegistry = input.liveRegistry ?? !input.isolatedProfile;
+      const pluginArgs = liveRegistry
+        ? ["plugins", "list", "--json", "--live"]
+        : ["plugins", "list", "--enabled", "--json"];
       const pluginResult = await executeCli(
         commandRunner,
         cli,
-        ["plugins", "list", "--enabled", "--json"],
+        pluginArgs,
         env,
         capabilityTimeoutMs,
+        MAX_CAPABILITY_INVENTORY_BYTES,
         input.signal,
       );
       const openclawVersion = parseVersion(versionResult.stdout);
@@ -227,10 +236,10 @@ export function createOpenClawControlClient(
       const agentGuardHasBeforeHook = Boolean(
         agentGuard?.enabled && hasBeforeToolCallHook(agentGuard.raw),
       );
-      const staticAgentGuardReady = Boolean(
+      const agentGuardReady = Boolean(
         agentGuard?.enabled &&
         hasHealthyPluginStatus(agentGuard.raw) &&
-        hasTrustedToolPolicyContract(agentGuard.raw) &&
+        (liveRegistry || hasTrustedToolPolicyContract(agentGuard.raw)) &&
         !inventory.diagnostics.some(isAgentGuardErrorDiagnostic),
       );
       const conflicts = plugins
@@ -247,12 +256,12 @@ export function createOpenClawControlClient(
         liveCapability !== undefined && agentGuardHasBeforeHook;
       const supportsNativeGuard =
         isCompatibleNativeGuardVersion(openclawVersion) &&
-        staticAgentGuardReady &&
-        (input.isolatedProfile ? isolatedInventoryReady : hostInventoryReady);
+        agentGuardReady &&
+        (liveRegistry ? hostInventoryReady : isolatedInventoryReady);
 
       let finalizerAssurance: NativeGuardFinalizerAssurance = "unverified";
       if (supportsNativeGuard) {
-        if (input.isolatedProfile) {
+        if (!liveRegistry && input.isolatedProfile) {
           finalizerAssurance = "isolated_profile";
         } else if (conflicts.length === 0) {
           finalizerAssurance = "exclusive_before_hook";
@@ -571,7 +580,7 @@ type ParsedPluginInventory = {
 };
 
 function parsePluginList(stdout: string): ParsedPluginInventory {
-  assertOutputLimit(stdout);
+  assertOutputLimit(stdout, MAX_CAPABILITY_INVENTORY_BYTES);
   let value: unknown;
   try {
     value = JSON.parse(stdout) as unknown;
@@ -621,6 +630,18 @@ function parsePluginList(stdout: string): ParsedPluginInventory {
 }
 
 function parsePluginDiagnostics(value: unknown): ParsedPluginDiagnostic[] {
+  if (
+    Array.isArray(value) &&
+    value.some((diagnostic) =>
+      isRecord(diagnostic) &&
+      typeof diagnostic.message === "string" &&
+      Buffer.byteLength(diagnostic.message) > MAX_DIAGNOSTIC_MESSAGE_BYTES)
+  ) {
+    throw controlError(
+      "OPENCLAW_CLI_OUTPUT_TOO_LARGE",
+      "OpenClaw CLI output exceeded the size limit.",
+    );
+  }
   if (!Array.isArray(value) || !value.every(validPluginDiagnostic)) {
     throw controlError("OPENCLAW_CLI_INVALID_OUTPUT", "OpenClaw plugin inventory was invalid.");
   }
@@ -686,7 +707,7 @@ function isLegacyAgentGuardConflict(message: string): boolean {
 }
 
 function parseVersion(stdout: string): string {
-  assertOutputLimit(stdout);
+  assertOutputLimit(stdout, MAX_RESPONSE_BYTES);
   const match = stdout.match(/(?:^|\D)(\d{4}\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)(?:\s|$)/);
   if (!match) {
     throw controlError("OPENCLAW_CLI_INVALID_OUTPUT", "OpenClaw version output was invalid.");
@@ -721,6 +742,7 @@ async function executeCli(
   args: string[],
   env: NodeJS.ProcessEnv,
   timeoutMs: number,
+  maxOutputBytes: number,
   parentSignal?: AbortSignal,
 ): Promise<OpenClawCommandResult> {
   let result: OpenClawCommandResult;
@@ -742,7 +764,7 @@ async function executeCli(
         shell: cli.shell,
         env,
         timeoutMs,
-        maxOutputBytes: MAX_RESPONSE_BYTES,
+        maxOutputBytes,
         signal: controller.signal,
       }),
       new Promise<never>((_resolve, reject) => {
@@ -765,9 +787,9 @@ async function executeCli(
     if (timer) clearTimeout(timer);
     parentSignal?.removeEventListener("abort", onParentAbort);
   }
-  assertOutputLimit(result.stdout);
-  assertOutputLimit(result.stderr);
-  if (Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr) > MAX_RESPONSE_BYTES) {
+  assertOutputLimit(result.stdout, maxOutputBytes);
+  assertOutputLimit(result.stderr, maxOutputBytes);
+  if (Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr) > maxOutputBytes) {
     throw controlError("OPENCLAW_CLI_OUTPUT_TOO_LARGE", "OpenClaw CLI output exceeded the size limit.");
   }
   if (result.exitCode !== 0) {
@@ -847,8 +869,8 @@ function terminateProcessTree(child: ChildProcess): void {
   }
 }
 
-function assertOutputLimit(value: string): void {
-  if (Buffer.byteLength(value) > MAX_RESPONSE_BYTES) {
+function assertOutputLimit(value: string, maxOutputBytes: number): void {
+  if (Buffer.byteLength(value) > maxOutputBytes) {
     throw controlError("OPENCLAW_CLI_OUTPUT_TOO_LARGE", "OpenClaw CLI output exceeded the size limit.");
   }
 }

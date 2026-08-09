@@ -285,6 +285,35 @@ test("requires complete live registry proof outside an isolated profile", async 
   });
 });
 
+test("accepts the host live contribution for a dedicated isolated profile", async () => {
+  const plugin = {
+    id: "agent-guard-supervision",
+    enabled: true,
+    status: "loaded",
+    activated: true,
+    hookNames: ["after_tool_call", "before_tool_call"],
+    services: ["agent-guard-runtime"],
+    trustedToolPolicies: ["agent-guard-admission"],
+  };
+  const client = createOpenClawControlClient({
+    gatewayToken: TOKEN,
+    commandRunner: commandRunner([
+      result("2026.7.1-agentguard.1"),
+      result(JSON.stringify(liveInventory([plugin]))),
+    ]),
+  });
+
+  assert.deepEqual(await client.inspectCapabilities({
+    isolatedProfile: true,
+    liveRegistry: true,
+  }), {
+    openclawVersion: "2026.7.1-agentguard.1",
+    supportsNativeGuard: true,
+    finalizerAssurance: "exclusive_before_hook",
+    conflictingPluginIds: [],
+  });
+});
+
 test("accepts a healthy isolated cold plugin inventory without runtime registry attestation", async () => {
   const client = createOpenClawControlClient({
     gatewayToken: TOKEN,
@@ -1032,6 +1061,49 @@ test("grants isolated assurance only for the exact enabled Agent Guard allowlist
   assert.equal(extraCapability.finalizerAssurance, "unverified");
 });
 
+test("accepts a bounded real-size live inventory without widening version output", async () => {
+  const calls: Parameters<OpenClawCommandRunner>[0][] = [];
+  const inventory = liveInventory([{
+    ...agentGuardPlugin(),
+    hostMetadata: "x".repeat(150_000),
+  }]);
+  const runner: OpenClawCommandRunner = async (input) => {
+    calls.push(input);
+    return calls.length === 1
+      ? result("2026.7.2")
+      : result(JSON.stringify(inventory));
+  };
+  const client = createOpenClawControlClient({
+    gatewayToken: TOKEN,
+    commandRunner: runner,
+  });
+
+  const capability = await client.inspectCapabilities({ isolatedProfile: false });
+
+  assert.equal(capability.supportsNativeGuard, true);
+  assert.equal(calls[0].maxOutputBytes, 64 * 1024);
+  assert.equal(calls[1].maxOutputBytes, 512 * 1024);
+});
+
+test("rejects capability inventory above its dedicated bounded output budget", async () => {
+  const inventory = liveInventory([{
+    ...agentGuardPlugin(),
+    hostMetadata: "x".repeat(512 * 1024),
+  }]);
+  const client = createOpenClawControlClient({
+    gatewayToken: TOKEN,
+    commandRunner: commandRunner([
+      result("2026.7.2"),
+      result(JSON.stringify(inventory)),
+    ]),
+  });
+
+  await assert.rejects(
+    () => client.inspectCapabilities({ isolatedProfile: false }),
+    hasCode("OPENCLAW_CLI_OUTPUT_TOO_LARGE"),
+  );
+});
+
 test("bounds injected CLI runners and reports malformed, oversized, and failed output stably", async () => {
   const timed = createOpenClawControlClient({
     gatewayToken: TOKEN,
@@ -1061,7 +1133,7 @@ test("bounds injected CLI runners and reports malformed, oversized, and failed o
   }
 });
 
-test("limits capability inventory to enabled plugins before bounded parsing", async () => {
+test("uses the enabled static inventory only for an isolated profile", async () => {
   const calls: string[][] = [];
   const runner: OpenClawCommandRunner = async (input) => {
     calls.push(input.args);
@@ -1080,7 +1152,7 @@ test("limits capability inventory to enabled plugins before bounded parsing", as
 
   const capability = await client.inspectCapabilities({
     cliPath: process.execPath,
-    isolatedProfile: false,
+    isolatedProfile: true,
   });
 
   assert.equal(capability.supportsNativeGuard, true);
@@ -1106,7 +1178,7 @@ test("passes CLI arguments separately and preserves the resolver's no-shell invo
 
   assert.equal(calls[0].shell, false);
   assert.deepEqual(calls[0].args, ["--version"]);
-  assert.deepEqual(calls[1].args, ["plugins", "list", "--enabled", "--json"]);
+  assert.deepEqual(calls[1].args, ["plugins", "list", "--json", "--live"]);
   assert.equal(calls[0].env.INSPECTION_MARKER, "separate-value");
 });
 

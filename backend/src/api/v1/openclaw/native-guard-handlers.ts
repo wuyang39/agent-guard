@@ -27,8 +27,13 @@ import {
 } from "../../../storage/nativeGuardEventStore";
 import {
   createOpenClawControlClient,
+  type InspectOpenClawCapabilitiesInput,
   type OpenClawControlClient,
 } from "../../../modules/openclaw/openclawControlClient";
+import {
+  createOpenClawHostCapabilityCache,
+  type OpenClawHostCapabilityCache,
+} from "../../../modules/openclaw/openclawHostCapabilityCache";
 import {
   controlTokenMatches,
   parseLeaseBearer,
@@ -43,6 +48,7 @@ const MAX_DECISION_PARAMETER_BYTES = 256 * 1024;
 const MAX_DECISION_ENVELOPE_BYTES = 64 * 1024;
 const MAX_DECISION_BODY_BYTES = MAX_DECISION_PARAMETER_BYTES + MAX_DECISION_ENVELOPE_BYTES;
 const MAX_DECISION_PARAMETER_KEYS = 4_096;
+export const HOST_NATIVE_GUARD_CAPABILITY_TIMEOUT_MS = 60_000;
 
 export type NativeGuardRouteDependencies = {
   controlToken?: string;
@@ -86,6 +92,7 @@ export type NativeGuardRuntimeOptions = {
   createDecisionService?: typeof createNativeToolDecisionService;
   loadActiveAgentConfig?: () => Promise<AgentConnectionConfig>;
   createCoordinator?: typeof createNativeGuardCoordinator;
+  warmupHostCapability?: boolean;
 };
 
 export function createNativeGuardRouteDependencies(
@@ -94,16 +101,32 @@ export function createNativeGuardRouteDependencies(
   const env = options.env ?? process.env;
   const leaseService = options.leaseService ?? createNativeGuardLeaseService();
   const eventStore = options.eventStore ?? createNativeGuardEventStore();
-  const controlClient = options.controlClient ?? createOpenClawControlClient({ env });
+  const controlClient = options.controlClient ?? createOpenClawControlClient({
+    env,
+    capabilityTimeoutMs: HOST_NATIVE_GUARD_CAPABILITY_TIMEOUT_MS,
+  });
+  const hostCapabilityCache = createOpenClawHostCapabilityCache();
   const coordinator = options.coordinator ?? createLazyNativeGuardCoordinator({
     env,
     leaseService,
     controlClient,
+    hostCapabilityCache,
     loadActiveAgentConfig:
       options.loadActiveAgentConfig ?? getActiveAgentConfig,
     createCoordinator:
       options.createCoordinator ?? createNativeGuardCoordinator,
   });
+  const warmupHostCapability = options.warmupHostCapability ?? (
+    options.coordinator === undefined &&
+    options.controlClient === undefined &&
+    options.loadActiveAgentConfig === undefined &&
+    options.createCoordinator === undefined
+  );
+  if (warmupHostCapability) {
+    queueMicrotask(() => {
+      void coordinator.status().catch(() => undefined);
+    });
+  }
   const guardedEventStore = createLeaseUsabilityEventAppender(
     coordinator,
     eventStore,
@@ -158,6 +181,7 @@ type LazyCoordinatorOptions = {
   env: NodeJS.ProcessEnv;
   leaseService: NativeGuardLeaseService;
   controlClient: OpenClawControlClient;
+  hostCapabilityCache: OpenClawHostCapabilityCache;
   loadActiveAgentConfig: () => Promise<AgentConnectionConfig>;
   createCoordinator: typeof createNativeGuardCoordinator;
 };
@@ -166,10 +190,7 @@ type NativeRuntimeIdentity = {
   key: string;
   gatewayUrl: string;
   backendUrl: string;
-  capabilityInput: {
-    cliPath?: string;
-    isolatedProfile: boolean;
-  };
+  capabilityInput: InspectOpenClawCapabilitiesInput;
 };
 
 function createLazyNativeGuardCoordinator(
@@ -243,9 +264,14 @@ function createLazyNativeGuardCoordinator(
         "Native guard active agent changed while a lease is managed.",
       );
     }
+    if (currentIdentity) options.hostCapabilityCache.invalidate(currentIdentity);
+    const cachedControlClient = options.hostCapabilityCache.wrap(
+      identity.key,
+      options.controlClient,
+    );
     const created = options.createCoordinator({
       leaseService: options.leaseService,
-      controlClient: options.controlClient,
+      controlClient: cachedControlClient,
       gatewayUrl: identity.gatewayUrl,
       backendUrl: identity.backendUrl,
       capabilityInput: identity.capabilityInput,
@@ -328,6 +354,7 @@ function resolveNativeRuntimeIdentity(
     : activeAgent.openclawCliPath;
   const backendUrl = resolveNativeGuardDecisionUrl(env);
   const isolatedProfile = env.AGENT_GUARD_OPENCLAW_ISOLATED_PROFILE === "1";
+  const profileEnv = resolveOpenClawProfileEnv(env);
   return {
     key: JSON.stringify([
       activeAgent.agentId,
@@ -335,14 +362,31 @@ function resolveNativeRuntimeIdentity(
       gatewayUrl,
       backendUrl,
       isolatedProfile,
+      profileEnv.OPENCLAW_HOME ?? null,
+      profileEnv.OPENCLAW_CONFIG_PATH ?? null,
+      profileEnv.OPENCLAW_STATE_DIR ?? null,
     ]),
     gatewayUrl,
     backendUrl,
     capabilityInput: {
       ...(cliPath ? { cliPath } : {}),
+      ...(Object.keys(profileEnv).length > 0 ? { env: profileEnv } : {}),
       isolatedProfile,
+      liveRegistry: true,
     },
   };
+}
+
+function resolveOpenClawProfileEnv(env: NodeJS.ProcessEnv): Record<string, string> {
+  const profileEnv: Record<string, string> = {};
+  for (const key of [
+    "OPENCLAW_HOME",
+    "OPENCLAW_CONFIG_PATH",
+    "OPENCLAW_STATE_DIR",
+  ] as const) {
+    if (nonEmpty(env[key])) profileEnv[key] = env[key];
+  }
+  return profileEnv;
 }
 
 function validateNativeGuardDecisionUrl(value: string): string {

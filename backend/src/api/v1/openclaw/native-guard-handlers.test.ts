@@ -1703,7 +1703,13 @@ test("native runtime loads the active OpenClaw identity only for explicit manage
   let loaderCalls = 0;
   const coordinatorOptions: Array<Record<string, unknown>> = [];
   const dependencies = handlers.createNativeGuardRouteDependencies({
-    env: { AGENT_GUARD_CONTROL_TOKEN: CONTROL_TOKEN },
+    env: {
+      AGENT_GUARD_CONTROL_TOKEN: CONTROL_TOKEN,
+      OPENCLAW_HOME: "C:\\profiles\\active",
+      OPENCLAW_CONFIG_PATH: "C:\\profiles\\active\\openclaw.json",
+      OPENCLAW_STATE_DIR: "C:\\profiles\\active\\state",
+      AGENT_GUARD_OPENCLAW_ISOLATED_PROFILE: "1",
+    },
     loadActiveAgentConfig: async () => {
       loaderCalls += 1;
       return activeAgent;
@@ -1741,9 +1747,154 @@ test("native runtime loads the active OpenClaw identity only for explicit manage
   assert.equal(coordinatorOptions[0].gatewayUrl, activeAgent.gatewayUrl);
   assert.deepEqual(coordinatorOptions[0].capabilityInput, {
     cliPath: activeAgent.openclawCliPath,
-    isolatedProfile: false,
+    env: {
+      OPENCLAW_HOME: "C:\\profiles\\active",
+      OPENCLAW_CONFIG_PATH: "C:\\profiles\\active\\openclaw.json",
+      OPENCLAW_STATE_DIR: "C:\\profiles\\active\\state",
+    },
+    isolatedProfile: true,
+    liveRegistry: true,
   });
   await app.close();
+});
+
+test("host runtime reuses one capability probe for the same identity", async () => {
+  const handlers = await import("./native-guard-handlers");
+  const activeAgent = nativeAgent(
+    "agent.cached",
+    "C:\\openclaw\\openclaw.cmd",
+    "http://127.0.0.1:18790",
+  );
+  let inspections = 0;
+  const ready: NativeGuardStatus = {
+    coverage: "ready",
+    finalizerAssurance: "exclusive_before_hook",
+    activeLeaseCount: 0,
+  };
+  const controlClient = {
+    async inspectCapabilities() {
+      inspections += 1;
+      return {
+        openclawVersion: "2026.7.2",
+        supportsNativeGuard: true,
+        finalizerAssurance: "exclusive_before_hook" as const,
+        conflictingPluginIds: [],
+      };
+    },
+  };
+  const dependencies = handlers.createNativeGuardRouteDependencies({
+    env: { AGENT_GUARD_CONTROL_TOKEN: CONTROL_TOKEN },
+    controlClient: controlClient as never,
+    loadActiveAgentConfig: async () => activeAgent,
+    createCoordinator(options) {
+      return {
+        ...(coordinatorStub(ready) as object),
+        async status() {
+          await options.controlClient.inspectCapabilities(options.capabilityInput);
+          return structuredClone(ready);
+        },
+      } as never;
+    },
+    createDecisionService() {
+      return { async decide() { throw new Error("not called"); } };
+    },
+  });
+
+  await dependencies.coordinator.status();
+  await dependencies.coordinator.status();
+
+  assert.equal(inspections, 1);
+});
+
+test("host runtime identity changes with each OpenClaw profile path", async () => {
+  const handlers = await import("./native-guard-handlers");
+  const env: NodeJS.ProcessEnv = {
+    AGENT_GUARD_CONTROL_TOKEN: CONTROL_TOKEN,
+    OPENCLAW_HOME: "C:\\profiles\\one",
+    OPENCLAW_CONFIG_PATH: "C:\\profiles\\one\\openclaw.json",
+    OPENCLAW_STATE_DIR: "C:\\profiles\\one\\state",
+  };
+  const profiles: Array<Record<string, string> | undefined> = [];
+  const dependencies = handlers.createNativeGuardRouteDependencies({
+    env,
+    controlClient: { async inspectCapabilities() { throw new Error("not called"); } } as never,
+    loadActiveAgentConfig: async () => nativeAgent(
+      "agent.profile",
+      "C:\\openclaw\\openclaw.cmd",
+      "http://127.0.0.1:18790",
+    ),
+    createCoordinator(options) {
+      profiles.push(options.capabilityInput.env);
+      return coordinatorStub();
+    },
+    createDecisionService() {
+      return { async decide() { throw new Error("not called"); } };
+    },
+  });
+
+  await dependencies.coordinator.status();
+  env.OPENCLAW_HOME = "C:\\profiles\\two";
+  await dependencies.coordinator.status();
+  env.OPENCLAW_CONFIG_PATH = "C:\\profiles\\two\\openclaw.json";
+  await dependencies.coordinator.status();
+  env.OPENCLAW_STATE_DIR = "C:\\profiles\\two\\state";
+  await dependencies.coordinator.status();
+
+  assert.equal(profiles.length, 4);
+  assert.deepEqual(profiles[3], {
+    OPENCLAW_HOME: "C:\\profiles\\two",
+    OPENCLAW_CONFIG_PATH: "C:\\profiles\\two\\openclaw.json",
+    OPENCLAW_STATE_DIR: "C:\\profiles\\two\\state",
+  });
+});
+
+test("host capability warmup is background-only and never activates a lease", async () => {
+  const handlers = await import("./native-guard-handlers");
+  let statusCalls = 0;
+  let activateCalls = 0;
+  const ready: NativeGuardStatus = {
+    coverage: "ready",
+    finalizerAssurance: "exclusive_before_hook",
+    activeLeaseCount: 0,
+  };
+  const dependencies = handlers.createNativeGuardRouteDependencies({
+    env: { AGENT_GUARD_CONTROL_TOKEN: CONTROL_TOKEN },
+    warmupHostCapability: true,
+    loadActiveAgentConfig: async () => nativeAgent(
+      "agent.warmup",
+      "C:\\openclaw\\openclaw.cmd",
+      "http://127.0.0.1:18790",
+    ),
+    createCoordinator() {
+      return {
+        ...(coordinatorStub(ready) as object),
+        async status() {
+          statusCalls += 1;
+          return structuredClone(ready);
+        },
+        async activate() {
+          activateCalls += 1;
+          return structuredClone(ready);
+        },
+      } as never;
+    },
+    createDecisionService() {
+      return { async decide() { throw new Error("not called"); } };
+    },
+  });
+
+  assert.equal(statusCalls, 0);
+  assert.equal(activateCalls, 0);
+  assert.equal(dependencies.coordinator.getLastStatus().coverage, "off");
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.equal(statusCalls, 1);
+  assert.equal(activateCalls, 0);
+});
+
+test("host capability probes receive a cold-start command budget", async () => {
+  const handlers = await import("./native-guard-handlers");
+  assert.equal(handlers.HOST_NATIVE_GUARD_CAPABILITY_TIMEOUT_MS, 60_000);
 });
 
 test("native runtime rejects invalid active agents and backend config only when explicitly loaded", async () => {

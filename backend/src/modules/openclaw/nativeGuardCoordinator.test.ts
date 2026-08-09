@@ -637,6 +637,19 @@ test("deletes the backend lease and warns when plugin revoke still reports activ
   assert.equal(result.reasonCode, "NATIVE_GUARD_PLUGIN_REVOKE_UNCONFIRMED");
 });
 
+test("accepts the plugin OFF response as a confirmed revoke", async () => {
+  const fixture = coordinatorFixture();
+  await fixture.coordinator.activate(supervisionInput());
+  const activation = fixture.activationCalls[0];
+  fixture.controlClient.revoke = async () => status("off");
+
+  const result = await fixture.coordinator.revoke(activation.leaseId);
+
+  assert.equal(result.coverage, "ready");
+  assert.equal(result.activeLeaseCount, 0);
+  assert.equal(result.reasonCode, undefined);
+});
+
 test("treats an already expired backend lease as an idempotent revoke success", async () => {
   const fixture = coordinatorFixture();
   await fixture.coordinator.activate({ ...supervisionInput(), ttlMs: 1 });
@@ -756,6 +769,17 @@ test("does not promote backend conditional status unless plugin and lease identi
 
   assert.equal(combined.coverage, "conditional");
   assert.equal(combined.reasonCode, "NATIVE_GUARD_STATUS_MISMATCH");
+});
+
+test("projects a capable idle plugin OFF state as ready", async () => {
+  const fixture = coordinatorFixture();
+  fixture.pluginStatus = status("off");
+
+  const combined = await fixture.coordinator.status();
+
+  assert.equal(combined.coverage, "ready");
+  assert.equal(combined.activeLeaseCount, 0);
+  assert.equal(combined.reasonCode, undefined);
 });
 
 test("reports anomalous backend multiplicity honestly and never promotes it active", async () => {

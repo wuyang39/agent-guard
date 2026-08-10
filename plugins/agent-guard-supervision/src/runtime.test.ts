@@ -930,12 +930,16 @@ test("main agent scope guards existing and new sessions while worker sessions st
   ] as const) {
     assert.equal(await fixture.runtime.beforeToolCall(
       { ...execEvent(), toolCallId },
-      execContext({ sessionKey, toolCallId }),
+      execContext({ sessionKey, toolCallId, agentId: "main" }),
     ), undefined);
   }
   assert.equal(await fixture.runtime.beforeToolCall(
     { ...execEvent(), toolCallId: "call.worker" },
-    execContext({ sessionKey: "agent:worker:dashboard:one", toolCallId: "call.worker" }),
+    execContext({
+      sessionKey: "agent:worker:dashboard:one",
+      toolCallId: "call.worker",
+      agentId: "worker",
+    }),
   ), undefined);
 
   assert.deepEqual(requests.map(({ leaseId, sessionKey }) => ({ leaseId, sessionKey })), [
@@ -964,6 +968,63 @@ test("main agent scope blocks malformed claimed-main tool context", async () => 
       blockReason: "[Agent Guard:NATIVE_GUARD_CONTEXT_INVALID] Native guard tool context is incomplete.",
     });
   }
+  assert.equal(fixture.fetchCalls(), 0);
+});
+
+test("active main agent scope requires a canonical matching agent identity before admission", async () => {
+  const fixture = await activeFixture({
+    action: "allow",
+    activationOverrides: {
+      rootSessionKey: "agent:main:main",
+      scope: { kind: "agent", agentId: "main" },
+    },
+  });
+  const contextBlock = {
+    block: true,
+    blockReason: "[Agent Guard:NATIVE_GUARD_CONTEXT_INVALID] Native guard tool context is incomplete.",
+  };
+
+  for (const context of [
+    execContext({ sessionKey: undefined, agentId: "main" }),
+    execContext({ sessionKey: "raw.session", agentId: undefined }),
+    execContext({ sessionKey: "raw.session", agentId: "main" }),
+    execContext({ sessionKey: "raw.session", agentId: "worker" }),
+    execContext({ sessionKey: "agent:main:dashboard:one", agentId: undefined }),
+    execContext({ sessionKey: "agent:main:dashboard:one", agentId: "worker" }),
+    execContext({ sessionKey: "agent:worker:dashboard:one", agentId: undefined }),
+  ]) {
+    assert.deepEqual(await fixture.runtime.beforeToolCall(execEvent(), context), contextBlock);
+  }
+  assert.equal(await fixture.runtime.beforeToolCall(
+    execEvent(),
+    execContext({ sessionKey: "agent:worker:dashboard:one", agentId: "worker" }),
+  ), undefined);
+  assert.equal(fixture.fetchCalls(), 0);
+});
+
+test("active main agent scope blocks an exact session lease with mismatched identity", async () => {
+  const fixture = await activeFixture({
+    action: "allow",
+    activationOverrides: {
+      rootSessionKey: "agent:main:main",
+      scope: { kind: "agent", agentId: "main" },
+    },
+  });
+  await fixture.runtime.activate(fixture.activation({
+    leaseId: "lease.worker",
+    rootSessionKey: "agent:worker:dashboard:one",
+    scope: { kind: "session", sessionKey: "agent:worker:dashboard:one" },
+    credential: "credential.worker",
+    evidenceCredential: "evidence-credential.worker",
+  }));
+
+  assert.deepEqual(await fixture.runtime.beforeToolCall(
+    execEvent(),
+    execContext({ sessionKey: "agent:worker:dashboard:one", agentId: "main" }),
+  ), {
+    block: true,
+    blockReason: "[Agent Guard:NATIVE_GUARD_CONTEXT_INVALID] Native guard tool context is incomplete.",
+  });
   assert.equal(fixture.fetchCalls(), 0);
 });
 
@@ -999,6 +1060,42 @@ test("recovering main agent scope blocks claimed-main mismatches but leaves othe
   ), undefined);
 });
 
+test("recovering main agent scope requires a canonical matching agent identity before admission", async () => {
+  const runtime = new AgentGuardRuntime({
+    markerStore: memoryMarkerStore([{
+      leaseId: "lease.1",
+      rootSessionKey: "agent:main:main",
+      childSessionKeys: [],
+      mode: "supervision",
+      scope: { kind: "agent", agentId: "main" },
+      policyPackId: "pack.1",
+      policyPackDigest: "b".repeat(64),
+      expiresAt: "2026-08-02T10:05:00.000Z",
+    }]),
+    now: () => new Date(NOW),
+  });
+  const contextBlock = {
+    block: true,
+    blockReason: "[Agent Guard:NATIVE_GUARD_CONTEXT_INVALID] Native guard tool context is incomplete.",
+  };
+
+  for (const context of [
+    execContext({ sessionKey: undefined, agentId: "main" }),
+    execContext({ sessionKey: "raw.session", agentId: undefined }),
+    execContext({ sessionKey: "raw.session", agentId: "main" }),
+    execContext({ sessionKey: "raw.session", agentId: "worker" }),
+    execContext({ sessionKey: "agent:main:dashboard:one", agentId: undefined }),
+    execContext({ sessionKey: "agent:main:dashboard:one", agentId: "worker" }),
+    execContext({ sessionKey: "agent:worker:dashboard:one", agentId: undefined }),
+  ]) {
+    assert.deepEqual(await runtime.beforeToolCall(execEvent(), context), contextBlock);
+  }
+  assert.equal(await runtime.beforeToolCall(
+    execEvent(),
+    execContext({ sessionKey: "agent:worker:dashboard:one", agentId: "worker" }),
+  ), undefined);
+});
+
 test("exact session decisions shadow agent scope then fall back after revoke", async () => {
   const requests: NativeToolDecisionRequest[] = [];
   const fixture = await activeFixture({
@@ -1019,7 +1116,7 @@ test("exact session decisions shadow agent scope then fall back after revoke", a
     credential: "credential.exact",
     evidenceCredential: "evidence-credential.exact",
   }));
-  const context = execContext({ sessionKey: "agent:main:dashboard:shadowed" });
+  const context = execContext({ sessionKey: "agent:main:dashboard:shadowed", agentId: "main" });
 
   assert.equal(await fixture.runtime.beforeToolCall(execEvent(), context), undefined);
   assert.equal(requests.at(-1)?.leaseId, "lease.exact");
@@ -1046,7 +1143,7 @@ test("agent session end uploads evidence but leaves future main sessions protect
   assert.deepEqual(endedSessions, ["agent:main:dashboard:ended"]);
   assert.equal(await fixture.runtime.beforeToolCall(
     execEvent(),
-    execContext({ sessionKey: "agent:main:cli:future" }),
+    execContext({ sessionKey: "agent:main:cli:future", agentId: "main" }),
   ), undefined);
   assert.equal(fixture.fetchCalls(), 1);
 });

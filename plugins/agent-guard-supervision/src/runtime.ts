@@ -15,6 +15,7 @@ import type {
 import {
   canonicalJson,
   digestJson,
+  parseCanonicalOpenClawSessionKey,
   signNativeGuardPayload,
   verifyNativeGuardPayload,
 } from "@agent-guard/native-guard-protocol";
@@ -325,12 +326,22 @@ export class AgentGuardRuntime {
     const sessionKey = context.sessionKey;
     if (sessionKey !== undefined) {
       const current = await this.lookup(sessionKey);
-      if (current.state !== "off") return guardedAdmission(current, event, context);
-      if (
-        context.agentId === "main" &&
-        await this.#track(this.registry.hasAgentScopedCoverage("main"))
-      ) return contextBlock();
+      if (current.state !== "off") {
+        if (
+          (isMainAgentScopedLookup(current) ||
+            await this.#track(this.registry.hasAgentScopedCoverage("main"))) &&
+          !canonicalSessionAgentMatch(sessionKey, context.agentId)
+        ) return contextBlock();
+        return guardedAdmission(current, event, context);
+      }
+      if (await this.#track(this.registry.hasAgentScopedCoverage("main"))) {
+        const canonicalIdentity = canonicalSessionAgentMatch(sessionKey, context.agentId);
+        if (!canonicalIdentity) return contextBlock();
+        return canonicalIdentity.agentId === "main" ? contextBlock() : undefined;
+      }
       if (!(await this.#track(this.registry.hasSessionScopedCoverage()))) return;
+    } else if (await this.#track(this.registry.hasAgentScopedCoverage("main"))) {
+      return contextBlock();
     }
 
     const status = await this.#internalStatus();
@@ -1110,6 +1121,25 @@ function safeSessionKey(value: unknown): value is string {
     value.length <= 512 &&
     !/[\\/\x00-\x1f\x7f]/.test(value) &&
     !value.includes("..");
+}
+
+function canonicalSessionAgentMatch(
+  sessionKey: unknown,
+  agentId: unknown,
+): ReturnType<typeof parseCanonicalOpenClawSessionKey> {
+  if (typeof sessionKey !== "string" || typeof agentId !== "string") return undefined;
+  const parsed = parseCanonicalOpenClawSessionKey(sessionKey);
+  return parsed?.agentId === agentId ? parsed : undefined;
+}
+
+function isMainAgentScopedLookup(
+  lookup: Exclude<LeaseLookup, { state: "off" }>,
+): boolean {
+  return "scope" in lookup &&
+    typeof lookup.scope === "object" &&
+    lookup.scope !== null &&
+    lookup.scope.kind === "agent" &&
+    lookup.scope.agentId === "main";
 }
 
 type GuardedIdentity = {

@@ -166,7 +166,7 @@ agent-scope lease 的生命周期与任一具体会话无关：
 - stop 时先停止续租，再 revoke；
 - 后端关闭时尽力 revoke，失败则保留 recovery marker 并报告 recovery。
 
-同一策略重复 start 返回当前状态。不同策略 start 使用“验证新策略 -> 原子替换”流程；第一版不允许两个 main 策略并存。
+同一策略且当前 lease 可用时重复 start 返回当前状态。其他 start 先验证请求策略；只要当前 main lease 仍被服务保留，就返回稳定的 `409 MAIN_AGENT_SUPERVISION_REPLACE_CONFLICT`，不撤销或替换当前 lease。操作员必须先显式 stop，再 start 所需策略；第一版不允许两个 main 策略并存。
 
 ## 8. API
 

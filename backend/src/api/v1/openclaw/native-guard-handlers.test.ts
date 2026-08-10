@@ -3,6 +3,7 @@ import {
   createPrivateKey,
   createPublicKey,
   generateKeyPairSync,
+  randomUUID,
   type KeyObject,
 } from "node:crypto";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
@@ -24,6 +25,7 @@ import {
 } from "@agent-guard/native-guard-protocol";
 import { createNativeGuardLeaseService } from "../../../modules/openclaw/nativeGuardLeaseService";
 import { createNativeToolDecisionService } from "../../../modules/openclaw/nativeToolDecisionService";
+import { createNativeGuardEventStore } from "../../../storage/nativeGuardEventStore";
 import {
   systemRoutes,
   type SystemRouteDependencies,
@@ -39,6 +41,11 @@ const require = createRequire(import.meta.url);
 const CONTROL_TOKEN = "operator-control-token";
 const LEASE_CREDENTIAL = "lease-credential";
 const EVIDENCE_CREDENTIAL = "evidence-credential";
+const RUNTIME_EVENT_FIXTURE_ROOT = await mkdtemp(path.join(
+  tmpdir(),
+  "agent-guard-native-handler-runtime-",
+));
+test.after(() => rm(RUNTIME_EVENT_FIXTURE_ROOT, { recursive: true, force: true }));
 
 test("valid evidence proof succeeds and returns a decision-key signed acknowledgement", async () => {
   const fixture = createRealDecisionFixture();
@@ -2857,7 +2864,9 @@ function createFixture() {
         return true;
       },
     },
-    runtimeEventStore: {} as never,
+    runtimeEventStore: createNativeGuardEventStore({
+      rootDir: path.join(RUNTIME_EVENT_FIXTURE_ROOT, randomUUID()),
+    }),
   };
   return { calls, dependencies };
 }

@@ -1,10 +1,21 @@
 import assert from "node:assert/strict";
+import { generateKeyPairSync } from "node:crypto";
 import http from "node:http";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import type { NativeGuardEvent } from "@agent-guard/contracts";
+import type {
+  NativeGuardEvent,
+  NativeGuardLeaseActivation,
+  NativeGuardLeaseSummary,
+  NativeGuardStatus,
+  SupervisionPolicyPack,
+} from "@agent-guard/contracts";
+import {
+  digestJson,
+  signNativeGuardPayload,
+} from "@agent-guard/native-guard-protocol";
 import { createNativeGuardRouteDependencies } from "./api/v1/openclaw/native-guard-handlers";
 import {
   buildApp,
@@ -12,7 +23,13 @@ import {
   requireNativeGuardRuntimeEventStore,
 } from "./app";
 import { createNativeGuardEventStore } from "./storage/nativeGuardEventStore";
-import type { MainAgentSupervisionService } from "./modules/openclaw/mainAgentSupervisionService";
+import {
+  createMainAgentSupervisionService,
+  type MainAgentSupervisionService,
+} from "./modules/openclaw/mainAgentSupervisionService";
+import { createNativeGuardCoordinator } from "./modules/openclaw/nativeGuardCoordinator";
+import { createNativeGuardLeaseService } from "./modules/openclaw/nativeGuardLeaseService";
+import type { OpenClawControlClient } from "./modules/openclaw/openclawControlClient";
 import {
   subscribeRealtimeEvents,
   type RealtimeEvent,
@@ -79,12 +96,15 @@ test("sandbox activation gives cold capability inspection the preflight command 
   const runtimeEventStore = createNativeGuardEventStore();
   const dependencies = createNativeGuardRouteDependencies({
     coordinator: {
-      async activate(input: Parameters<ReturnType<typeof createNativeGuardRouteDependencies>["coordinator"]["activate"]>[0]) {
+      async activateWithIdentity(input: Parameters<ReturnType<typeof createNativeGuardRouteDependencies>["coordinator"]["activateWithIdentity"]>[0]) {
         const capability = await input.sandbox?.controlClient.inspectCapabilities(
           input.sandbox.capabilityInput,
         );
         assert.equal(capability?.supportsNativeGuard, true);
-        return { activeLease: { leaseId: "lease-cold-start", leaseEpoch: 1 } } as never;
+        return {
+          leaseId: "lease-cold-start",
+          status: { activeLease: { leaseId: "lease-cold-start", leaseEpoch: 1 } },
+        } as never;
       },
     } as never,
     leaseService: {} as never,
@@ -135,12 +155,15 @@ test("sandbox activation gives cold Gateway control requests the detection comma
   const runtimeEventStore = createNativeGuardEventStore();
   const dependencies = createNativeGuardRouteDependencies({
     coordinator: {
-      async activate(input: Parameters<ReturnType<typeof createNativeGuardRouteDependencies>["coordinator"]["activate"]>[0]) {
+      async activateWithIdentity(input: Parameters<ReturnType<typeof createNativeGuardRouteDependencies>["coordinator"]["activateWithIdentity"]>[0]) {
         await input.sandbox!.controlClient.activate(input.sandbox!.gatewayUrl, {
           leaseId: "lease-cold-control",
           leaseEpoch: 1,
         } as never);
-        return { activeLease: { leaseId: "lease-cold-control", leaseEpoch: 1 } } as never;
+        return {
+          leaseId: "lease-cold-control",
+          status: { activeLease: { leaseId: "lease-cold-control", leaseEpoch: 1 } },
+        } as never;
       },
     } as never,
     leaseService: {} as never,
@@ -167,7 +190,7 @@ test("sandbox activation reuses the run-scoped attested capability snapshot", as
   const runtimeEventStore = createNativeGuardEventStore();
   const dependencies = createNativeGuardRouteDependencies({
     coordinator: {
-      async activate(input: Parameters<ReturnType<typeof createNativeGuardRouteDependencies>["coordinator"]["activate"]>[0]) {
+      async activateWithIdentity(input: Parameters<ReturnType<typeof createNativeGuardRouteDependencies>["coordinator"]["activateWithIdentity"]>[0]) {
         const first = await input.sandbox!.controlClient.inspectCapabilities(
           input.sandbox!.capabilityInput,
         );
@@ -178,7 +201,10 @@ test("sandbox activation reuses the run-scoped attested capability snapshot", as
         assert.notEqual(first, second);
         first.conflictingPluginIds.push("mutated-outside-cache");
         assert.deepEqual(second.conflictingPluginIds, []);
-        return { activeLease: { leaseId: "lease-cached", leaseEpoch: 1 } } as never;
+        return {
+          leaseId: "lease-cached",
+          status: { activeLease: { leaseId: "lease-cached", leaseEpoch: 1 } },
+        } as never;
       },
     } as never,
     leaseService: {} as never,
@@ -240,6 +266,142 @@ test("buildApp registers one injected main supervision service and closes it", a
 
   await app.close();
   assert.deepEqual(calls, ["status", "close"]);
+});
+
+test("buildApp keeps host main supervision and sandbox detection isolated through revoke", async (t) => {
+  const now = Date.parse("2026-08-10T00:00:00.000Z");
+  const policyPack = appMainPolicyPack();
+  const loadPolicyPack = async (policyPackId: string) => policyPackId === policyPack.policyPackId
+    ? {
+        policyPack,
+        policyPackDigest: digestJson(policyPack),
+        runGroupId: "run-group.app-coexistence",
+      }
+    : undefined;
+  const leaseService = createNativeGuardLeaseService({ now: () => now });
+  const eventStore = createNativeGuardEventStore();
+  const host = createAppGatewayClient(
+    "gateway.host.app.test",
+    "http://127.0.0.1:18789",
+    "exclusive_before_hook",
+  );
+  const sandbox = await createAppSandboxGateway();
+  const coordinator = createNativeGuardCoordinator({
+    leaseService,
+    controlClient: host.controlClient,
+    loadStoredOpenClawPolicyPack: loadPolicyPack,
+    gatewayUrl: host.gatewayUrl,
+    backendUrl: "http://127.0.0.1:3100/api/v1/openclaw/native-guard/decision",
+    capabilityInput: { isolatedProfile: false },
+    gatewayAttestationPublicKey: host.attestationPublicKey,
+  });
+  const dependencies = createNativeGuardRouteDependencies({
+    coordinator,
+    leaseService,
+    eventStore,
+    warmupHostCapability: false,
+  });
+  const scheduledTimers = new Set<object>();
+  const mainService = createMainAgentSupervisionService({
+    coordinator,
+    loadStoredOpenClawPolicyPack: loadPolicyPack,
+    ttlMs: 3_000,
+    now: () => now,
+    scheduleTimeout() {
+      const timer = {};
+      scheduledTimers.add(timer);
+      return timer;
+    },
+    cancelTimeout(timer) {
+      scheduledTimers.delete(timer as object);
+    },
+  });
+  let appForCleanup: Awaited<ReturnType<typeof buildApp>> | undefined;
+  let sandboxLeaseId: string | undefined;
+  t.after(async () => {
+    if (sandboxLeaseId && coordinator.isLeaseUsable(sandboxLeaseId)) {
+      await coordinator.revoke(sandboxLeaseId).catch(() => undefined);
+    }
+    await appForCleanup?.close().catch(() => undefined);
+    await sandbox.close();
+    assert.equal(scheduledTimers.size, 0);
+  });
+  const app = await buildApp({
+    logger: false,
+    nativeGuardDependencies: dependencies,
+    mainAgentSupervisionService: mainService,
+  });
+  appForCleanup = app;
+
+  const started = await app.inject({
+    method: "POST",
+    url: "/api/v1/openclaw/native-supervision/start",
+    payload: { policyPackId: policyPack.policyPackId },
+  });
+  assert.equal(started.statusCode, 200);
+  const main = started.json().data;
+  assert.deepEqual(main.scope, { kind: "agent", agentId: "main" });
+  assert.equal(main.gatewayInstanceId, host.gatewayInstanceId);
+
+  const runGuard = createSandboxCoordinatorFactory(dependencies)({
+    gatewayUrl: sandbox.gatewayUrl,
+    gatewayToken: sandbox.gatewayToken,
+    profileEnv: {},
+    capabilitySnapshot: {
+      ...attestedCapability(),
+      gatewayInstanceId: sandbox.gatewayInstanceId,
+    },
+  });
+  const sandboxLease = await runGuard.activate({
+    rootSessionKey: "agent:sandbox:run-app-coexistence",
+    runGroupId: "run-group.app-coexistence",
+  });
+  sandboxLeaseId = sandboxLease.leaseId;
+
+  const aggregate = await coordinator.status();
+  const mainSummary = aggregate.activeLeases?.find((lease) => lease.leaseId === main.leaseId);
+  const sandboxSummary = aggregate.activeLeases?.find(
+    (lease) => lease.leaseId === sandboxLease.leaseId,
+  );
+  assert.equal(aggregate.activeLeaseCount, 2);
+  assert.notEqual(main.leaseId, sandboxLease.leaseId);
+  assert.deepEqual(mainSummary?.scope, { kind: "agent", agentId: "main" });
+  assert.equal(mainSummary?.gatewayInstanceId, host.gatewayInstanceId);
+  assert.deepEqual(sandboxSummary?.scope, {
+    kind: "session",
+    sessionKey: "agent:sandbox:run-app-coexistence",
+  });
+  assert.equal(sandboxSummary?.gatewayInstanceId, sandbox.gatewayInstanceId);
+  assert.notEqual(mainSummary?.gatewayInstanceId, sandboxSummary?.gatewayInstanceId);
+  assert.equal(coordinator.isLeaseUsable(main.leaseId), true);
+  assert.equal(coordinator.isLeaseUsable(sandboxLease.leaseId), true);
+
+  await runGuard.revoke(sandboxLease.leaseId);
+  sandboxLeaseId = undefined;
+  assert.deepEqual(sandbox.revokeLeaseIds, [sandboxLease.leaseId]);
+  assert.deepEqual(host.revokeLeaseIds, []);
+  assert.equal(coordinator.isLeaseUsable(sandboxLease.leaseId), false);
+  assert.equal(coordinator.isLeaseUsable(main.leaseId), true);
+  const afterSandboxRevoke = await app.inject({
+    method: "GET",
+    url: "/api/v1/openclaw/native-supervision",
+  });
+  assert.equal(afterSandboxRevoke.statusCode, 200);
+  assert.equal(afterSandboxRevoke.json().data.coverage, "active");
+  assert.equal(afterSandboxRevoke.json().data.activeLeaseCount, 1);
+  assert.equal(afterSandboxRevoke.json().data.mainLeaseCount, 1);
+
+  const stopped = await app.inject({
+    method: "POST",
+    url: "/api/v1/openclaw/native-supervision/stop",
+  });
+  assert.equal(stopped.statusCode, 200);
+  assert.equal(stopped.json().data.mainLeaseCount, 0);
+  assert.equal(stopped.json().data.activeLeaseCount, 0);
+  assert.deepEqual(host.revokeLeaseIds, [main.leaseId]);
+  assert.equal(coordinator.isLeaseUsable(main.leaseId), false);
+  assert.equal(host.currentStatus().activeLeaseCount, 0);
+  assert.equal(["ready", "off"].includes(host.currentStatus().coverage), true);
 });
 
 test("buildApp streams durable native guard events until the app closes", async (t) => {
@@ -457,6 +619,218 @@ function appNativeGuardDependencies(
       return { async decide() { throw new Error("not called"); } };
     },
   });
+}
+
+function createAppGatewayClient(
+  gatewayInstanceId: string,
+  gatewayUrl: string,
+  finalizerAssurance: "isolated_profile" | "exclusive_before_hook",
+) {
+  const attestationKeys = generateKeyPairSync("ed25519");
+  let activeLeases: NativeGuardLeaseSummary[] = [];
+  const revokeLeaseIds: string[] = [];
+  const capability = {
+    openclawVersion: "2026.7.2",
+    supportsNativeGuard: true,
+    finalizerAssurance,
+    conflictingPluginIds: [],
+    gatewayInstanceId,
+  };
+  const currentStatus = (): NativeGuardStatus => ({
+    coverage: activeLeases.length > 0 ? "active" : "ready",
+    finalizerAssurance,
+    openclawVersion: capability.openclawVersion,
+    gatewayInstanceId,
+    activeLeaseCount: activeLeases.length,
+    activeLeases: activeLeases.map((lease) => structuredClone(lease)),
+    ...(activeLeases.length === 1
+      ? { activeLease: structuredClone(activeLeases[0]) }
+      : {}),
+    conflictingPluginIds: [],
+  });
+  const summary = (activation: NativeGuardLeaseActivation): NativeGuardLeaseSummary => ({
+    leaseId: activation.leaseId,
+    leaseEpoch: activation.leaseEpoch,
+    rootSessionKey: activation.rootSessionKey,
+    scope: typeof activation.scope === "string"
+      ? activation.scope
+      : { ...activation.scope },
+    gatewayInstanceId,
+    mode: activation.mode,
+    policyPackId: activation.policyPackId,
+    policyPackDigest: activation.policyPackDigest,
+    expiresAt: activation.expiresAt,
+  });
+  const controlClient: OpenClawControlClient = {
+    async inspectCapabilities() {
+      return structuredClone(capability);
+    },
+    async attestGateway(input) {
+      const unsigned = {
+        contractVersion: "native-guard-gateway-1",
+        signatureContext: "native_guard.gateway_attestation.v1",
+        challenge: input.challenge,
+        gatewayUrl: input.gatewayUrl,
+        gatewayInstanceId,
+        openclawVersion: capability.openclawVersion,
+        nativeGuard: {
+          contractVersion: "native-guard-1",
+          registrarStatus: "live",
+          finalBeforeToolCall: {
+            pluginId: "agent-guard-supervision",
+            exclusive: true,
+          },
+          trustedToolPolicy: {
+            policyId: "agent-guard-admission",
+            exclusive: true,
+          },
+          recoveryService: {
+            serviceId: "agent-guard-runtime",
+            live: true,
+          },
+          postApprovalLeaseRecheck: true,
+          paramsProvenance: "json-only",
+        },
+      } as const;
+      return {
+        ...unsigned,
+        signature: signNativeGuardPayload(unsigned, attestationKeys.privateKey),
+      };
+    },
+    async status() {
+      return currentStatus();
+    },
+    async activate(_url, activation) {
+      activeLeases = [
+        summary(activation),
+        ...activeLeases.filter((lease) => lease.leaseId !== activation.leaseId),
+      ];
+      return currentStatus();
+    },
+    async renew(_url, activation) {
+      activeLeases = [
+        summary(activation),
+        ...activeLeases.filter((lease) => lease.leaseId !== activation.leaseId),
+      ];
+      return currentStatus();
+    },
+    async revoke(_url, leaseId) {
+      revokeLeaseIds.push(leaseId);
+      activeLeases = activeLeases.filter((lease) => lease.leaseId !== leaseId);
+      return currentStatus();
+    },
+  };
+  return {
+    gatewayInstanceId,
+    gatewayUrl,
+    attestationPublicKey: attestationKeys.publicKey,
+    controlClient,
+    currentStatus,
+    revokeLeaseIds,
+  };
+}
+
+async function createAppSandboxGateway() {
+  const gatewayToken = "sandbox-app-token";
+  const gatewayInstanceId = "gateway.sandbox.app.test";
+  let activeLeases: NativeGuardLeaseSummary[] = [];
+  const revokeLeaseIds: string[] = [];
+  const server = http.createServer(async (request, response) => {
+    try {
+      if (request.headers.authorization !== `Bearer ${gatewayToken}`) {
+        response.statusCode = 401;
+        response.end("unauthorized");
+        return;
+      }
+      if (request.url === "/agent-guard/native-guard/v1/leases/activate") {
+        const activation = await readAppGatewayJson(request) as NativeGuardLeaseActivation;
+        activeLeases = [{
+          leaseId: activation.leaseId,
+          leaseEpoch: activation.leaseEpoch,
+          rootSessionKey: activation.rootSessionKey,
+          scope: typeof activation.scope === "string"
+            ? activation.scope
+            : { ...activation.scope },
+          gatewayInstanceId,
+          mode: activation.mode,
+          policyPackId: activation.policyPackId,
+          policyPackDigest: activation.policyPackDigest,
+          expiresAt: activation.expiresAt,
+        }];
+      } else if (request.url === "/agent-guard/native-guard/v1/leases/revoke") {
+        const { leaseId } = await readAppGatewayJson(request) as { leaseId: string };
+        revokeLeaseIds.push(leaseId);
+        activeLeases = activeLeases.filter((lease) => lease.leaseId !== leaseId);
+      } else if (request.url !== "/agent-guard/native-guard/v1/status") {
+        response.statusCode = 404;
+        response.end("not found");
+        return;
+      }
+      const status: NativeGuardStatus = {
+        coverage: activeLeases.length > 0 ? "active" : "ready",
+        finalizerAssurance: "isolated_profile",
+        openclawVersion: "2026.7.2",
+        gatewayInstanceId,
+        activeLeaseCount: activeLeases.length,
+        activeLeases: activeLeases.map((lease) => structuredClone(lease)),
+        ...(activeLeases.length === 1
+          ? { activeLease: structuredClone(activeLeases[0]) }
+          : {}),
+        conflictingPluginIds: [],
+      };
+      response.statusCode = 200;
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify(status));
+    } catch {
+      response.statusCode = 400;
+      response.end("invalid request");
+    }
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  return {
+    gatewayToken,
+    gatewayInstanceId,
+    gatewayUrl: `http://127.0.0.1:${String(address.port)}`,
+    revokeLeaseIds,
+    async close() {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    },
+  };
+}
+
+async function readAppGatewayJson(request: http.IncomingMessage): Promise<unknown> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) chunks.push(Buffer.from(chunk));
+  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+}
+
+function appMainPolicyPack(): SupervisionPolicyPack {
+  return {
+    schemaVersion: "p3-a-1",
+    policyPackId: "policy.main.app-coexistence",
+    agentId: "main",
+    sourceDetectionReportId: "detection.app-coexistence",
+    sourceRiskProfileId: "risk.app-coexistence",
+    policies: [{
+      policyId: "deny-app-coexistence",
+      sourceWeaknessIds: [],
+      name: "App coexistence deny",
+      description: "App coexistence deny",
+      targetType: "tool_call",
+      action: "deny",
+      riskLevel: "high",
+      match: { relation: "all" },
+      reason: "Denied by the app coexistence fixture.",
+    }],
+    defaultAction: "deny",
+    createdAt: "2026-08-10T00:00:00.000Z",
+  };
 }
 
 function appNativeDecision(

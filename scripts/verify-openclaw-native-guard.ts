@@ -2,13 +2,11 @@
  * verify-openclaw-native-guard.ts — OpenClaw native guard fake-host verification.
  *
  * 离线验证（不要求真实 OpenClaw/插件/Docker）：
- *   1. OFF 零副作用
- *   2. allow/deny/redact 决策
- *   3. unattested ask 拒绝
- *   4. 恢复 (recovery) 状态
- *   5. 子 Agent 生命周期
- *   6. 冲突 Hook 检测
- *   7. 签名失败处理
+ *   1. scope 协议兼容与 agent/session 生命周期
+ *   2. 插件 allow/deny/redact、fallback 与恢复
+ *   3. host main 与 detection sandbox 共存
+ *   4. durable event 到 SSE 的净化投影
+ *   5. sandbox/launcher/installer 验收门
  *
  * 此脚本运行离线协议级和插件级测试，不依赖运行中的 OpenClaw 实例。
  * 每个测试套件独立运行，以捕获各自崩溃/超时。
@@ -37,6 +35,10 @@ function runTest(testLabel: string, testFiles: string[]): void {
   process.stdout.write(`  ✓ ${testLabel} passed.\n`);
 }
 
+function stage(index: number, label: string): void {
+  process.stdout.write(`\n[Stage ${String(index)}] ${label}\n`);
+}
+
 function runTypecheck(label: string, script: string): void {
   process.stdout.write(`\n  ${label}...`);
   const result = spawnSync(NPM_CMD, ["run", script], BASE_ARGS);
@@ -62,10 +64,15 @@ function runNpm(script: string): void {
 // ---------------------------------------------------------------------------
 process.stdout.write("OpenClaw Native Guard Fake-Host Verification\n");
 
+stage(1, "Scope protocol and lease resolution");
 runTest("Protocol (Ed25519, canonical JSON, digest)", [
   "packages/native-guard-protocol/src/index.test.ts",
 ]);
+runTest("Backend lease scopes (legacy, exact, agent fallback, lifecycle)", [
+  "backend/src/modules/openclaw/nativeGuardLeaseService.test.ts",
+]);
 
+stage(2, "Plugin enforcement and recovery");
 runTest("Plugin (lease registry, control routes, runtime, event spool)", [
   "plugins/agent-guard-supervision/src/leaseRegistry.test.ts",
   "plugins/agent-guard-supervision/src/controlRoutes.test.ts",
@@ -73,30 +80,52 @@ runTest("Plugin (lease registry, control routes, runtime, event spool)", [
   "plugins/agent-guard-supervision/src/eventSpool.test.ts",
 ]);
 
-runTest("Backend (coordinator, routes, runtime evidence, event store, trace projector, sandbox)", [
+stage(3, "Host main supervision and sandbox coexistence");
+runTest("Backend app composition and main supervision lifecycle", [
   "backend/src/app.test.ts",
+  "backend/src/api/v1/openclaw/native-supervision-handlers.test.ts",
+  "backend/src/modules/openclaw/mainAgentSupervisionService.test.ts",
+]);
+runTest("Backend coordinator, control identity, and decision routes", [
   "backend/src/api/v1/openclaw/native-guard-handlers.test.ts",
-  "backend/src/api/v1/test-runs/handlers.test.ts",
-  "backend/src/modules/agent/openclawAdapter.test.ts",
-  "backend/src/modules/agent/openclawSession.test.ts",
   "backend/src/modules/openclaw/nativeGuardCoordinator.test.ts",
   "backend/src/modules/openclaw/nativeGuardLiveCapability.test.ts",
   "backend/src/modules/openclaw/openclawHostCapabilityCache.test.ts",
   "backend/src/modules/openclaw/openclawControlClient.test.ts",
+  "backend/src/modules/openclaw/hostGatewayAttestationBootstrap.test.ts",
+  "backend/src/modules/openclaw/nativeToolDecisionService.test.ts",
+]);
+
+stage(4, "Durable events, sanitized SSE, and session lifecycle");
+runTest("Durable native event projection and realtime fan-out", [
+  "backend/src/modules/openclaw/nativeGuardRealtimeBridge.test.ts",
+  "backend/src/modules/openclaw/realtimeMcpServer.test.ts",
+  "backend/src/storage/nativeGuardEventStore.test.ts",
+  "backend/src/modules/openclaw/nativeGuardTraceProjector.test.ts",
+]);
+runTest("OpenClaw adapter and session lifecycle", [
+  "backend/src/modules/agent/openclawAdapter.test.ts",
+  "backend/src/modules/agent/openclawSession.test.ts",
+]);
+
+stage(5, "Detection sandbox orchestration");
+runTest("Detection run routes, runner, persistence, and sandbox", [
+  "backend/src/api/v1/test-runs/handlers.test.ts",
   "backend/src/modules/runner/testRunner.test.ts",
   "backend/src/services/e2eRunService.test.ts",
   "backend/src/storage/fileRunStore.test.ts",
-  "backend/src/storage/nativeGuardEventStore.test.ts",
-  "backend/src/modules/openclaw/nativeGuardTraceProjector.test.ts",
+  "backend/src/modules/openclaw/detectionOpenClawConfig.test.ts",
   "backend/src/modules/openclaw/detectionSandboxManager.test.ts",
 ]);
 
+stage(6, "Offline acceptance gates");
 runTest("Acceptance gates (launcher, installer, live Docker verifier)", [
   "scripts/openclaw-guard-launcher.test.ts",
   "scripts/install-openclaw-native-guard.test.ts",
   "scripts/verify-openclaw-detection-sandbox.test.ts",
 ]);
 
+stage(7, "Static checks and plugin build");
 runTypecheck("Backend typecheck", "typecheck");
 runTypecheck("Plugin typecheck", "typecheck:openclaw-plugin");
 runTypecheck("Frontend typecheck", "typecheck:frontend");
@@ -107,5 +136,13 @@ process.stdout.write(`
 ============================================================
 OpenClaw Native Guard Fake-Host Verification: ALL PASSED
 ============================================================
+[PASS] legacy exact/session_tree compatibility
+[PASS] main-agent fallback across current and future sessions
+[PASS] worker-agent exclusion from main supervision
+[PASS] exact-session precedence over agent fallback
+[PASS] agent session_end preservation and lifecycle cleanup
+[PASS] durable SSE projection and sensitive-detail sanitization
+[PASS] host main supervision and sandbox detection coexistence
+[PASS] sandbox revoke restoration and main Guard OFF restoration
 `);
 process.exit(0);

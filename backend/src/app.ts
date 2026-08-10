@@ -80,8 +80,9 @@ export function createSandboxCoordinatorFactory(
     };
     return {
       activate: async (actInput) => {
-        const status = await nativeGuardDependencies.coordinator.activate({
+        const activated = await nativeGuardDependencies.coordinator.activateWithIdentity({
           rootSessionKey: actInput.rootSessionKey,
+          scope: { kind: "session", sessionKey: actInput.rootSessionKey },
           mode: "detection",
           sandbox: {
             controlClient: sandboxControlClient,
@@ -93,8 +94,14 @@ export function createSandboxCoordinatorFactory(
               inheritProcessEnv: false,
             },
           },
-        } as Parameters<typeof nativeGuardDependencies.coordinator.activate>[0]);
-        const lease = status.activeLease;
+        } as Parameters<
+          typeof nativeGuardDependencies.coordinator.activateWithIdentity
+        >[0]);
+        const lease = activated.status.activeLeases?.find(
+          (candidate) => candidate.leaseId === activated.leaseId,
+        ) ?? (activated.status.activeLease?.leaseId === activated.leaseId
+          ? activated.status.activeLease
+          : undefined);
         if (!lease) throw new Error("Sandbox guard activation returned no active lease.");
         return { leaseId: lease.leaseId, leaseEpoch: lease.leaseEpoch };
       },

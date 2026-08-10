@@ -206,6 +206,7 @@ function createLazyNativeGuardCoordinator(
   let currentIdentity: string | undefined;
   let resolutionTail = Promise.resolve();
   const inFlightByCoordinator = new Map<NativeGuardCoordinator, number>();
+  const leaseOwners = new Map<string, NativeGuardCoordinator>();
 
   async function reserveCoordinator(): Promise<NativeGuardCoordinator> {
     const previousResolution = resolutionTail;
@@ -216,14 +217,18 @@ function createLazyNativeGuardCoordinator(
     await previousResolution;
     try {
       const coordinator = await resolveFreshCoordinator();
-      inFlightByCoordinator.set(
-        coordinator,
-        (inFlightByCoordinator.get(coordinator) ?? 0) + 1,
-      );
+      retainCoordinator(coordinator);
       return coordinator;
     } finally {
       releaseResolution();
     }
+  }
+
+  function retainCoordinator(coordinator: NativeGuardCoordinator): void {
+    inFlightByCoordinator.set(
+      coordinator,
+      (inFlightByCoordinator.get(coordinator) ?? 0) + 1,
+    );
   }
 
   function releaseCoordinator(coordinator: NativeGuardCoordinator): void {
@@ -243,6 +248,40 @@ function createLazyNativeGuardCoordinator(
       return await operation(coordinator);
     } finally {
       releaseCoordinator(coordinator);
+    }
+  }
+
+  async function delegateToOwner<T>(
+    coordinator: NativeGuardCoordinator,
+    operation: (coordinator: NativeGuardCoordinator) => Promise<T>,
+  ): Promise<T> {
+    retainCoordinator(coordinator);
+    try {
+      return await operation(coordinator);
+    } finally {
+      releaseCoordinator(coordinator);
+    }
+  }
+
+  function revokeCleanupConfirmed(
+    coordinator: NativeGuardCoordinator,
+    leaseId: string,
+    status: NativeGuardStatus,
+  ): boolean {
+    if (
+      status.activeLease?.leaseId === leaseId ||
+      status.activeLeases?.some((lease) => lease.leaseId === leaseId) ||
+      (status.activeLeaseCount > 0 &&
+        status.activeLease === undefined &&
+        status.activeLeases === undefined)
+    ) {
+      return false;
+    }
+    try {
+      return !coordinator.isLeaseUsable(leaseId) &&
+        !coordinator.isLeaseRevoking(leaseId);
+    } catch {
+      return false;
     }
   }
 
@@ -293,12 +332,31 @@ function createLazyNativeGuardCoordinator(
       return delegate((coordinator) => coordinator.activate(input));
     },
     async activateWithIdentity(input) {
-      return delegate((coordinator) => coordinator.activateWithIdentity(input));
+      return delegate(async (coordinator) => {
+        const activation = await coordinator.activateWithIdentity(input);
+        leaseOwners.set(activation.leaseId, coordinator);
+        return activation;
+      });
     },
     async renew(leaseId, ttlMs) {
+      const owner = leaseOwners.get(leaseId);
+      if (owner) {
+        return delegateToOwner(owner, (coordinator) => coordinator.renew(leaseId, ttlMs));
+      }
       return delegate((coordinator) => coordinator.renew(leaseId, ttlMs));
     },
     async revoke(leaseId) {
+      const owner = leaseOwners.get(leaseId);
+      if (owner) {
+        const status = await delegateToOwner(
+          owner,
+          (coordinator) => coordinator.revoke(leaseId),
+        );
+        if (revokeCleanupConfirmed(owner, leaseId, status)) {
+          leaseOwners.delete(leaseId);
+        }
+        return status;
+      }
       return delegate((coordinator) => coordinator.revoke(leaseId));
     },
     async status() {

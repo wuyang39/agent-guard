@@ -128,6 +128,35 @@ function hasOptionalString(value: unknown): boolean {
   return value === undefined || typeof value === "string";
 }
 
+export async function reconcileNativeStatusAfterStartFailure(options: {
+  error: unknown;
+  operation: LatestOperationToken;
+  loadStatus: () => Promise<MainAgentSupervisionStatus>;
+  applyStatus: (status: MainAgentSupervisionStatus) => void;
+  applyError: (message: string) => void;
+}): Promise<void> {
+  if (!options.operation.isCurrent()) return;
+  const errorMessage = options.error instanceof Error
+    ? options.error.message
+    : String(options.error);
+  options.applyError(errorMessage);
+
+  const embeddedStatus = nativeStatusFromError(options.error);
+  if (embeddedStatus) {
+    if (!options.operation.isCurrent()) return;
+    options.applyStatus(embeddedStatus);
+    return;
+  }
+
+  try {
+    const authoritativeStatus = await options.loadStatus();
+    if (!options.operation.isCurrent()) return;
+    options.applyStatus(authoritativeStatus);
+  } catch {
+    // The activation error remains authoritative for the command outcome.
+  }
+}
+
 export function LiveSupervisionPage({
   onGoDefense,
   onReportGenerated,
@@ -303,9 +332,13 @@ export function LiveSupervisionPage({
       setNativeStatus(status);
     } catch (error) {
       if (!operation.isCurrent()) return;
-      const failedStatus = nativeStatusFromError(error);
-      if (failedStatus) setNativeStatus(failedStatus);
-      setStatusError(error instanceof Error ? error.message : String(error));
+      await reconcileNativeStatusAfterStartFailure({
+        error,
+        operation,
+        loadStatus: agentGuardApi.nativeSupervisionStatus,
+        applyStatus: setNativeStatus,
+        applyError: setStatusError,
+      });
     } finally {
       if (operation.isCurrent()) setNativeCommandPending(false);
     }

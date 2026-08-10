@@ -15,6 +15,7 @@ import {
   MainSupervisionStatusPanel,
   REALTIME_EVENT_TYPES,
   nativeStatusFromError,
+  reconcileNativeStatusAfterStartFailure,
   startMainSupervision,
   stopMainSupervision,
 } from "./pages/Supervision/LiveSupervisionPage";
@@ -185,6 +186,87 @@ test("stream construction failure preserves active supervision and reports liste
 
   assert.equal(status.coverage, "active");
   assert.match(String(listeningError), /ask stream construction failed/);
+});
+
+test("activation failure refreshes authoritative native status without replacing the start error", async () => {
+  const gate = createLatestOperationGate();
+  gate.mount();
+  const operation = gate.begin();
+  const statuses: MainAgentSupervisionStatus[] = [];
+  const errors: string[] = [];
+
+  await reconcileNativeStatusAfterStartFailure({
+    error: new ApiRequestError("activation gateway timeout", "GATEWAY_TIMEOUT", 503),
+    operation,
+    async loadStatus() {
+      return {
+        ...mainSupervisionStatus(),
+        coverage: "conditional",
+        reasonCode: "LEASE_OWNERSHIP_UNCERTAIN",
+      };
+    },
+    applyStatus(status) {
+      statuses.push(status);
+    },
+    applyError(message) {
+      errors.push(message);
+    },
+  });
+
+  assert.equal(statuses.at(-1)?.coverage, "conditional");
+  assert.deepEqual(errors, ["activation gateway timeout"]);
+});
+
+test("stale activation failure refresh cannot overwrite a newer operation", async () => {
+  const gate = createLatestOperationGate();
+  gate.mount();
+  const operation = gate.begin();
+  let resolveStatus: ((status: MainAgentSupervisionStatus) => void) | undefined;
+  const statuses: MainAgentSupervisionStatus[] = [];
+
+  const pending = reconcileNativeStatusAfterStartFailure({
+    error: new ApiRequestError("activation failed", "GATEWAY_ERROR", 503),
+    operation,
+    loadStatus() {
+      return new Promise((resolve) => {
+        resolveStatus = resolve;
+      });
+    },
+    applyStatus(status) {
+      statuses.push(status);
+    },
+    applyError() {},
+  });
+  await Promise.resolve();
+  gate.begin();
+  resolveStatus?.({ ...mainSupervisionStatus(), coverage: "recovery" });
+  await pending;
+
+  assert.deepEqual(statuses, []);
+});
+
+test("status refresh failure keeps the previous status and original activation error", async () => {
+  const gate = createLatestOperationGate();
+  gate.mount();
+  const statuses: MainAgentSupervisionStatus[] = [];
+  const errors: string[] = [];
+
+  await reconcileNativeStatusAfterStartFailure({
+    error: new ApiRequestError("activation failed", "GATEWAY_ERROR", 503),
+    operation: gate.begin(),
+    async loadStatus() {
+      throw new Error("status refresh failed");
+    },
+    applyStatus(status) {
+      statuses.push(status);
+    },
+    applyError(message) {
+      errors.push(message);
+    },
+  });
+
+  assert.deepEqual(statuses, []);
+  assert.deepEqual(errors, ["activation failed"]);
 });
 
 test("starting main supervision rejects non-active responses without opening the stream", async () => {

@@ -267,10 +267,15 @@ test("sandbox activation returns the coordinator's authoritative lease identity"
 });
 
 test("sandbox activation revokes malformed authoritative identities before rejecting", async (t) => {
-  for (const invalid of [
-    { leaseId: "", leaseEpoch: 1 },
-    { leaseId: "lease-zero-epoch", leaseEpoch: 0 },
-    { leaseId: "lease-fractional-epoch", leaseEpoch: 1.5 },
+  for (const { identity: invalid, expectedRevoke } of [
+    { identity: { leaseId: "", leaseEpoch: 1 }, expectedRevoke: false },
+    { identity: { leaseId: null as unknown as string, leaseEpoch: 1 }, expectedRevoke: false },
+    { identity: { leaseId: 42 as unknown as string, leaseEpoch: 1 }, expectedRevoke: false },
+    { identity: { leaseId: "lease-zero-epoch", leaseEpoch: 0 }, expectedRevoke: true },
+    {
+      identity: { leaseId: "lease-fractional-epoch", leaseEpoch: 1.5 },
+      expectedRevoke: true,
+    },
   ]) {
     await t.test(JSON.stringify(invalid), async () => {
       const revokeLeaseIds: string[] = [];
@@ -313,7 +318,7 @@ test("sandbox activation revokes malformed authoritative identities before rejec
         }),
         { message: "Sandbox guard activation returned an invalid lease identity." },
       );
-      assert.deepEqual(revokeLeaseIds, [invalid.leaseId]);
+      assert.deepEqual(revokeLeaseIds, expectedRevoke ? [invalid.leaseId] : []);
     });
   }
 });

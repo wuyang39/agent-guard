@@ -49,7 +49,7 @@ Invoke-RestMethod http://127.0.0.1:3100/api/v1/system/status
 node $env:OPENCLAW_CLI plugins list --json
 ```
 
-预期插件为 enabled/loaded，三个端口在监听。若模型检查、插件或 Docker image 任一项失败，不进入验收。
+预期插件为 enabled/loaded，四个端口在监听。若模型检查、插件或 Docker image 任一项失败，不进入验收。
 
 ## 2. 建立安全探针和证据目录
 

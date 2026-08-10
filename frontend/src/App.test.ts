@@ -4,11 +4,17 @@ import { renderToStaticMarkup } from "react-dom/server";
 import test from "node:test";
 import type { AgentConnectionConfig, MainAgentSupervisionStatus } from "./lib/api/types";
 import { agentGuardApi } from "./lib/api/client";
+import { ApiRequestError } from "./lib/api/core";
 import { mockBundle } from "./lib/api/mockData";
+import {
+  createLatestOperationGate,
+  createRealtimeStreamController,
+} from "./lib/models/realtime";
 import { RunWorkflowPage } from "./pages/RunWorkflow/RunWorkflowPage";
 import {
   MainSupervisionStatusPanel,
   REALTIME_EVENT_TYPES,
+  nativeStatusFromError,
   startMainSupervision,
   stopMainSupervision,
 } from "./pages/Supervision/LiveSupervisionPage";
@@ -111,6 +117,76 @@ test("starting main supervision does not open the stream when activation fails",
   assert.equal(openCount, 0);
 });
 
+test("an HTTP 503 error cannot be mistaken for a native supervision status", async () => {
+  assert.equal(
+    nativeStatusFromError(new ApiRequestError("gateway unavailable", "GATEWAY_ERROR", 503)),
+    undefined,
+  );
+
+  let thrown: unknown;
+  try {
+    await startMainSupervision("policy.frontend.main", {
+      async start() {
+        return {
+          ...mainSupervisionStatus(),
+          coverage: "conditional",
+          reasonCode: "LEASE_RECOVERY_REQUIRED",
+        };
+      },
+      openStream() {},
+    });
+  } catch (error) {
+    thrown = error;
+  }
+  assert.deepEqual(nativeStatusFromError(thrown), {
+    ...mainSupervisionStatus(),
+    coverage: "conditional",
+    reasonCode: "LEASE_RECOVERY_REQUIRED",
+  });
+});
+
+test("a deferred start cannot open SSE after its lifecycle is invalidated", async () => {
+  const gate = createLatestOperationGate();
+  gate.mount();
+  const operation = gate.begin();
+  let resolveStart: ((status: MainAgentSupervisionStatus) => void) | undefined;
+  let openCount = 0;
+
+  const startPromise = startMainSupervision("policy.frontend.main", {
+    start() {
+      return new Promise((resolve) => {
+        resolveStart = resolve;
+      });
+    },
+    openStream() {
+      openCount += 1;
+    },
+  }, operation);
+
+  gate.dispose();
+  resolveStart?.(mainSupervisionStatus());
+  await startPromise;
+  assert.equal(openCount, 0);
+});
+
+test("stream construction failure preserves active supervision and reports listening separately", async () => {
+  let listeningError: unknown;
+  const status = await startMainSupervision("policy.frontend.main", {
+    async start() {
+      return mainSupervisionStatus();
+    },
+    openStream() {
+      throw new Error("ask stream construction failed");
+    },
+    onListeningError(error) {
+      listeningError = error;
+    },
+  });
+
+  assert.equal(status.coverage, "active");
+  assert.match(String(listeningError), /ask stream construction failed/);
+});
+
 test("starting main supervision rejects non-active responses without opening the stream", async () => {
   let openCount = 0;
 
@@ -136,18 +212,41 @@ test("starting main supervision rejects non-active responses without opening the
 
 test("stopping main supervision leaves an existing event stream open", async () => {
   let closeCount = 0;
-
-  const status = await stopMainSupervision({
-    async stop() {
-      return { ...mainSupervisionStatus(), coverage: "off", mainLeaseCount: 0 };
+  const stream = createRealtimeStreamController({
+    eventTypes: [],
+    createEventSource() {
+      return {
+        onerror: null,
+        addEventListener() {},
+        close() {
+          closeCount += 1;
+        },
+      };
     },
-    closeStream() {
-      closeCount += 1;
-    },
+    onEvent() {},
+    onAskConfig() {},
+    onAskDecision() {},
+    onAskResolved() {},
+    onError() {},
+    onStreamingChange() {},
+  });
+  stream.open({
+    mainUrl: "http://main.test/events",
+    askUrl: "http://main.test/asks",
+    runtimeSessionId: "runtime.synthetic",
+    includeHistory: false,
   });
 
+  const status = await stopMainSupervision(async () => ({
+    ...mainSupervisionStatus(),
+    coverage: "off",
+    mainLeaseCount: 0,
+  }));
+
   assert.equal(status.coverage, "off");
+  assert.equal(stream.isOpen(), true);
   assert.equal(closeCount, 0);
+  stream.close();
 });
 
 test("main supervision status panel renders scope, lease state, diagnostics, and controls", (t) => {
@@ -167,6 +266,7 @@ test("main supervision status panel renders scope, lease state, diagnostics, and
     },
     commandPending: false,
     streaming: true,
+    onRefresh() {},
     onStart() {},
     onStartListening() {},
     onStop() {},
@@ -201,11 +301,11 @@ test("main supervision status panel can restart SSE listening independently", (t
   });
   reactGlobal.React = React;
 
-  const StatusPanel = MainSupervisionStatusPanel as React.ComponentType<Record<string, unknown>>;
-  const markup = renderToStaticMarkup(React.createElement(StatusPanel, {
+  const markup = renderToStaticMarkup(React.createElement(MainSupervisionStatusPanel, {
     status: mainSupervisionStatus(),
     commandPending: false,
     streaming: false,
+    onRefresh() {},
     onStart() {},
     onStop() {},
     onStartListening() {},
@@ -214,6 +314,30 @@ test("main supervision status panel can restart SSE listening independently", (t
 
   assert.match(markup, /监听事件/);
   assert.match(markup, /开始监督/);
+});
+
+test("pending native commands disable start, stop, and native status refresh", (t) => {
+  const reactGlobal = globalThis as typeof globalThis & { React?: typeof React };
+  const previousReact = reactGlobal.React;
+  t.after(() => {
+    reactGlobal.React = previousReact;
+  });
+  reactGlobal.React = React;
+
+  const markup = renderToStaticMarkup(React.createElement(MainSupervisionStatusPanel, {
+    status: mainSupervisionStatus(),
+    commandPending: true,
+    streaming: true,
+    onRefresh() {},
+    onStart() {},
+    onStop() {},
+    onStartListening() {},
+    onStopListening() {},
+  }));
+
+  assert.match(markup, /<button[^>]*disabled=""[^>]*>处理中\.\.\.<\/button>/);
+  assert.match(markup, /<button[^>]*disabled=""[^>]*>停止监督<\/button>/);
+  assert.match(markup, /<button[^>]*disabled=""[^>]*>刷新监督<\/button>/);
 });
 
 function mainSupervisionStatus(): MainAgentSupervisionStatus {

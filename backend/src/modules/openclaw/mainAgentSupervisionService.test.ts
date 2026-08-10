@@ -287,25 +287,32 @@ test("an invalid activation result is revoked and never exposed as active", asyn
 });
 
 test("activation requires an exact usable summary with its own Gateway identity", async () => {
-  for (const invalid of ["scope", "usable", "gateway"] as const) {
+  for (const invalid of ["root", "scope", "usable", "gateway"] as const) {
     const fixture = createFixture({ invalidActivation: invalid });
 
     await assert.rejects(
       fixture.service.start("policy.main"),
       isServiceError("MAIN_AGENT_SUPERVISION_ACTIVATION_FAILED", 503),
     );
-    assert.deepEqual(
-      fixture.revokeLeaseIds,
-      invalid === "scope" ? [] : ["lease-1"],
-      invalid,
-    );
-    if (invalid === "scope") {
-      assert.equal(
-        (await fixture.service.status()).reasonCode,
-        "MAIN_AGENT_SUPERVISION_ROLLBACK_UNCONFIRMED",
-      );
-    }
+    assert.deepEqual(fixture.revokeLeaseIds, ["lease-1"], invalid);
   }
+});
+
+test("malformed activation rollback ignores a concurrent new different-policy lease", async () => {
+  const fixture = createFixture({ invalidActivation: "scope" });
+  fixture.setConcurrentActivationLease({
+    ...unrelatedLease(),
+    leaseId: "lease.concurrent",
+    policyPackId: "policy.concurrent",
+  });
+
+  await assert.rejects(
+    fixture.service.start("policy.main"),
+    isServiceError("MAIN_AGENT_SUPERVISION_ACTIVATION_FAILED", 503),
+  );
+
+  assert.deepEqual(fixture.revokeLeaseIds, ["lease-1"]);
+  assert.deepEqual(fixture.activeLeaseIds(), ["lease.concurrent"]);
 });
 
 test("renew runs at two-thirds TTL and reschedules from the renewed expiry", async () => {
@@ -406,7 +413,7 @@ type FixtureOptions = {
   unrelatedLease?: boolean;
   beforeActivate?: () => Promise<void>;
   activationCoverage?: NativeGuardStatus["coverage"];
-  invalidActivation?: "scope" | "usable" | "gateway";
+  invalidActivation?: "root" | "scope" | "usable" | "gateway";
   renewError?: Error;
   revokeFailures?: number;
   revokeUnconfirmedCount?: number;
@@ -417,6 +424,7 @@ function createFixture(options: FixtureOptions = {}) {
   let timerSequence = 0;
   let activeMain: NativeGuardLeaseSummary | undefined;
   let externalMain: NativeGuardLeaseSummary | undefined;
+  let concurrentActivationLease: NativeGuardLeaseSummary | undefined;
   let unrelatedActive = options.unrelatedLease === true;
   let revokeFailures = options.revokeFailures ?? 0;
   let revokeUnconfirmedCount = options.revokeUnconfirmedCount ?? 0;
@@ -445,6 +453,9 @@ function createFixture(options: FixtureOptions = {}) {
     scheduled,
     setUnrelatedActive(value: boolean) { unrelatedActive = value; },
     setExternalMain(value: NativeGuardLeaseSummary | undefined) { externalMain = value; },
+    setConcurrentActivationLease(value: NativeGuardLeaseSummary | undefined) {
+      concurrentActivationLease = value;
+    },
     failNextActivation(policyPackId: string) {
       activationFailures.set(policyPackId, (activationFailures.get(policyPackId) ?? 0) + 1);
     },
@@ -455,7 +466,8 @@ function createFixture(options: FixtureOptions = {}) {
       coordinatorGateways.set(policyPackId, gatewayInstanceId);
     },
     activeLeaseIds() {
-      return [externalMain, activeMain].flatMap((lease) => lease ? [lease.leaseId] : []);
+      return [externalMain, concurrentActivationLease, activeMain]
+        .flatMap((lease) => lease ? [lease.leaseId] : []);
     },
     setMainGatewayInstanceId(value: string | undefined) {
       if (activeMain) activeMain = { ...activeMain, gatewayInstanceId: value };
@@ -465,13 +477,15 @@ function createFixture(options: FixtureOptions = {}) {
   const unrelated = unrelatedLease();
   const aggregate = (
     main = activeMain,
-    coverage: NativeGuardStatus["coverage"] = main || externalMain || unrelatedActive
+    coverage: NativeGuardStatus["coverage"] = main || externalMain ||
+        concurrentActivationLease || unrelatedActive
       ? "active"
       : "ready",
   ): NativeGuardStatus => {
     const activeLeases = [
       ...(unrelatedActive ? [unrelated] : []),
       ...(externalMain ? [externalMain] : []),
+      ...(concurrentActivationLease ? [concurrentActivationLease] : []),
       ...(main ? [main] : []),
     ];
     return {
@@ -500,6 +514,9 @@ function createFixture(options: FixtureOptions = {}) {
       const expiresAt = new Date(fixture.nowMs + TTL_MS).toISOString();
       activeMain = mainLease({
         leaseId,
+        ...(options.invalidActivation === "root"
+          ? { rootSessionKey: "agent:main:wrong" }
+          : {}),
         policyPackId,
         policyPackDigest: coordinatorPolicyDigests.get(policyPackId) ??
           digestJson(policyPack(policyPackId)),
@@ -550,6 +567,9 @@ function createFixture(options: FixtureOptions = {}) {
       }
       usableLeaseIds.delete(leaseId);
       if (activeMain?.leaseId === leaseId) activeMain = undefined;
+      if (concurrentActivationLease?.leaseId === leaseId) {
+        concurrentActivationLease = undefined;
+      }
       return aggregate();
     },
     async status() {

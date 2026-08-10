@@ -208,8 +208,11 @@ export function createMainAgentSupervisionService(
       } catch {
         // A missing post-failure snapshot leaves ownership unconfirmed.
       }
-      if (after && newlyAddedMainLeases(after, beforeIds).length > 0) {
-        await rollbackInvalidActivation(after, beforeIds);
+      if (
+        after &&
+        newlyAddedActivationCandidates(after, beforeIds, policyPackId).length > 0
+      ) {
+        await rollbackInvalidActivation(after, beforeIds, policyPackId);
       } else {
         current = undefined;
         lastStatus = idleStatus("conditional", after?.activeLeaseCount ?? before.activeLeaseCount, {
@@ -236,7 +239,7 @@ export function createMainAgentSupervisionService(
         exact.gatewayInstanceId !== expectedGatewayInstanceId) ||
       !options.coordinator.isLeaseUsable(exact.leaseId)
     ) {
-      await rollbackInvalidActivation(aggregate, beforeIds);
+      await rollbackInvalidActivation(aggregate, beforeIds, policyPackId);
       return false;
     }
 
@@ -246,7 +249,7 @@ export function createMainAgentSupervisionService(
       scheduleRenewal(current);
       return true;
     } catch {
-      await rollbackInvalidActivation(aggregate, beforeIds);
+      await rollbackInvalidActivation(aggregate, beforeIds, policyPackId);
       return false;
     }
   }
@@ -254,9 +257,14 @@ export function createMainAgentSupervisionService(
   async function rollbackInvalidActivation(
     aggregate: NativeGuardStatus,
     beforeIds: ReadonlySet<string>,
+    requestedPolicyPackId: string,
   ): Promise<boolean> {
     cancelRenewal();
-    const candidates = newlyAddedMainLeases(aggregate, beforeIds);
+    const candidates = newlyAddedActivationCandidates(
+      aggregate,
+      beforeIds,
+      requestedPolicyPackId,
+    );
     if (candidates.length !== 1) {
       current = undefined;
       lastStatus = idleStatus("recovery", aggregate.activeLeaseCount, {
@@ -658,6 +666,16 @@ function newlyAddedMainLeases(
   beforeIds: ReadonlySet<string>,
 ): NativeGuardLeaseSummary[] {
   return findMainLeases(status).filter((lease) => !beforeIds.has(lease.leaseId));
+}
+
+function newlyAddedActivationCandidates(
+  status: NativeGuardStatus,
+  beforeIds: ReadonlySet<string>,
+  requestedPolicyPackId: string,
+): NativeGuardLeaseSummary[] {
+  return statusLeases(status).filter((lease) =>
+    !beforeIds.has(lease.leaseId) &&
+    lease.policyPackId === requestedPolicyPackId);
 }
 
 function statusLeases(status: NativeGuardStatus): NativeGuardLeaseSummary[] {

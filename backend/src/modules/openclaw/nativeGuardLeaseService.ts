@@ -530,25 +530,28 @@ export function createNativeGuardLeaseService(
         expiresAtMs: clampExpiry(issuedAtMs, ttlMs, policyExpiresAtMs),
         policyExpiresAtMs,
       };
-      leases.set(leaseId, lease);
-      if (normalizedScope.kind === "session") {
-        sessions.set(normalizedScope.sessionKey, {
-          leaseId,
-          boundEpoch: 1,
-          children: new Set(),
-        });
-      } else {
-        agents.set(normalizedScope.agentId, leaseId);
+      const activation = activationFor(
+        lease,
+        credential,
+        evidenceCredential,
+        evidenceSigning.evidenceSigningPrivateKey,
+      );
+      try {
+        leases.set(leaseId, lease);
+        if (normalizedScope.kind === "session") {
+          sessions.set(normalizedScope.sessionKey, {
+            leaseId,
+            boundEpoch: 1,
+            children: new Set(),
+          });
+        } else {
+          agents.set(normalizedScope.agentId, leaseId);
+        }
+        return { activation, status: status() };
+      } catch (error) {
+        removeLease(leaseId);
+        throw error;
       }
-      return {
-        activation: activationFor(
-          lease,
-          credential,
-          evidenceCredential,
-          evidenceSigning.evidenceSigningPrivateKey,
-        ),
-        status: status(),
-      };
     },
 
     renew(leaseId: string, ttlMs = DEFAULT_TTL_MS): NativeGuardLeaseActivation {
@@ -722,6 +725,8 @@ export function createNativeGuardLeaseService(
         serviceForEvidence(leaseId, credential) === undefined
       ) return false;
       if (lease.normalizedScope.kind === "agent") {
+        const exact = sessions.get(sessionKey);
+        if (exact !== undefined && exact.leaseId !== leaseId) return false;
         return matchesAgentScope(lease, sessionKey);
       }
       const live = sessions.get(sessionKey);

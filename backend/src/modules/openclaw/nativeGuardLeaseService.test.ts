@@ -243,6 +243,34 @@ describe("main agent lease scope", () => {
     assert.notEqual(afterExpiry.leaseId, afterRevoke.leaseId);
   });
 
+  test("rolls back agent indexes when status projection aborts creation", () => {
+    const nowMs = Date.parse("2026-08-01T00:00:00.000Z");
+    let clockReads = 0;
+    let failStatusRead = true;
+    const service = createNativeGuardLeaseService({
+      now: () => {
+        clockReads += 1;
+        return failStatusRead && clockReads === 3 ? Number.NaN : nowMs;
+      },
+    });
+
+    assert.throws(() => createAgentLease(service), {
+      name: "RangeError",
+      message: "Native guard clock returned an invalid time",
+    });
+
+    failStatusRead = false;
+    let retried: NativeGuardLeaseActivation | undefined;
+    assert.doesNotThrow(() => {
+      retried = createAgentLease(service);
+    });
+    assert.equal(service.status().activeLeaseCount, 1);
+    assert.equal(
+      service.resolveBySession("agent:main:dashboard:after-recovery")?.leaseId,
+      retried?.leaseId,
+    );
+  });
+
   test("reports every active scope and only exposes the singular compatibility field", () => {
     const service = createNativeGuardLeaseService({
       now: () => new Date("2026-08-01T00:00:00.000Z"),
@@ -293,6 +321,12 @@ describe("main agent lease scope", () => {
       exact.leaseEpoch + 1,
       exactSessionKey,
       exact.evidenceCredential,
+    ), false);
+    assert.equal(service.authorizeEvidence(
+      main.leaseId,
+      main.leaseEpoch,
+      exactSessionKey,
+      main.evidenceCredential,
     ), false);
 
     assert.equal(service.revoke(exact.leaseId), true);

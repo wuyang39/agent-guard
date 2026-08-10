@@ -2840,6 +2840,161 @@ test("lazy native runtime keeps root-ended evidence ownership until final revoca
   assert.equal(secondRenewCalls, 1);
 });
 
+test("lazy native runtime prunes owner routing after a fail-closed renewal cleanup", async () => {
+  const handlers = await import("./native-guard-handlers");
+  const first = nativeAgent(
+    "agent.first",
+    "C:\\first\\openclaw.cmd",
+    "http://127.0.0.1:18790",
+  );
+  const second = nativeAgent(
+    "agent.second",
+    "C:\\second\\openclaw.cmd",
+    "http://127.0.0.1:18791",
+  );
+  let factoryCalls = 0;
+  let firstManaged = true;
+  let firstRenewCalls = 0;
+  let secondRenewCalls = 0;
+  const renewalError = new Error("renewal failed closed");
+  let lastStatus: NativeGuardStatus = {
+    coverage: "active",
+    finalizerAssurance: "exclusive_before_hook",
+    activeLeaseCount: 1,
+  };
+  const dependencies = handlers.createNativeGuardRouteDependencies({
+    env: { AGENT_GUARD_CONTROL_TOKEN: CONTROL_TOKEN },
+    loadActiveAgentConfig: async () => factoryCalls === 0 ? first : second,
+    createCoordinator(options) {
+      factoryCalls += 1;
+      if (factoryCalls === 1) {
+        assert.equal(options.gatewayUrl, first.gatewayUrl);
+        return {
+          ...(coordinatorStub() as object),
+          async activateWithIdentity() {
+            return {
+              status: structuredClone(lastStatus),
+              leaseId: "lease.renew-cleanup",
+              leaseEpoch: 6,
+            };
+          },
+          async renew() {
+            firstRenewCalls += 1;
+            firstManaged = false;
+            lastStatus = {
+              coverage: "ready",
+              finalizerAssurance: "exclusive_before_hook",
+              activeLeaseCount: 0,
+            };
+            throw renewalError;
+          },
+          hasManagedLeases() { return firstManaged; },
+          getLastStatus() { return structuredClone(lastStatus); },
+        } as never;
+      }
+      assert.equal(options.gatewayUrl, second.gatewayUrl);
+      return {
+        ...(coordinatorStub() as object),
+        async renew() {
+          secondRenewCalls += 1;
+          return {
+            coverage: "ready",
+            finalizerAssurance: "exclusive_before_hook",
+            activeLeaseCount: 0,
+          };
+        },
+      } as never;
+    },
+    createDecisionService() {
+      return { async decide() { throw new Error("not called"); } };
+    },
+  });
+
+  await dependencies.coordinator.activateWithIdentity({} as never);
+  await assert.rejects(
+    () => dependencies.coordinator.renew("lease.renew-cleanup"),
+    (error: unknown) => error === renewalError,
+  );
+
+  await dependencies.coordinator.status();
+  assert.equal(factoryCalls, 2);
+  await dependencies.coordinator.renew("lease.renew-cleanup");
+  assert.equal(firstRenewCalls, 1);
+  assert.equal(secondRenewCalls, 1);
+});
+
+test("lazy native runtime retains owner routing after ambiguous renewal cleanup", async () => {
+  const handlers = await import("./native-guard-handlers");
+  const first = nativeAgent(
+    "agent.first",
+    "C:\\first\\openclaw.cmd",
+    "http://127.0.0.1:18790",
+  );
+  const second = nativeAgent(
+    "agent.second",
+    "C:\\second\\openclaw.cmd",
+    "http://127.0.0.1:18791",
+  );
+  let factoryCalls = 0;
+  let firstRenewCalls = 0;
+  const renewalError = new Error("renewal cleanup remains pending");
+  const dependencies = handlers.createNativeGuardRouteDependencies({
+    env: { AGENT_GUARD_CONTROL_TOKEN: CONTROL_TOKEN },
+    loadActiveAgentConfig: async () => factoryCalls === 0 ? first : second,
+    createCoordinator(options) {
+      factoryCalls += 1;
+      if (factoryCalls === 1) {
+        assert.equal(options.gatewayUrl, first.gatewayUrl);
+        return {
+          ...(coordinatorStub() as object),
+          async activateWithIdentity() {
+            return {
+              status: {
+                coverage: "active",
+                finalizerAssurance: "exclusive_before_hook",
+                activeLeaseCount: 1,
+              },
+              leaseId: "lease.renew-pending",
+              leaseEpoch: 7,
+            };
+          },
+          async renew() {
+            firstRenewCalls += 1;
+            throw renewalError;
+          },
+          getLastStatus() {
+            return {
+              coverage: "recovery",
+              finalizerAssurance: "exclusive_before_hook",
+              activeLeaseCount: 0,
+              reasonCode: "NATIVE_GUARD_PLUGIN_REVOKE_UNCONFIRMED",
+            };
+          },
+          isLeaseEvidenceUsable() { return true; },
+          isLeaseRevoking() { return true; },
+        } as never;
+      }
+      assert.equal(options.gatewayUrl, second.gatewayUrl);
+      return coordinatorStub();
+    },
+    createDecisionService() {
+      return { async decide() { throw new Error("not called"); } };
+    },
+  });
+
+  await dependencies.coordinator.activateWithIdentity({} as never);
+  await assert.rejects(
+    () => dependencies.coordinator.renew("lease.renew-pending"),
+    (error: unknown) => error === renewalError,
+  );
+  await assert.rejects(
+    () => dependencies.coordinator.renew("lease.renew-pending"),
+    (error: unknown) => error === renewalError,
+  );
+  assert.equal(firstRenewCalls, 2);
+  assert.equal(factoryCalls, 1);
+});
+
 test("lazy native runtime reserves its identity while management is in flight", async () => {
   const handlers = await import("./native-guard-handlers");
   const first = nativeAgent(

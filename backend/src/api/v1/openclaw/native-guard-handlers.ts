@@ -361,7 +361,22 @@ function createLazyNativeGuardCoordinator(
     async renew(leaseId, ttlMs) {
       const owner = leaseOwners.get(leaseId);
       if (owner) {
-        return delegateToOwner(owner, (coordinator) => coordinator.renew(leaseId, ttlMs));
+        try {
+          return await delegateToOwner(
+            owner,
+            (coordinator) => coordinator.renew(leaseId, ttlMs),
+          );
+        } catch (error) {
+          try {
+            const status = owner.getLastStatus();
+            if (revokeCleanupConfirmed(owner, leaseId, status)) {
+              leaseOwners.delete(leaseId);
+            }
+          } catch {
+            // Keep owner routing when post-renewal cleanup cannot be confirmed.
+          }
+          throw error;
+        }
       }
       return delegate((coordinator) => coordinator.renew(leaseId, ttlMs));
     },

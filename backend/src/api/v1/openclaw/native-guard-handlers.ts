@@ -279,6 +279,7 @@ function createLazyNativeGuardCoordinator(
     }
     try {
       return !coordinator.isLeaseUsable(leaseId) &&
+        !coordinator.isLeaseEvidenceUsable(leaseId) &&
         !coordinator.isLeaseRevoking(leaseId);
     } catch {
       return false;

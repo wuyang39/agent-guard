@@ -288,6 +288,55 @@ test("buildApp streams durable native guard events until the app closes", async 
   assert.equal(received.length, 1);
 });
 
+test("buildApp shares one native event bridge across apps using the same store", async (t) => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "agent-guard-shared-realtime-"));
+  t.after(() => rm(rootDir, { recursive: true, force: true }));
+  const runtimeEventStore = createNativeGuardEventStore({ rootDir });
+  const firstApp = await buildApp({
+    logger: false,
+    nativeGuardDependencies: appNativeGuardDependencies(runtimeEventStore),
+    mainAgentSupervisionService: appSupervisionService([]),
+  });
+  const secondApp = await buildApp({
+    logger: false,
+    nativeGuardDependencies: appNativeGuardDependencies(runtimeEventStore),
+    mainAgentSupervisionService: appSupervisionService([]),
+  });
+  t.after(async () => {
+    await Promise.allSettled([firstApp.close(), secondApp.close()]);
+  });
+  const received: string[] = [];
+  const unsubscribe = subscribeRealtimeEvents((event) => {
+    if (event.runtimeSessionId === "agent:main:dashboard:shared-apps") {
+      received.push(event.toolId ?? "missing");
+    }
+  });
+  t.after(unsubscribe);
+
+  assert.equal(await runtimeEventStore.append(appNativeDecision({
+    eventId: "event.shared-both-open",
+    sessionKey: "agent:main:dashboard:shared-apps",
+    toolCallId: "call.shared-both-open",
+  })), true);
+  assert.deepEqual(received, ["call.shared-both-open"]);
+
+  await firstApp.close();
+  assert.equal(await runtimeEventStore.append(appNativeDecision({
+    eventId: "event.shared-one-open",
+    sessionKey: "agent:main:dashboard:shared-apps",
+    toolCallId: "call.shared-one-open",
+  })), true);
+  assert.deepEqual(received, ["call.shared-both-open", "call.shared-one-open"]);
+
+  await secondApp.close();
+  assert.equal(await runtimeEventStore.append(appNativeDecision({
+    eventId: "event.shared-all-closed",
+    sessionKey: "agent:main:dashboard:shared-apps",
+    toolCallId: "call.shared-all-closed",
+  })), true);
+  assert.deepEqual(received, ["call.shared-both-open", "call.shared-one-open"]);
+});
+
 test("buildApp blocks unapproved browser origins before native supervision mutations", async () => {
   const calls: string[] = [];
   const service = appSupervisionService(calls);

@@ -175,6 +175,33 @@ test("does not project duplicate appends or events appended after close", async 
   });
 });
 
+test("releases a shared subscription once for each bridge handle", async () => {
+  await withStore(async (store) => {
+    const projected: string[] = [];
+    const emit: typeof emitNativeToolHookEvent = (input) => {
+      projected.push(input.toolCallId ?? "missing");
+      return {} as ReturnType<typeof emitNativeToolHookEvent>;
+    };
+    const first = createNativeGuardRealtimeBridge({ eventStore: store, emit });
+    const second = createNativeGuardRealtimeBridge({ eventStore: store, emit });
+
+    first.close();
+    first.close();
+    assert.equal(await store.append(buildEvent({
+      eventId: "event.second-owner",
+      toolCallId: "call.second-owner",
+    })), true);
+    assert.deepEqual(projected, ["call.second-owner"]);
+
+    second.close();
+    assert.equal(await store.append(buildEvent({
+      eventId: "event.no-owner",
+      toolCallId: "call.no-owner",
+    })), true);
+    assert.deepEqual(projected, ["call.second-owner"]);
+  });
+});
+
 test("keeps a durable append readable when realtime emission throws", async () => {
   await withStore(async (store) => {
     const event = buildEvent({ eventId: "event.emit-failure" });

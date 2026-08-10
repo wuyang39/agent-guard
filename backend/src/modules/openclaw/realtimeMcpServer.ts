@@ -657,17 +657,25 @@ export function resetRealtimeSessions(runtimeSessionId?: string): number {
 }
 
 export function subscribeRealtimeEvents(
-  listener: (event: RealtimeEvent) => void,
+  listener: (event: RealtimeEvent) => void | Promise<void>,
   opts: { replay?: boolean } = {},
 ): () => void {
+  const safeListener = (event: RealtimeEvent): void => {
+    try {
+      void Promise.resolve(listener(event)).catch(() => undefined);
+    } catch {
+      // One broken realtime consumer must not interrupt event fan-out.
+    }
+  };
+
   if (opts.replay) {
     for (const event of eventHistory) {
-      listener(event);
+      safeListener(event);
     }
   }
 
-  realtimeEvents.on("event", listener);
-  return () => realtimeEvents.off("event", listener);
+  realtimeEvents.on("event", safeListener);
+  return () => realtimeEvents.off("event", safeListener);
 }
 
 export async function handleRealtimeMcpJsonRpc(

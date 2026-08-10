@@ -2,10 +2,16 @@ import assert from "node:assert/strict";
 import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import test from "node:test";
-import type { AgentConnectionConfig } from "./lib/api/types";
+import type { AgentConnectionConfig, MainAgentSupervisionStatus } from "./lib/api/types";
 import { agentGuardApi } from "./lib/api/client";
 import { mockBundle } from "./lib/api/mockData";
 import { RunWorkflowPage } from "./pages/RunWorkflow/RunWorkflowPage";
+import {
+  MainSupervisionStatusPanel,
+  REALTIME_EVENT_TYPES,
+  startMainSupervision,
+  stopMainSupervision,
+} from "./pages/Supervision/LiveSupervisionPage";
 import {
   DEFAULT_SELECTION_CASE_COUNT,
   MAX_SELECTION_CASE_COUNT,
@@ -58,6 +64,171 @@ test("competition workflow renders a 120-case number input maximum", () => {
 
   assert.match(markup, /<input[^>]*max="120"[^>]*type="number"/);
 });
+
+test("live supervision subscribes to native tool hook events", () => {
+  assert.ok(REALTIME_EVENT_TYPES.includes("native_tool_hook"));
+});
+
+test("starting main supervision opens the stream only after active coverage resolves", async () => {
+  const order: string[] = [];
+  let resolveStart: ((status: MainAgentSupervisionStatus) => void) | undefined;
+  const startPromise = startMainSupervision("policy.frontend.main", {
+    start(policyPackId) {
+      order.push(`start:${policyPackId}`);
+      return new Promise((resolve) => {
+        resolveStart = resolve;
+      });
+    },
+    openStream() {
+      order.push("open");
+    },
+  });
+
+  await Promise.resolve();
+  assert.deepEqual(order, ["start:policy.frontend.main"]);
+  resolveStart?.(mainSupervisionStatus());
+  const status = await startPromise;
+
+  assert.equal(status.coverage, "active");
+  assert.deepEqual(order, ["start:policy.frontend.main", "open"]);
+});
+
+test("starting main supervision does not open the stream when activation fails", async () => {
+  let openCount = 0;
+
+  await assert.rejects(
+    () => startMainSupervision("policy.frontend.main", {
+      async start() {
+        throw new Error("gateway unavailable");
+      },
+      openStream() {
+        openCount += 1;
+      },
+    }),
+    /gateway unavailable/,
+  );
+
+  assert.equal(openCount, 0);
+});
+
+test("starting main supervision rejects non-active responses without opening the stream", async () => {
+  let openCount = 0;
+
+  await assert.rejects(
+    () => startMainSupervision("policy.frontend.main", {
+      async start() {
+        return {
+          ...mainSupervisionStatus(),
+          coverage: "conditional",
+          mainLeaseCount: 1,
+          reasonCode: "LEASE_RECOVERY_REQUIRED",
+        };
+      },
+      openStream() {
+        openCount += 1;
+      },
+    }),
+    /LEASE_RECOVERY_REQUIRED/,
+  );
+
+  assert.equal(openCount, 0);
+});
+
+test("stopping main supervision leaves an existing event stream open", async () => {
+  let closeCount = 0;
+
+  const status = await stopMainSupervision({
+    async stop() {
+      return { ...mainSupervisionStatus(), coverage: "off", mainLeaseCount: 0 };
+    },
+    closeStream() {
+      closeCount += 1;
+    },
+  });
+
+  assert.equal(status.coverage, "off");
+  assert.equal(closeCount, 0);
+});
+
+test("main supervision status panel renders scope, lease state, diagnostics, and controls", (t) => {
+  const reactGlobal = globalThis as typeof globalThis & { React?: typeof React };
+  const previousReact = reactGlobal.React;
+  t.after(() => {
+    reactGlobal.React = previousReact;
+  });
+  reactGlobal.React = React;
+
+  const markup = renderToStaticMarkup(React.createElement(MainSupervisionStatusPanel, {
+    status: {
+      ...mainSupervisionStatus(),
+      coverage: "recovery",
+      reasonCode: "LEASE_RECONCILIATION_REQUIRED",
+      detail: "Gateway lease ownership needs reconciliation.",
+    },
+    commandPending: false,
+    streaming: true,
+    onStart() {},
+    onStartListening() {},
+    onStop() {},
+    onStopListening() {},
+  }));
+
+  for (const expected of [
+    "开始监督",
+    "停止监督",
+    "停止监听",
+    "main Agent 全部当前/未来会话",
+    "recovery",
+    "policy.frontend.main",
+    "mainLeaseCount",
+    "1",
+    "activeLeaseCount",
+    "2",
+    "gateway.frontend",
+    "2026",
+    "LEASE_RECONCILIATION_REQUIRED",
+    "Gateway lease ownership needs reconciliation.",
+  ]) {
+    assert.match(markup, new RegExp(expected));
+  }
+});
+
+test("main supervision status panel can restart SSE listening independently", (t) => {
+  const reactGlobal = globalThis as typeof globalThis & { React?: typeof React };
+  const previousReact = reactGlobal.React;
+  t.after(() => {
+    reactGlobal.React = previousReact;
+  });
+  reactGlobal.React = React;
+
+  const StatusPanel = MainSupervisionStatusPanel as React.ComponentType<Record<string, unknown>>;
+  const markup = renderToStaticMarkup(React.createElement(StatusPanel, {
+    status: mainSupervisionStatus(),
+    commandPending: false,
+    streaming: false,
+    onStart() {},
+    onStop() {},
+    onStartListening() {},
+    onStopListening() {},
+  }));
+
+  assert.match(markup, /监听事件/);
+  assert.match(markup, /开始监督/);
+});
+
+function mainSupervisionStatus(): MainAgentSupervisionStatus {
+  return {
+    coverage: "active",
+    scope: { kind: "agent", agentId: "main" },
+    policyPackId: "policy.frontend.main",
+    leaseId: "lease.frontend.main",
+    leaseEpoch: 8,
+    expiresAt: "2026-08-10T08:30:00.000Z",
+    gatewayInstanceId: "gateway.frontend",
+    activeLeaseCount: 2,
+    mainLeaseCount: 1,
+  };
+}
 
 test("OpenClaw selection budgets preserve the 80, 81, and 120 target profiles", async () => {
   const { buildLlmSelectionRequest, selectionTargetProfile } = await import("./App");

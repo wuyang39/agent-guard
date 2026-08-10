@@ -2,6 +2,7 @@ import { apiBaseUrl, request } from "./core";
 import type {
   AskTimeoutConfig,
   DefenseDetailView,
+  MainAgentSupervisionStatus,
   PendingSupervisionAsk,
   RealtimeActivePolicyState,
   RealtimePreparedSession,
@@ -28,6 +29,28 @@ export const realtimeApi = {
 
   activeRealtimePolicy() {
     return request<RealtimeActivePolicyState>("/api/v1/openclaw/realtime/active-policy");
+  },
+
+  nativeSupervisionStatus() {
+    return request<MainAgentSupervisionStatus>("/api/v1/openclaw/native-supervision");
+  },
+
+  startNativeSupervision(policyPackId: string) {
+    return request<MainAgentSupervisionStatus>(
+      "/api/v1/openclaw/native-supervision/start",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ policyPackId }),
+      },
+    );
+  },
+
+  stopNativeSupervision() {
+    return request<MainAgentSupervisionStatus>(
+      "/api/v1/openclaw/native-supervision/stop",
+      { method: "POST" },
+    );
   },
 
   setRealtimeActivePolicy(policyPackId: string, resetSessions = true) {

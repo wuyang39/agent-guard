@@ -5,6 +5,7 @@ import type {
   DefenseClaim,
   EvidenceBundle,
   InteractionTrace,
+  NativeGuardCoverageStatus,
   ReportBundle,
   ReportFormat,
   ReportQualitySummary,
@@ -17,6 +18,20 @@ import type {
   TestContextView,
   TraceabilityGraph,
 } from "@agent-guard/contracts";
+
+export type MainAgentSupervisionStatus = {
+  coverage: NativeGuardCoverageStatus;
+  scope: { kind: "agent"; agentId: "main" };
+  policyPackId?: string;
+  leaseId?: string;
+  leaseEpoch?: number;
+  expiresAt?: string;
+  gatewayInstanceId?: string;
+  activeLeaseCount: number;
+  mainLeaseCount: 0 | 1;
+  reasonCode?: string;
+  detail?: string;
+};
 
 export type ApiResponse<T> =
   | {

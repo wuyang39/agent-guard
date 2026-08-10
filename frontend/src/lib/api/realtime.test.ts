@@ -2,7 +2,19 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { apiBaseUrl } from "./core";
 import { realtimeApi } from "./realtime";
-import type { RunCaseFailureView } from "./types";
+import type { MainAgentSupervisionStatus, RunCaseFailureView } from "./types";
+
+const activeMainSupervision = {
+  coverage: "active",
+  scope: { kind: "agent", agentId: "main" },
+  policyPackId: "policy.frontend.main",
+  leaseId: "lease.frontend.main",
+  leaseEpoch: 8,
+  expiresAt: "2026-08-10T08:30:00.000Z",
+  gatewayInstanceId: "gateway.frontend",
+  activeLeaseCount: 2,
+  mainLeaseCount: 1,
+} satisfies MainAgentSupervisionStatus;
 
 const sandboxProfileSeedFailure = {
   caseId: "case.profile-seed",
@@ -53,4 +65,81 @@ test("ask stream can be scoped to a realtime session", () => {
     realtimeApi.supervisionAskStreamUrl({ sessionId: "session.demo/1" }),
     `${apiBaseUrl}/api/v1/supervision/ask/stream?sessionId=session.demo%2F1`,
   );
+});
+
+test("native supervision API reads status with GET", async (t) => {
+  const previousFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = previousFetch;
+  });
+  let requestUrl: string | undefined;
+  let requestInit: RequestInit | undefined;
+  globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    requestUrl = String(url);
+    requestInit = init;
+    return {
+      async json() {
+        return { ok: true, data: activeMainSupervision };
+      },
+    };
+  }) as unknown as typeof fetch;
+
+  const status = await realtimeApi.nativeSupervisionStatus();
+
+  assert.equal(requestUrl, `${apiBaseUrl}/api/v1/openclaw/native-supervision`);
+  assert.equal(requestInit, undefined);
+  assert.deepEqual(status, activeMainSupervision);
+});
+
+test("native supervision API starts main coverage with the selected policy pack", async (t) => {
+  const previousFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = previousFetch;
+  });
+  let requestUrl: string | undefined;
+  let requestInit: RequestInit | undefined;
+  globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    requestUrl = String(url);
+    requestInit = init;
+    return {
+      async json() {
+        return { ok: true, data: activeMainSupervision };
+      },
+    };
+  }) as unknown as typeof fetch;
+
+  await realtimeApi.startNativeSupervision("policy.frontend.main");
+
+  assert.equal(requestUrl, `${apiBaseUrl}/api/v1/openclaw/native-supervision/start`);
+  assert.equal(requestInit?.method, "POST");
+  assert.deepEqual(JSON.parse(String(requestInit?.body)), {
+    policyPackId: "policy.frontend.main",
+  });
+});
+
+test("native supervision API stops main coverage without a request body", async (t) => {
+  const previousFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = previousFetch;
+  });
+  let requestUrl: string | undefined;
+  let requestInit: RequestInit | undefined;
+  globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    requestUrl = String(url);
+    requestInit = init;
+    return {
+      async json() {
+        return {
+          ok: true,
+          data: { ...activeMainSupervision, coverage: "off", mainLeaseCount: 0 },
+        };
+      },
+    };
+  }) as unknown as typeof fetch;
+
+  await realtimeApi.stopNativeSupervision();
+
+  assert.equal(requestUrl, `${apiBaseUrl}/api/v1/openclaw/native-supervision/stop`);
+  assert.equal(requestInit?.method, "POST");
+  assert.equal(requestInit?.body, undefined);
 });

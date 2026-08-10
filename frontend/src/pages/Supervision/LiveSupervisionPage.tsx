@@ -13,13 +13,17 @@ import type {
   AskTimeoutConfig,
   DefenseDetailView,
   LiveSupervisionEvent,
+  MainAgentSupervisionStatus,
   PendingSupervisionAsk,
   RealtimeActivePolicyState,
   RealtimePreparedSession,
 } from "../../lib/api/types";
 import { actionLabel, actionTone } from "../../lib/formatters/risk";
 import { formatDateTime } from "../../lib/formatters/time";
-import { shouldDisplayRealtimeEvent } from "../../lib/models/realtime";
+import {
+  collectObservedMainSessionKeys,
+  shouldDisplayRealtimeEvent,
+} from "../../lib/models/realtime";
 
 type LiveSupervisionPageProps = {
   onGoDefense: () => void;
@@ -27,7 +31,7 @@ type LiveSupervisionPageProps = {
   onRealtimeEvent?: (event: LiveSupervisionEvent) => void;
 };
 
-const REALTIME_EVENT_TYPES: LiveSupervisionEvent["type"][] = [
+export const REALTIME_EVENT_TYPES = [
   "active_policy_updated",
   "session_reset",
   "session_created",
@@ -39,9 +43,39 @@ const REALTIME_EVENT_TYPES: LiveSupervisionEvent["type"][] = [
   "supervision_batch_started",
   "supervision_batch_completed",
   "defense_report_generated",
-];
+  "native_tool_hook",
+] as const satisfies readonly LiveSupervisionEvent["type"][];
 
 const REALTIME_MCP_URL = "http://127.0.0.1:3100/api/v1/openclaw/realtime/mcp";
+
+export async function startMainSupervision(
+  policyPackId: string,
+  commands: {
+    start: (policyPackId: string) => Promise<MainAgentSupervisionStatus>;
+    openStream: () => void;
+  },
+): Promise<MainAgentSupervisionStatus> {
+  const status = await commands.start(policyPackId);
+  if (status.coverage !== "active" || status.mainLeaseCount !== 1) {
+    throw Object.assign(
+      new Error(
+        status.reasonCode ?? status.detail ??
+          `原生监督未激活（coverage=${status.coverage}, mainLeaseCount=${status.mainLeaseCount}）。`,
+      ),
+      { status },
+    );
+  }
+  commands.openStream();
+  return status;
+}
+
+export async function stopMainSupervision(commands: {
+  stop: () => Promise<MainAgentSupervisionStatus>;
+  closeStream: () => void;
+}): Promise<MainAgentSupervisionStatus> {
+  // Keep the stream alive so OFF and recovery events remain observable.
+  return commands.stop();
+}
 
 export function LiveSupervisionPage({
   onGoDefense,
@@ -49,12 +83,16 @@ export function LiveSupervisionPage({
   onRealtimeEvent,
 }: LiveSupervisionPageProps) {
   const [activePolicy, setActivePolicy] = useState<RealtimeActivePolicyState | undefined>();
+  const [nativeStatus, setNativeStatus] = useState<MainAgentSupervisionStatus | undefined>();
   const [preparedSession, setPreparedSession] = useState<RealtimePreparedSession | undefined>();
   const [statusError, setStatusError] = useState<string | undefined>();
   const [events, setEvents] = useState<LiveSupervisionEvent[]>([]);
+  const [observedNativeEvents, setObservedNativeEvents] = useState<LiveSupervisionEvent[]>([]);
+  const [selectedMainSessionId, setSelectedMainSessionId] = useState<string | undefined>();
   const [includeHistory, setIncludeHistory] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [finalizing, setFinalizing] = useState(false);
+  const [nativeCommandPending, setNativeCommandPending] = useState(false);
   const [pendingAsks, setPendingAsks] = useState<PendingSupervisionAsk[]>([]);
   const [askConfig, setAskConfig] = useState<AskTimeoutConfig | undefined>();
   const [respondingAskIds, setRespondingAskIds] = useState<Set<string>>(() => new Set());
@@ -62,7 +100,7 @@ export function LiveSupervisionPage({
   const askSourceRef = useRef<EventSource | undefined>(undefined);
 
   useEffect(() => {
-    void refreshActivePolicy();
+    void refreshSupervisionStatus();
     void prepareSession();
     return () => {
       sourceRef.current?.close();
@@ -70,10 +108,33 @@ export function LiveSupervisionPage({
     };
   }, []);
 
+  async function refreshSupervisionStatus() {
+    setStatusError(undefined);
+    try {
+      const [nextActivePolicy, nextNativeStatus] = await Promise.all([
+        agentGuardApi.activeRealtimePolicy(),
+        agentGuardApi.nativeSupervisionStatus(),
+      ]);
+      setActivePolicy(nextActivePolicy);
+      setNativeStatus(nextNativeStatus);
+    } catch (error) {
+      setStatusError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
   async function refreshActivePolicy() {
     setStatusError(undefined);
     try {
       setActivePolicy(await agentGuardApi.activeRealtimePolicy());
+    } catch (error) {
+      setStatusError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function refreshNativeSupervisionStatus() {
+    setStatusError(undefined);
+    try {
+      setNativeStatus(await agentGuardApi.nativeSupervisionStatus());
     } catch (error) {
       setStatusError(error instanceof Error ? error.message : String(error));
     }
@@ -112,6 +173,40 @@ export function LiveSupervisionPage({
     openStream(includeHistory);
   }
 
+  async function startSupervision() {
+    if (!activePolicy) return;
+    setNativeCommandPending(true);
+    setStatusError(undefined);
+    try {
+      const status = await startMainSupervision(activePolicy.resolvedPolicyPackId, {
+        start: agentGuardApi.startNativeSupervision,
+        openStream: startStream,
+      });
+      setNativeStatus(status);
+    } catch (error) {
+      const failedStatus = (error as { status?: MainAgentSupervisionStatus }).status;
+      if (failedStatus) setNativeStatus(failedStatus);
+      setStatusError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setNativeCommandPending(false);
+    }
+  }
+
+  async function stopSupervision() {
+    setNativeCommandPending(true);
+    setStatusError(undefined);
+    try {
+      setNativeStatus(await stopMainSupervision({
+        stop: agentGuardApi.stopNativeSupervision,
+        closeStream: stopStream,
+      }));
+    } catch (error) {
+      setStatusError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setNativeCommandPending(false);
+    }
+  }
+
   function openStream(nextIncludeHistory: boolean) {
     sourceRef.current?.close();
     askSourceRef.current?.close();
@@ -127,6 +222,9 @@ export function LiveSupervisionPage({
     for (const eventType of REALTIME_EVENT_TYPES) {
       source.addEventListener(eventType, (message) => {
         const event = JSON.parse((message as MessageEvent).data) as LiveSupervisionEvent;
+        if (event.type === "native_tool_hook") {
+          setObservedNativeEvents((current) => [...current, event]);
+        }
         if (!shouldDisplayRealtimeEvent(event, runtimeSessionId, nextIncludeHistory)) {
           return;
         }
@@ -242,16 +340,25 @@ export function LiveSupervisionPage({
     }
   }
 
-  if (!activePolicy && !statusError) {
-    return <LoadingBlock message="正在读取 OpenClaw realtime MCP 监督状态..." />;
+  if ((!activePolicy || !nativeStatus) && !statusError) {
+    return <LoadingBlock message="正在读取 OpenClaw realtime MCP 与原生监督状态..." />;
   }
 
-  const decisionEvents = events.filter((event) => event.type === "supervision_decision");
+  const observedMainSessionKeys = collectObservedMainSessionKeys(observedNativeEvents);
+  const visibleEvents = events.filter((event) =>
+    shouldDisplayRealtimeEvent(
+      event,
+      preparedSession?.runtimeSessionId,
+      includeHistory,
+      selectedMainSessionId,
+    ),
+  );
+  const decisionEvents = visibleEvents.filter((event) => event.type === "supervision_decision");
   const denyCount = decisionEvents.filter((event) => event.action === "deny").length;
   const redactCount = decisionEvents.filter((event) => event.action === "redact").length;
   const askCount = decisionEvents.filter((event) => event.action === "ask").length;
   const allowCount = decisionEvents.filter((event) => event.action === "allow").length;
-  const newestEvents = [...events].reverse();
+  const newestEvents = [...visibleEvents].reverse();
 
   return (
     <div className="page-stack fill-page supervision-page">
@@ -261,9 +368,6 @@ export function LiveSupervisionPage({
           <h1>实时监督</h1>
         </div>
         <div className="hero-actions">
-          <button className="primary-button hero-button" onClick={streaming ? stopStream : startStream}>
-            {streaming ? "停止监听" : "监听实时事件"}
-          </button>
           <button className="primary-button" disabled={finalizing} onClick={finalizeReport}>
             {finalizing ? "生成中..." : "生成防御报告"}
           </button>
@@ -272,6 +376,18 @@ export function LiveSupervisionPage({
 
       {statusError ? <ErrorBlock title="实时监督状态读取失败" message={statusError} /> : null}
 
+      {nativeStatus ? (
+        <MainSupervisionStatusPanel
+          commandPending={nativeCommandPending}
+          onStart={() => void startSupervision()}
+          onStartListening={startStream}
+          onStop={() => void stopSupervision()}
+          onStopListening={stopStream}
+          status={nativeStatus}
+          streaming={streaming}
+        />
+      ) : null}
+
       <section className="workspace-grid supervision-workspace">
         <div className="workspace-main panel grow-panel event-console">
           <div className="section-header compact">
@@ -279,6 +395,20 @@ export function LiveSupervisionPage({
               <h2>实时事件流</h2>
             </div>
             <div className="event-toolbar">
+              <label className="field event-session-filter">
+                <span>原生 main 会话</span>
+                <select
+                  onChange={(event) =>
+                    setSelectedMainSessionId(event.target.value || undefined)
+                  }
+                  value={selectedMainSessionId ?? ""}
+                >
+                  <option value="">全部 main 会话</option>
+                  {observedMainSessionKeys.map((sessionKey) => (
+                    <option key={sessionKey} value={sessionKey}>{sessionKey}</option>
+                  ))}
+                </select>
+              </label>
               <div className="segmented-control" aria-label="实时事件范围">
                 <button
                   className={!includeHistory ? "active" : ""}
@@ -298,13 +428,13 @@ export function LiveSupervisionPage({
             </div>
           </div>
           <div className="event-list">
-            {events.length ? (
+            {visibleEvents.length ? (
               newestEvents.map((event, index) => (
                 <article
                   className={`event-row ${eventRowClass(event)}`}
                   key={`${event.eventId ?? event.timestamp}-${index}`}
                 >
-                  <div className="event-index">{events.length - index}</div>
+                  <div className="event-index">{visibleEvents.length - index}</div>
                   <div className="event-body">
                     <div className="event-title">
                       <strong>{eventTitle(event)}</strong>
@@ -351,6 +481,9 @@ export function LiveSupervisionPage({
             <div className="button-row rail-actions">
               <button className="secondary-button" onClick={() => void refreshActivePolicy()}>
                 刷新策略
+              </button>
+              <button className="secondary-button" onClick={() => void refreshNativeSupervisionStatus()}>
+                刷新监督
               </button>
               <button className="secondary-button" onClick={() => void resetSession()}>
                 重置会话
@@ -445,6 +578,86 @@ export function LiveSupervisionPage({
       </section>
     </div>
   );
+}
+
+export function MainSupervisionStatusPanel({
+  status,
+  commandPending,
+  streaming,
+  onStart,
+  onStop,
+  onStartListening,
+  onStopListening,
+}: {
+  status: MainAgentSupervisionStatus;
+  commandPending: boolean;
+  streaming: boolean;
+  onStart: () => void;
+  onStop: () => void;
+  onStartListening: () => void;
+  onStopListening: () => void;
+}) {
+  return (
+    <section className="panel native-supervision-status" aria-label="main Agent 原生监督状态">
+      <div className="section-header compact">
+        <div>
+          <h2>main Agent 原生工具监督</h2>
+          <p className="muted">固定范围：main Agent 全部当前/未来会话</p>
+        </div>
+        <Badge tone={nativeCoverageTone(status.coverage)}>{status.coverage}</Badge>
+      </div>
+
+      <div className="id-grid native-supervision-grid">
+        <div><span>Policy pack</span><code>{status.policyPackId ?? "未绑定"}</code></div>
+        <div><span>mainLeaseCount</span><code>{status.mainLeaseCount}</code></div>
+        <div><span>activeLeaseCount</span><code>{status.activeLeaseCount}</code></div>
+        <div><span>Gateway instance</span><code>{status.gatewayInstanceId ?? "未知"}</code></div>
+        <div><span>到期时间</span><code>{status.expiresAt ?? "无"}</code></div>
+      </div>
+
+      {status.reasonCode || status.detail ? (
+        <div className="native-supervision-fault" role="status">
+          {status.reasonCode ? <strong>{status.reasonCode}</strong> : null}
+          {status.detail ? <p>{status.detail}</p> : null}
+        </div>
+      ) : null}
+
+      <div className="button-row native-supervision-actions">
+        <button
+          className="primary-button"
+          disabled={commandPending}
+          onClick={onStart}
+          type="button"
+        >
+          {commandPending ? "处理中..." : "开始监督"}
+        </button>
+        <button
+          className="secondary-button"
+          disabled={commandPending}
+          onClick={onStop}
+          type="button"
+        >
+          停止监督
+        </button>
+        {streaming ? (
+          <button className="secondary-button" onClick={onStopListening} type="button">
+            停止监听
+          </button>
+        ) : (
+          <button className="secondary-button" onClick={onStartListening} type="button">
+            监听事件
+          </button>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function nativeCoverageTone(coverage: MainAgentSupervisionStatus["coverage"]): string {
+  if (coverage === "active") return "tone-low";
+  if (coverage === "conditional" || coverage === "recovery") return "tone-high";
+  if (coverage === "off" || coverage === "ready") return "tone-neutral";
+  return "tone-critical";
 }
 
 function upsertAsk(

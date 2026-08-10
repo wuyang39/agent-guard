@@ -129,18 +129,36 @@ export function runLiveRegistryCli(
   });
 }
 
-function runOpenClawChild(
+export async function runOpenClawChild(
   args: string[],
   cliPath = process.env.OPENCLAW_CLI ?? "openclaw",
+  env: NodeJS.ProcessEnv = process.env,
 ): Promise<ChildResult> {
   const cli = resolveOpenClawCliInvocation(cliPath);
+  const bootstrapFd = openHostBootstrapFile(env);
   return new Promise((resolve) => {
-    const child = spawn(cli.command, [...cli.argsPrefix, ...args], {
-      windowsHide: true,
-      shell: cli.shell,
-      stdio: "inherit",
-      env: { ...cli.env, ...process.env },
-    });
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(cli.command, [...cli.argsPrefix, ...args], {
+        windowsHide: true,
+        shell: cli.shell,
+        stdio: bootstrapFd === undefined
+          ? "inherit"
+          : ["inherit", "inherit", "inherit", bootstrapFd],
+        env: {
+          ...cli.env,
+          ...env,
+          ...(bootstrapFd === undefined
+            ? {}
+            : {
+                OPENCLAW_NATIVE_GUARD_BOOTSTRAP_FD: "3",
+                OPENCLAW_NATIVE_GUARD_BOOTSTRAP_CONTRACT: "native-guard-bootstrap-1",
+              }),
+        },
+      });
+    } finally {
+      if (bootstrapFd !== undefined) fs.closeSync(bootstrapFd);
+    }
     const signals: NodeJS.Signals[] = ["SIGINT", "SIGTERM", "SIGHUP"];
     const signalHandlers = signals.map((signal) => ({
       signal,
@@ -164,6 +182,37 @@ function runOpenClawChild(
       resolve({ exitCode, signal });
     });
   });
+}
+
+function openHostBootstrapFile(env: NodeJS.ProcessEnv): number | undefined {
+  const file = env.AGENT_GUARD_HOST_ATTESTATION_BOOTSTRAP_FILE;
+  if (file === undefined) return undefined;
+  let fd: number | undefined;
+  try {
+    if (!path.isAbsolute(file) || path.resolve(file) !== file) throw new Error("unsafe path");
+    const parent = path.dirname(file);
+    const realParent = fs.realpathSync(parent);
+    const normalize = (value: string) => process.platform === "win32"
+      ? path.resolve(value).toLowerCase()
+      : path.resolve(value);
+    if (normalize(realParent) !== normalize(parent)) throw new Error("unsafe parent");
+    fd = fs.openSync(file, "wx", 0o600);
+    if (!fs.fstatSync(fd).isFile()) {
+      fs.closeSync(fd);
+      fd = undefined;
+      throw new Error("unsafe target");
+    }
+    return fd;
+  } catch {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        // Preserve the stable launcher error below.
+      }
+    }
+    throw new Error("Host Gateway attestation bootstrap file could not be prepared.");
+  }
 }
 
 export function inspectGuardedMarkers(

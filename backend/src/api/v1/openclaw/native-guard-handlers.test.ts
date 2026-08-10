@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
-import { createPrivateKey, createPublicKey } from "node:crypto";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import {
+  createPrivateKey,
+  createPublicKey,
+  generateKeyPairSync,
+  type KeyObject,
+} from "node:crypto";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -1756,6 +1761,54 @@ test("native runtime loads the active OpenClaw identity only for explicit manage
     liveRegistry: true,
   });
   await app.close();
+});
+
+test("host runtime loads the bootstrap key and fingerprints it into coordinator identity", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "agent-guard-host-runtime-key-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const bootstrapFile = path.join(root, "bootstrap.json");
+  const writeBootstrap = async (publicKey: KeyObject) => {
+    const encoded = publicKey.export({ format: "der", type: "spki" }).toString("base64");
+    await writeFile(bootstrapFile, `${JSON.stringify({
+      contractVersion: "native-guard-bootstrap-1",
+      attestationPublicKey: encoded,
+    })}\n`, "utf8");
+    return encoded;
+  };
+  const first = generateKeyPairSync("ed25519").publicKey;
+  const firstEncoded = await writeBootstrap(first);
+  const coordinatorOptions: Array<Record<string, unknown>> = [];
+  const handlers = await import("./native-guard-handlers");
+  const dependencies = handlers.createNativeGuardRouteDependencies({
+    env: {
+      AGENT_GUARD_CONTROL_TOKEN: CONTROL_TOKEN,
+      AGENT_GUARD_HOST_ATTESTATION_BOOTSTRAP_FILE: bootstrapFile,
+    },
+    loadActiveAgentConfig: async () => nativeAgent(
+      "agent.host-attested",
+      "C:\\openclaw\\openclaw.cmd",
+      "http://127.0.0.1:18790",
+    ),
+    createCoordinator(options) {
+      coordinatorOptions.push(options as unknown as Record<string, unknown>);
+      return coordinatorStub();
+    },
+    createDecisionService() {
+      return { async decide() { throw new Error("not called"); } };
+    },
+  });
+
+  await dependencies.coordinator.status();
+  assert.equal(coordinatorOptions.length, 1);
+  assert.equal(
+    (coordinatorOptions[0].gatewayAttestationPublicKey as KeyObject | undefined)
+      ?.export({ format: "der", type: "spki" }).toString("base64"),
+    firstEncoded,
+  );
+
+  await writeBootstrap(generateKeyPairSync("ed25519").publicKey);
+  await dependencies.coordinator.status();
+  assert.equal(coordinatorOptions.length, 2);
 });
 
 test("host runtime reuses one capability probe for the same identity", async () => {

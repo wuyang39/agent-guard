@@ -102,6 +102,7 @@ test("start print plan uses the portable runtime and per-run gateway lifecycle",
     gatewayLifecycle: string;
     supervisionGatewayLifecycle: string;
     controlTokenFile: string;
+    hostAttestationBootstrapFile: string;
   };
 
   assert.deepEqual(plan.services, [
@@ -121,6 +122,83 @@ test("start print plan uses the portable runtime and per-run gateway lifecycle",
     plan.controlTokenFile,
     path.join(path.resolve(runtimeRoot), "runtime", "agent-guard-control-token.txt"),
   );
+  assert.equal(
+    plan.hostAttestationBootstrapFile,
+    path.join(path.resolve(runtimeRoot), "runtime", "openclaw-host-attestation-bootstrap.json"),
+  );
+});
+
+test("host launcher creates an exclusive fd3 bootstrap file and preserves normal launches", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-guard-host-launcher-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const launcher = await import("./openclaw-guard-launcher") as unknown as {
+    runOpenClawChild: (
+      args: string[],
+      cliPath: string,
+      env: NodeJS.ProcessEnv,
+    ) => Promise<{ exitCode: number | null; signal: NodeJS.Signals | null }>;
+  };
+  assert.equal(typeof launcher.runOpenClawChild, "function");
+  const bootstrapFile = path.join(root, "bootstrap.json");
+  const record = `${JSON.stringify({
+    contractVersion: "native-guard-bootstrap-1",
+    attestationPublicKey: "child-writes-the-real-key",
+  })}\n`;
+
+  const guarded = await launcher.runOpenClawChild([
+    "-e",
+    `require("node:fs").writeSync(3, ${JSON.stringify(record)})`,
+  ], process.execPath, {
+    ...process.env,
+    AGENT_GUARD_HOST_ATTESTATION_BOOTSTRAP_FILE: bootstrapFile,
+  });
+  assert.deepEqual(guarded, { exitCode: 0, signal: null });
+  assert.equal(await readFile(bootstrapFile, "utf8"), record);
+  await rm(bootstrapFile);
+
+  const ordinary = await launcher.runOpenClawChild(
+    ["-e", "process.exit(0)"],
+    process.execPath,
+    { ...process.env, AGENT_GUARD_HOST_ATTESTATION_BOOTSTRAP_FILE: undefined },
+  );
+  assert.deepEqual(ordinary, { exitCode: 0, signal: null });
+});
+
+test("host launcher fails closed on stale and unsafe bootstrap paths", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-guard-host-launcher-stale-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const launcher = await import("./openclaw-guard-launcher") as unknown as {
+    runOpenClawChild: (
+      args: string[],
+      cliPath: string,
+      env: NodeJS.ProcessEnv,
+    ) => Promise<unknown>;
+  };
+  const stale = path.join(root, "bootstrap.json");
+  await writeFile(stale, "stale", "utf8");
+
+  for (const bootstrapFile of [stale, "relative-bootstrap.json"] as const) {
+    await assert.rejects(
+      () => launcher.runOpenClawChild(
+        ["-e", "process.exit(0)"],
+        process.execPath,
+        { ...process.env, AGENT_GUARD_HOST_ATTESTATION_BOOTSTRAP_FILE: bootstrapFile },
+      ),
+      /bootstrap/i,
+    );
+  }
+});
+
+test("portable start removes the exact stale host bootstrap before Gateway launch", async () => {
+  const source = await readFile(
+    path.join(repoRoot, "scripts", "start-agent-guard-openclaw.ps1"),
+    "utf8",
+  );
+  const removal = source.indexOf("Remove-Item -LiteralPath $hostAttestationBootstrapFile");
+  const gatewayStart = source.indexOf('Start-NodeService "gateway"');
+  assert.notEqual(removal, -1);
+  assert.ok(removal < gatewayStart);
+  assert.match(source, /AGENT_GUARD_HOST_ATTESTATION_BOOTSTRAP_FILE/);
 });
 
 test("stop handles a top-level PowerShell JSON array registry", async () => {

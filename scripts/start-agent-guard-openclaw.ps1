@@ -111,6 +111,7 @@ $runtimeStateDir = Join-Path $RuntimeRoot "runtime"
 $pidFile = Join-Path $runtimeStateDir "agent-guard-services.json"
 $controlTokenFile = Join-Path $runtimeStateDir "agent-guard-control-token.txt"
 $gatewayTokenFile = Join-Path $runtimeStateDir "openclaw-gateway-token.txt"
+$hostAttestationBootstrapFile = Join-Path $runtimeStateDir "openclaw-host-attestation-bootstrap.json"
 $logDir = Join-Path $RuntimeRoot "runs\portable-services"
 
 $plan = [ordered]@{
@@ -122,6 +123,7 @@ $plan = [ordered]@{
   supervisionGatewayLifecycle = "managed-guard-launcher"
   controlTokenFile = $controlTokenFile
   gatewayTokenFile = $gatewayTokenFile
+  hostAttestationBootstrapFile = $hostAttestationBootstrapFile
   services = @(
     [ordered]@{ name = "gateway"; port = $GatewayPort },
     [ordered]@{ name = "sample"; port = $SamplePort },
@@ -158,6 +160,10 @@ $env:AGENT_GUARD_DETECTION_IMAGE = [string]$manifest.sandboxImage
 $env:AGENT_GUARD_OPENCLAW_ISOLATED_PROFILE = "1"
 
 New-Item -ItemType Directory -Force -Path $runtimeStateDir, $logDir | Out-Null
+if (Test-Path -LiteralPath $hostAttestationBootstrapFile) {
+  Remove-Item -LiteralPath $hostAttestationBootstrapFile -Force
+}
+$env:AGENT_GUARD_HOST_ATTESTATION_BOOTSTRAP_FILE = $hostAttestationBootstrapFile
 $env:AGENT_GUARD_CONTROL_TOKEN = Get-OrCreateRuntimeToken $controlTokenFile
 $env:OPENCLAW_GATEWAY_TOKEN = Get-OrCreateRuntimeToken $gatewayTokenFile
 $env:OPENCLAW_GATEWAY_URL = "http://127.0.0.1:$GatewayPort"

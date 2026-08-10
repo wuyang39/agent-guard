@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { generateKeyPairSync, type KeyObject } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import type {
@@ -589,7 +590,10 @@ test("reserves overlapping scopes per Gateway while different Gateways activate 
       sandbox: different.sandbox.context,
     }),
   ]);
-  assert.deepEqual(differentResults.map((status) => status.activeLeaseCount), [1, 2]);
+  assert.deepEqual(
+    differentResults.map((status) => status.activeLeaseCount).sort(),
+    [1, 2],
+  );
 
   const same = scopedCoordinatorFixture();
   const sameResults = await Promise.allSettled([
@@ -641,6 +645,66 @@ test("requires an attested Gateway identity for every explicit scope", async () 
     hasCoordinatorCode("NATIVE_GUARD_UNSUPPORTED"),
   );
   assert.equal(fixture.activationCalls.length, 0);
+});
+
+test("uses fresh signed host attestations to enable a main-agent scope", async () => {
+  const fixture = coordinatorFixture({
+    capability: { ...verifiedCapability(), gatewayInstanceId: undefined },
+    gatewayAttestationPublicKey: generateKeyPairSync("ed25519").publicKey,
+  });
+
+  const activated = await fixture.coordinator.activate(agentScopeInput());
+
+  assert.equal(activated.coverage, "active");
+  assert.equal(activated.gatewayInstanceId, "gateway.instance.test.1");
+  assert.equal(fixture.attestationCalls.length, 2);
+  assert.match(fixture.attestationCalls[0].challenge, /^[A-Za-z0-9_-]{32}$/);
+  assert.notEqual(fixture.attestationCalls[0].challenge, fixture.attestationCalls[1].challenge);
+});
+
+test("fails host scoped activation when signed Gateway attestation is unavailable", async () => {
+  const fixture = coordinatorFixture({
+    capability: { ...verifiedCapability(), gatewayInstanceId: undefined },
+    gatewayAttestationPublicKey: generateKeyPairSync("ed25519").publicKey,
+    attestationError: new Error("wrong host bootstrap key"),
+  });
+
+  await assert.rejects(
+    () => fixture.coordinator.activate(agentScopeInput()),
+    hasCoordinatorCode("NATIVE_GUARD_UNSUPPORTED"),
+  );
+  assert.equal(fixture.activationCalls.length, 0);
+});
+
+test("binds host renewal and status rechecks to the attested Gateway instance", async () => {
+  const renewal = coordinatorFixture({
+    capability: { ...verifiedCapability(), gatewayInstanceId: undefined },
+    gatewayAttestationPublicKey: generateKeyPairSync("ed25519").publicKey,
+    attestedGatewayInstanceIds: [
+      "gateway.instance.test.1",
+      "gateway.instance.test.1",
+      "gateway.instance.changed",
+    ],
+  });
+  await renewal.coordinator.activate(agentScopeInput());
+  await assert.rejects(
+    () => renewal.coordinator.renew(renewal.activationCalls[0].leaseId),
+    hasCoordinatorCode("NATIVE_GUARD_RENEW_FAILED"),
+  );
+
+  const health = coordinatorFixture({
+    capability: { ...verifiedCapability(), gatewayInstanceId: undefined },
+    gatewayAttestationPublicKey: generateKeyPairSync("ed25519").publicKey,
+    attestedGatewayInstanceIds: [
+      "gateway.instance.test.1",
+      "gateway.instance.test.1",
+      "gateway.instance.changed",
+    ],
+  });
+  await health.coordinator.activate(agentScopeInput());
+  const status = await health.coordinator.status();
+  assert.equal(status.coverage, "conditional");
+  assert.equal(status.reasonCode, "NATIVE_GUARD_CAPABILITY_CHANGED");
 });
 
 test("deletes the backend lease after an offline plugin revoke and keeps repeats idempotent", async () => {
@@ -1057,6 +1121,9 @@ function coordinatorFixture(options: {
   renewAckOverrides?: Record<string, unknown>;
   capabilityAfterActivate?: NativeGuardCapability;
   capabilityAfterRenew?: NativeGuardCapability;
+  gatewayAttestationPublicKey?: KeyObject;
+  attestationError?: Error;
+  attestedGatewayInstanceIds?: string[];
 } = {}) {
   let nowMs = Date.parse("2026-08-02T00:00:00.000Z");
   const leaseService = createNativeGuardLeaseService({ now: () => nowMs });
@@ -1069,6 +1136,7 @@ function coordinatorFixture(options: {
   let capabilityError: Error | undefined;
   let inspectCalls = 0;
   let statusCalls = 0;
+  const attestationCalls: Array<{ gatewayUrl: string; challenge: string }> = [];
   const controlClient = {
     inspectCapabilities: async () => {
       inspectCalls += 1;
@@ -1079,12 +1147,15 @@ function coordinatorFixture(options: {
       statusCalls += 1;
       return pluginStatus;
     },
-    attestGateway: async (input: { gatewayUrl: string; challenge: string }) => ({
+    attestGateway: async (input: { gatewayUrl: string; challenge: string }) => {
+      attestationCalls.push(input);
+      if (options.attestationError) throw options.attestationError;
+      return {
       contractVersion: "native-guard-gateway-1" as const,
       signatureContext: "native_guard.gateway_attestation.v1" as const,
       challenge: input.challenge,
       gatewayUrl: input.gatewayUrl,
-      gatewayInstanceId: "gateway.instance.test.1",
+      gatewayInstanceId: options.attestedGatewayInstanceIds?.shift() ?? "gateway.instance.test.1",
       openclawVersion: "2026.7.2",
       nativeGuard: {
         contractVersion: "native-guard-1" as const,
@@ -1096,7 +1167,7 @@ function coordinatorFixture(options: {
         paramsProvenance: "json-only" as const,
       },
       signature: "test-signature",
-    }),
+    }; },
     activate: async (_gatewayUrl: string, activation: NativeGuardLeaseActivation) => {
       activationCalls.push(activation);
       if (options.activateError) throw options.activateError;
@@ -1136,6 +1207,7 @@ function coordinatorFixture(options: {
     gatewayUrl: "http://127.0.0.1:18789",
     backendUrl: "http://127.0.0.1:3000/api/v1/openclaw/native-guard/decision",
     capabilityInput: { isolatedProfile: false },
+    gatewayAttestationPublicKey: options.gatewayAttestationPublicKey,
   });
   return {
     coordinator,
@@ -1144,6 +1216,7 @@ function coordinatorFixture(options: {
     activationCalls,
     renewCalls,
     revokeCalls,
+    attestationCalls,
     advanceTime(deltaMs: number) { nowMs += deltaMs; },
     get capability() { return capability; },
     set capability(value: NativeGuardCapability) { capability = value; },
@@ -1267,7 +1340,33 @@ function scopedCoordinatorFixture() {
     });
     const controlClient = {
       inspectCapabilities: async () => structuredClone(capability),
-      attestGateway: async () => { throw new Error("not called"); },
+      attestGateway: async (input: { gatewayUrl: string; challenge: string }) => ({
+        contractVersion: "native-guard-gateway-1" as const,
+        signatureContext: "native_guard.gateway_attestation.v1" as const,
+        challenge: input.challenge,
+        gatewayUrl: input.gatewayUrl,
+        gatewayInstanceId,
+        openclawVersion: capability.openclawVersion,
+        nativeGuard: {
+          contractVersion: "native-guard-1" as const,
+          registrarStatus: "live" as const,
+          finalBeforeToolCall: {
+            pluginId: "agent-guard-supervision" as const,
+            exclusive: true as const,
+          },
+          trustedToolPolicy: {
+            policyId: "agent-guard-admission" as const,
+            exclusive: true as const,
+          },
+          recoveryService: {
+            serviceId: "agent-guard-runtime" as const,
+            live: true as const,
+          },
+          postApprovalLeaseRecheck: true as const,
+          paramsProvenance: "json-only" as const,
+        },
+        signature: "test-signature",
+      }),
       status: async () => {
         statusCalls += 1;
         return gatewayStatus();
@@ -1324,6 +1423,7 @@ function scopedCoordinatorFixture() {
     gatewayUrl: host.gatewayUrl,
     backendUrl: "http://127.0.0.1:3000/api/v1/openclaw/native-guard/decision",
     capabilityInput: { isolatedProfile: false },
+    gatewayAttestationPublicKey: generateKeyPairSync("ed25519").publicKey,
   });
   return { coordinator, leaseService, host, sandbox, createGateway };
 }

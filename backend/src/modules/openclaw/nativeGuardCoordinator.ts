@@ -1,3 +1,4 @@
+import { randomBytes, type KeyObject } from "node:crypto";
 import type {
   NativeGuardLeaseActivation,
   NativeGuardLeaseScope,
@@ -44,6 +45,7 @@ export type NativeGuardCoordinatorOptions = {
   gatewayUrl: string;
   backendUrl: string;
   capabilityInput: InspectOpenClawCapabilitiesInput;
+  gatewayAttestationPublicKey?: KeyObject;
 };
 
 export type ActivateNativeGuardInput = {
@@ -101,6 +103,8 @@ type ManagedLease = {
   gatewayUrl: string;
   controlClient: OpenClawControlClient;
   capabilityInput: InspectOpenClawCapabilitiesInput;
+  gatewayAttestationPublicKey?: KeyObject;
+  trustCapabilityGatewayInstanceId: boolean;
   capability: NativeGuardCapability;
   pluginVersion?: string;
   phase: "activating" | "active" | "renewing" | "root_ended" | "revoking";
@@ -110,6 +114,8 @@ type LeaseControlContext = {
   controlClient: OpenClawControlClient;
   gatewayUrl: string;
   capabilityInput: InspectOpenClawCapabilitiesInput;
+  gatewayAttestationPublicKey?: KeyObject;
+  trustCapabilityGatewayInstanceId: boolean;
 };
 
 type ActivationReservation = {
@@ -162,11 +168,14 @@ export function createNativeGuardCoordinator(
           controlClient: input.controlClient,
           gatewayUrl: input.gatewayUrl,
           capabilityInput: input.capabilityInput,
+          trustCapabilityGatewayInstanceId: true,
         }
       : {
           controlClient: options.controlClient,
           gatewayUrl: options.gatewayUrl,
           capabilityInput: options.capabilityInput,
+          gatewayAttestationPublicKey: options.gatewayAttestationPublicKey,
+          trustCapabilityGatewayInstanceId: false,
         };
   }
 
@@ -269,7 +278,7 @@ export function createNativeGuardCoordinator(
   ): Promise<NativeGuardCapability> {
     let capability: NativeGuardCapability;
     try {
-      capability = await context.controlClient.inspectCapabilities(context.capabilityInput);
+      capability = await inspectControlCapability(context);
     } catch {
       setLastStatus([...leases.values()].some((managed) => managed.phase === "active")
         ? aggregateManagedStatus("conditional", "NATIVE_GUARD_UNSUPPORTED")
@@ -383,7 +392,7 @@ export function createNativeGuardCoordinator(
   ): Promise<NativeGuardCapability> {
     let fresh: NativeGuardCapability;
     try {
-      fresh = await context.controlClient.inspectCapabilities(context.capabilityInput);
+      fresh = await inspectControlCapability(context);
     } catch {
       throw coordinatorError(
         "NATIVE_GUARD_CAPABILITY_CHANGED",
@@ -397,6 +406,52 @@ export function createNativeGuardCoordinator(
       );
     }
     return fresh;
+  }
+
+  async function inspectControlCapability(
+    context: LeaseControlContext,
+  ): Promise<NativeGuardCapability> {
+    const inspected = await context.controlClient.inspectCapabilities(context.capabilityInput);
+    if (!context.gatewayAttestationPublicKey) {
+      return context.trustCapabilityGatewayInstanceId
+        ? inspected
+        : { ...inspected, gatewayInstanceId: undefined };
+    }
+    if (
+      !inspected.supportsNativeGuard ||
+      inspected.finalizerAssurance === "unverified" ||
+      inspected.conflictingPluginIds.length > 0
+    ) {
+      return { ...inspected, gatewayInstanceId: undefined };
+    }
+    const challenge = randomBytes(24).toString("base64url");
+    const attestation = await context.controlClient.attestGateway({
+      gatewayUrl: context.gatewayUrl,
+      challenge,
+      attestationPublicKey: context.gatewayAttestationPublicKey,
+    });
+    if (
+      attestation.challenge !== challenge ||
+      attestation.gatewayUrl !== context.gatewayUrl ||
+      !/^[A-Za-z0-9._-]{8,128}$/.test(attestation.gatewayInstanceId) ||
+      attestation.openclawVersion !== inspected.openclawVersion ||
+      attestation.nativeGuard.contractVersion !== "native-guard-1" ||
+      attestation.nativeGuard.registrarStatus !== "live" ||
+      attestation.nativeGuard.finalBeforeToolCall.pluginId !== "agent-guard-supervision" ||
+      attestation.nativeGuard.finalBeforeToolCall.exclusive !== true ||
+      attestation.nativeGuard.trustedToolPolicy.policyId !== "agent-guard-admission" ||
+      attestation.nativeGuard.trustedToolPolicy.exclusive !== true ||
+      attestation.nativeGuard.recoveryService.serviceId !== "agent-guard-runtime" ||
+      attestation.nativeGuard.recoveryService.live !== true ||
+      attestation.nativeGuard.postApprovalLeaseRecheck !== true ||
+      attestation.nativeGuard.paramsProvenance !== "json-only"
+    ) {
+      throw coordinatorError(
+        "NATIVE_GUARD_CAPABILITY_CHANGED",
+        "OpenClaw Gateway attestation does not match its inspected capability.",
+      );
+    }
+    return { ...inspected, gatewayInstanceId: attestation.gatewayInstanceId };
   }
 
   return {
@@ -734,7 +789,7 @@ export function createNativeGuardCoordinator(
         for (const candidate of leases.values()) {
           let capability: NativeGuardCapability;
           try {
-            capability = await candidate.controlClient.inspectCapabilities(candidate.capabilityInput);
+            capability = await inspectControlCapability(candidate);
           } catch {
             return setLastStatus(aggregateManagedStatus(
               "conditional",
@@ -1062,6 +1117,8 @@ function managedLeaseMetadata(
     gatewayUrl: context.gatewayUrl,
     controlClient: context.controlClient,
     capabilityInput: context.capabilityInput,
+    gatewayAttestationPublicKey: context.gatewayAttestationPublicKey,
+    trustCapabilityGatewayInstanceId: context.trustCapabilityGatewayInstanceId,
     capability,
   };
 }

@@ -234,9 +234,6 @@ export function createOpenClawControlClient(
       const openclawVersion = parseVersion(versionResult.stdout);
       const inventory = parsePluginList(pluginResult.stdout);
       const liveCapability = parseNativeGuardLiveCapability(inventory.raw);
-      const gatewayInstanceId = liveCapability
-        ? parseLiveGatewayInstanceId(inventory.raw)
-        : undefined;
       const plugins = inventory.plugins;
       const agentGuard = plugins.find((plugin) => plugin.id === AGENT_GUARD_PLUGIN_ID);
       const agentGuardHasBeforeHook = Boolean(
@@ -279,7 +276,6 @@ export function createOpenClawControlClient(
         supportsNativeGuard,
         finalizerAssurance,
         conflictingPluginIds: conflicts,
-        ...(gatewayInstanceId ? { gatewayInstanceId } : {}),
       };
     },
 
@@ -688,15 +684,6 @@ function sameLeaseSummary(
 
 function invalidControlStatus(): never {
   throw controlError("OPENCLAW_CONTROL_INVALID_RESPONSE", "OpenClaw control status was invalid.");
-}
-
-function parseLiveGatewayInstanceId(value: unknown): string | undefined {
-  if (!isRecord(value) || !isRecord(value.registry)) return undefined;
-  const gatewayInstanceId = value.registry.gatewayInstanceId;
-  return typeof gatewayInstanceId === "string" &&
-      /^[A-Za-z0-9._-]{8,128}$/.test(gatewayInstanceId)
-    ? gatewayInstanceId
-    : undefined;
 }
 
 type ParsedPlugin = { id: string; enabled: boolean; raw: Record<string, unknown> };

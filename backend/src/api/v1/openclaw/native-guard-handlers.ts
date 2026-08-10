@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID, type KeyObject } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type {
   NativeGuardEvidenceProof,
@@ -34,6 +34,9 @@ import {
   createOpenClawHostCapabilityCache,
   type OpenClawHostCapabilityCache,
 } from "../../../modules/openclaw/openclawHostCapabilityCache";
+import {
+  readHostGatewayAttestationBootstrap,
+} from "../../../modules/openclaw/hostGatewayAttestationBootstrap";
 import {
   controlTokenMatches,
   parseLeaseBearer,
@@ -191,6 +194,7 @@ type NativeRuntimeIdentity = {
   gatewayUrl: string;
   backendUrl: string;
   capabilityInput: InspectOpenClawCapabilitiesInput;
+  gatewayAttestationPublicKey?: KeyObject;
 };
 
 function createLazyNativeGuardCoordinator(
@@ -275,6 +279,7 @@ function createLazyNativeGuardCoordinator(
       gatewayUrl: identity.gatewayUrl,
       backendUrl: identity.backendUrl,
       capabilityInput: identity.capabilityInput,
+      gatewayAttestationPublicKey: identity.gatewayAttestationPublicKey,
     });
     current = created;
     currentIdentity = identity.key;
@@ -355,6 +360,20 @@ function resolveNativeRuntimeIdentity(
   const backendUrl = resolveNativeGuardDecisionUrl(env);
   const isolatedProfile = env.AGENT_GUARD_OPENCLAW_ISOLATED_PROFILE === "1";
   const profileEnv = resolveOpenClawProfileEnv(env);
+  let hostBootstrap: ReturnType<typeof readHostGatewayAttestationBootstrap> | undefined;
+  const hostBootstrapFile = nonEmpty(env.AGENT_GUARD_HOST_ATTESTATION_BOOTSTRAP_FILE)
+    ? env.AGENT_GUARD_HOST_ATTESTATION_BOOTSTRAP_FILE
+    : undefined;
+  if (hostBootstrapFile) {
+    try {
+      hostBootstrap = readHostGatewayAttestationBootstrap(hostBootstrapFile);
+    } catch {
+      throw runtimeConfigError(
+        "NATIVE_GUARD_HOST_ATTESTATION_INVALID",
+        "Native guard host Gateway attestation bootstrap is invalid.",
+      );
+    }
+  }
   return {
     key: JSON.stringify([
       activeAgent.agentId,
@@ -365,6 +384,7 @@ function resolveNativeRuntimeIdentity(
       profileEnv.OPENCLAW_HOME ?? null,
       profileEnv.OPENCLAW_CONFIG_PATH ?? null,
       profileEnv.OPENCLAW_STATE_DIR ?? null,
+      hostBootstrap?.keyFingerprint ?? null,
     ]),
     gatewayUrl,
     backendUrl,
@@ -374,6 +394,11 @@ function resolveNativeRuntimeIdentity(
       isolatedProfile,
       liveRegistry: true,
     },
+    ...(hostBootstrap
+      ? {
+          gatewayAttestationPublicKey: hostBootstrap.attestationPublicKey,
+        }
+      : {}),
   };
 }
 

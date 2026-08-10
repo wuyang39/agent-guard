@@ -285,22 +285,21 @@ test("requires complete live registry proof outside an isolated profile", async 
   });
 });
 
-test("propagates the authoritative Gateway identity from a valid live plugin inventory", async () => {
+test("ignores an unsigned Gateway identity injected into a valid live plugin inventory", async () => {
+  const inventory = liveInventory([agentGuardPlugin()]);
+  (inventory.registry as Record<string, unknown>).gatewayInstanceId = "gateway.instance.spoofed";
   const client = createOpenClawControlClient({
     gatewayToken: TOKEN,
     commandRunner: commandRunner([
       result("2026.7.2"),
-      result(JSON.stringify(liveInventory(
-        [agentGuardPlugin()],
-        "gateway.instance.live.1",
-      ))),
+      result(JSON.stringify(inventory)),
     ]),
   });
 
   const capability = await client.inspectCapabilities({ isolatedProfile: false });
 
   assert.equal(capability.supportsNativeGuard, true);
-  assert.equal(capability.gatewayInstanceId, "gateway.instance.live.1");
+  assert.equal(capability.gatewayInstanceId, undefined);
 });
 
 test("accepts the host live contribution for a dedicated isolated profile", async () => {
@@ -1379,15 +1378,11 @@ function coldForkAgentGuardPlugin(): Record<string, unknown> {
   };
 }
 
-function liveInventory(
-  plugins: Record<string, unknown>[],
-  gatewayInstanceId?: string,
-): Record<string, unknown> {
+function liveInventory(plugins: Record<string, unknown>[]): Record<string, unknown> {
   return {
     plugins,
     registry: {
       liveAttestation: true,
-      ...(gatewayInstanceId ? { gatewayInstanceId } : {}),
       nativeGuard: {
         contractVersion: "native-guard-1",
         registrarStatus: "live",

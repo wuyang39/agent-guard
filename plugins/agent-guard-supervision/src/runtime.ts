@@ -326,18 +326,19 @@ export class AgentGuardRuntime {
     const sessionKey = context.sessionKey;
     if (sessionKey !== undefined) {
       const current = await this.lookup(sessionKey);
+      const canonicalIdentity = canonicalSessionAgentMatch(sessionKey, context.agentId);
       if (current.state !== "off") {
         if (
+          !canonicalIdentity &&
           (isMainAgentScopedLookup(current) ||
-            await this.#track(this.registry.hasAgentScopedCoverage("main"))) &&
-          !canonicalSessionAgentMatch(sessionKey, context.agentId)
+            await this.#track(this.registry.hasAgentScopedCoverage("main")))
         ) return contextBlock();
         return guardedAdmission(current, event, context);
       }
-      if (await this.#track(this.registry.hasAgentScopedCoverage("main"))) {
-        const canonicalIdentity = canonicalSessionAgentMatch(sessionKey, context.agentId);
-        if (!canonicalIdentity) return contextBlock();
-        return canonicalIdentity.agentId === "main" ? contextBlock() : undefined;
+      if (!canonicalIdentity || canonicalIdentity.agentId === "main") {
+        if (await this.#track(this.registry.hasAgentScopedCoverage("main"))) {
+          return contextBlock();
+        }
       }
       if (!(await this.#track(this.registry.hasSessionScopedCoverage()))) return;
     } else if (await this.#track(this.registry.hasAgentScopedCoverage("main"))) {

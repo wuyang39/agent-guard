@@ -1028,6 +1028,36 @@ test("active main agent scope blocks an exact session lease with mismatched iden
   assert.equal(fixture.fetchCalls(), 0);
 });
 
+test("matching exact worker admission avoids a main coverage lookup", async () => {
+  const fixture = await activeFixture({
+    action: "allow",
+    activationOverrides: {
+      rootSessionKey: "agent:main:main",
+      scope: { kind: "agent", agentId: "main" },
+    },
+  });
+  await fixture.runtime.activate(fixture.activation({
+    leaseId: "lease.worker",
+    rootSessionKey: "agent:worker:dashboard:one",
+    scope: { kind: "session", sessionKey: "agent:worker:dashboard:one" },
+    credential: "credential.worker",
+    evidenceCredential: "evidence-credential.worker",
+  }));
+  const hasMainCoverage = fixture.runtime.registry.hasAgentScopedCoverage.bind(fixture.runtime.registry);
+  let mainCoverageCalls = 0;
+  fixture.runtime.registry.hasAgentScopedCoverage = async (agentId) => {
+    mainCoverageCalls += 1;
+    return hasMainCoverage(agentId);
+  };
+
+  assert.equal(await fixture.runtime.beforeToolCall(
+    execEvent(),
+    execContext({ sessionKey: "agent:worker:dashboard:one", agentId: "worker" }),
+  ), undefined);
+  assert.equal(mainCoverageCalls, 0);
+  assert.equal(fixture.fetchCalls(), 1);
+});
+
 test("recovering main agent scope blocks claimed-main mismatches but leaves other agents OFF", async () => {
   const runtime = new AgentGuardRuntime({
     markerStore: memoryMarkerStore([{

@@ -285,6 +285,29 @@ function createLazyNativeGuardCoordinator(
     }
   }
 
+  function reconcileLeaseOwners(
+    coordinator: NativeGuardCoordinator,
+    status: NativeGuardStatus,
+  ): void {
+    for (const [leaseId, owner] of leaseOwners) {
+      if (owner === coordinator && revokeCleanupConfirmed(owner, leaseId, status)) {
+        leaseOwners.delete(leaseId);
+      }
+    }
+  }
+
+  async function activateWithOwner(input: ActivateNativeGuardInput): Promise<{
+    status: NativeGuardStatus;
+    leaseId: string;
+    leaseEpoch: number;
+  }> {
+    return delegate(async (coordinator) => {
+      const activation = await coordinator.activateWithIdentity(input);
+      leaseOwners.set(activation.leaseId, coordinator);
+      return activation;
+    });
+  }
+
   async function resolveFreshCoordinator(): Promise<NativeGuardCoordinator> {
     let activeAgent: AgentConnectionConfig;
     try {
@@ -329,14 +352,10 @@ function createLazyNativeGuardCoordinator(
 
   return {
     async activate(input) {
-      return delegate((coordinator) => coordinator.activate(input));
+      return (await activateWithOwner(input)).status;
     },
     async activateWithIdentity(input) {
-      return delegate(async (coordinator) => {
-        const activation = await coordinator.activateWithIdentity(input);
-        leaseOwners.set(activation.leaseId, coordinator);
-        return activation;
-      });
+      return activateWithOwner(input);
     },
     async renew(leaseId, ttlMs) {
       const owner = leaseOwners.get(leaseId);
@@ -360,7 +379,11 @@ function createLazyNativeGuardCoordinator(
       return delegate((coordinator) => coordinator.revoke(leaseId));
     },
     async status() {
-      return delegate((coordinator) => coordinator.status());
+      return delegate(async (coordinator) => {
+        const status = await coordinator.status();
+        reconcileLeaseOwners(coordinator, status);
+        return status;
+      });
     },
     isLeaseUsable(leaseId) {
       try {

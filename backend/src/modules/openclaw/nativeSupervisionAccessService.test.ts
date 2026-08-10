@@ -135,6 +135,22 @@ test("never reuses a token across control and event capability classes", () => {
   assert.equal(service.authenticateEvents(control.token), false);
 });
 
+test("never reuses the bootstrap token as a long-lived control capability", () => {
+  let issuance = 0;
+  const service = createNativeSupervisionAccessService({
+    bootstrapToken: BOOTSTRAP,
+    createToken: () => {
+      issuance += 1;
+      return issuance === 1 ? BOOTSTRAP : "c".repeat(43);
+    },
+  });
+
+  const control = service.exchangeBootstrap(BOOTSTRAP)!;
+
+  assert.notEqual(control.token, BOOTSTRAP);
+  assert.equal(service.authenticateControl(BOOTSTRAP), false);
+});
+
 function sequenceTokenFactory(...prefixes: string[]): () => string {
   let index = 0;
   return () => `${prefixes[index++ % prefixes.length]}${String(index).padStart(42, "0")}`;

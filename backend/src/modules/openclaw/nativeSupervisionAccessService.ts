@@ -61,6 +61,7 @@ export function createNativeSupervisionAccessService(
   const bootstrapExpiresAtMs = addTtl(readNow(now), bootstrapTtlMs);
   const controls = new Map<string, StoredCapability>();
   const events = new Map<string, StoredCapability>();
+  const reservedDigests = new Set([digestToken(options.bootstrapToken)]);
   let bootstrapConsumed = false;
 
   function issue(
@@ -77,7 +78,7 @@ export function createNativeSupervisionAccessService(
     for (let attempt = 0; attempt < 16; attempt += 1) {
       const token = createAndValidateToken(createToken);
       const digest = digestToken(token);
-      if (store.has(digest) || otherStore.has(digest)) continue;
+      if (reservedDigests.has(digest) || store.has(digest) || otherStore.has(digest)) continue;
       const expiresAtMs = addTtl(issuedAtMs, ttlMs);
       store.set(digest, { issuedAtMs, expiresAtMs });
       return { token, expiresAtMs };

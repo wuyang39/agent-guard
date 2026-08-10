@@ -69,9 +69,10 @@ test("canonical OpenClaw session keys expose their agent identity", () => {
     "agent:main:cli:abc",
     "agent:main:channel:abc",
     "agent:main:subagent:abc",
+    "agent:worker.prod:channel:abc",
   ]) {
     assert.deepEqual(parseCanonicalOpenClawSessionKey(sessionKey), {
-      agentId: "main",
+      agentId: sessionKey === "agent:worker.prod:channel:abc" ? "worker.prod" : "main",
       sessionKey,
     });
   }
@@ -91,9 +92,14 @@ test("canonical OpenClaw session key parsing rejects malformed and unsafe keys",
     "agent:main:",
     "agent:main",
     "agent:main!:dashboard:abc",
-    "agent:-worker:dashboard:abc",
-    "agent:_worker:dashboard:abc",
     "agent:main/dashboard:abc",
+    "agent:worker/prod:dashboard:abc",
+    "agent:worker..prod:dashboard:abc",
+    "agent:main:dashboard/abc",
+    "agent:main:<dashboard>",
+    "agent:main:run..escape",
+    `agent:${"a".repeat(65)}:dashboard`,
+    `agent:main:${"a".repeat(181)}`,
     " agent:main:dashboard:abc",
     "agent:main:dashboard:abc ",
     "agent:ma in:dashboard:abc",
@@ -101,26 +107,33 @@ test("canonical OpenClaw session key parsing rejects malformed and unsafe keys",
     "agent:main:dashboard:abc\ndef",
     "agent:main:dashboard:abc\u0000def",
     "agent:main:dashboard:abc\u007fdef",
+    "agent:main:dashboard:äbc",
   ]) {
     assert.equal(parseCanonicalOpenClawSessionKey(sessionKey), undefined, sessionKey);
   }
 });
 
 test("native guard lease scope normalization supports legacy and explicit sessions", () => {
-  const rootSessionKey = "agent:main:dashboard:abc";
-
-  assert.deepEqual(normalizeNativeGuardLeaseScope(undefined, rootSessionKey), {
-    kind: "session",
-    sessionKey: rootSessionKey,
-  });
-  assert.deepEqual(normalizeNativeGuardLeaseScope("session_tree", rootSessionKey), {
-    kind: "session",
-    sessionKey: rootSessionKey,
-  });
-  assert.deepEqual(
-    normalizeNativeGuardLeaseScope({ kind: "session", sessionKey: rootSessionKey }, rootSessionKey),
-    { kind: "session", sessionKey: rootSessionKey },
-  );
+  for (const rootSessionKey of [
+    "agent:main",
+    "agent:guard:root.1",
+    "session.fastify",
+    "not-a-canonical-session key",
+    "x".repeat(512),
+  ]) {
+    assert.deepEqual(normalizeNativeGuardLeaseScope(undefined, rootSessionKey), {
+      kind: "session",
+      sessionKey: rootSessionKey,
+    });
+    assert.deepEqual(normalizeNativeGuardLeaseScope("session_tree", rootSessionKey), {
+      kind: "session",
+      sessionKey: rootSessionKey,
+    });
+    assert.deepEqual(
+      normalizeNativeGuardLeaseScope({ kind: "session", sessionKey: rootSessionKey }, rootSessionKey),
+      { kind: "session", sessionKey: rootSessionKey },
+    );
+  }
 });
 
 test("native guard lease scope normalization supports the anchored main agent", () => {
@@ -143,18 +156,26 @@ test("native guard lease scope normalization rejects session mismatches", () => 
   );
 });
 
-test("native guard lease scope normalization rejects non-canonical sessions", () => {
-  assert.throws(
-    () => normalizeNativeGuardLeaseScope(
-      { kind: "session", sessionKey: "agent:main:cli:abc def" },
-      "agent:main:cli:abc def",
-    ),
-    { name: "TypeError", message: INVALID_SCOPE_ERROR },
-  );
-  assert.throws(
-    () => normalizeNativeGuardLeaseScope("session_tree", "not-a-session-key"),
-    { name: "TypeError", message: INVALID_SCOPE_ERROR },
-  );
+test("native guard lease scope normalization rejects unsafe exact sessions", () => {
+  for (const rootSessionKey of [
+    "",
+    "x".repeat(513),
+    "agent:main\u0000",
+    "agent:main\u001f",
+    "agent:main\u007f",
+  ]) {
+    assert.throws(
+      () => normalizeNativeGuardLeaseScope("session_tree", rootSessionKey),
+      { name: "TypeError", message: INVALID_SCOPE_ERROR },
+    );
+    assert.throws(
+      () => normalizeNativeGuardLeaseScope(
+        { kind: "session", sessionKey: rootSessionKey },
+        rootSessionKey,
+      ),
+      { name: "TypeError", message: INVALID_SCOPE_ERROR },
+    );
+  }
 });
 
 test("native guard agent scope normalization rejects wrong anchors and non-main agents", () => {
@@ -175,7 +196,7 @@ test("native guard agent scope normalization rejects wrong anchors and non-main 
 });
 
 test("invalid lease scope errors do not reflect untrusted input", () => {
-  const untrusted = "<untrusted-session>";
+  const untrusted = "<untrusted-session>\n";
 
   assert.throws(
     () => normalizeNativeGuardLeaseScope(
@@ -188,79 +209,68 @@ test("invalid lease scope errors do not reflect untrusted input", () => {
   );
 });
 
-test("native guard scope equality compares semantic fields", () => {
-  assert.equal(nativeGuardScopesEqual("session_tree", "session_tree"), true);
+test("native guard scope equality normalizes each activation identity", () => {
+  const rootSessionKey = "agent:main";
+  const legacy = { scope: "session_tree" as const, rootSessionKey };
+  const missing = { rootSessionKey };
+  const structured = {
+    scope: { kind: "session" as const, sessionKey: rootSessionKey },
+    rootSessionKey,
+  };
+
+  assert.equal(nativeGuardScopesEqual(legacy, { ...legacy }), true);
   assert.equal(
-    nativeGuardScopesEqual(
-      { kind: "session", sessionKey: "agent:main:cli:abc" },
-      { sessionKey: "agent:main:cli:abc", kind: "session" },
-    ),
-    true,
-  );
-  assert.equal(
-    nativeGuardScopesEqual(
-      { kind: "agent", agentId: "main" },
-      { agentId: "main", kind: "agent" },
-    ),
-    true,
-  );
-  assert.equal(
-    nativeGuardScopesEqual(
-      { kind: "session", sessionKey: "agent:main:cli:abc" },
-      { kind: "session", sessionKey: "agent:main:cli:other" },
-    ),
+    nativeGuardScopesEqual(legacy, { scope: "session_tree", rootSessionKey: "agent:other" }),
     false,
   );
+  assert.equal(nativeGuardScopesEqual(missing, structured), true);
+  assert.equal(nativeGuardScopesEqual(structured, missing), true);
   assert.equal(
-    nativeGuardScopesEqual(
-      { kind: "session", sessionKey: "agent:main:main" },
-      { kind: "agent", agentId: "main" },
-    ),
-    false,
-  );
-  assert.equal(
-    nativeGuardScopesEqual("session_tree", {
-      kind: "session",
-      sessionKey: "agent:main:main",
+    nativeGuardScopesEqual(missing, {
+      scope: { kind: "session", sessionKey: "agent:other" },
+      rootSessionKey: "agent:other",
     }),
     false,
   );
 });
 
-test("native guard scope equality resolves legacy sessions within activation context", () => {
-  const rootSessionKey = "agent:main:cli:abc";
-  const structuredScope: NativeGuardLeaseScope = { kind: "session", sessionKey: rootSessionKey };
-  const context = { rootSessionKey };
-
-  assert.equal(nativeGuardScopesEqual("session_tree", structuredScope, context), true);
-  assert.equal(nativeGuardScopesEqual(structuredScope, "session_tree", context), true);
+test("native guard scope equality compares normalized structured scopes", () => {
   assert.equal(
     nativeGuardScopesEqual(
-      "session_tree",
-      { kind: "session", sessionKey: "agent:main:cli:other" },
-      context,
+      {
+        scope: { kind: "session", sessionKey: "agent:main:cli:abc" },
+        rootSessionKey: "agent:main:cli:abc",
+      },
+      {
+        scope: { sessionKey: "agent:main:cli:abc", kind: "session" },
+        rootSessionKey: "agent:main:cli:abc",
+      },
+    ),
+    true,
+  );
+  assert.equal(
+    nativeGuardScopesEqual(
+      { scope: { kind: "agent", agentId: "main" }, rootSessionKey: "agent:main:main" },
+      { scope: { agentId: "main", kind: "agent" }, rootSessionKey: "agent:main:main" },
+    ),
+    true,
+  );
+  assert.equal(
+    nativeGuardScopesEqual(
+      {
+        scope: { kind: "session", sessionKey: "agent:main:main" },
+        rootSessionKey: "agent:main:main",
+      },
+      { scope: { kind: "agent", agentId: "main" }, rootSessionKey: "agent:main:main" },
     ),
     false,
   );
 });
 
-test("native guard scope equality resolves missing scopes within activation context", () => {
-  const rootSessionKey = "agent:main:cli:abc";
-  const structuredScope: NativeGuardLeaseScope = { kind: "session", sessionKey: rootSessionKey };
-  const context = { rootSessionKey };
+test("native guard scope equality returns false for invalid identities before comparison", () => {
+  const invalidIdentity = { scope: "session_tree" as const, rootSessionKey: "" };
 
-  assert.equal(nativeGuardScopesEqual(undefined, structuredScope), false);
-  assert.equal(nativeGuardScopesEqual(structuredScope, undefined), false);
-  assert.equal(nativeGuardScopesEqual(undefined, structuredScope, context), true);
-  assert.equal(nativeGuardScopesEqual(structuredScope, undefined, context), true);
-  assert.equal(
-    nativeGuardScopesEqual(
-      undefined,
-      { kind: "session", sessionKey: "agent:main:cli:other" },
-      context,
-    ),
-    false,
-  );
+  assert.equal(nativeGuardScopesEqual(invalidIdentity, invalidIdentity), false);
 });
 
 test("canonical JSON is stable across key order", () => {

@@ -7,8 +7,9 @@ export const MAX_NATIVE_TOOL_PARAM_DEPTH = 32;
 export const MAX_NATIVE_TOOL_PARAM_KEYS = 4_096;
 
 const DANGEROUS_PARAM_KEYS = new Set(["__proto__", "constructor", "prototype"]);
-const OPENCLAW_AGENT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
-const OPENCLAW_SESSION_KEY_FORBIDDEN_PATTERN = /[\s\p{Cc}]/u;
+const CANONICAL_OPENCLAW_SESSION_KEY = /^agent:[A-Za-z0-9._-]{1,64}:[A-Za-z0-9._:-]{1,180}$/;
+const UNSAFE_EXACT_SESSION_KEY = /[\x00-\x1f\x7f]/;
+const MAX_EXACT_SESSION_KEY_LENGTH = 512;
 const MAIN_AGENT_ANCHOR_SESSION_KEY = "agent:main:main";
 const INVALID_LEASE_SCOPE_MESSAGE = "Native guard lease scope is invalid";
 
@@ -22,7 +23,8 @@ export type NormalizedNativeGuardLeaseScope = Exclude<
   "session_tree"
 >;
 
-export type NativeGuardScopeComparisonContext = {
+export type NativeGuardScopeIdentity = {
+  scope?: NativeGuardLeaseScope;
   rootSessionKey: string;
 };
 
@@ -36,27 +38,14 @@ export function parseCanonicalOpenClawSessionKey(
 ): CanonicalOpenClawSessionKey | undefined {
   if (
     typeof sessionKey !== "string" ||
-    sessionKey.length === 0 ||
-    OPENCLAW_SESSION_KEY_FORBIDDEN_PATTERN.test(sessionKey)
+    sessionKey.includes("..") ||
+    !CANONICAL_OPENCLAW_SESSION_KEY.test(sessionKey)
   ) {
     return undefined;
   }
 
-  const firstSeparator = sessionKey.indexOf(":");
-  const secondSeparator = sessionKey.indexOf(":", firstSeparator + 1);
-  if (
-    firstSeparator === -1 ||
-    secondSeparator === -1 ||
-    sessionKey.slice(0, firstSeparator) !== "agent"
-  ) {
-    return undefined;
-  }
-
-  const agentId = sessionKey.slice(firstSeparator + 1, secondSeparator);
-  const tail = sessionKey.slice(secondSeparator + 1);
-  if (!OPENCLAW_AGENT_ID_PATTERN.test(agentId) || tail.length === 0) {
-    return undefined;
-  }
+  const agentIdEnd = sessionKey.indexOf(":", "agent:".length);
+  const agentId = sessionKey.slice("agent:".length, agentIdEnd);
 
   return { agentId, sessionKey };
 }
@@ -66,7 +55,7 @@ export function normalizeNativeGuardLeaseScope(
   rootSessionKey: string,
 ): NormalizedNativeGuardLeaseScope {
   if (scope === undefined || scope === "session_tree") {
-    if (parseCanonicalOpenClawSessionKey(rootSessionKey) === undefined) {
+    if (!isSafeExactSessionKey(rootSessionKey)) {
       throw invalidLeaseScope();
     }
     return { kind: "session", sessionKey: rootSessionKey };
@@ -79,7 +68,7 @@ export function normalizeNativeGuardLeaseScope(
   if (scope.kind === "session") {
     if (
       scope.sessionKey !== rootSessionKey ||
-      parseCanonicalOpenClawSessionKey(scope.sessionKey) === undefined
+      !isSafeExactSessionKey(scope.sessionKey)
     ) {
       throw invalidLeaseScope();
     }
@@ -98,37 +87,28 @@ export function normalizeNativeGuardLeaseScope(
 }
 
 export function nativeGuardScopesEqual(
-  left: NativeGuardLeaseScope | undefined,
-  right: NativeGuardLeaseScope | undefined,
-  context?: NativeGuardScopeComparisonContext,
+  left: NativeGuardScopeIdentity,
+  right: NativeGuardScopeIdentity,
 ): boolean {
-  if (left === right) return true;
-  if (
-    context !== undefined &&
-    (left === undefined ||
-      right === undefined ||
-      left === "session_tree" ||
-      right === "session_tree")
-  ) {
-    try {
-      left = normalizeNativeGuardLeaseScope(left, context.rootSessionKey);
-      right = normalizeNativeGuardLeaseScope(right, context.rootSessionKey);
-    } catch {
-      return false;
+  try {
+    const normalizedLeft = normalizeNativeGuardLeaseScope(left.scope, left.rootSessionKey);
+    const normalizedRight = normalizeNativeGuardLeaseScope(right.scope, right.rootSessionKey);
+    if (normalizedLeft.kind === "session") {
+      return normalizedRight.kind === "session" &&
+        normalizedLeft.sessionKey === normalizedRight.sessionKey;
     }
-  }
-  if (
-    left === undefined ||
-    right === undefined ||
-    left === "session_tree" ||
-    right === "session_tree"
-  ) {
+    return normalizedRight.kind === "agent" &&
+      normalizedLeft.agentId === normalizedRight.agentId;
+  } catch {
     return false;
   }
-  if (left.kind === "session") {
-    return right.kind === "session" && left.sessionKey === right.sessionKey;
-  }
-  return right.kind === "agent" && left.agentId === right.agentId;
+}
+
+function isSafeExactSessionKey(value: unknown): value is string {
+  return typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= MAX_EXACT_SESSION_KEY_LENGTH &&
+    !UNSAFE_EXACT_SESSION_KEY.test(value);
 }
 
 function invalidLeaseScope(): TypeError {

@@ -6,10 +6,12 @@ import path from "node:path";
 import test from "node:test";
 import { createNativeGuardRouteDependencies } from "./api/v1/openclaw/native-guard-handlers";
 import {
+  buildApp,
   createSandboxCoordinatorFactory,
   requireNativeGuardRuntimeEventStore,
 } from "./app";
 import { createNativeGuardEventStore } from "./storage/nativeGuardEventStore";
+import type { MainAgentSupervisionService } from "./modules/openclaw/mainAgentSupervisionService";
 
 function attestedCapability() {
   return {
@@ -194,3 +196,73 @@ test("sandbox activation reuses the run-scoped attested capability snapshot", as
   }), { leaseId: "lease-cached", leaseEpoch: 1 });
   assert.equal(capabilityInspections, 2);
 });
+
+test("buildApp registers one injected main supervision service and closes it", async () => {
+  const calls: string[] = [];
+  const service: MainAgentSupervisionService = {
+    async status() {
+      calls.push("status");
+      return {
+        coverage: "ready",
+        scope: { kind: "agent", agentId: "main" },
+        activeLeaseCount: 0,
+        mainLeaseCount: 0,
+      };
+    },
+    async start() {
+      throw new Error("not called");
+    },
+    async stop() {
+      throw new Error("not called");
+    },
+    async close() {
+      calls.push("close");
+    },
+  };
+  const app = await buildApp({
+    logger: false,
+    nativeGuardDependencies: appNativeGuardDependencies(),
+    mainAgentSupervisionService: service,
+  });
+
+  const response = await app.inject({
+    method: "GET",
+    url: "/api/v1/openclaw/native-supervision",
+  });
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.json().data.mainLeaseCount, 0);
+  assert.deepEqual(calls, ["status"]);
+
+  await app.close();
+  assert.deepEqual(calls, ["status", "close"]);
+});
+
+function appNativeGuardDependencies() {
+  const runtimeEventStore = createNativeGuardEventStore();
+  return createNativeGuardRouteDependencies({
+    coordinator: {
+      async status() {
+        return {
+          coverage: "ready",
+          finalizerAssurance: "exclusive_before_hook",
+          activeLeaseCount: 0,
+          activeLeases: [],
+        };
+      },
+      getLastStatus() {
+        return {
+          coverage: "ready",
+          finalizerAssurance: "exclusive_before_hook",
+          activeLeaseCount: 0,
+          activeLeases: [],
+        };
+      },
+      isLeaseEvidenceUsable() { return false; },
+    } as never,
+    leaseService: {} as never,
+    eventStore: runtimeEventStore,
+    createDecisionService() {
+      return { async decide() { throw new Error("not called"); } };
+    },
+  });
+}

@@ -37,6 +37,13 @@ import {
   openClawNativeGuardRoutes,
   type NativeGuardRouteDependencies,
 } from "./api/v1/openclaw/native-guard-handlers";
+import {
+  openClawNativeSupervisionRoutes,
+} from "./api/v1/openclaw/native-supervision-handlers";
+import {
+  createMainAgentSupervisionService,
+  type MainAgentSupervisionService,
+} from "./modules/openclaw/mainAgentSupervisionService";
 import { failure } from "./api/response";
 
 export function requireNativeGuardRuntimeEventStore(
@@ -109,6 +116,7 @@ function cloneNativeGuardCapability(
 export async function buildApp(opts?: {
   logger?: FastifyServerOptions["logger"];
   nativeGuardDependencies?: NativeGuardRouteDependencies;
+  mainAgentSupervisionService?: MainAgentSupervisionService;
 }) {
   let nativeGuardDependencies = opts?.nativeGuardDependencies;
   if (!nativeGuardDependencies) {
@@ -120,6 +128,10 @@ export async function buildApp(opts?: {
     });
   }
   requireNativeGuardRuntimeEventStore(nativeGuardDependencies);
+  const mainAgentSupervisionService = opts?.mainAgentSupervisionService ??
+    createMainAgentSupervisionService({
+      coordinator: nativeGuardDependencies.coordinator,
+    });
   const redaction = {
     paths: [
       "req.headers.authorization",
@@ -143,6 +155,9 @@ export async function buildApp(opts?: {
         };
   const app = Fastify({
     logger,
+  });
+  app.addHook("onClose", async () => {
+    await mainAgentSupervisionService.close();
   });
 
   // ---- 插件 ----
@@ -206,6 +221,9 @@ export async function buildApp(opts?: {
   await app.register(openClawRealtimeMcpRoutes);
   await app.register(runtimeConfigRoutes);
   await app.register(openClawPyritOpenAiRoutes);
+  await app.register(openClawNativeSupervisionRoutes, {
+    service: mainAgentSupervisionService,
+  });
   await app.register(openClawNativeGuardRoutes, nativeGuardDependencies);
 
   return app;

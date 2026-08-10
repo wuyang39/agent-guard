@@ -129,16 +129,28 @@ function activation(
 }
 
 function marker(overrides: Partial<GuardedMarker> = {}): GuardedMarker {
+  const rootSessionKey = overrides.rootSessionKey ?? "agent:guard:root.1";
   return {
     leaseId: "lease.1",
-    rootSessionKey: "agent:guard:root.1",
+    rootSessionKey,
     childSessionKeys: [],
     mode: "supervision",
+    scope: { kind: "session", sessionKey: rootSessionKey },
     policyPackId: "policy.1",
     policyPackDigest: "a".repeat(64),
     expiresAt: "2026-08-02T00:05:00.000Z",
     ...overrides,
-  };
+  } as GuardedMarker;
+}
+
+function agentActivation(
+  overrides: Partial<NativeGuardLeaseActivation> = {},
+): NativeGuardLeaseActivation {
+  return activation({
+    rootSessionKey: "agent:main:main",
+    scope: { kind: "agent", agentId: "main" },
+    ...overrides,
+  });
 }
 
 function lifecycleMarkerBytes(value: GuardedMarker): number {
@@ -232,6 +244,7 @@ test("restart with an unexpired marker returns recovery and never active", async
     leaseId: "lease.1",
     rootSessionKey: "agent:guard:root.1",
     mode: "supervision",
+    scope: { kind: "session", sessionKey: "agent:guard:root.1" },
     policyPackId: "policy.1",
     policyPackDigest: "a".repeat(64),
     expiresAt: "2026-08-02T00:05:00.000Z",
@@ -296,10 +309,21 @@ test("activation clones and freezes secrets in memory and persists only the guar
     coverage: "active",
     finalizerAssurance: "unverified",
     activeLeaseCount: 1,
+    activeLeases: [{
+      leaseId: "lease.1",
+      leaseEpoch: 1,
+      rootSessionKey: "agent:guard:root.1",
+      scope: { kind: "session", sessionKey: "agent:guard:root.1" },
+      mode: "supervision",
+      policyPackId: "policy.1",
+      policyPackDigest: "a".repeat(64),
+      expiresAt: "2026-08-02T00:05:00.000Z",
+    }],
     activeLease: {
       leaseId: "lease.1",
       leaseEpoch: 1,
       rootSessionKey: "agent:guard:root.1",
+      scope: { kind: "session", sessionKey: "agent:guard:root.1" },
       mode: "supervision",
       policyPackId: "policy.1",
       policyPackDigest: "a".repeat(64),
@@ -308,12 +332,283 @@ test("activation clones and freezes secrets in memory and persists only the guar
   });
 });
 
+test("agent activation persists canonical scope and protects every canonical main session", async () => {
+  const store = new MemoryMarkerStore();
+  const registry = new LeaseRegistry({ markerStore: store, now: () => new Date(NOW) });
+  await registry.start();
+
+  const status = await registry.activate(agentActivation());
+
+  for (const sessionKey of [
+    "agent:main:main",
+    "agent:main:dashboard:alpha",
+    "agent:main:cli:beta",
+  ]) {
+    const lookup = await registry.lookup(sessionKey);
+    assert.equal(lookup.state, "active");
+    if (lookup.state === "active") {
+      assert.equal(lookup.leaseId, "lease.1");
+      assert.deepEqual(lookup.scope, { kind: "agent", agentId: "main" });
+    }
+  }
+  assert.deepEqual(store.writes, [{
+    ...marker({ rootSessionKey: "agent:main:main", leaseEpoch: 1 }),
+    scope: { kind: "agent", agentId: "main" },
+  }]);
+  assert.deepEqual(status.activeLeases, [{
+    leaseId: "lease.1",
+    leaseEpoch: 1,
+    rootSessionKey: "agent:main:main",
+    scope: { kind: "agent", agentId: "main" },
+    mode: "supervision",
+    policyPackId: "policy.1",
+    policyPackDigest: "a".repeat(64),
+    expiresAt: "2026-08-02T00:05:00.000Z",
+  }]);
+});
+
+test("agent lookup fails closed only for malformed claimed-main session identities", async () => {
+  const registry = new LeaseRegistry({
+    markerStore: new MemoryMarkerStore(),
+    now: () => new Date(NOW),
+  });
+  await registry.start();
+  await registry.activate(agentActivation());
+
+  assert.deepEqual(await registry.lookup("agent:main:"), { state: "identity_mismatch" });
+  assert.deepEqual(await registry.lookup("agent:main:bad..key"), { state: "identity_mismatch" });
+  assert.deepEqual(await registry.lookup("agent:worker:"), { state: "off" });
+  assert.deepEqual(await registry.lookup("not-an-agent-key"), { state: "off" });
+  assert.deepEqual(await registry.lookup("agent:worker:dashboard"), { state: "off" });
+});
+
+test("exact session lease shadows an agent lease and revocation falls back to agent scope", async () => {
+  const registry = new LeaseRegistry({
+    markerStore: new MemoryMarkerStore(),
+    now: () => new Date(NOW),
+  });
+  await registry.start();
+  await registry.activate(agentActivation());
+  await registry.activate(activation({
+    leaseId: "lease.exact",
+    rootSessionKey: "agent:main:dashboard:alpha",
+    scope: { kind: "session", sessionKey: "agent:main:dashboard:alpha" },
+    credential: "credential.exact",
+    evidenceCredential: "evidence-credential.exact",
+  }));
+
+  const exact = await registry.lookup("agent:main:dashboard:alpha");
+  assert.equal(exact.state, "active");
+  if (exact.state === "active") assert.equal(exact.leaseId, "lease.exact");
+
+  assert.equal(await registry.revoke("lease.exact"), true);
+  const fallback = await registry.lookup("agent:main:dashboard:alpha");
+  assert.equal(fallback.state, "active");
+  if (fallback.state === "active") assert.equal(fallback.leaseId, "lease.1");
+});
+
+test("agent marker restart recovery covers all canonical main sessions and exact recovery shadows it", async () => {
+  const store = new MemoryMarkerStore([{
+    ...marker({ rootSessionKey: "agent:main:main" }),
+    scope: { kind: "agent", agentId: "main" },
+  }, marker({
+    leaseId: "lease.exact",
+    rootSessionKey: "agent:main:dashboard:alpha",
+  })]);
+  const registry = new LeaseRegistry({ markerStore: store, now: () => new Date(NOW) });
+  await registry.start();
+
+  const exact = await registry.lookup("agent:main:dashboard:alpha");
+  assert.equal(exact.state, "recovery");
+  if (exact.state === "recovery") assert.equal(exact.leaseId, "lease.exact");
+  const fallback = await registry.lookup("agent:main:cli:new");
+  assert.equal(fallback.state, "recovery");
+  if (fallback.state === "recovery") {
+    assert.equal(fallback.leaseId, "lease.1");
+    assert.deepEqual(fallback.scope, { kind: "agent", agentId: "main" });
+  }
+  assert.deepEqual(await registry.lookup("agent:worker:cli:new"), { state: "off" });
+});
+
+test("old missing-scope marker recovers as a legacy exact session without becoming agent-wide", async () => {
+  const scoped = marker();
+  const { scope: _scope, ...legacyMarker } = scoped as GuardedMarker & { scope: unknown };
+  const registry = new LeaseRegistry({
+    markerStore: new MemoryMarkerStore([legacyMarker]),
+    now: () => new Date(NOW),
+  });
+
+  await registry.start();
+
+  const recovery = await registry.lookup("agent:guard:root.1");
+  assert.equal(recovery.state, "recovery");
+  if (recovery.state === "recovery") {
+    assert.deepEqual(recovery.scope, {
+      kind: "session",
+      sessionKey: "agent:guard:root.1",
+    });
+  }
+  assert.deepEqual(await registry.lookup("agent:guard:other"), { state: "off" });
+});
+
+test("agent renewal preserves scope and rejects a scope downgrade", async () => {
+  const store = new MemoryMarkerStore();
+  const registry = new LeaseRegistry({ markerStore: store, now: () => new Date(NOW) });
+  await registry.start();
+  await registry.activate(agentActivation());
+
+  await assert.rejects(registry.renew(agentActivation({
+    leaseEpoch: 2,
+    scope: { kind: "session", sessionKey: "agent:main:main" },
+    credential: "credential.2",
+    evidenceCredential: "evidence-credential.2",
+    ...RENEWED_EVIDENCE_IDENTITY,
+  })), /does not match/);
+  await registry.renew(agentActivation({
+    leaseEpoch: 2,
+    credential: "credential.2",
+    evidenceCredential: "evidence-credential.2",
+    ...RENEWED_EVIDENCE_IDENTITY,
+  }));
+
+  const current = await registry.lookup("agent:main:cli:renewed");
+  assert.equal(current.state, "active");
+  if (current.state === "active") {
+    assert.equal(current.leaseEpoch, 2);
+    assert.deepEqual(current.scope, { kind: "agent", agentId: "main" });
+  }
+  assert.deepEqual(store.writes.at(-1)?.scope, { kind: "agent", agentId: "main" });
+});
+
+test("agent recovery reactivation requires the same scope and preserves lineage", async () => {
+  const store = new MemoryMarkerStore([{
+    ...marker({
+      rootSessionKey: "agent:main:main",
+      childSessionKeys: ["agent:main:cli:child"],
+      sessionBindings: [{
+        parentSessionKey: "agent:main:dashboard:parent",
+        childSessionKey: "agent:main:cli:child",
+      }],
+    }),
+    scope: { kind: "agent", agentId: "main" },
+  }]);
+  const registry = new LeaseRegistry({ markerStore: store, now: () => new Date(NOW) });
+  await registry.start();
+
+  await assert.rejects(registry.activate(activation({
+    rootSessionKey: "agent:main:main",
+    scope: { kind: "session", sessionKey: "agent:main:main" },
+  })), /does not match/);
+  await registry.activate(agentActivation());
+
+  const active = await registry.lookup("agent:main:new:session");
+  assert.equal(active.state, "active");
+  if (active.state === "active") {
+    assert.deepEqual(active.childSessionKeys, ["agent:main:cli:child"]);
+    assert.deepEqual(active.scope, { kind: "agent", agentId: "main" });
+  }
+});
+
+test("agent lifecycle records canonical main lineage without creating exact authorization", async () => {
+  const store = new MemoryMarkerStore();
+  const registry = new LeaseRegistry({ markerStore: store, now: () => new Date(NOW) });
+  await registry.start();
+  await registry.activate(agentActivation());
+
+  assert.equal(await registry.prepareChildBinding(
+    "lease.1",
+    "agent:main:dashboard:parent",
+    "agent:main:cli:child",
+  ), true);
+  assert.equal((await registry.lookup("agent:main:unrelated:new")).state, "lifecycle_pending");
+  assert.equal(await registry.completeChildBinding(
+    "lease.1",
+    "agent:main:dashboard:parent",
+    "agent:main:cli:child",
+  ), true);
+  assert.equal((await registry.lookup("agent:main:cli:child")).state, "active");
+  assert.equal(await registry.prepareChildBinding(
+    "lease.1",
+    "agent:worker:parent",
+    "agent:main:cli:other",
+  ), false);
+  assert.equal(await registry.prepareChildBinding(
+    "lease.1",
+    "agent:main:dashboard:parent",
+    "agent:worker:child",
+  ), false);
+
+  await registry.activate(activation({
+    leaseId: "lease.exact-child",
+    rootSessionKey: "agent:main:cli:child",
+    scope: { kind: "session", sessionKey: "agent:main:cli:child" },
+    credential: "credential.exact-child",
+    evidenceCredential: "evidence-credential.exact-child",
+  }));
+  const exact = await registry.lookup("agent:main:cli:child");
+  assert.equal(exact.state, "active");
+  if (exact.state === "active") assert.equal(exact.leaseId, "lease.exact-child");
+});
+
+test("agent session end acknowledges canonical main identities without ending the lease", async () => {
+  const store = new MemoryMarkerStore();
+  const registry = new LeaseRegistry({ markerStore: store, now: () => new Date(NOW) });
+  await registry.start();
+  await registry.activate(agentActivation());
+
+  const intent = await registry.prepareSessionEnd("agent:main:dashboard:ended");
+  assert.deepEqual(intent, { kind: "end_session", sessionKey: "agent:main:dashboard:ended" });
+  assert.equal(await registry.completeSessionEnd(
+    "lease.1",
+    "agent:main:dashboard:ended",
+  ), true);
+  assert.equal((await registry.lookup("agent:main:cli:future")).state, "active");
+  assert.equal(await registry.prepareSessionEnd("agent:worker:dashboard:ended"), undefined);
+  assert.equal(await registry.endSession("agent:main:main"), true);
+  assert.equal((await registry.lookup("agent:main:dashboard:after-root-end")).state, "active");
+});
+
+test("agent expiry removes fallback and malformed-main fail-closed state", async () => {
+  let now = new Date(NOW);
+  const store = new MemoryMarkerStore();
+  const registry = new LeaseRegistry({ markerStore: store, now: () => now });
+  await registry.start();
+  await registry.activate(agentActivation());
+  now = new Date("2026-08-02T00:05:00.000Z");
+
+  assert.deepEqual(await registry.lookup("agent:main:cli:expired"), { state: "off" });
+  assert.deepEqual(await registry.lookup("agent:main:"), { state: "off" });
+  assert.deepEqual(store.removes, ["lease.1"]);
+});
+
 test("activation rejects malformed security fields without writing a marker", async () => {
   const invalidInputs: NativeGuardLeaseActivation[] = [
     { ...activation(), policyPack: { secret: "must-not-enter-plugin-state" } } as NativeGuardLeaseActivation,
     activation({ schemaVersion: "other" as "native-guard-1" }),
     activation({ leaseEpoch: 0 }),
     activation({ scope: "other" as "session_tree" }),
+    activation({
+      scope: { kind: "session", sessionKey: "agent:guard:other" },
+    }),
+    activation({
+      scope: {
+        kind: "session",
+        sessionKey: "agent:guard:root.1",
+        extra: true,
+      } as NativeGuardLeaseActivation["scope"],
+    }),
+    activation({
+      rootSessionKey: "agent:guard:root.1",
+      scope: { kind: "agent", agentId: "main" },
+    }),
+    activation({
+      rootSessionKey: "agent:main:main",
+      scope: {
+        kind: "agent",
+        agentId: "main",
+        extra: true,
+      } as NativeGuardLeaseActivation["scope"],
+    }),
     activation({ policyPackDigest: "A".repeat(64) }),
     activation({ backendUrl: "http://example.com/api/v1/openclaw/native-guard/decision" }),
     activation({ backendUrl: "http://127.0.0.1:3100/wrong" }),
@@ -335,6 +630,55 @@ test("activation rejects malformed security fields without writing a marker", as
     await assert.rejects(registry.activate(input));
     assert.deepEqual(await registry.lookup(input.rootSessionKey), { state: "off" });
     assert.equal(store.writes.length, 0);
+  }
+});
+
+test("activation accepts legacy and structured exact session scopes as one identity", async () => {
+  for (const scope of [
+    "session_tree" as const,
+    { kind: "session" as const, sessionKey: "agent:guard:root.1" },
+  ]) {
+    const registry = new LeaseRegistry({
+      markerStore: new MemoryMarkerStore(),
+      now: () => new Date(NOW),
+    });
+    await registry.start();
+
+    await registry.activate(activation({ scope }));
+
+    const lookup = await registry.lookup("agent:guard:root.1");
+    assert.equal(lookup.state, "active");
+    if (lookup.state === "active") {
+      assert.deepEqual(lookup.scope, {
+        kind: "session",
+        sessionKey: "agent:guard:root.1",
+      });
+    }
+  }
+});
+
+test("startup rejects malformed scoped markers", async () => {
+  const invalidMarkers = [{
+      ...marker(),
+      scope: {
+        kind: "session",
+        sessionKey: "agent:guard:root.1",
+        extra: true,
+      },
+    }, {
+      ...marker({
+        rootSessionKey: "agent:main:main",
+        childSessionKeys: ["agent:worker:child"],
+      }),
+      scope: { kind: "agent", agentId: "main" },
+    }];
+
+  for (const invalidMarker of invalidMarkers) {
+    const registry = new LeaseRegistry({
+      markerStore: new MemoryMarkerStore([invalidMarker]),
+      now: () => new Date(NOW),
+    });
+    await assert.rejects(registry.start(), /invalid marker/);
   }
 });
 
@@ -489,6 +833,7 @@ test("startup detects session conflicts deterministically and revokes the entire
       leaseId: "lease.a",
       rootSessionKey: "agent:guard:root.a",
       mode: "supervision",
+      scope: { kind: "session", sessionKey: "agent:guard:root.a" },
       policyPackId: "policy.1",
       policyPackDigest: "a".repeat(64),
       expiresAt: "2026-08-02T00:05:00.000Z",
@@ -1743,6 +2088,28 @@ test("multiple independent session trees report a truthful count without singula
     coverage: "active",
     finalizerAssurance: "unverified",
     activeLeaseCount: 2,
+    activeLeases: [
+      {
+        leaseId: "lease.1",
+        leaseEpoch: 1,
+        rootSessionKey: "agent:guard:root.1",
+        scope: { kind: "session", sessionKey: "agent:guard:root.1" },
+        mode: "supervision",
+        policyPackId: "policy.1",
+        policyPackDigest: "a".repeat(64),
+        expiresAt: "2026-08-02T00:05:00.000Z",
+      },
+      {
+        leaseId: "lease.2",
+        leaseEpoch: 1,
+        rootSessionKey: "agent:guard:root.2",
+        scope: { kind: "session", sessionKey: "agent:guard:root.2" },
+        mode: "supervision",
+        policyPackId: "policy.1",
+        policyPackDigest: "a".repeat(64),
+        expiresAt: "2026-08-02T00:05:00.000Z",
+      },
+    ],
   });
 });
 
@@ -1762,6 +2129,16 @@ test("any recovery marker dominates mixed coverage and suppresses singular activ
     coverage: "recovery",
     finalizerAssurance: "unverified",
     activeLeaseCount: 1,
+    activeLeases: [{
+      leaseId: "lease.active",
+      leaseEpoch: 1,
+      rootSessionKey: "agent:guard:active-root",
+      scope: { kind: "session", sessionKey: "agent:guard:active-root" },
+      mode: "supervision",
+      policyPackId: "policy.1",
+      policyPackDigest: "a".repeat(64),
+      expiresAt: "2026-08-02T00:05:00.000Z",
+    }],
   });
   assert.equal((await registry.lookup("agent:guard:active-root")).state, "active");
   assert.equal((await registry.lookup("agent:guard:root.1")).state, "recovery");

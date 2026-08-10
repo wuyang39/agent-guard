@@ -908,6 +908,113 @@ test("ACTIVE warn emits a decision event and passes through", async () => {
   assert.equal(fixture.events[0]?.detail.action, "warn");
 });
 
+test("main agent scope guards existing and new sessions while worker sessions stay OFF", async () => {
+  const requests: NativeToolDecisionRequest[] = [];
+  let decisionId = 0;
+  const fixture = await activeFixture({
+    action: "allow",
+    decisionId: () => `decision.agent.${++decisionId}`,
+    activationOverrides: {
+      rootSessionKey: "agent:main:main",
+      scope: { kind: "agent", agentId: "main" },
+    },
+    decisionTransport: async (request, response) => {
+      requests.push(structuredClone(request));
+      return response;
+    },
+  });
+
+  for (const [sessionKey, toolCallId] of [
+    ["agent:main:dashboard:existing", "call.dashboard"],
+    ["agent:main:cli:new", "call.cli"],
+  ] as const) {
+    assert.equal(await fixture.runtime.beforeToolCall(
+      { ...execEvent(), toolCallId },
+      execContext({ sessionKey, toolCallId }),
+    ), undefined);
+  }
+  assert.equal(await fixture.runtime.beforeToolCall(
+    { ...execEvent(), toolCallId: "call.worker" },
+    execContext({ sessionKey: "agent:worker:dashboard:one", toolCallId: "call.worker" }),
+  ), undefined);
+
+  assert.deepEqual(requests.map(({ leaseId, sessionKey }) => ({ leaseId, sessionKey })), [
+    { leaseId: "lease.1", sessionKey: "agent:main:dashboard:existing" },
+    { leaseId: "lease.1", sessionKey: "agent:main:cli:new" },
+  ]);
+});
+
+test("main agent scope blocks malformed claimed-main tool context", async () => {
+  const fixture = await activeFixture({
+    action: "allow",
+    activationOverrides: {
+      rootSessionKey: "agent:main:main",
+      scope: { kind: "agent", agentId: "main" },
+    },
+  });
+
+  assert.deepEqual(await fixture.runtime.beforeToolCall(
+    execEvent(),
+    execContext({ sessionKey: "agent:main:" }),
+  ), {
+    block: true,
+    blockReason: "[Agent Guard:NATIVE_GUARD_CONTEXT_INVALID] Native guard tool context is incomplete.",
+  });
+  assert.equal(fixture.fetchCalls(), 0);
+});
+
+test("exact session decisions shadow agent scope then fall back after revoke", async () => {
+  const requests: NativeToolDecisionRequest[] = [];
+  const fixture = await activeFixture({
+    action: "allow",
+    activationOverrides: {
+      rootSessionKey: "agent:main:main",
+      scope: { kind: "agent", agentId: "main" },
+    },
+    decisionTransport: async (request, response) => {
+      requests.push(structuredClone(request));
+      return response;
+    },
+  });
+  await fixture.runtime.activate(fixture.activation({
+    leaseId: "lease.exact",
+    rootSessionKey: "agent:main:dashboard:shadowed",
+    scope: { kind: "session", sessionKey: "agent:main:dashboard:shadowed" },
+    credential: "credential.exact",
+    evidenceCredential: "evidence-credential.exact",
+  }));
+  const context = execContext({ sessionKey: "agent:main:dashboard:shadowed" });
+
+  assert.equal(await fixture.runtime.beforeToolCall(execEvent(), context), undefined);
+  assert.equal(requests.at(-1)?.leaseId, "lease.exact");
+  assert.equal(await fixture.runtime.revoke("lease.exact"), true);
+  assert.equal(await fixture.runtime.beforeToolCall(execEvent(), context), undefined);
+  assert.equal(requests.at(-1)?.leaseId, "lease.1");
+});
+
+test("agent session end uploads evidence but leaves future main sessions protected", async () => {
+  const endedSessions: string[] = [];
+  const fixture = await activeFixture({
+    action: "allow",
+    activationOverrides: {
+      rootSessionKey: "agent:main:main",
+      scope: { kind: "agent", agentId: "main" },
+    },
+    lifecycleClient: {
+      async bindChild() { return; },
+      async endSession(_lease, input) { endedSessions.push(input.sessionKey); },
+    },
+  });
+
+  assert.equal(await fixture.runtime.endSession("agent:main:dashboard:ended"), true);
+  assert.deepEqual(endedSessions, ["agent:main:dashboard:ended"]);
+  assert.equal(await fixture.runtime.beforeToolCall(
+    execEvent(),
+    execContext({ sessionKey: "agent:main:cli:future" }),
+  ), undefined);
+  assert.equal(fixture.fetchCalls(), 1);
+});
+
 test("signed epoch-one outcome survives an after lookup paused across renewal", async () => {
   const fixture = await activeFixture({ action: "allow" });
   assert.equal(await fixture.runtime.beforeToolCall(execEvent(), execContext()), undefined);
@@ -1519,6 +1626,7 @@ test("durable lifecycle intent blocks even exact low-risk tools across restart",
       rootSessionKey: "agent:main",
       childSessionKeys: [],
       mode: "supervision",
+      scope: { kind: "session", sessionKey: "agent:main" },
       policyPackId: "pack.1",
       policyPackDigest: "b".repeat(64),
       expiresAt: "2026-08-02T10:05:00.000Z",
@@ -2020,6 +2128,7 @@ type FixtureOptions = {
   lifecycleClient?: LifecycleClient;
   monotonicNow?: () => number;
   maxOutcomeCorrelations?: number;
+  activationOverrides?: Partial<NativeGuardLeaseActivation>;
 };
 
 async function activeFixture(options: FixtureOptions) {
@@ -2032,6 +2141,7 @@ async function activeFixture(options: FixtureOptions) {
   let calls = 0;
   const store = memoryMarkerStore();
   const baseActivation = activation({
+    ...options.activationOverrides,
     ...(options.backendUrl === undefined ? {} : { backendUrl: options.backendUrl }),
     decisionPublicKey: publicKey.export({ type: "spki", format: "pem" }).toString(),
     failurePolicy: {
@@ -2252,6 +2362,7 @@ function recoveryRuntime(overrides: Record<string, unknown> = {}): AgentGuardRun
       rootSessionKey: "agent:main",
       childSessionKeys: [],
       mode: "supervision",
+      scope: { kind: "session", sessionKey: "agent:main" },
       policyPackId: "pack.1",
       policyPackDigest: "b".repeat(64),
       expiresAt: "2026-08-02T10:05:00.000Z",

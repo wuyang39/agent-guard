@@ -326,6 +326,7 @@ export class AgentGuardRuntime {
     if (sessionKey !== undefined) {
       const current = await this.lookup(sessionKey);
       if (current.state !== "off") return guardedAdmission(current, event, context);
+      if (!(await this.#track(this.registry.hasSessionScopedCoverage()))) return;
     }
 
     const status = await this.#internalStatus();
@@ -392,6 +393,7 @@ export class AgentGuardRuntime {
     }
     const lookup = await this.lookup(context.sessionKey);
     if (lookup.state === "off") return;
+    if (lookup.state === "identity_mismatch") return contextBlock();
     const identity = guardedIdentity(event, context);
     if (identity === undefined) return contextBlock();
     if (lookup.state === "recovery") return recoveryDecision(event, identity);
@@ -891,7 +893,7 @@ export class AgentGuardRuntime {
   async endSession(sessionKey: string): Promise<boolean> {
     this.#assertRunning();
     const current = await this.lookup(sessionKey);
-    if (current.state === "off") return false;
+    if (current.state === "off" || current.state === "identity_mismatch") return false;
     if (current.state === "root_ended") return false;
     if (current.state === "recovery") return this.#track(this.registry.endSession(sessionKey));
     const lease = await this.#track(this.registry.lookupActiveLease(current.leaseId));
@@ -1172,6 +1174,7 @@ function guardedAdmission(
 ): BeforeResult | void {
   const identity = guardedIdentity(event, context);
   if (identity === undefined) return contextBlock();
+  if (lookup.state === "identity_mismatch") return contextBlock();
   if (lookup.state === "lifecycle_pending") return lifecyclePendingBlock();
   if (lookup.state === "recovery") return recoveryDecision(event, identity);
   if (lookup.state === "root_ended") return rootEndedBlock();

@@ -2,6 +2,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { createHash } from "node:crypto";
 import type {
   NativeGuardLeaseActivation,
+  NativeGuardLeaseScope,
+  NativeGuardLeaseSummary,
   NativeGuardStatus,
 } from "@agent-guard/contracts";
 import type { PluginApi } from "openclaw/plugin-sdk/plugin-entry";
@@ -621,7 +623,7 @@ function sendJson(response: ServerResponse, statusCode: number, body: unknown): 
 }
 
 function projectStatus(status: NativeGuardStatus): NativeGuardStatus {
-  return {
+  const projected = {
     coverage: status.coverage,
     finalizerAssurance: status.finalizerAssurance,
     activeLeaseCount: status.activeLeaseCount,
@@ -633,20 +635,51 @@ function projectStatus(status: NativeGuardStatus): NativeGuardStatus {
     ...(status.conflictingPluginIds === undefined
       ? {}
       : { conflictingPluginIds: [...status.conflictingPluginIds] }),
+    ...(status.reasonCode === undefined ? {} : { reasonCode: status.reasonCode }),
+  };
+  if (status.activeLeases !== undefined) {
+    return {
+      ...projected,
+      activeLeases: status.activeLeases.map((lease) => projectLeaseSummary(lease)),
+      ...(status.activeLease === undefined
+        ? {}
+        : { activeLease: projectLeaseSummary(status.activeLease) }),
+    };
+  }
+  return {
+    ...projected,
     ...(status.activeLease === undefined
       ? {}
+      : { activeLease: projectLeaseSummary(status.activeLease) }),
+  };
+}
+
+type ProjectableLeaseSummary = Omit<NativeGuardLeaseSummary, "scope"> & {
+  scope?: NativeGuardLeaseScope;
+};
+
+function projectLeaseSummary(lease: NativeGuardLeaseSummary): NativeGuardLeaseSummary;
+function projectLeaseSummary(
+  lease: ProjectableLeaseSummary,
+): ProjectableLeaseSummary;
+function projectLeaseSummary(lease: ProjectableLeaseSummary): ProjectableLeaseSummary {
+  return {
+    leaseId: lease.leaseId,
+    leaseEpoch: lease.leaseEpoch,
+    rootSessionKey: lease.rootSessionKey,
+    ...(lease.scope === undefined
+      ? {}
       : {
-          activeLease: {
-            leaseId: status.activeLease.leaseId,
-            leaseEpoch: status.activeLease.leaseEpoch,
-            rootSessionKey: status.activeLease.rootSessionKey,
-            mode: status.activeLease.mode,
-            policyPackId: status.activeLease.policyPackId,
-            policyPackDigest: status.activeLease.policyPackDigest,
-            expiresAt: status.activeLease.expiresAt,
-          },
+          scope: lease.scope === "session_tree"
+            ? "session_tree" as const
+            : (lease.scope.kind === "agent"
+              ? { kind: "agent" as const, agentId: "main" as const }
+              : { kind: "session" as const, sessionKey: lease.scope.sessionKey }),
         }),
-    ...(status.reasonCode === undefined ? {} : { reasonCode: status.reasonCode }),
+    mode: lease.mode,
+    policyPackId: lease.policyPackId,
+    policyPackDigest: lease.policyPackDigest,
+    expiresAt: lease.expiresAt,
   };
 }
 

@@ -1802,10 +1802,23 @@ test("status projects an allowlist and never returns secrets, policy contents, o
       credential: "status-credential-secret",
       decisionPrivateKey: "-----BEGIN PRIVATE KEY-----",
       detail: "policies: allow every tool",
+      activeLeases: [{
+        leaseId: "lease.1",
+        leaseEpoch: 1,
+        rootSessionKey: "agent:main:main",
+        scope: { kind: "agent", agentId: "main" },
+        mode: "supervision",
+        policyPackId: "policy.1",
+        policyPackDigest: "a".repeat(64),
+        expiresAt: "2026-08-02T00:05:00.000Z",
+        credential: "list-credential-secret",
+        decisionPublicKey: PUBLIC_KEY,
+      }],
       activeLease: {
         leaseId: "lease.1",
         leaseEpoch: 1,
         rootSessionKey: "agent:guard:run.1",
+        scope: { kind: "session", sessionKey: "agent:guard:run.1" },
         mode: "supervision",
         policyPackId: "policy.1",
         policyPackDigest: "a".repeat(64),
@@ -1829,10 +1842,21 @@ test("status projects an allowlist and never returns secrets, policy contents, o
     coverage: "active",
     finalizerAssurance: "unverified",
     activeLeaseCount: 1,
+    activeLeases: [{
+      leaseId: "lease.1",
+      leaseEpoch: 1,
+      rootSessionKey: "agent:main:main",
+      scope: { kind: "agent", agentId: "main" },
+      mode: "supervision",
+      policyPackId: "policy.1",
+      policyPackDigest: "a".repeat(64),
+      expiresAt: "2026-08-02T00:05:00.000Z",
+    }],
     activeLease: {
       leaseId: "lease.1",
       leaseEpoch: 1,
       rootSessionKey: "agent:guard:run.1",
+      scope: { kind: "session", sessionKey: "agent:guard:run.1" },
       mode: "supervision",
       policyPackId: "policy.1",
       policyPackDigest: "a".repeat(64),
@@ -2496,11 +2520,13 @@ class BlockingLoadMarkerStore extends MemoryMarkerStore {
 }
 
 function marker(overrides: Partial<GuardedMarker> = {}): GuardedMarker {
+  const rootSessionKey = overrides.rootSessionKey ?? "agent:guard:run.1";
   return {
     leaseId: "lease.1",
-    rootSessionKey: "agent:guard:run.1",
+    rootSessionKey,
     childSessionKeys: [],
     mode: "supervision",
+    scope: { kind: "session", sessionKey: rootSessionKey },
     policyPackId: "policy.1",
     policyPackDigest: "a".repeat(64),
     expiresAt: "2026-08-02T00:05:00.000Z",

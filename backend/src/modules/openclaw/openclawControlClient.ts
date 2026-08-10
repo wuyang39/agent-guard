@@ -234,6 +234,9 @@ export function createOpenClawControlClient(
       const openclawVersion = parseVersion(versionResult.stdout);
       const inventory = parsePluginList(pluginResult.stdout);
       const liveCapability = parseNativeGuardLiveCapability(inventory.raw);
+      const gatewayInstanceId = liveCapability
+        ? parseLiveGatewayInstanceId(inventory.raw)
+        : undefined;
       const plugins = inventory.plugins;
       const agentGuard = plugins.find((plugin) => plugin.id === AGENT_GUARD_PLUGIN_ID);
       const agentGuardHasBeforeHook = Boolean(
@@ -276,6 +279,7 @@ export function createOpenClawControlClient(
         supportsNativeGuard,
         finalizerAssurance,
         conflictingPluginIds: conflicts,
+        ...(gatewayInstanceId ? { gatewayInstanceId } : {}),
       };
     },
 
@@ -528,12 +532,13 @@ function parseNativeGuardStatus(value: unknown): NativeGuardStatus {
     throw controlError("OPENCLAW_CONTROL_INVALID_RESPONSE", "OpenClaw control status was invalid.");
   }
   const hasActiveLeases = Object.hasOwn(value, "activeLeases");
+  const activeLeaseCount = value.activeLeaseCount as number;
   let activeLeases: NativeGuardLeaseSummary[] | undefined;
   let activeLease: NativeGuardLeaseSummary | Omit<NativeGuardLeaseSummary, "scope"> | undefined;
   if (hasActiveLeases) {
     if (!Array.isArray(value.activeLeases)) invalidControlStatus();
     activeLeases = value.activeLeases.map((entry) => parseLeaseSummary(entry, true));
-    if (activeLeases.length !== value.activeLeaseCount) invalidControlStatus();
+    if (activeLeases.length !== activeLeaseCount) invalidControlStatus();
     if (new Set(activeLeases.map((entry) => entry.leaseId)).size !== activeLeases.length) {
       invalidControlStatus();
     }
@@ -547,10 +552,19 @@ function parseNativeGuardStatus(value: unknown): NativeGuardStatus {
   } else if (value.activeLease !== undefined) {
     activeLease = parseLeaseSummary(value.activeLease, false);
   }
+  if (!hasActiveLeases) {
+    if (
+      activeLeaseCount > 1 ||
+      (activeLeaseCount === 0 && activeLease !== undefined) ||
+      (activeLeaseCount === 1 && activeLease === undefined)
+    ) {
+      invalidControlStatus();
+    }
+  }
   const parsedBase = {
     coverage: value.coverage as NativeGuardStatus["coverage"],
     finalizerAssurance: value.finalizerAssurance as NativeGuardFinalizerAssurance,
-    activeLeaseCount: value.activeLeaseCount as number,
+    activeLeaseCount,
     ...(typeof value.pluginVersion === "string" ? { pluginVersion: value.pluginVersion } : {}),
     ...(typeof value.openclawVersion === "string" ? { openclawVersion: value.openclawVersion } : {}),
     ...(typeof value.gatewayInstanceId === "string"
@@ -674,6 +688,15 @@ function sameLeaseSummary(
 
 function invalidControlStatus(): never {
   throw controlError("OPENCLAW_CONTROL_INVALID_RESPONSE", "OpenClaw control status was invalid.");
+}
+
+function parseLiveGatewayInstanceId(value: unknown): string | undefined {
+  if (!isRecord(value) || !isRecord(value.registry)) return undefined;
+  const gatewayInstanceId = value.registry.gatewayInstanceId;
+  return typeof gatewayInstanceId === "string" &&
+      /^[A-Za-z0-9._-]{8,128}$/.test(gatewayInstanceId)
+    ? gatewayInstanceId
+    : undefined;
 }
 
 type ParsedPlugin = { id: string; enabled: boolean; raw: Record<string, unknown> };

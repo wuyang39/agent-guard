@@ -285,6 +285,24 @@ test("requires complete live registry proof outside an isolated profile", async 
   });
 });
 
+test("propagates the authoritative Gateway identity from a valid live plugin inventory", async () => {
+  const client = createOpenClawControlClient({
+    gatewayToken: TOKEN,
+    commandRunner: commandRunner([
+      result("2026.7.2"),
+      result(JSON.stringify(liveInventory(
+        [agentGuardPlugin()],
+        "gateway.instance.live.1",
+      ))),
+    ]),
+  });
+
+  const capability = await client.inspectCapabilities({ isolatedProfile: false });
+
+  assert.equal(capability.supportsNativeGuard, true);
+  assert.equal(capability.gatewayInstanceId, "gateway.instance.live.1");
+});
+
 test("accepts the host live contribution for a dedicated isolated profile", async () => {
   const plugin = {
     id: "agent-guard-supervision",
@@ -1238,6 +1256,23 @@ test("accepts an unscoped legacy activeLease only when activeLeases is absent", 
   assert.equal(parsed.activeLeases, undefined);
   assert.equal(parsed.activeLease?.scope, undefined);
 
+  const invalidLegacyCounts: unknown[] = [
+    { ...legacy, activeLeaseCount: 0 },
+    { ...legacy, activeLeaseCount: 1, activeLease: undefined },
+    { ...legacy, activeLeaseCount: 2, activeLease: undefined },
+    { ...legacy, activeLeaseCount: 2 },
+  ];
+  for (const value of invalidLegacyCounts) {
+    const client = createOpenClawControlClient({
+      gatewayToken: TOKEN,
+      fetch: async () => jsonResponse(value),
+    });
+    await assert.rejects(
+      () => client.status("http://localhost"),
+      hasCode("OPENCLAW_CONTROL_INVALID_RESPONSE"),
+    );
+  }
+
   const mixed = structuredClone(activeStatus(ACTIVATION)) as NativeGuardStatus;
   delete (mixed.activeLease as unknown as Record<string, unknown>).scope;
   const mixedClient = createOpenClawControlClient({
@@ -1344,11 +1379,15 @@ function coldForkAgentGuardPlugin(): Record<string, unknown> {
   };
 }
 
-function liveInventory(plugins: Record<string, unknown>[]): Record<string, unknown> {
+function liveInventory(
+  plugins: Record<string, unknown>[],
+  gatewayInstanceId?: string,
+): Record<string, unknown> {
   return {
     plugins,
     registry: {
       liveAttestation: true,
+      ...(gatewayInstanceId ? { gatewayInstanceId } : {}),
       nativeGuard: {
         contractVersion: "native-guard-1",
         registrarStatus: "live",

@@ -178,14 +178,14 @@ export function createMainAgentSupervisionService(
     if (
       aggregate.coverage !== "active" ||
       !exact ||
-      !nonEmpty(aggregate.gatewayInstanceId) ||
+      !nonEmpty(exact.gatewayInstanceId) ||
       !options.coordinator.isLeaseUsable(exact.leaseId)
     ) {
       await rollbackInvalidActivation(aggregate, loaded);
       throw activationFailed();
     }
 
-    current = managedLease(exact, aggregate.gatewayInstanceId, aggregate.activeLeaseCount);
+    current = managedLease(exact, exact.gatewayInstanceId, aggregate.activeLeaseCount);
     lastStatus = activeStatus(current);
     try {
       scheduleRenewal(current);
@@ -221,7 +221,9 @@ export function createMainAgentSupervisionService(
       current = {
         ...managedLease(
           { ...candidate, scope: { ...MAIN_SCOPE } },
-          aggregate.gatewayInstanceId ?? "unconfirmed",
+          candidate.gatewayInstanceId ?? (
+            aggregate.activeLeaseCount === 1 ? aggregate.gatewayInstanceId : undefined
+          ) ?? "unconfirmed",
           aggregate.activeLeaseCount,
         ),
         failure: {
@@ -252,14 +254,15 @@ export function createMainAgentSupervisionService(
     if (
       aggregate.coverage !== "active" ||
       !renewed ||
-      !nonEmpty(aggregate.gatewayInstanceId) ||
+      !nonEmpty(renewed.gatewayInstanceId) ||
+      renewed.gatewayInstanceId !== lease.gatewayInstanceId ||
       !options.coordinator.isLeaseUsable(lease.leaseId)
     ) {
       lease.activeLeaseCount = aggregate.activeLeaseCount;
       markRenewFailure(lease);
       return;
     }
-    current = managedLease(renewed, aggregate.gatewayInstanceId, aggregate.activeLeaseCount);
+    current = managedLease(renewed, renewed.gatewayInstanceId, aggregate.activeLeaseCount);
     lastStatus = activeStatus(current);
     try {
       scheduleRenewal(current);
@@ -333,10 +336,14 @@ export function createMainAgentSupervisionService(
       if (
         discovered &&
         aggregate.coverage === "active" &&
-        nonEmpty(aggregate.gatewayInstanceId) &&
+        nonEmpty(discovered.gatewayInstanceId) &&
         options.coordinator.isLeaseUsable(discovered.leaseId)
       ) {
-        current = managedLease(discovered, aggregate.gatewayInstanceId, aggregate.activeLeaseCount);
+        current = managedLease(
+          discovered,
+          discovered.gatewayInstanceId,
+          aggregate.activeLeaseCount,
+        );
         lastStatus = activeStatus(current);
         try {
           scheduleRenewal(current);
@@ -357,10 +364,11 @@ export function createMainAgentSupervisionService(
     if (
       aggregate.coverage === "active" &&
       exact &&
-      nonEmpty(aggregate.gatewayInstanceId) &&
+      nonEmpty(exact.gatewayInstanceId) &&
+      exact.gatewayInstanceId === current.gatewayInstanceId &&
       options.coordinator.isLeaseUsable(current.leaseId)
     ) {
-      current = managedLease(exact, aggregate.gatewayInstanceId, aggregate.activeLeaseCount);
+      current = managedLease(exact, exact.gatewayInstanceId, aggregate.activeLeaseCount);
       lastStatus = activeStatus(current);
       return cloneStatus(lastStatus);
     }

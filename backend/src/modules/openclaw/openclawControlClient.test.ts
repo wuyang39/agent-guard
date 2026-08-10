@@ -1192,6 +1192,42 @@ test("round-trips a deferred scoped activation through activeLeases", async () =
   assert.deepEqual(status.activeLease?.scope, activation.scope);
 });
 
+test("preserves only strict optional per-lease Gateway identities", async () => {
+  const valid = activeStatus({
+    ...ACTIVATION,
+    rootSessionKey: "agent:main:main",
+    scope: { kind: "agent", agentId: "main" },
+  });
+  (valid.activeLeases![0] as unknown as Record<string, unknown>).gatewayInstanceId =
+    "gateway.host.test";
+  (valid.activeLease as unknown as Record<string, unknown>).gatewayInstanceId =
+    "gateway.host.test";
+  const validClient = createOpenClawControlClient({
+    gatewayToken: TOKEN,
+    fetch: async () => jsonResponse(valid),
+  });
+
+  const parsed = await validClient.status("http://localhost");
+  assert.equal(parsed.activeLeases?.[0]?.gatewayInstanceId, "gateway.host.test");
+  assert.equal(parsed.activeLease?.gatewayInstanceId, "gateway.host.test");
+
+  for (const gatewayInstanceId of ["short", "gateway/invalid", "x".repeat(129)]) {
+    const invalid = structuredClone(valid);
+    (invalid.activeLeases![0] as unknown as Record<string, unknown>).gatewayInstanceId =
+      gatewayInstanceId;
+    (invalid.activeLease as unknown as Record<string, unknown>).gatewayInstanceId =
+      gatewayInstanceId;
+    const client = createOpenClawControlClient({
+      gatewayToken: TOKEN,
+      fetch: async () => jsonResponse(invalid),
+    });
+    await assert.rejects(
+      () => client.status("http://localhost"),
+      hasCode("OPENCLAW_CONTROL_INVALID_RESPONSE"),
+    );
+  }
+});
+
 test("strictly validates scoped activeLeases summaries and array invariants", async () => {
   const first = activeStatus({
     ...ACTIVATION,

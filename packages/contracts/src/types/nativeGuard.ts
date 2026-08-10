@@ -157,6 +157,7 @@ export type NativeGuardLeaseSummary = {
   leaseEpoch: number;
   rootSessionKey: string;
   scope: NativeGuardLeaseScope;
+  gatewayInstanceId?: string;
   mode: NativeGuardMode;
   policyPackId: string;
   policyPackDigest: string;

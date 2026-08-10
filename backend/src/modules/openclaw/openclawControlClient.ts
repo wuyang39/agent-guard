@@ -32,6 +32,7 @@ const RESPONSE_CANCEL_TIMEOUT_MS = 25;
 const AGENT_GUARD_PLUGIN_ID = "agent-guard-supervision";
 const TRUSTED_TOOL_POLICY_ID = "agent-guard-admission";
 const AGENT_GUARD_SERVICE_ID = "agent-guard-runtime";
+const GATEWAY_INSTANCE_ID_PATTERN = /^[A-Za-z0-9._-]{8,128}$/;
 const AGENT_GUARD_ROUTE_PATHS = new Set([
   ACTIVATE_PATH,
   RENEW_PATH,
@@ -617,7 +618,10 @@ function parseLeaseSummary(
     (value.mode !== "detection" && value.mode !== "supervision") ||
     nonEmptyString(value.policyPackId) === false ||
     nonEmptyString(value.policyPackDigest) === false ||
-    nonEmptyString(value.expiresAt) === false
+    nonEmptyString(value.expiresAt) === false ||
+    (value.gatewayInstanceId !== undefined &&
+      (typeof value.gatewayInstanceId !== "string" ||
+        !GATEWAY_INSTANCE_ID_PATTERN.test(value.gatewayInstanceId)))
   ) {
     return invalidControlStatus();
   }
@@ -627,6 +631,7 @@ function parseLeaseSummary(
     "leaseEpoch",
     "rootSessionKey",
     "scope",
+    "gatewayInstanceId",
     "mode",
     "policyPackId",
     "policyPackDigest",
@@ -641,6 +646,9 @@ function parseLeaseSummary(
     leaseId: value.leaseId as string,
     leaseEpoch: value.leaseEpoch as number,
     rootSessionKey: value.rootSessionKey as string,
+    ...(typeof value.gatewayInstanceId === "string"
+      ? { gatewayInstanceId: value.gatewayInstanceId }
+      : {}),
     mode: value.mode as NativeGuardLeaseSummary["mode"],
     policyPackId: value.policyPackId as string,
     policyPackDigest: value.policyPackDigest as string,

@@ -1148,6 +1148,7 @@ function managedLeaseSummary(managed: ManagedLease): NativeGuardLeaseSummary {
     leaseEpoch: managed.leaseEpoch,
     rootSessionKey: managed.rootSessionKey,
     scope: cloneLeaseScope(managed.scope),
+    gatewayInstanceId: managed.gatewayInstanceId,
     mode: managed.mode,
     policyPackId: managed.policyPackId,
     policyPackDigest: managed.policyPackDigest,

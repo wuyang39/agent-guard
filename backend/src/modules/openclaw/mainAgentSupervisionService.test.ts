@@ -9,6 +9,7 @@ import { digestJson } from "@agent-guard/native-guard-protocol";
 import {
   createMainAgentSupervisionService,
   MainAgentSupervisionServiceError,
+  type MainAgentSupervisionStatus,
 } from "./mainAgentSupervisionService";
 
 const NOW = Date.parse("2026-08-10T00:00:00.000Z");
@@ -33,11 +34,47 @@ test("start activates exact main-agent supervision and separates main from syste
     leaseId: "lease-1",
     leaseEpoch: 1,
     expiresAt: "2026-08-10T00:00:03.000Z",
-    gatewayInstanceId: "gateway.instance.test",
+    gatewayInstanceId: "gateway.host.test",
     activeLeaseCount: 2,
     mainLeaseCount: 1,
   });
   assert.equal(fixture.scheduled[0]?.delayMs, 2_000);
+});
+
+test("binds main lifecycle to its per-lease Gateway while sandbox leases change", async () => {
+  const fixture = createFixture({ unrelatedLease: true });
+
+  const started = await fixture.service.start("policy.main");
+  assert.equal(started.gatewayInstanceId, "gateway.host.test");
+  assert.equal((await fixture.service.status()).coverage, "active");
+
+  fixture.setUnrelatedActive(false);
+  assert.deepEqual(
+    pickCoverage(await fixture.service.status()),
+    { coverage: "active", activeLeaseCount: 1, mainLeaseCount: 1 },
+  );
+  fixture.setUnrelatedActive(true);
+  fixture.nowMs += 2_000;
+  fixture.scheduled[0]!.callback();
+  await waitUntil(() => fixture.scheduled.length === 2);
+
+  assert.deepEqual(
+    pickCoverage(await fixture.service.status()),
+    { coverage: "active", activeLeaseCount: 2, mainLeaseCount: 1 },
+  );
+  assert.equal(fixture.scheduled[1]?.delayMs, 2_000);
+});
+
+test("status rejects a changed main per-lease Gateway identity", async () => {
+  const fixture = createFixture();
+  await fixture.service.start("policy.main");
+
+  fixture.setMainGatewayInstanceId("gateway.changed.test");
+  const status = await fixture.service.status();
+
+  assert.equal(status.coverage, "recovery");
+  assert.equal(status.reasonCode, "MAIN_AGENT_SUPERVISION_STATUS_MISMATCH");
+  assert.equal(status.gatewayInstanceId, "gateway.host.test");
 });
 
 test("same-policy start is idempotent while its lease is usable", async () => {
@@ -143,7 +180,7 @@ test("an invalid activation result is revoked and never exposed as active", asyn
   assert.notEqual(status.coverage, "active");
 });
 
-test("activation requires an exact usable summary and gateway identity", async () => {
+test("activation requires an exact usable summary with its own Gateway identity", async () => {
   for (const invalid of ["scope", "usable", "gateway"] as const) {
     const fixture = createFixture({ invalidActivation: invalid });
 
@@ -243,7 +280,7 @@ function createFixture(options: FixtureOptions = {}) {
   let leaseSequence = 0;
   let timerSequence = 0;
   let activeMain: NativeGuardLeaseSummary | undefined;
-  let activeGatewayInstanceId: string | undefined;
+  let unrelatedActive = options.unrelatedLease === true;
   let revokeFailures = options.revokeFailures ?? 0;
   const usableLeaseIds = new Set<string>();
   const activateInputs: unknown[] = [];
@@ -265,21 +302,27 @@ function createFixture(options: FixtureOptions = {}) {
     invalidPolicyIds,
     order,
     scheduled,
+    setUnrelatedActive(value: boolean) { unrelatedActive = value; },
+    setMainGatewayInstanceId(value: string | undefined) {
+      if (activeMain) activeMain = { ...activeMain, gatewayInstanceId: value };
+    },
     service: undefined as unknown as ReturnType<typeof createMainAgentSupervisionService>,
   };
   const unrelated = unrelatedLease();
   const aggregate = (
     main = activeMain,
-    coverage: NativeGuardStatus["coverage"] = main ? "active" : options.unrelatedLease ? "active" : "ready",
+    coverage: NativeGuardStatus["coverage"] = main ? "active" : unrelatedActive ? "active" : "ready",
   ): NativeGuardStatus => {
     const activeLeases = [
-      ...(options.unrelatedLease ? [unrelated] : []),
+      ...(unrelatedActive ? [unrelated] : []),
       ...(main ? [main] : []),
     ];
     return {
       coverage,
       finalizerAssurance: "exclusive_before_hook",
-      ...(activeGatewayInstanceId ? { gatewayInstanceId: activeGatewayInstanceId } : {}),
+      ...(activeLeases.length === 1
+        ? { gatewayInstanceId: activeLeases[0].gatewayInstanceId }
+        : {}),
       activeLeaseCount: activeLeases.length,
       activeLeases,
       ...(activeLeases.length === 1 ? { activeLease: activeLeases[0] } : {}),
@@ -300,10 +343,10 @@ function createFixture(options: FixtureOptions = {}) {
         ...(options.invalidActivation === "scope"
           ? { scope: { kind: "session" as const, sessionKey: "agent:main:main" } }
           : {}),
+        ...(options.invalidActivation === "gateway"
+          ? { gatewayInstanceId: undefined }
+          : {}),
       });
-      activeGatewayInstanceId = options.invalidActivation === "gateway"
-        ? undefined
-        : "gateway.instance.test";
       if (options.invalidActivation !== "usable") usableLeaseIds.add(leaseId);
       return aggregate(activeMain, options.activationCoverage);
     },
@@ -328,7 +371,6 @@ function createFixture(options: FixtureOptions = {}) {
       }
       usableLeaseIds.delete(leaseId);
       if (activeMain?.leaseId === leaseId) activeMain = undefined;
-      activeGatewayInstanceId = undefined;
       return aggregate();
     },
     async status() {
@@ -385,6 +427,7 @@ function mainLease(overrides: Partial<NativeGuardLeaseSummary> = {}): NativeGuar
     policyPackId: "policy.main",
     policyPackDigest: digestJson(policyPack("policy.main")),
     expiresAt: "2026-08-10T00:00:03.000Z",
+    gatewayInstanceId: "gateway.host.test",
     ...overrides,
   };
 }
@@ -399,6 +442,15 @@ function unrelatedLease(): NativeGuardLeaseSummary {
     policyPackId: "policy.detection",
     policyPackDigest: "d".repeat(64),
     expiresAt: "2026-08-10T00:00:03.000Z",
+    gatewayInstanceId: "gateway.sandbox.test",
+  };
+}
+
+function pickCoverage(status: MainAgentSupervisionStatus) {
+  return {
+    coverage: status.coverage,
+    activeLeaseCount: status.activeLeaseCount,
+    mainLeaseCount: status.mainLeaseCount,
   };
 }
 

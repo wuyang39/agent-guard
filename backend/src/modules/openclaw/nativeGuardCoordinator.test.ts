@@ -603,6 +603,13 @@ test("keeps host main and sandbox exact leases usable and sandbox revoke preserv
 
   assert.equal(sandbox.activeLeaseCount, 2);
   assert.equal(sandbox.activeLease, undefined);
+  assert.deepEqual(
+    sandbox.activeLeases?.map((lease) => [lease.leaseId, lease.gatewayInstanceId]),
+    [
+      [hostLeaseId, fixture.host.gatewayInstanceId],
+      [sandboxLeaseId, fixture.sandbox.gatewayInstanceId],
+    ],
+  );
   assert.equal(fixture.coordinator.isLeaseUsable(hostLeaseId), true);
   assert.equal(fixture.coordinator.isLeaseUsable(sandboxLeaseId), true);
 
@@ -610,6 +617,7 @@ test("keeps host main and sandbox exact leases usable and sandbox revoke preserv
   assert.equal(afterRevoke.coverage, "active");
   assert.equal(afterRevoke.activeLeaseCount, 1);
   assert.equal(afterRevoke.activeLease?.leaseId, hostLeaseId);
+  assert.equal(afterRevoke.activeLease?.gatewayInstanceId, fixture.host.gatewayInstanceId);
   assert.equal(fixture.coordinator.isLeaseUsable(hostLeaseId), true);
   assert.equal(fixture.sandbox.revokeCalls[0]?.gatewayUrl, fixture.sandbox.gatewayUrl);
   assert.equal(fixture.host.revokeCalls.length, 0);

@@ -169,12 +169,16 @@ export function createMainAgentSupervisionService(
   async function cleanupExpiredLease(snapshot: LeaseExpirySnapshot): Promise<void> {
     const lease = current;
     if (!lease || lease.leaseId !== snapshot.leaseId) return;
+    const expiresAtMs = Date.parse(lease.expiresAt);
+    if (!Number.isFinite(expiresAtMs)) {
+      await stopInternal();
+      return;
+    }
     if (lease.leaseEpoch !== snapshot.leaseEpoch || lease.expiresAt !== snapshot.expiresAt) {
       scheduleRenewal(lease);
       return;
     }
-    const expiresAtMs = Date.parse(lease.expiresAt);
-    if (!Number.isFinite(expiresAtMs) || now() < expiresAtMs) {
+    if (now() < expiresAtMs) {
       scheduleRenewal(lease);
       return;
     }
@@ -281,6 +285,7 @@ export function createMainAgentSupervisionService(
       aggregate.coverage !== "active" ||
       !exact ||
       !nonEmpty(exact.gatewayInstanceId) ||
+      !hasFiniteExpiry(exact.expiresAt) ||
       (expectedGatewayInstanceId !== undefined &&
         exact.gatewayInstanceId !== expectedGatewayInstanceId) ||
       !options.coordinator.isLeaseUsable(exact.leaseId)
@@ -431,6 +436,10 @@ export function createMainAgentSupervisionService(
     }
     current = managedLease(renewed, renewed.gatewayInstanceId, aggregate.activeLeaseCount);
     lastStatus = activeStatus(current);
+    if (!hasFiniteExpiry(current.expiresAt)) {
+      await stopInternal();
+      return;
+    }
     try {
       scheduleRenewal(current);
     } catch {
@@ -538,6 +547,7 @@ export function createMainAgentSupervisionService(
     ) {
       current = managedLease(exact, exact.gatewayInstanceId, aggregate.activeLeaseCount);
       lastStatus = activeStatus(current);
+      if (!hasFiniteExpiry(current.expiresAt)) return stopInternal();
       return cloneStatus(lastStatus);
     }
     cancelRenewal();
@@ -754,6 +764,10 @@ function validPolicyPackId(value: string): boolean {
 
 function validTtl(value: number | undefined): value is number {
   return value !== undefined && Number.isSafeInteger(value) && value > 0;
+}
+
+function hasFiniteExpiry(expiresAt: string): boolean {
+  return Number.isFinite(Date.parse(expiresAt));
 }
 
 function nonEmpty(value: unknown): value is string {

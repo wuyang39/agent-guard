@@ -362,8 +362,8 @@ test("an invalid activation result is revoked and never exposed as active", asyn
   assert.notEqual(status.coverage, "active");
 });
 
-test("activation requires an exact usable summary with its own Gateway identity", async () => {
-  for (const invalid of ["policy", "root", "scope", "usable", "gateway"] as const) {
+test("activation requires an exact usable summary with its own Gateway identity and expiry", async () => {
+  for (const invalid of ["policy", "root", "scope", "usable", "gateway", "expiresAt"] as const) {
     const fixture = createFixture({ invalidActivation: invalid });
 
     await assert.rejects(
@@ -504,6 +504,31 @@ test("expiry cleanup revoke failure remains recovery instead of turning supervis
   assert.equal(fixture.scheduled.length, 2);
 });
 
+test("a malformed renewed expiry is cleaned up once without scheduling another timer", async () => {
+  const fixture = createFixture({ renewInvalidExpiry: true });
+  await fixture.service.start("policy.main");
+
+  fixture.nowMs += 2_000;
+  fixture.scheduled[0]!.callback();
+  await waitUntil(() => fixture.revokeLeaseIds.length === 1);
+
+  assert.deepEqual(fixture.revokeLeaseIds, ["lease-1"]);
+  assert.equal(fixture.scheduled.length, 1);
+  assert.equal((await fixture.service.status()).mainLeaseCount, 0);
+});
+
+test("a malformed status expiry is cleaned up without retaining the renewal timer", async () => {
+  const fixture = createFixture();
+  await fixture.service.start("policy.main");
+  fixture.setMainExpiry("not-a-date");
+
+  const status = await fixture.service.status();
+
+  assert.deepEqual(fixture.revokeLeaseIds, ["lease-1"]);
+  assert.equal(fixture.scheduled.length, 1);
+  assert.equal(status.mainLeaseCount, 0);
+});
+
 test("a cancelled expiry callback cannot clear the replacement lease timer", async () => {
   const fixture = createFixture({ renewReturnsUnchangedExpiry: true });
   await fixture.service.start("policy.main");
@@ -632,8 +657,9 @@ type FixtureOptions = {
   unrelatedLease?: boolean;
   beforeActivate?: () => Promise<void>;
   activationCoverage?: NativeGuardStatus["coverage"];
-  invalidActivation?: "policy" | "root" | "scope" | "usable" | "gateway";
+  invalidActivation?: "policy" | "root" | "scope" | "usable" | "gateway" | "expiresAt";
   renewError?: Error;
+  renewInvalidExpiry?: boolean;
   renewReturnsUnchangedExpiry?: boolean;
   revokeFailures?: number;
   revokeUnconfirmedCount?: number;
@@ -693,6 +719,9 @@ function createFixture(options: FixtureOptions = {}) {
     setMainGatewayInstanceId(value: string | undefined) {
       if (activeMain) activeMain = { ...activeMain, gatewayInstanceId: value };
     },
+    setMainExpiry(value: string) {
+      if (activeMain) activeMain = { ...activeMain, expiresAt: value };
+    },
     advanceMainLease() {
       assert.ok(activeMain);
       activeMain = {
@@ -751,7 +780,7 @@ function createFixture(options: FixtureOptions = {}) {
         policyPackDigest: coordinatorPolicyDigests.get(policyPackId) ??
           digestJson(policyPack(policyPackId)),
         gatewayInstanceId: coordinatorGateways.get(policyPackId) ?? "gateway.host.test",
-        expiresAt,
+        expiresAt: options.invalidActivation === "expiresAt" ? "not-a-date" : expiresAt,
         ...(options.invalidActivation === "scope"
           ? { scope: { kind: "session" as const, sessionKey: "agent:main:main" } }
           : {}),
@@ -783,7 +812,9 @@ function createFixture(options: FixtureOptions = {}) {
       activeMain = {
         ...activeMain,
         leaseEpoch: activeMain.leaseEpoch + 1,
-        expiresAt: options.renewReturnsUnchangedExpiry
+        expiresAt: options.renewInvalidExpiry
+          ? "not-a-date"
+          : options.renewReturnsUnchangedExpiry
           ? activeMain.expiresAt
           : new Date(fixture.nowMs + TTL_MS).toISOString(),
       };

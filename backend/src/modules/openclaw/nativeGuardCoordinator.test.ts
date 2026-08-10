@@ -3,6 +3,8 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import type {
   NativeGuardLeaseActivation,
+  NativeGuardLeaseScope,
+  NativeGuardLeaseSummary,
   NativeGuardStatus,
   SupervisionPolicyPack,
 } from "@agent-guard/contracts";
@@ -409,7 +411,7 @@ test("re-inspects capability after renewal ACK and revokes the rotated lease on 
   assert.equal(fixture.coordinator.isLeaseRevoking(fixture.activationCalls[0].leaseId), false);
 });
 
-test("fails renewal closed when a second backend lease appears while plugin ACK is pending", async () => {
+test("renews its scoped target without revoking an unrelated backend lease", async () => {
   const fixture = coordinatorFixture();
   await fixture.coordinator.activate(supervisionInput());
   const leaseId = fixture.activationCalls[0].leaseId;
@@ -427,13 +429,10 @@ test("fails renewal closed when a second backend lease appears while plugin ACK 
   createUnmanagedLease(fixture.leaseService, "agent:ack-race-second");
   releaseAck.resolve();
 
-  await assert.rejects(
-    () => renewing,
-    hasCoordinatorCode("NATIVE_GUARD_RENEW_FAILED"),
-  );
-  assert.equal(fixture.leaseService.status().activeLeaseCount, 1);
-  assert.equal(fixture.coordinator.isLeaseRevoking(leaseId), false);
-  assert.equal(fixture.coordinator.getLastStatus().coverage, "conditional");
+  const renewed = await renewing;
+  assert.equal(renewed.coverage, "active");
+  assert.equal(fixture.leaseService.status().activeLeaseCount, 2);
+  assert.equal(fixture.coordinator.isLeaseUsable(leaseId), true);
 });
 
 test("marks renewal unusable before awaits and rejects a concurrent renew without side effects", async () => {
@@ -510,64 +509,138 @@ test("does not let renewal overwrite revoking phase or return active", async () 
   assert.equal(fixture.leaseService.status().activeLeaseCount, 0);
 });
 
-test("enforces one managed lease and refuses activation over unmanaged backend state", async () => {
-  const fixture = coordinatorFixture();
-  await fixture.coordinator.activate(supervisionInput());
+test("keeps host main and sandbox exact leases usable and sandbox revoke preserves host", async () => {
+  const fixture = scopedCoordinatorFixture();
+  const host = await fixture.coordinator.activate(agentScopeInput());
+  const sandbox = await fixture.coordinator.activate({
+    ...exactScopeInput("agent:sandbox:run-1"),
+    sandbox: fixture.sandbox.context,
+  });
+  const hostLeaseId = host.activeLease!.leaseId;
+  const sandboxLeaseId = sandbox.activeLeases!.find((lease) => lease.scope !== "session_tree" &&
+    typeof lease.scope === "object" && lease.scope.kind === "session")!.leaseId;
+
+  assert.equal(sandbox.activeLeaseCount, 2);
+  assert.equal(sandbox.activeLease, undefined);
+  assert.equal(fixture.coordinator.isLeaseUsable(hostLeaseId), true);
+  assert.equal(fixture.coordinator.isLeaseUsable(sandboxLeaseId), true);
+
+  const afterRevoke = await fixture.coordinator.revoke(sandboxLeaseId);
+  assert.equal(afterRevoke.coverage, "active");
+  assert.equal(afterRevoke.activeLeaseCount, 1);
+  assert.equal(afterRevoke.activeLease?.leaseId, hostLeaseId);
+  assert.equal(fixture.coordinator.isLeaseUsable(hostLeaseId), true);
+  assert.equal(fixture.sandbox.revokeCalls[0]?.gatewayUrl, fixture.sandbox.gatewayUrl);
+  assert.equal(fixture.host.revokeCalls.length, 0);
+});
+
+test("rejects duplicate agent and overlapping exact-main scopes on the attested Gateway identity", async () => {
+  const fixture = scopedCoordinatorFixture();
+  await fixture.coordinator.activate(agentScopeInput());
+  const alias = fixture.createGateway("gateway.host.test", "http://127.0.0.1:19991");
+
   await assert.rejects(
     () => fixture.coordinator.activate({
-      ...supervisionInput(),
-      rootSessionKey: "agent:second",
+      ...agentScopeInput(),
+      sandbox: alias.context,
     }),
     hasCoordinatorCode("NATIVE_GUARD_ALREADY_ACTIVE"),
   );
-  assert.equal(fixture.activationCalls.length, 1);
-  assert.equal(fixture.leaseService.status().activeLeaseCount, 1);
-
-  const unmanaged = coordinatorFixture();
-  createUnmanagedLease(unmanaged.leaseService, "agent:unmanaged");
   await assert.rejects(
-    () => unmanaged.coordinator.activate(supervisionInput()),
+    () => fixture.coordinator.activate({
+      ...exactScopeInput("agent:main:child-1"),
+      sandbox: alias.context,
+    }),
     hasCoordinatorCode("NATIVE_GUARD_ALREADY_ACTIVE"),
   );
-  assert.equal(unmanaged.activationCalls.length, 0);
-  assert.equal(unmanaged.leaseService.status().activeLeaseCount, 1);
+  assert.equal(alias.activateCalls.length, 0);
 });
 
-test("reserves the single managed lease slot across concurrent activation preflight", async () => {
-  const fixture = coordinatorFixture();
-  const inspectStarted = deferred<void>();
-  const releaseInspect = deferred<void>();
-  let inspectCall = 0;
-  fixture.controlClient.inspectCapabilities = async () => {
-    inspectCall += 1;
-    if (inspectCall === 1) {
-      inspectStarted.resolve();
-      await releaseInspect.promise;
-    }
-    return verifiedCapability();
-  };
+test("allows independent exact sessions on one Gateway and matches ACKs by lease identity", async () => {
+  const fixture = scopedCoordinatorFixture();
+  const first = await fixture.coordinator.activate(exactScopeInput("agent:worker:one"));
+  const second = await fixture.coordinator.activate(exactScopeInput("agent:worker:two"));
+  const secondLease = second.activeLeases!.find((lease) =>
+    lease.rootSessionKey === "agent:worker:two")!;
 
-  const first = fixture.coordinator.activate(supervisionInput());
-  await inspectStarted.promise;
-  let assertionError: unknown;
-  try {
-    await assert.rejects(
-      () => fixture.coordinator.activate({
-        ...supervisionInput(),
-        rootSessionKey: "agent:concurrent-second",
-      }),
-      hasCoordinatorCode("NATIVE_GUARD_ALREADY_ACTIVE"),
-    );
-  } catch (error) {
-    assertionError = error;
-  } finally {
-    releaseInspect.resolve();
-  }
-  await Promise.allSettled([first]);
-  if (assertionError) throw assertionError;
+  assert.equal(second.activeLeaseCount, 2);
+  assert.equal(second.activeLease, undefined);
+  assert.deepEqual(second.activeLeases?.map((lease) => lease.rootSessionKey).sort(), [
+    "agent:worker:one",
+    "agent:worker:two",
+  ]);
+  assert.equal(fixture.coordinator.isLeaseUsable(first.activeLease!.leaseId), true);
 
-  assert.equal(fixture.activationCalls.length, 1);
-  assert.equal(fixture.leaseService.status().activeLeaseCount, 1);
+  const renewed = await fixture.coordinator.renew(secondLease.leaseId);
+  assert.equal(renewed.activeLeaseCount, 2);
+  assert.equal(fixture.host.renewCalls[0]?.gatewayUrl, fixture.host.gatewayUrl);
+  assert.deepEqual(fixture.host.renewCalls[0]?.activation.scope, {
+    kind: "session",
+    sessionKey: "agent:worker:two",
+  });
+});
+
+test("reserves overlapping scopes per Gateway while different Gateways activate concurrently", async () => {
+  const different = scopedCoordinatorFixture();
+  const differentResults = await Promise.all([
+    different.coordinator.activate(exactScopeInput("agent:worker:host-session")),
+    different.coordinator.activate({
+      ...exactScopeInput("agent:worker:sandbox-session"),
+      sandbox: different.sandbox.context,
+    }),
+  ]);
+  assert.deepEqual(differentResults.map((status) => status.activeLeaseCount), [1, 2]);
+
+  const same = scopedCoordinatorFixture();
+  const sameResults = await Promise.allSettled([
+    same.coordinator.activate(agentScopeInput()),
+    same.coordinator.activate(agentScopeInput()),
+  ]);
+  assert.equal(sameResults.filter((result) => result.status === "fulfilled").length, 1);
+  const rejected = sameResults.find((result) => result.status === "rejected") as PromiseRejectedResult;
+  assert.equal(rejected.reason instanceof NativeGuardCoordinatorError, true);
+  assert.equal((rejected.reason as NativeGuardCoordinatorError).code, "NATIVE_GUARD_ALREADY_ACTIVE");
+});
+
+test("failed activation releases only its scoped Gateway reservation", async () => {
+  const fixture = scopedCoordinatorFixture();
+  fixture.host.failNextActivation = true;
+  const [failed, sandbox] = await Promise.allSettled([
+    fixture.coordinator.activate(exactScopeInput("agent:worker:retry")),
+    fixture.coordinator.activate({
+      ...exactScopeInput("agent:sandbox:survivor"),
+      sandbox: fixture.sandbox.context,
+    }),
+  ]);
+  assert.equal(failed.status, "rejected");
+  assert.equal(sandbox.status, "fulfilled");
+
+  const retried = await fixture.coordinator.activate(exactScopeInput("agent:worker:retry"));
+  assert.equal(retried.activeLeaseCount, 2);
+  assert.equal(fixture.sandbox.activateCalls.length, 1);
+});
+
+test("preserves the legacy session_tree wire scope when activation omits scope", async () => {
+  const fixture = scopedCoordinatorFixture();
+  const result = await fixture.coordinator.activate({
+    rootSessionKey: "agent:legacy-detection",
+    mode: "detection",
+  });
+
+  assert.equal(fixture.host.activateCalls[0]?.activation.scope, "session_tree");
+  assert.equal(result.activeLease?.scope, "session_tree");
+});
+
+test("requires an attested Gateway identity for every explicit scope", async () => {
+  const fixture = coordinatorFixture({
+    capability: { ...verifiedCapability(), gatewayInstanceId: undefined },
+  });
+
+  await assert.rejects(
+    () => fixture.coordinator.activate(agentScopeInput()),
+    hasCoordinatorCode("NATIVE_GUARD_UNSUPPORTED"),
+  );
+  assert.equal(fixture.activationCalls.length, 0);
 });
 
 test("deletes the backend lease after an offline plugin revoke and keeps repeats idempotent", async () => {
@@ -868,16 +941,10 @@ test("returns conditional with the backend count when fresh CLI inspection is un
   assert.equal(fixture.statusCalls, 0);
 });
 
-test("uses fresh verified metadata and resolves backend state without retaining credentials", async () => {
+test("uses fresh verified metadata and status summaries without retaining credentials", async () => {
   const fixture = coordinatorFixture();
   await fixture.coordinator.activate(supervisionInput());
   fixture.capability = { ...verifiedCapability(), openclawVersion: "2026.8.0" };
-  const resolveBySession = fixture.leaseService.resolveBySession.bind(fixture.leaseService);
-  let resolveCalls = 0;
-  fixture.leaseService.resolveBySession = (sessionKey) => {
-    resolveCalls += 1;
-    return resolveBySession(sessionKey);
-  };
   fixture.leaseService.authenticate = () => {
     throw new Error("status must not retain or authenticate with a raw credential");
   };
@@ -888,32 +955,18 @@ test("uses fresh verified metadata and resolves backend state without retaining 
 
   assert.equal(combined.coverage, "active");
   assert.equal(combined.openclawVersion, "2026.8.0");
-  assert.equal(resolveCalls, 1);
   assert.doesNotMatch(managedLeaseType, /\bactivation\b|\bcredential\b/);
 });
 
-test("contains resolveBySession failures in final commit and public status gates", async () => {
+test("does not depend on ambiguous session resolution for commit or public status", async () => {
   const activation = coordinatorFixture();
   activation.leaseService.resolveBySession = () => {
     throw new Error("resolve-activation-secret");
   };
-  await assert.rejects(
-    () => activation.coordinator.activate(supervisionInput()),
-    (error: unknown) => error instanceof NativeGuardCoordinatorError &&
-      error.code === "NATIVE_GUARD_ACTIVATION_FAILED" &&
-      !error.message.includes("resolve-activation-secret"),
-  );
-  assert.equal(activation.leaseService.status().activeLeaseCount, 0);
-
-  const health = coordinatorFixture();
-  await health.coordinator.activate(supervisionInput());
-  health.leaseService.resolveBySession = () => {
-    throw new Error("resolve-health-secret");
-  };
-  const result = await health.coordinator.status();
-  assert.equal(result.coverage, "conditional");
-  assert.equal(result.reasonCode, "NATIVE_GUARD_BACKEND_STATUS_UNAVAILABLE");
-  assert.equal(JSON.stringify(result).includes("resolve-health-secret"), false);
+  await activation.coordinator.activate(supervisionInput());
+  const result = await activation.coordinator.status();
+  assert.equal(result.coverage, "active");
+  assert.equal(JSON.stringify(result).includes("resolve-activation-secret"), false);
 });
 
 test("loads an exact stored supervision pack and uses the deterministic baseline for detection", async () => {
@@ -1115,6 +1168,7 @@ function verifiedCapability(): NativeGuardCapability {
     supportsNativeGuard: true,
     finalizerAssurance: "exclusive_before_hook",
     conflictingPluginIds: [],
+    gatewayInstanceId: "gateway.instance.test.1",
   };
 }
 
@@ -1128,26 +1182,150 @@ function status(
   activation?: NativeGuardLeaseActivation,
   activeLeaseOverrides: Record<string, unknown> = {},
 ): NativeGuardStatus {
+  const activeLease = leaseId
+    ? {
+        leaseId,
+        leaseEpoch: activation?.leaseEpoch ?? 1,
+        rootSessionKey: activation?.rootSessionKey ?? "agent:supervision",
+        scope: activation?.scope ?? "session_tree" as const,
+        mode: activation?.mode ?? "supervision" as const,
+        policyPackId: activation?.policyPackId ?? "stored-policy",
+        policyPackDigest: activation?.policyPackDigest ?? digestJson(storedPolicyPack()),
+        expiresAt: activation?.expiresAt ?? "2026-08-02T00:05:00.000Z",
+        ...activeLeaseOverrides,
+      }
+    : undefined;
   return {
     coverage,
     finalizerAssurance: "exclusive_before_hook",
     openclawVersion: "2026.7.2",
     activeLeaseCount: leaseId ? 1 : 0,
-    ...(leaseId
-      ? {
-          activeLease: {
-            leaseId,
-            leaseEpoch: activation?.leaseEpoch ?? 1,
-            rootSessionKey: activation?.rootSessionKey ?? "agent:supervision",
-            mode: activation?.mode ?? "supervision",
-            policyPackId: activation?.policyPackId ?? "stored-policy",
-            policyPackDigest: activation?.policyPackDigest ?? digestJson(storedPolicyPack()),
-            expiresAt: activation?.expiresAt ?? "2026-08-02T00:05:00.000Z",
-            ...activeLeaseOverrides,
-          },
-        }
-      : {}),
+    activeLeases: activeLease ? [activeLease] : [],
+    ...(activeLease ? { activeLease } : {}),
   };
+}
+
+function agentScopeInput() {
+  return {
+    rootSessionKey: "agent:main:main",
+    scope: { kind: "agent", agentId: "main" } as const,
+    mode: "supervision" as const,
+    policyPackId: "stored-policy",
+  };
+}
+
+function exactScopeInput(rootSessionKey: string) {
+  return {
+    rootSessionKey,
+    scope: { kind: "session", sessionKey: rootSessionKey } as const,
+    mode: "supervision" as const,
+    policyPackId: "stored-policy",
+  };
+}
+
+function scopedCoordinatorFixture() {
+  const leaseService = createNativeGuardLeaseService({
+    now: () => Date.parse("2026-08-02T00:00:00.000Z"),
+  });
+  const policyPack = storedPolicyPack();
+
+  function createGateway(gatewayInstanceId: string, gatewayUrl: string) {
+    let activeLeases: NativeGuardLeaseSummary[] = [];
+    let failNextActivation = false;
+    let statusCalls = 0;
+    const activateCalls: Array<{ gatewayUrl: string; activation: NativeGuardLeaseActivation }> = [];
+    const renewCalls: Array<{ gatewayUrl: string; activation: NativeGuardLeaseActivation }> = [];
+    const revokeCalls: Array<{ gatewayUrl: string; leaseId: string }> = [];
+    const capability: NativeGuardCapability = {
+      openclawVersion: "2026.7.2",
+      supportsNativeGuard: true,
+      finalizerAssurance: "exclusive_before_hook",
+      conflictingPluginIds: [],
+      gatewayInstanceId,
+    };
+    const gatewayStatus = (): NativeGuardStatus => {
+      const summaries = activeLeases.map((lease) => structuredClone(lease));
+      return {
+        coverage: summaries.length > 0 ? "active" : "ready",
+        finalizerAssurance: "exclusive_before_hook",
+        openclawVersion: capability.openclawVersion,
+        gatewayInstanceId,
+        activeLeaseCount: summaries.length,
+        activeLeases: summaries,
+        ...(summaries.length === 1 ? { activeLease: summaries[0] } : {}),
+      };
+    };
+    const summary = (activation: NativeGuardLeaseActivation): NativeGuardLeaseSummary => ({
+      leaseId: activation.leaseId,
+      leaseEpoch: activation.leaseEpoch,
+      rootSessionKey: activation.rootSessionKey,
+      scope: typeof activation.scope === "string" ? activation.scope : { ...activation.scope },
+      mode: activation.mode,
+      policyPackId: activation.policyPackId,
+      policyPackDigest: activation.policyPackDigest,
+      expiresAt: activation.expiresAt,
+    });
+    const controlClient = {
+      inspectCapabilities: async () => structuredClone(capability),
+      attestGateway: async () => { throw new Error("not called"); },
+      status: async () => {
+        statusCalls += 1;
+        return gatewayStatus();
+      },
+      activate: async (url: string, activation: NativeGuardLeaseActivation) => {
+        activateCalls.push({ gatewayUrl: url, activation });
+        if (failNextActivation) {
+          failNextActivation = false;
+          throw new Error("scoped activation failure");
+        }
+        activeLeases = [summary(activation), ...activeLeases];
+        return gatewayStatus();
+      },
+      renew: async (url: string, activation: NativeGuardLeaseActivation) => {
+        renewCalls.push({ gatewayUrl: url, activation });
+        activeLeases = [
+          summary(activation),
+          ...activeLeases.filter((lease) => lease.leaseId !== activation.leaseId),
+        ];
+        return gatewayStatus();
+      },
+      revoke: async (url: string, leaseId: string) => {
+        revokeCalls.push({ gatewayUrl: url, leaseId });
+        activeLeases = activeLeases.filter((lease) => lease.leaseId !== leaseId);
+        return gatewayStatus();
+      },
+    };
+    return {
+      gatewayInstanceId,
+      gatewayUrl,
+      controlClient,
+      context: {
+        controlClient,
+        gatewayUrl,
+        capabilityInput: { isolatedProfile: true },
+      },
+      activateCalls,
+      renewCalls,
+      revokeCalls,
+      get statusCalls() { return statusCalls; },
+      get failNextActivation() { return failNextActivation; },
+      set failNextActivation(value: boolean) { failNextActivation = value; },
+    };
+  }
+
+  const host = createGateway("gateway.host.test", "http://127.0.0.1:18789");
+  const sandbox = createGateway("gateway.sandbox.test", "http://127.0.0.1:18888");
+  const coordinator = createNativeGuardCoordinator({
+    leaseService,
+    controlClient: host.controlClient,
+    loadStoredOpenClawPolicyPack: async (policyPackId) => policyPackId === policyPack.policyPackId
+      ? { policyPack, policyPackDigest: digestJson(policyPack), runGroupId: "run-group" }
+      : undefined,
+    gatewayUrl: host.gatewayUrl,
+    backendUrl: "http://127.0.0.1:3000/api/v1/openclaw/native-guard/decision",
+    capabilityInput: { isolatedProfile: false },
+  });
+  return { coordinator, leaseService, host, sandbox, createGateway };
 }
 
 function createUnmanagedLease(

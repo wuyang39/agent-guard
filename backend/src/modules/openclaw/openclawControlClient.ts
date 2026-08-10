@@ -3,6 +3,8 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import path from "node:path";
 import type {
   NativeGuardLeaseActivation,
+  NativeGuardLeaseScope,
+  NativeGuardLeaseSummary,
   NativeGuardStatus,
 } from "@agent-guard/contracts";
 import {
@@ -15,6 +17,7 @@ import {
   parseNativeGuardLiveCapability,
   type NativeGuardGatewayAttestation,
 } from "./nativeGuardLiveCapability";
+import { normalizeNativeGuardLeaseScope } from "@agent-guard/native-guard-protocol";
 
 const STATUS_PATH = "/agent-guard/native-guard/v1/status";
 const GATEWAY_ATTESTATION_PATH = "/agent-guard/native-guard/v1/gateway-attestation";
@@ -520,12 +523,31 @@ function parseNativeGuardStatus(value: unknown): NativeGuardStatus {
     !optionalString(value.gatewayInstanceId) ||
     !optionalString(value.reasonCode) ||
     !optionalString(value.detail) ||
-    !optionalStringArray(value.conflictingPluginIds) ||
-    !validActiveLease(value.activeLease)
+    !optionalStringArray(value.conflictingPluginIds)
   ) {
     throw controlError("OPENCLAW_CONTROL_INVALID_RESPONSE", "OpenClaw control status was invalid.");
   }
-  return {
+  const hasActiveLeases = Object.hasOwn(value, "activeLeases");
+  let activeLeases: NativeGuardLeaseSummary[] | undefined;
+  let activeLease: NativeGuardLeaseSummary | Omit<NativeGuardLeaseSummary, "scope"> | undefined;
+  if (hasActiveLeases) {
+    if (!Array.isArray(value.activeLeases)) invalidControlStatus();
+    activeLeases = value.activeLeases.map((entry) => parseLeaseSummary(entry, true));
+    if (activeLeases.length !== value.activeLeaseCount) invalidControlStatus();
+    if (new Set(activeLeases.map((entry) => entry.leaseId)).size !== activeLeases.length) {
+      invalidControlStatus();
+    }
+    if (activeLeases.length === 1) {
+      const singular = parseLeaseSummary(value.activeLease, true);
+      if (!sameLeaseSummary(singular, activeLeases[0])) invalidControlStatus();
+      activeLease = singular;
+    } else if (value.activeLease !== undefined) {
+      invalidControlStatus();
+    }
+  } else if (value.activeLease !== undefined) {
+    activeLease = parseLeaseSummary(value.activeLease, false);
+  }
+  const parsedBase = {
     coverage: value.coverage as NativeGuardStatus["coverage"],
     finalizerAssurance: value.finalizerAssurance as NativeGuardFinalizerAssurance,
     activeLeaseCount: value.activeLeaseCount as number,
@@ -537,34 +559,121 @@ function parseNativeGuardStatus(value: unknown): NativeGuardStatus {
     ...(Array.isArray(value.conflictingPluginIds)
       ? { conflictingPluginIds: [...value.conflictingPluginIds] as string[] }
       : {}),
-    ...(isRecord(value.activeLease)
-      ? { activeLease: {
-          leaseId: value.activeLease.leaseId as string,
-          leaseEpoch: value.activeLease.leaseEpoch as number,
-          rootSessionKey: value.activeLease.rootSessionKey as string,
-          mode: value.activeLease.mode as "detection" | "supervision",
-          policyPackId: value.activeLease.policyPackId as string,
-          policyPackDigest: value.activeLease.policyPackDigest as string,
-          expiresAt: value.activeLease.expiresAt as string,
-        } }
-      : {}),
     ...(typeof value.reasonCode === "string" ? { reasonCode: value.reasonCode } : {}),
     ...(typeof value.detail === "string" ? { detail: value.detail } : {}),
   };
+  if (activeLeases !== undefined) {
+    return {
+      ...parsedBase,
+      activeLeases,
+      ...(activeLease ? { activeLease: activeLease as NativeGuardLeaseSummary } : {}),
+    };
+  }
+  return { ...parsedBase, ...(activeLease ? { activeLease } : {}) };
 }
 
-function validActiveLease(value: unknown): boolean {
-  return value === undefined || (
-    isRecord(value) &&
-    nonEmptyString(value.leaseId) &&
-    Number.isSafeInteger(value.leaseEpoch) &&
-    (value.leaseEpoch as number) > 0 &&
-    nonEmptyString(value.rootSessionKey) &&
-    (value.mode === "detection" || value.mode === "supervision") &&
-    nonEmptyString(value.policyPackId) &&
-    nonEmptyString(value.policyPackDigest) &&
-    nonEmptyString(value.expiresAt)
-  );
+function parseLeaseSummary(
+  value: unknown,
+  requireScope: true,
+): NativeGuardLeaseSummary;
+function parseLeaseSummary(
+  value: unknown,
+  requireScope: false,
+): NativeGuardLeaseSummary | Omit<NativeGuardLeaseSummary, "scope">;
+function parseLeaseSummary(
+  value: unknown,
+  requireScope: boolean,
+): NativeGuardLeaseSummary | Omit<NativeGuardLeaseSummary, "scope"> {
+  if (
+    !isRecord(value) ||
+    nonEmptyString(value.leaseId) === false ||
+    !Number.isSafeInteger(value.leaseEpoch) ||
+    (value.leaseEpoch as number) <= 0 ||
+    nonEmptyString(value.rootSessionKey) === false ||
+    (value.mode !== "detection" && value.mode !== "supervision") ||
+    nonEmptyString(value.policyPackId) === false ||
+    nonEmptyString(value.policyPackDigest) === false ||
+    nonEmptyString(value.expiresAt) === false
+  ) {
+    return invalidControlStatus();
+  }
+  const hasScope = Object.hasOwn(value, "scope");
+  const allowedKeys = new Set([
+    "leaseId",
+    "leaseEpoch",
+    "rootSessionKey",
+    "scope",
+    "mode",
+    "policyPackId",
+    "policyPackDigest",
+    "expiresAt",
+  ]);
+  if (Object.keys(value).some((key) => !allowedKeys.has(key))) invalidControlStatus();
+  if (requireScope && !hasScope) invalidControlStatus();
+  if (hasScope && !validLeaseScope(value.scope, value.rootSessionKey as string)) {
+    invalidControlStatus();
+  }
+  const base: Omit<NativeGuardLeaseSummary, "scope"> = {
+    leaseId: value.leaseId as string,
+    leaseEpoch: value.leaseEpoch as number,
+    rootSessionKey: value.rootSessionKey as string,
+    mode: value.mode as NativeGuardLeaseSummary["mode"],
+    policyPackId: value.policyPackId as string,
+    policyPackDigest: value.policyPackDigest as string,
+    expiresAt: value.expiresAt as string,
+  };
+  return hasScope
+    ? { ...base, scope: cloneLeaseScope(value.scope as NativeGuardLeaseScope) }
+    : base;
+}
+
+function validLeaseScope(scope: unknown, rootSessionKey: string): scope is NativeGuardLeaseScope {
+  if (scope === "session_tree") return scopeNormalizes(scope, rootSessionKey);
+  if (!isRecord(scope)) return false;
+  if (scope.kind === "session") {
+    return Object.keys(scope).length === 2 &&
+      Object.hasOwn(scope, "sessionKey") &&
+      nonEmptyString(scope.sessionKey) &&
+      scope.sessionKey === rootSessionKey &&
+      scopeNormalizes(scope as NativeGuardLeaseScope, rootSessionKey);
+  }
+  return scope.kind === "agent" &&
+    Object.keys(scope).length === 2 &&
+    Object.hasOwn(scope, "agentId") &&
+    scope.agentId === "main" &&
+    rootSessionKey === "agent:main:main" &&
+    scopeNormalizes(scope as NativeGuardLeaseScope, rootSessionKey);
+}
+
+function scopeNormalizes(scope: NativeGuardLeaseScope, rootSessionKey: string): boolean {
+  try {
+    normalizeNativeGuardLeaseScope(scope, rootSessionKey);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function cloneLeaseScope(scope: NativeGuardLeaseScope): NativeGuardLeaseScope {
+  return typeof scope === "string" ? scope : { ...scope };
+}
+
+function sameLeaseSummary(
+  left: NativeGuardLeaseSummary,
+  right: NativeGuardLeaseSummary,
+): boolean {
+  return left.leaseId === right.leaseId &&
+    left.leaseEpoch === right.leaseEpoch &&
+    left.rootSessionKey === right.rootSessionKey &&
+    JSON.stringify(left.scope) === JSON.stringify(right.scope) &&
+    left.mode === right.mode &&
+    left.policyPackId === right.policyPackId &&
+    left.policyPackDigest === right.policyPackDigest &&
+    left.expiresAt === right.expiresAt;
+}
+
+function invalidControlStatus(): never {
+  throw controlError("OPENCLAW_CONTROL_INVALID_RESPONSE", "OpenClaw control status was invalid.");
 }
 
 type ParsedPlugin = { id: string; enabled: boolean; raw: Record<string, unknown> };

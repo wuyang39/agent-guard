@@ -1133,6 +1133,123 @@ test("bounds injected CLI runners and reports malformed, oversized, and failed o
   }
 });
 
+test("round-trips a deferred scoped activation through activeLeases", async () => {
+  const requestSeen = deferred<NativeGuardLeaseActivation>();
+  const releaseResponse = deferred<void>();
+  const activation: NativeGuardLeaseActivation = {
+    ...ACTIVATION,
+    rootSessionKey: "agent:main:main",
+    scope: { kind: "agent", agentId: "main" },
+  };
+  const client = createOpenClawControlClient({
+    gatewayToken: TOKEN,
+    fetch: async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as NativeGuardLeaseActivation;
+      requestSeen.resolve(body);
+      await releaseResponse.promise;
+      return jsonResponse(activeStatus(body));
+    },
+  });
+
+  const pending = client.activate("http://localhost", activation);
+  assert.deepEqual((await requestSeen.promise).scope, activation.scope);
+  releaseResponse.resolve();
+
+  const status = await pending;
+  assert.deepEqual(status.activeLeases?.[0]?.scope, activation.scope);
+  assert.deepEqual(status.activeLease?.scope, activation.scope);
+});
+
+test("strictly validates scoped activeLeases summaries and array invariants", async () => {
+  const first = activeStatus({
+    ...ACTIVATION,
+    rootSessionKey: "agent:main:main",
+    scope: { kind: "agent", agentId: "main" },
+  });
+  const secondActivation: NativeGuardLeaseActivation = {
+    ...ACTIVATION,
+    leaseId: "lease-2",
+    rootSessionKey: "agent:sandbox:session-2",
+    scope: { kind: "session", sessionKey: "agent:sandbox:session-2" },
+  };
+  const second = activeStatus(secondActivation).activeLeases![0];
+  const multiple: NativeGuardStatus = {
+    ...first,
+    activeLeaseCount: 2,
+    activeLeases: [first.activeLeases![0], second],
+    activeLease: undefined,
+  };
+  const invalid: unknown[] = [];
+
+  const unscoped = structuredClone(first) as NativeGuardStatus;
+  delete (unscoped.activeLeases![0] as unknown as Record<string, unknown>).scope;
+  invalid.push(unscoped);
+
+  const extraScopeKey = structuredClone(first) as NativeGuardStatus;
+  (extraScopeKey.activeLeases![0].scope as unknown as Record<string, unknown>).extra = true;
+  invalid.push(extraScopeKey);
+
+  invalid.push({ ...multiple, activeLeaseCount: 1 });
+  invalid.push({ ...multiple, activeLeases: [multiple.activeLeases![0], multiple.activeLeases![0]] });
+  invalid.push({ ...multiple, activeLease: first.activeLease });
+  invalid.push({ ...first, activeLease: undefined });
+  invalid.push({
+    ...first,
+    activeLease: { ...first.activeLease!, policyPackDigest: "different" },
+  });
+  invalid.push({
+    ...first,
+    activeLeases: [{
+      ...first.activeLease!,
+      rootSessionKey: "agent:main:not-the-anchor",
+    }],
+    activeLease: {
+      ...first.activeLease!,
+      rootSessionKey: "agent:main:not-the-anchor",
+    },
+  });
+  invalid.push(activeStatus({
+    ...secondActivation,
+    rootSessionKey: "agent:sandbox:different",
+  }));
+
+  for (const value of invalid) {
+    const client = createOpenClawControlClient({
+      gatewayToken: TOKEN,
+      fetch: async () => jsonResponse(value),
+    });
+    await assert.rejects(
+      () => client.status("http://localhost"),
+      hasCode("OPENCLAW_CONTROL_INVALID_RESPONSE"),
+    );
+  }
+});
+
+test("accepts an unscoped legacy activeLease only when activeLeases is absent", async () => {
+  const legacy = structuredClone(activeStatus(ACTIVATION)) as NativeGuardStatus;
+  delete (legacy as unknown as Record<string, unknown>).activeLeases;
+  delete (legacy.activeLease as unknown as Record<string, unknown>).scope;
+  const legacyClient = createOpenClawControlClient({
+    gatewayToken: TOKEN,
+    fetch: async () => jsonResponse(legacy),
+  });
+
+  const parsed = await legacyClient.status("http://localhost");
+  assert.equal(parsed.activeLeases, undefined);
+  assert.equal(parsed.activeLease?.scope, undefined);
+
+  const mixed = structuredClone(activeStatus(ACTIVATION)) as NativeGuardStatus;
+  delete (mixed.activeLease as unknown as Record<string, unknown>).scope;
+  const mixedClient = createOpenClawControlClient({
+    gatewayToken: TOKEN,
+    fetch: async () => jsonResponse(mixed),
+  });
+  await assert.rejects(
+    () => mixedClient.status("http://localhost"),
+    hasCode("OPENCLAW_CONTROL_INVALID_RESPONSE"),
+  );
+});
+
 test("uses the enabled static inventory only for an isolated profile", async () => {
   const calls: string[][] = [];
   const runner: OpenClawCommandRunner = async (input) => {
@@ -1396,21 +1513,29 @@ function readyStatus(): NativeGuardStatus {
 }
 
 function activeStatus(activation: NativeGuardLeaseActivation): NativeGuardStatus {
+  const activeLease = {
+    leaseId: activation.leaseId,
+    leaseEpoch: activation.leaseEpoch,
+    rootSessionKey: activation.rootSessionKey,
+    scope: activation.scope,
+    mode: activation.mode,
+    policyPackId: activation.policyPackId,
+    policyPackDigest: activation.policyPackDigest,
+    expiresAt: activation.expiresAt,
+  };
   return {
     ...readyStatus(),
     coverage: "active",
     activeLeaseCount: 1,
-    activeLease: {
-      leaseId: activation.leaseId,
-      leaseEpoch: activation.leaseEpoch,
-      rootSessionKey: activation.rootSessionKey,
-      scope: activation.scope,
-      mode: activation.mode,
-      policyPackId: activation.policyPackId,
-      policyPackDigest: activation.policyPackDigest,
-      expiresAt: activation.expiresAt,
-    },
+    activeLeases: [activeLease],
+    activeLease,
   };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((innerResolve) => { resolve = innerResolve; });
+  return { promise, resolve };
 }
 
 const ACTIVATION: NativeGuardLeaseActivation = {

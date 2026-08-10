@@ -1,16 +1,120 @@
 import { createHash, sign, verify, type KeyObject } from "node:crypto";
 import { types as utilTypes } from "node:util";
+import type { NativeGuardLeaseScope } from "@agent-guard/contracts";
 
 export const MAX_NATIVE_TOOL_PARAM_BYTES = 256 * 1024;
 export const MAX_NATIVE_TOOL_PARAM_DEPTH = 32;
 export const MAX_NATIVE_TOOL_PARAM_KEYS = 4_096;
 
 const DANGEROUS_PARAM_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+const OPENCLAW_AGENT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+const OPENCLAW_SESSION_KEY_FORBIDDEN_PATTERN = /[\s\p{Cc}]/u;
+const MAIN_AGENT_ANCHOR_SESSION_KEY = "agent:main:main";
+const INVALID_LEASE_SCOPE_MESSAGE = "Native guard lease scope is invalid";
+
+export type CanonicalOpenClawSessionKey = {
+  agentId: string;
+  sessionKey: string;
+};
+
+export type NormalizedNativeGuardLeaseScope = Exclude<
+  NativeGuardLeaseScope,
+  "session_tree"
+>;
 
 export type BoundedParams = {
   canonical: string;
   digest: string;
 };
+
+export function parseCanonicalOpenClawSessionKey(
+  sessionKey: string,
+): CanonicalOpenClawSessionKey | undefined {
+  if (
+    typeof sessionKey !== "string" ||
+    sessionKey.length === 0 ||
+    OPENCLAW_SESSION_KEY_FORBIDDEN_PATTERN.test(sessionKey)
+  ) {
+    return undefined;
+  }
+
+  const firstSeparator = sessionKey.indexOf(":");
+  const secondSeparator = sessionKey.indexOf(":", firstSeparator + 1);
+  if (
+    firstSeparator === -1 ||
+    secondSeparator === -1 ||
+    sessionKey.slice(0, firstSeparator) !== "agent"
+  ) {
+    return undefined;
+  }
+
+  const agentId = sessionKey.slice(firstSeparator + 1, secondSeparator);
+  const tail = sessionKey.slice(secondSeparator + 1);
+  if (!OPENCLAW_AGENT_ID_PATTERN.test(agentId) || tail.length === 0) {
+    return undefined;
+  }
+
+  return { agentId, sessionKey };
+}
+
+export function normalizeNativeGuardLeaseScope(
+  scope: NativeGuardLeaseScope | undefined,
+  rootSessionKey: string,
+): NormalizedNativeGuardLeaseScope {
+  if (scope === undefined || scope === "session_tree") {
+    if (parseCanonicalOpenClawSessionKey(rootSessionKey) === undefined) {
+      throw invalidLeaseScope();
+    }
+    return { kind: "session", sessionKey: rootSessionKey };
+  }
+
+  if (typeof scope !== "object" || scope === null) {
+    throw invalidLeaseScope();
+  }
+
+  if (scope.kind === "session") {
+    if (
+      scope.sessionKey !== rootSessionKey ||
+      parseCanonicalOpenClawSessionKey(scope.sessionKey) === undefined
+    ) {
+      throw invalidLeaseScope();
+    }
+    return { kind: "session", sessionKey: scope.sessionKey };
+  }
+
+  if (
+    scope.kind === "agent" &&
+    scope.agentId === "main" &&
+    rootSessionKey === MAIN_AGENT_ANCHOR_SESSION_KEY
+  ) {
+    return { kind: "agent", agentId: "main" };
+  }
+
+  throw invalidLeaseScope();
+}
+
+export function nativeGuardScopesEqual(
+  left: NativeGuardLeaseScope | undefined,
+  right: NativeGuardLeaseScope | undefined,
+): boolean {
+  if (left === right) return true;
+  if (
+    left === undefined ||
+    right === undefined ||
+    left === "session_tree" ||
+    right === "session_tree"
+  ) {
+    return false;
+  }
+  if (left.kind === "session") {
+    return right.kind === "session" && left.sessionKey === right.sessionKey;
+  }
+  return right.kind === "agent" && left.agentId === right.agentId;
+}
+
+function invalidLeaseScope(): TypeError {
+  return new TypeError(INVALID_LEASE_SCOPE_MESSAGE);
+}
 
 function assertWellFormedUnicode(value: string): void {
   for (let index = 0; index < value.length; index += 1) {

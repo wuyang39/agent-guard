@@ -1,5 +1,10 @@
 export type NativeGuardMode = "detection" | "supervision";
 
+export type NativeGuardLeaseScope =
+  | "session_tree"
+  | { kind: "session"; sessionKey: string }
+  | { kind: "agent"; agentId: "main" };
+
 export type NativeGuardCoverageStatus =
   | "off"
   | "ready"
@@ -17,7 +22,7 @@ export type NativeGuardLeaseActivation = {
   leaseEpoch: number;
   rootSessionKey: string;
   mode: NativeGuardMode;
-  scope: "session_tree";
+  scope: NativeGuardLeaseScope;
   policyPackId: string;
   policyPackDigest: string;
   backendUrl: string;
@@ -147,6 +152,21 @@ export type NativeGuardDurationSource =
   | "legacy_unspecified"
   | "unavailable";
 
+export type NativeGuardLeaseSummary = {
+  leaseId: string;
+  leaseEpoch: number;
+  rootSessionKey: string;
+  scope: NativeGuardLeaseScope;
+  mode: NativeGuardMode;
+  policyPackId: string;
+  policyPackDigest: string;
+  expiresAt: string;
+};
+
+type LegacyNativeGuardLeaseSummary = Omit<NativeGuardLeaseSummary, "scope"> & {
+  scope?: undefined;
+};
+
 export type NativeGuardStatus = {
   coverage: NativeGuardCoverageStatus;
   finalizerAssurance: "isolated_profile" | "exclusive_before_hook" | "unverified";
@@ -155,15 +175,8 @@ export type NativeGuardStatus = {
   gatewayInstanceId?: string;
   activeLeaseCount: number;
   conflictingPluginIds?: string[];
-  activeLease?: {
-    leaseId: string;
-    leaseEpoch: number;
-    rootSessionKey: string;
-    mode: NativeGuardMode;
-    policyPackId: string;
-    policyPackDigest: string;
-    expiresAt: string;
-  };
+  activeLease?: NativeGuardLeaseSummary | LegacyNativeGuardLeaseSummary;
+  activeLeases?: NativeGuardLeaseSummary[];
   reasonCode?: string;
   detail?: string;
 };

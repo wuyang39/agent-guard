@@ -326,6 +326,10 @@ export class AgentGuardRuntime {
     if (sessionKey !== undefined) {
       const current = await this.lookup(sessionKey);
       if (current.state !== "off") return guardedAdmission(current, event, context);
+      if (
+        context.agentId === "main" &&
+        await this.#track(this.registry.hasAgentScopedCoverage("main"))
+      ) return contextBlock();
       if (!(await this.#track(this.registry.hasSessionScopedCoverage()))) return;
     }
 

@@ -351,7 +351,7 @@ export class LeaseRegistry {
       }
       if (
         parsedSession === undefined &&
-        sessionKey.startsWith("agent:main:") &&
+        (sessionKey === "agent:main" || sessionKey.startsWith("agent:main:")) &&
         (this.#activeByAgent.has("main") || this.#recoveringByAgent.has("main"))
       ) {
         return { state: "identity_mismatch" };
@@ -376,6 +376,14 @@ export class LeaseRegistry {
       return this.#activeBySession.size > 0 ||
         this.#recoveringBySession.size > 0 ||
         this.#rootEndedBySession.size > 0;
+    });
+  }
+
+  async hasAgentScopedCoverage(agentId: "main"): Promise<boolean> {
+    return this.#serialized(async () => {
+      this.#assertStarted();
+      await this.#purgeExpired();
+      return this.#activeByAgent.has(agentId) || this.#recoveringByAgent.has(agentId);
     });
   }
 
@@ -844,9 +852,7 @@ export class LeaseRegistry {
       const expected: LifecycleIntent = { kind: "end_session", sessionKey };
       if (record === undefined || !sameLifecycleIntent(record.lifecycleQueue[0], expected)) return false;
       if (isAgentScope(record.lease.scope)) {
-        const subtree = record.parentByChild.has(sessionKey)
-          ? collectSubtree(record.parentByChild, sessionKey)
-          : new Set<string>();
+        const subtree = collectSubtree(record.parentByChild, sessionKey);
         const lease = withChildSessionKeys(
           record.lease,
           record.lease.childSessionKeys.filter((key) => !subtree.has(key)),
@@ -911,16 +917,17 @@ export class LeaseRegistry {
       await this.#purgeExpired();
       if (!safeSessionKey(sessionKey)) throw new TypeError("Native guard session key is invalid");
       const parsedSession = parseCanonicalOpenClawSessionKey(sessionKey);
+      const hasExactInactive = this.#rootEndedBySession.has(sessionKey) ||
+        this.#recoveringBySession.has(sessionKey);
       const active = this.#activeBySession.get(sessionKey) ??
-        (parsedSession?.agentId === "main" ? this.#activeByAgent.get("main") : undefined);
+        (!hasExactInactive && parsedSession?.agentId === "main"
+          ? this.#activeByAgent.get("main")
+          : undefined);
       if (active !== undefined) {
         if (active.lifecycleQueue.length > 0 || active.lifecycleOverflow) return false;
         if (isAgentScope(active.lease.scope)) {
           if (parsedSession?.agentId !== active.lease.scope.agentId) return false;
-          const subtree = active.parentByChild.has(sessionKey)
-            ? collectSubtree(active.parentByChild, sessionKey)
-            : new Set<string>();
-          if (subtree.size === 0) return true;
+          const subtree = collectSubtree(active.parentByChild, sessionKey);
           const lease = withChildSessionKeys(
             active.lease,
             active.lease.childSessionKeys.filter((key) => !subtree.has(key)),
@@ -967,6 +974,7 @@ export class LeaseRegistry {
         return true;
       }
 
+      if (this.#rootEndedBySession.has(sessionKey)) return false;
       const recovering = this.#recoveringBySession.get(sessionKey) ??
         (parsedSession?.agentId === "main" ? this.#recoveringByAgent.get("main") : undefined);
       if (recovering === undefined) return false;

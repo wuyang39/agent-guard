@@ -375,6 +375,7 @@ test("agent lookup fails closed only for malformed claimed-main session identiti
   await registry.start();
   await registry.activate(agentActivation());
 
+  assert.deepEqual(await registry.lookup("agent:main"), { state: "identity_mismatch" });
   assert.deepEqual(await registry.lookup("agent:main:"), { state: "identity_mismatch" });
   assert.deepEqual(await registry.lookup("agent:main:bad..key"), { state: "identity_mismatch" });
   assert.deepEqual(await registry.lookup("agent:worker:"), { state: "off" });
@@ -427,7 +428,35 @@ test("agent marker restart recovery covers all canonical main sessions and exact
     assert.equal(fallback.leaseId, "lease.1");
     assert.deepEqual(fallback.scope, { kind: "agent", agentId: "main" });
   }
+  assert.deepEqual(await registry.lookup("agent:main"), { state: "identity_mismatch" });
+  assert.deepEqual(await registry.lookup("agent:main:"), { state: "identity_mismatch" });
   assert.deepEqual(await registry.lookup("agent:worker:cli:new"), { state: "off" });
+});
+
+test("session end honors exact recovery before active agent fallback across restart", async () => {
+  const exactSessionKey = "agent:main:dashboard:exact-recovery";
+  const store = new MemoryMarkerStore([marker({
+    leaseId: "lease.exact",
+    leaseEpoch: 1,
+    rootSessionKey: exactSessionKey,
+  })]);
+  const registry = new LeaseRegistry({ markerStore: store, now: () => new Date(NOW) });
+  await registry.start();
+  await registry.activate(agentActivation());
+
+  assert.equal(await registry.endSession(exactSessionKey), true);
+  const ended = await registry.lookup(exactSessionKey);
+  assert.equal(ended.state, "root_ended");
+  if (ended.state === "root_ended") assert.equal(ended.leaseId, "lease.exact");
+  assert.equal(store.writes.at(-1)?.leaseId, "lease.exact");
+  assert.equal(store.writes.at(-1)?.rootTombstone?.leaseEpoch, 1);
+
+  const restarted = new LeaseRegistry({ markerStore: store, now: () => new Date(NOW) });
+  await restarted.start();
+  const recovered = await restarted.lookup(exactSessionKey);
+  assert.equal(recovered.state, "root_ended");
+  if (recovered.state === "root_ended") assert.equal(recovered.leaseId, "lease.exact");
+  assert.equal((await restarted.lookup("agent:main:cli:other")).state, "recovery");
 });
 
 test("old missing-scope marker recovers as a legacy exact session without becoming agent-wide", async () => {
@@ -566,6 +595,44 @@ test("agent session end acknowledges canonical main identities without ending th
   assert.equal(await registry.prepareSessionEnd("agent:worker:dashboard:ended"), undefined);
   assert.equal(await registry.endSession("agent:main:main"), true);
   assert.equal((await registry.lookup("agent:main:dashboard:after-root-end")).state, "active");
+});
+
+test("agent session end prunes descendants of an external canonical parent", async () => {
+  const parentSessionKey = "agent:main:dashboard:external-parent";
+  const childSessionKey = "agent:main:cli:child";
+  const grandchildSessionKey = "agent:main:cli:grandchild";
+
+  const buildRegistry = async () => {
+    const store = new MemoryMarkerStore();
+    const registry = new LeaseRegistry({ markerStore: store, now: () => new Date(NOW) });
+    await registry.start();
+    await registry.activate(agentActivation());
+    assert.equal(await registry.bindChild("lease.1", parentSessionKey, childSessionKey), true);
+    assert.equal(await registry.bindChild("lease.1", childSessionKey, grandchildSessionKey), true);
+    return { registry, store };
+  };
+
+  const queued = await buildRegistry();
+  assert.deepEqual(await queued.registry.prepareSessionEnd(parentSessionKey), {
+    kind: "end_session",
+    sessionKey: parentSessionKey,
+  });
+  assert.equal(await queued.registry.completeSessionEnd("lease.1", parentSessionKey), true);
+  assert.deepEqual(queued.store.writes.at(-1)?.childSessionKeys, []);
+  assert.equal(queued.store.writes.at(-1)?.sessionBindings, undefined);
+  const queuedActive = await queued.registry.lookup("agent:main:cli:unrelated");
+  assert.equal(queuedActive.state, "active");
+  if (queuedActive.state === "active") assert.deepEqual(queuedActive.childSessionKeys, []);
+  assert.equal(await queued.registry.bindChild("lease.1", parentSessionKey, childSessionKey), true);
+
+  const direct = await buildRegistry();
+  assert.equal(await direct.registry.endSession(parentSessionKey), true);
+  assert.deepEqual(direct.store.writes.at(-1)?.childSessionKeys, []);
+  assert.equal(direct.store.writes.at(-1)?.sessionBindings, undefined);
+  const directActive = await direct.registry.lookup("agent:main:dashboard:unrelated");
+  assert.equal(directActive.state, "active");
+  if (directActive.state === "active") assert.deepEqual(directActive.childSessionKeys, []);
+  assert.equal(await direct.registry.bindChild("lease.1", parentSessionKey, childSessionKey), true);
 });
 
 test("agent expiry removes fallback and malformed-main fail-closed state", async () => {

@@ -953,14 +953,50 @@ test("main agent scope blocks malformed claimed-main tool context", async () => 
     },
   });
 
-  assert.deepEqual(await fixture.runtime.beforeToolCall(
-    execEvent(),
+  for (const context of [
+    execContext({ sessionKey: "agent:main" }),
     execContext({ sessionKey: "agent:main:" }),
-  ), {
-    block: true,
-    blockReason: "[Agent Guard:NATIVE_GUARD_CONTEXT_INVALID] Native guard tool context is incomplete.",
-  });
+    execContext({ sessionKey: "not-an-agent-key", agentId: "main" }),
+    execContext({ sessionKey: "agent:worker:dashboard:one", agentId: "main" }),
+  ]) {
+    assert.deepEqual(await fixture.runtime.beforeToolCall(execEvent(), context), {
+      block: true,
+      blockReason: "[Agent Guard:NATIVE_GUARD_CONTEXT_INVALID] Native guard tool context is incomplete.",
+    });
+  }
   assert.equal(fixture.fetchCalls(), 0);
+});
+
+test("recovering main agent scope blocks claimed-main mismatches but leaves other agents OFF", async () => {
+  const runtime = new AgentGuardRuntime({
+    markerStore: memoryMarkerStore([{
+      leaseId: "lease.1",
+      rootSessionKey: "agent:main:main",
+      childSessionKeys: [],
+      mode: "supervision",
+      scope: { kind: "agent", agentId: "main" },
+      policyPackId: "pack.1",
+      policyPackDigest: "b".repeat(64),
+      expiresAt: "2026-08-02T10:05:00.000Z",
+    }]),
+    now: () => new Date(NOW),
+  });
+
+  for (const context of [
+    execContext({ sessionKey: "agent:main" }),
+    execContext({ sessionKey: "agent:main:" }),
+    execContext({ sessionKey: "not-an-agent-key", agentId: "main" }),
+    execContext({ sessionKey: "agent:worker:dashboard:one", agentId: "main" }),
+  ]) {
+    assert.deepEqual(await runtime.beforeToolCall(execEvent(), context), {
+      block: true,
+      blockReason: "[Agent Guard:NATIVE_GUARD_CONTEXT_INVALID] Native guard tool context is incomplete.",
+    });
+  }
+  assert.equal(await runtime.beforeToolCall(
+    execEvent(),
+    execContext({ sessionKey: "agent:worker:dashboard:one", agentId: "worker" }),
+  ), undefined);
 });
 
 test("exact session decisions shadow agent scope then fall back after revoke", async () => {

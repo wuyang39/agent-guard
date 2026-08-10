@@ -383,6 +383,54 @@ test("profile seed snapshots only allowlisted main-agent model state files", asy
   assert.equal(Object.hasOwn(isolatedConfig, "models"), false);
 });
 
+test("profile seed snapshots the selected generated plugin model catalog", async (t) => {
+  const sourceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-plugin-model-state-"));
+  const sourceAgentDir = path.join(sourceRoot, "agents", "main", "agent");
+  const catalogDir = path.join(sourceAgentDir, "plugins", "deepseek");
+  await fs.mkdir(catalogDir, { recursive: true });
+  await fs.writeFile(
+    path.join(sourceAgentDir, "models.json"),
+    JSON.stringify({ providers: { codex: { models: [{ id: "gpt-5.6-sol" }] } } }),
+  );
+  await fs.writeFile(
+    path.join(sourceAgentDir, "openclaw-agent.sqlite"),
+    Buffer.from("SQLite format 3\0seed"),
+  );
+  const catalog = JSON.stringify({
+    generatedBy: "openclaw-plugin-model-catalog-v1",
+    providers: {
+      deepseek: {
+        models: [{ id: "deepseek-v4-flash", name: "DeepSeek V4 Flash" }],
+      },
+    },
+  });
+  await fs.writeFile(path.join(catalogDir, "catalog.json"), catalog);
+  const profileSeed = await resolveTestProfileSeed(sourceRoot, {
+    model: { primary: "deepseek/deepseek-v4-flash" },
+  });
+  t.after(() => fs.rm(sourceRoot, { recursive: true, force: true }));
+
+  const { runner } = runnerFor();
+  const manager = new DetectionSandboxManager({
+    runGroupId: "run-profile-seed-plugin-catalog",
+    image: `openclaw@sha256:${"a".repeat(64)}`,
+    commandRunner: runner,
+    profileSeed,
+  });
+  t.after(() => manager.cleanup().catch(() => undefined));
+
+  const evidence = await manager.preflight();
+  const isolatedAgentDir = path.join(evidence.profileRoot, "state", "agents", "main", "agent");
+  assert.equal(
+    await fs.readFile(path.join(isolatedAgentDir, "plugins", "deepseek", "catalog.json"), "utf8"),
+    catalog,
+  );
+  const isolatedConfig = JSON.parse(await fs.readFile(evidence.configPath, "utf8")) as {
+    plugins?: { allow?: string[] };
+  };
+  assert.deepEqual(isolatedConfig.plugins?.allow, ["agent-guard-supervision", "deepseek"]);
+});
+
 test("profile seed accepts built-in model state without optional models.json", async (t) => {
   const sourceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agent-guard-builtin-model-state-"));
   const sourceAgentDir = path.join(sourceRoot, "agents", "main", "agent");

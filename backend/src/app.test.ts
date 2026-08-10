@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import http from "node:http";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -99,6 +100,59 @@ test("sandbox activation gives cold capability inspection the preflight command 
   });
 
   assert.deepEqual(lease, { leaseId: "lease-cold-start", leaseEpoch: 1 });
+});
+
+test("sandbox activation gives cold Gateway control requests the detection command budget", async (t) => {
+  const server = http.createServer((request, response) => {
+    request.resume();
+    request.once("end", () => {
+      setTimeout(() => {
+        response.statusCode = 200;
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({
+          coverage: "ready",
+          finalizerAssurance: "isolated_profile",
+          activeLeaseCount: 0,
+        }));
+      }, 2_100);
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+
+  const runtimeEventStore = createNativeGuardEventStore();
+  const dependencies = createNativeGuardRouteDependencies({
+    coordinator: {
+      async activate(input: Parameters<ReturnType<typeof createNativeGuardRouteDependencies>["coordinator"]["activate"]>[0]) {
+        await input.sandbox!.controlClient.activate(input.sandbox!.gatewayUrl, {
+          leaseId: "lease-cold-control",
+          leaseEpoch: 1,
+        } as never);
+        return { activeLease: { leaseId: "lease-cold-control", leaseEpoch: 1 } } as never;
+      },
+    } as never,
+    leaseService: {} as never,
+    eventStore: runtimeEventStore,
+    createDecisionService() {
+      return { async decide() { throw new Error("not called"); } };
+    },
+  });
+  const runGuard = createSandboxCoordinatorFactory(dependencies)({
+    gatewayUrl: `http://127.0.0.1:${String(address.port)}`,
+    gatewayToken: "sandbox-token",
+    profileEnv: {},
+    capabilitySnapshot: attestedCapability(),
+  });
+
+  assert.deepEqual(await runGuard.activate({
+    rootSessionKey: "agent:cold-control",
+    runGroupId: "run-cold-control",
+  }), { leaseId: "lease-cold-control", leaseEpoch: 1 });
 });
 
 test("sandbox activation reuses the run-scoped attested capability snapshot", async () => {

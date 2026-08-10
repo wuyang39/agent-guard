@@ -40,7 +40,7 @@ export type DetectionOpenClawConfig = {
   tools: { elevated: { enabled: false } };
   plugins: {
     enabled: true;
-    allow: ["agent-guard-supervision"];
+    allow: string[];
     load: { paths: [string] };
     slots: { memory: "none" };
     entries: {
@@ -80,6 +80,7 @@ export type GenerateDetectionConfigOptions = {
   pluginRoot: string;
   markerDir: string;
   spoolDir: string;
+  providerPluginIds?: string[];
   userConfig?: unknown;
   model?: unknown;
 };
@@ -123,7 +124,7 @@ export function generateDetectionOpenClawConfig(
     tools: { elevated: { enabled: false } },
     plugins: {
       enabled: true,
-      allow: ["agent-guard-supervision"],
+      allow: [...new Set(["agent-guard-supervision", ...(options.providerPluginIds ?? [])])],
       load: { paths: [options.pluginRoot] },
       slots: { memory: "none" },
       entries: {

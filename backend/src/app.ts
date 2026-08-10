@@ -24,7 +24,10 @@ import {
   createOpenClawControlClient,
   type NativeGuardCapability,
 } from "./modules/openclaw/openclawControlClient";
-import { DETECTION_SANDBOX_CAPABILITY_TIMEOUT_MS } from "./modules/openclaw/detectionSandboxManager";
+import {
+  DETECTION_SANDBOX_CAPABILITY_TIMEOUT_MS,
+  DETECTION_SANDBOX_COMMAND_TIMEOUT_MS,
+} from "./modules/openclaw/detectionSandboxManager";
 import { createNativeGuardLeaseService } from "./modules/openclaw/nativeGuardLeaseService";
 import { createNativeGuardEventStore } from "./storage/nativeGuardEventStore";
 import type { NativeGuardEventStore } from "./storage/nativeGuardEventStore";
@@ -57,6 +60,7 @@ export function createSandboxCoordinatorFactory(
   return (input) => {
     const liveControlClient = createOpenClawControlClient({
       gatewayToken: input.gatewayToken,
+      timeoutMs: DETECTION_SANDBOX_COMMAND_TIMEOUT_MS,
       capabilityTimeoutMs: DETECTION_SANDBOX_CAPABILITY_TIMEOUT_MS,
     });
     const sandboxControlClient = {

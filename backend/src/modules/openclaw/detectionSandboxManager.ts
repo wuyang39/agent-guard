@@ -34,6 +34,8 @@ const MAX_MODEL_STATE_FILES = MODEL_STATE_ALLOWLIST.size;
 const MAX_MODEL_STATE_FILE_BYTES = 32 * 1024 * 1024;
 const MAX_MODEL_STATE_TOTAL_BYTES = 64 * 1024 * 1024;
 const MODEL_STATE_READ_CHUNK_BYTES = 1024 * 1024;
+const PLUGIN_MODEL_CATALOG_GENERATED_BY = "openclaw-plugin-model-catalog-v1";
+const PLUGIN_MODEL_CATALOG_FILE = "catalog.json";
 export const DETECTION_SANDBOX_COMMAND_TIMEOUT_MS = 30_000;
 export const DETECTION_SANDBOX_CAPABILITY_TIMEOUT_MS = 90_000;
 const MAX_COMMAND_OUTPUT_BYTES = 256 * 1024;
@@ -203,6 +205,7 @@ export class DetectionSandboxManager {
   private cleanupPromise?: Promise<void>;
   private resolvedOpenClawVersion?: string;
   private staticCapability?: NativeGuardCapability;
+  private providerPluginIds: string[] = [];
   private networkName?: string;
   private sinkContainerId?: string;
   private sinkLogs?: string;
@@ -862,13 +865,14 @@ export class DetectionSandboxManager {
       fs.mkdir(spoolDir, { recursive: true, mode: 0o700 }),
     ]);
     if (this.options.profileSeed) {
-      await this.snapshotAgentModelState(root, this.options.profileSeed);
+      this.providerPluginIds = await this.snapshotAgentModelState(root, this.options.profileSeed);
     }
     this.config = generateDetectionOpenClawConfig({
       userConfig: this.options.profileSeed?.userConfig ?? this.options.userConfig,
       pluginRoot: this.pluginRoot,
       markerDir,
       spoolDir,
+      providerPluginIds: this.providerPluginIds,
     });
     this.config.agents.defaults.sandbox.docker.image = this.imageId;
     this.config.agents.defaults.sandbox.docker.labels = {
@@ -907,7 +911,7 @@ export class DetectionSandboxManager {
   private async snapshotAgentModelState(
     profileRoot: string,
     profileSeed: DetectionProfileSeed,
-  ): Promise<void> {
+  ): Promise<string[]> {
     this.throwIfAborted();
     const sourceAgentDir = profileSeed.agentStateDir;
     const stateRootDirectory = await snapshotApprovedSeedDirectory(
@@ -960,6 +964,7 @@ export class DetectionSandboxManager {
     }
 
     const openFiles: OpenSeedFileSnapshot[] = [];
+    let pluginCatalog: SelectedPluginModelCatalogSnapshot | undefined;
     try {
       let totalBytes = 0n;
       for (const entry of allowed) {
@@ -999,6 +1004,8 @@ export class DetectionSandboxManager {
         );
       }
       const modelCatalogSnapshot = snapshots.get("models.json");
+      let rootCatalogHasProvider = false;
+      let rootCatalogHasModel = false;
       if (modelCatalogSnapshot) {
         let modelCatalog: unknown;
         try {
@@ -1022,21 +1029,36 @@ export class DetectionSandboxManager {
         const providerEntry = Object.entries(modelCatalog.providers).find(
           ([provider]) => provider.trim().toLowerCase() === modelRef.provider,
         )?.[1];
-        if (!isRecord(providerEntry)) {
-          throw new SandboxPreflightError(
-            "MODEL_PROFILE_SEED_INVALID",
-            `Detection model provider ${modelRef.provider} is absent from models.json.`,
+        if (isRecord(providerEntry)) {
+          rootCatalogHasProvider = true;
+          const providerModels = Array.isArray(providerEntry.models) ? providerEntry.models : [];
+          rootCatalogHasModel = providerModels.some(
+            (entry) => isRecord(entry) && typeof entry.id === "string" && entry.id === modelRef.model,
           );
         }
-        const providerModels = Array.isArray(providerEntry.models) ? providerEntry.models : [];
-        const hasModel = providerModels.some(
-          (entry) => isRecord(entry) && typeof entry.id === "string" && entry.id === modelRef.model,
+      }
+      if (!rootCatalogHasModel) {
+        pluginCatalog = await openSelectedPluginModelCatalogSnapshot(
+          sourceDirectory,
+          modelRef,
+          () => this.throwIfAborted(),
         );
-        if (!hasModel) {
+        if (!pluginCatalog && modelCatalogSnapshot) {
           throw new SandboxPreflightError(
             "MODEL_PROFILE_SEED_INVALID",
-            `Detection model ${modelRef.model} is absent from provider ${modelRef.provider} in models.json.`,
+            rootCatalogHasProvider
+              ? `Detection model ${modelRef.model} is absent from provider ${modelRef.provider} in models.json and generated plugin catalogs.`
+              : `Detection model provider ${modelRef.provider} is absent from models.json and generated plugin catalogs.`,
           );
+        }
+        if (pluginCatalog) {
+          totalBytes += pluginCatalog.file.stat.size;
+          if (totalBytes > BigInt(MAX_MODEL_STATE_TOTAL_BYTES)) {
+            throw new SandboxPreflightError(
+              "MODEL_PROFILE_SEED_INVALID",
+              "Detection model state exceeds the total snapshot size limit.",
+            );
+          }
         }
       }
       const expectedHeader = Buffer.from("SQLite format 3\0", "utf8");
@@ -1060,6 +1082,19 @@ export class DetectionSandboxManager {
           await handle.close();
         }
       }
+      if (pluginCatalog) {
+        this.throwIfAborted();
+        const targetDirectory = path.join(destination, "plugins", pluginCatalog.encodedPluginId);
+        await fs.mkdir(targetDirectory, { recursive: true, mode: 0o700 });
+        const target = path.join(targetDirectory, PLUGIN_MODEL_CATALOG_FILE);
+        const handle = await fs.open(target, "wx", 0o600);
+        try {
+          await writeSeedSnapshotInChunks(handle, pluginCatalog.file.content!, () => this.throwIfAborted());
+        } finally {
+          await handle.close();
+        }
+        await assertSelectedPluginModelCatalogUnchanged(pluginCatalog);
+      }
       await assertSeedSnapshotUnchanged(sourceDirectory, openFiles);
       await Promise.all([
         snapshotApprovedSeedDirectory(
@@ -1073,8 +1108,12 @@ export class DetectionSandboxManager {
           "main-agent state directory",
         ),
       ]);
+      return pluginCatalog ? [pluginCatalog.pluginId] : [];
     } finally {
-      await Promise.all(openFiles.map((entry) => entry.handle.close().catch(() => undefined)));
+      await Promise.all([
+        ...openFiles.map((entry) => entry.handle.close().catch(() => undefined)),
+        pluginCatalog ? pluginCatalog.file.handle.close().catch(() => undefined) : Promise.resolve(),
+      ]);
     }
   }
 
@@ -1849,6 +1888,155 @@ type OpenSeedFileSnapshot = {
   stat: BigIntStats;
   content?: Buffer;
 };
+
+type SelectedPluginModelCatalogSnapshot = {
+  pluginId: string;
+  encodedPluginId: string;
+  pluginsDirectory: TrustedSeedDirectorySnapshot;
+  pluginDirectory: TrustedSeedDirectorySnapshot;
+  file: OpenSeedFileSnapshot;
+};
+
+async function openSelectedPluginModelCatalogSnapshot(
+  agentDirectory: TrustedSeedDirectorySnapshot,
+  modelRef: { provider: string; model: string },
+  assertActive: () => void,
+): Promise<SelectedPluginModelCatalogSnapshot | undefined> {
+  const pluginsPath = path.join(agentDirectory.path, "plugins");
+  const pluginsStat = await fs.lstat(pluginsPath).catch(() => undefined);
+  if (!pluginsStat) return undefined;
+  if (!pluginsStat.isDirectory() || pluginsStat.isSymbolicLink()) {
+    throw new SandboxPreflightError(
+      "MODEL_PROFILE_SEED_INVALID",
+      `Detection plugin model catalog root is invalid: ${pluginsPath}.`,
+    );
+  }
+  const pluginsDirectory = await snapshotTrustedSeedDirectory(pluginsPath);
+  if (!isPathInsideDirectory(pluginsDirectory.path, agentDirectory.path)) {
+    throw new SandboxPreflightError(
+      "MODEL_PROFILE_SEED_INVALID",
+      `Detection plugin model catalog root escaped the trusted main-agent directory: ${pluginsPath}.`,
+    );
+  }
+
+  const matches: SelectedPluginModelCatalogSnapshot[] = [];
+  try {
+    const entries = (await fs.readdir(pluginsDirectory.path, { withFileTypes: true }))
+      .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink())
+      .sort((left, right) => left.name.localeCompare(right.name));
+    for (const entry of entries) {
+      assertActive();
+      let pluginId: string;
+      try {
+        pluginId = decodeURIComponent(entry.name).trim();
+      } catch {
+        continue;
+      }
+      if (!pluginId || pluginId === "." || pluginId === "..") continue;
+      const pluginDirectory = await snapshotTrustedSeedDirectory(path.join(pluginsDirectory.path, entry.name));
+      if (!isPathInsideDirectory(pluginDirectory.path, pluginsDirectory.path)) {
+        throw new SandboxPreflightError(
+          "MODEL_PROFILE_SEED_INVALID",
+          `Detection plugin model catalog escaped its trusted root: ${pluginDirectory.path}.`,
+        );
+      }
+      const catalogPath = path.join(pluginDirectory.path, PLUGIN_MODEL_CATALOG_FILE);
+      const catalogStat = await fs.lstat(catalogPath).catch(() => undefined);
+      if (!catalogStat) continue;
+      const file = await openSeedFileSnapshot(catalogPath, pluginDirectory);
+      try {
+        if (file.stat.size > BigInt(MAX_MODEL_STATE_FILE_BYTES)) {
+          throw new SandboxPreflightError(
+            "MODEL_PROFILE_SEED_INVALID",
+            `Detection plugin model catalog exceeds the size limit: ${catalogPath}.`,
+          );
+        }
+        file.content = await readBoundedSeedFile(file, assertActive);
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(file.content.toString("utf8")) as unknown;
+        } catch {
+          throw new SandboxPreflightError(
+            "MODEL_PROFILE_SEED_INVALID",
+            `Detection plugin model catalog is not valid JSON: ${catalogPath}.`,
+          );
+        }
+        if (!isRecord(parsed) || parsed.generatedBy !== PLUGIN_MODEL_CATALOG_GENERATED_BY) continue;
+        const providers = isRecord(parsed.providers) ? parsed.providers : undefined;
+        const providerEntry = providers
+          ? Object.entries(providers).find(([provider]) => provider.trim().toLowerCase() === modelRef.provider)?.[1]
+          : undefined;
+        if (!isRecord(providerEntry)) continue;
+        const providerModels = Array.isArray(providerEntry.models) ? providerEntry.models : [];
+        if (!providerModels.some(
+          (model) => isRecord(model) && typeof model.id === "string" && model.id === modelRef.model,
+        )) continue;
+        matches.push({
+          pluginId,
+          encodedPluginId: entry.name,
+          pluginsDirectory,
+          pluginDirectory,
+          file,
+        });
+        continue;
+      } finally {
+        if (!matches.some((match) => match.file === file)) {
+          await file.handle.close().catch(() => undefined);
+        }
+      }
+    }
+    if (matches.length > 1) {
+      throw new SandboxPreflightError(
+        "MODEL_PROFILE_SEED_INVALID",
+        `Detection model provider ${modelRef.provider} has multiple generated plugin catalog owners.`,
+      );
+    }
+    return matches[0];
+  } catch (error) {
+    await Promise.all(matches.map((match) => match.file.handle.close().catch(() => undefined)));
+    throw error;
+  }
+}
+
+async function assertSelectedPluginModelCatalogUnchanged(
+  snapshot: SelectedPluginModelCatalogSnapshot,
+): Promise<void> {
+  try {
+    for (const directory of [snapshot.pluginsDirectory, snapshot.pluginDirectory]) {
+      const current = await snapshotTrustedSeedDirectory(directory.path);
+      if (
+        !sameHostPath(current.path, directory.path) ||
+        !sameSeedFileSnapshot(current.stat, directory.stat)
+      ) {
+        throw new SandboxPreflightError(
+          "MODEL_PROFILE_SEED_INVALID",
+          `Detection plugin model catalog directory changed during snapshot: ${directory.path}.`,
+        );
+      }
+    }
+    const handleStat = await snapshot.file.handle.stat({ bigint: true });
+    const pathStat = await fs.lstat(snapshot.file.path, { bigint: true });
+    const canonicalPath = await fs.realpath(snapshot.file.path);
+    if (
+      pathStat.isSymbolicLink() ||
+      !sameSeedFileSnapshot(snapshot.file.stat, handleStat) ||
+      !sameSeedFileSnapshot(handleStat, pathStat) ||
+      !sameHostPath(canonicalPath, snapshot.file.canonicalPath) ||
+      !isPathInsideDirectory(canonicalPath, snapshot.pluginDirectory.path)
+    ) {
+      throw new SandboxPreflightError(
+        "MODEL_PROFILE_SEED_INVALID",
+        `Detection plugin model catalog changed during snapshot: ${snapshot.file.path}.`,
+      );
+    }
+  } catch (error) {
+    if (error instanceof SandboxPreflightError) throw error;
+    throw new SandboxPreflightError(
+      "MODEL_PROFILE_SEED_INVALID",
+      `Detection plugin model catalog changed during snapshot: ${snapshot.file.path}.`,
+    );
+  }
+}
 
 async function snapshotTrustedSeedDirectory(target: string): Promise<TrustedSeedDirectorySnapshot> {
   const resolved = path.resolve(target);

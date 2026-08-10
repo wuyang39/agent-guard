@@ -290,6 +290,20 @@ test("keeps the lease unusable after plugin activation ACK until final backend c
   assert.equal(isLeaseUsable(fixture.coordinator, leaseId), true);
 });
 
+test("returns its exact created lease identity without changing legacy activate", async () => {
+  const explicit = coordinatorFixture();
+  const owned = await explicit.coordinator.activateWithIdentity(supervisionInput());
+  assert.equal(owned.leaseId, explicit.activationCalls[0].leaseId);
+  assert.equal(owned.status.activeLease?.leaseId, owned.leaseId);
+  assert.equal(explicit.activationCalls.length, 1);
+
+  const legacy = coordinatorFixture();
+  const status = await legacy.coordinator.activate(supervisionInput());
+  assert.equal(status.coverage, "active");
+  assert.equal(status.activeLease?.leaseId, legacy.activationCalls[0].leaseId);
+  assert.equal(legacy.activationCalls.length, 1);
+});
+
 test("rejects root end during sandbox activation without losing rollback ownership", async () => {
   const fixture = coordinatorFixture();
   const sandboxRevokeCalls: string[] = [];

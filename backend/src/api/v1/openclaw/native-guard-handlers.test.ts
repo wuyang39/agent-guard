@@ -2614,6 +2614,46 @@ test("lazy native runtime delegates same-identity revoke during a pending renew"
   await Promise.all([renewal, revocation]);
 });
 
+test("lazy native runtime delegates explicit activation identity through one coordinator", async () => {
+  const handlers = await import("./native-guard-handlers");
+  const agent = nativeAgent(
+    "agent.identity",
+    "C:\\identity\\openclaw.cmd",
+    "http://127.0.0.1:18790",
+  );
+  let factoryCalls = 0;
+  let explicitCalls = 0;
+  const status: NativeGuardStatus = {
+    coverage: "active",
+    finalizerAssurance: "exclusive_before_hook",
+    activeLeaseCount: 1,
+  };
+  const dependencies = handlers.createNativeGuardRouteDependencies({
+    env: { AGENT_GUARD_CONTROL_TOKEN: CONTROL_TOKEN },
+    loadActiveAgentConfig: async () => agent,
+    createCoordinator() {
+      factoryCalls += 1;
+      return {
+        ...coordinatorStub(status),
+        async activateWithIdentity() {
+          explicitCalls += 1;
+          return { status: structuredClone(status), leaseId: "lease.explicit" };
+        },
+      } as never;
+    },
+    createDecisionService() {
+      return { async decide() { throw new Error("not called"); } };
+    },
+  });
+
+  const result = await dependencies.coordinator.activateWithIdentity({} as never);
+
+  assert.equal(result.leaseId, "lease.explicit");
+  assert.equal(result.status.coverage, "active");
+  assert.equal(factoryCalls, 1);
+  assert.equal(explicitCalls, 1);
+});
+
 async function createApp(dependencies: NativeGuardRouteDependencies) {
   const app = Fastify({ logger: false, bodyLimit: 2 * 1024 * 1024 });
   await app.register(openClawNativeGuardRoutes, dependencies);
@@ -2661,6 +2701,12 @@ function coordinatorStub(status: NativeGuardStatus = {
 }) {
   return {
     async activate() { return structuredClone(status); },
+    async activateWithIdentity() {
+      return {
+        status: structuredClone(status),
+        leaseId: status.activeLease?.leaseId ?? "lease.stub",
+      };
+    },
     async renew() { return structuredClone(status); },
     async revoke() { return structuredClone(status); },
     async status() { return structuredClone(status); },
@@ -2670,7 +2716,7 @@ function coordinatorStub(status: NativeGuardStatus = {
     markLeaseRootEnded() { return false; },
     isLeaseRevoking() { return false; },
     getLastStatus() { return structuredClone(status); },
-  } as never;
+  };
 }
 
 function createFixture() {
@@ -2704,6 +2750,11 @@ function createFixture() {
         calls.activate += 1;
         calls.activationInputs.push(input);
         return readyStatus;
+      },
+      async activateWithIdentity(input) {
+        calls.activate += 1;
+        calls.activationInputs.push(input);
+        return { status: readyStatus, leaseId: "lease.fixture" };
       },
       async renew(leaseId, ttlMs) {
         calls.renew += 1;

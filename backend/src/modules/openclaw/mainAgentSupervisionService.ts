@@ -20,7 +20,7 @@ type LoadedOpenClawPolicyPack = {
 
 type MainCoordinator = Pick<
   NativeGuardCoordinator,
-  "activate" | "renew" | "revoke" | "status" | "isLeaseUsable"
+  "activateWithIdentity" | "renew" | "revoke" | "status" | "isLeaseUsable"
 >;
 
 export type MainAgentSupervisionStatus = {
@@ -146,12 +146,11 @@ export function createMainAgentSupervisionService(
     const previous = current && current.policyPackId !== policyPackId
       ? { ...current, failure: undefined }
       : undefined;
-    let beforeActivation: NativeGuardStatus | undefined;
     if (!current) {
-      beforeActivation = await readCoordinatorStatusForStart();
-      const unmanaged = findMainLeases(beforeActivation);
+      const status = await readCoordinatorStatusForStart();
+      const unmanaged = findMainLeases(status);
       if (unmanaged.length > 0) {
-        lastStatus = unmanagedLeaseStatus(beforeActivation, unmanaged);
+        lastStatus = unmanagedLeaseStatus(status, unmanaged);
         throw serviceError(
           "MAIN_AGENT_SUPERVISION_UNMANAGED_LEASE",
           409,
@@ -168,14 +167,11 @@ export function createMainAgentSupervisionService(
           "The current main-agent supervision lease could not be replaced.",
         );
       }
-      beforeActivation = await readCoordinatorStatusForStart();
     }
-    beforeActivation ??= await readCoordinatorStatusForStart();
 
     const activated = await activateOwnedPolicy(
       policyPackId,
       loaded.policyPackDigest,
-      beforeActivation,
     );
     if (activated) return cloneStatus(lastStatus);
 
@@ -188,49 +184,34 @@ export function createMainAgentSupervisionService(
   async function activateOwnedPolicy(
     policyPackId: string,
     policyPackDigest: string,
-    before: NativeGuardStatus,
     expectedGatewayInstanceId?: string,
   ): Promise<boolean> {
-    const beforeIds = new Set(statusLeases(before).map((lease) => lease.leaseId));
     let aggregate: NativeGuardStatus;
+    let ownedLeaseId: string;
     try {
-      aggregate = await options.coordinator.activate({
+      const activated = await options.coordinator.activateWithIdentity({
         rootSessionKey: MAIN_ROOT_SESSION_KEY,
         scope: { ...MAIN_SCOPE },
         mode: "supervision",
         policyPackId,
         ttlMs,
       });
+      aggregate = activated.status;
+      ownedLeaseId = activated.leaseId;
     } catch {
-      let after: NativeGuardStatus | undefined;
-      try {
-        after = await options.coordinator.status();
-      } catch {
-        // A missing post-failure snapshot leaves ownership unconfirmed.
-      }
-      if (
-        after &&
-        newlyAddedActivationCandidates(after, beforeIds, policyPackId).length > 0
-      ) {
-        await rollbackInvalidActivation(after, beforeIds, policyPackId);
-      } else {
-        current = undefined;
-        lastStatus = idleStatus("conditional", after?.activeLeaseCount ?? before.activeLeaseCount, {
-          reasonCode: "MAIN_AGENT_SUPERVISION_ACTIVATION_FAILED",
-          detail: "Main-agent supervision could not be activated.",
-        });
-      }
+      current = undefined;
+      lastStatus = idleStatus("conditional", lastStatus.activeLeaseCount, {
+        reasonCode: "MAIN_AGENT_SUPERVISION_ACTIVATION_FAILED",
+        detail: "Main-agent supervision could not be activated.",
+      });
       return false;
     }
 
-    const newlyAdded = newlyAddedMainLeases(aggregate, beforeIds);
-    const exact = newlyAdded.length === 1
-      ? findExactMainLease(aggregate, {
-          leaseId: newlyAdded[0].leaseId,
-          policyPackId,
-          policyPackDigest,
-        })
-      : undefined;
+    const exact = findExactMainLease(aggregate, {
+      leaseId: ownedLeaseId,
+      policyPackId,
+      policyPackDigest,
+    });
     if (
       aggregate.coverage !== "active" ||
       !exact ||
@@ -239,7 +220,7 @@ export function createMainAgentSupervisionService(
         exact.gatewayInstanceId !== expectedGatewayInstanceId) ||
       !options.coordinator.isLeaseUsable(exact.leaseId)
     ) {
-      await rollbackInvalidActivation(aggregate, beforeIds, policyPackId);
+      await rollbackInvalidActivation(aggregate, ownedLeaseId);
       return false;
     }
 
@@ -249,47 +230,49 @@ export function createMainAgentSupervisionService(
       scheduleRenewal(current);
       return true;
     } catch {
-      await rollbackInvalidActivation(aggregate, beforeIds, policyPackId);
+      await rollbackInvalidActivation(aggregate, ownedLeaseId);
       return false;
     }
   }
 
   async function rollbackInvalidActivation(
     aggregate: NativeGuardStatus,
-    beforeIds: ReadonlySet<string>,
-    requestedPolicyPackId: string,
+    ownedLeaseId: string,
   ): Promise<boolean> {
     cancelRenewal();
-    const candidates = newlyAddedActivationCandidates(
-      aggregate,
-      beforeIds,
-      requestedPolicyPackId,
-    );
-    if (candidates.length !== 1) {
-      current = undefined;
-      lastStatus = idleStatus("recovery", aggregate.activeLeaseCount, {
-        reasonCode: "MAIN_AGENT_SUPERVISION_ROLLBACK_UNCONFIRMED",
-        detail: "Main-agent supervision activation ownership could not be confirmed.",
-      });
-      return false;
-    }
-    const candidate = candidates[0];
+    const candidate = statusLeases(aggregate).find((lease) => lease.leaseId === ownedLeaseId);
     try {
-      const revoked = await options.coordinator.revoke(candidate.leaseId);
+      const revoked = await options.coordinator.revoke(ownedLeaseId);
       if (
         revoked.reasonCode === "NATIVE_GUARD_PLUGIN_REVOKE_UNCONFIRMED" ||
-        statusLeases(revoked).some((lease) => lease.leaseId === candidate.leaseId)
+        statusLeases(revoked).some((lease) => lease.leaseId === ownedLeaseId)
       ) {
-        retainCleanupCandidate(candidate, aggregate, revoked.activeLeaseCount);
+        if (candidate) {
+          retainCleanupCandidate(candidate, aggregate, revoked.activeLeaseCount);
+        } else {
+          markRollbackUnconfirmed(revoked.activeLeaseCount);
+        }
         return false;
       }
       current = undefined;
       lastStatus = publicWithoutMain(revoked);
       return true;
     } catch {
-      retainCleanupCandidate(candidate, aggregate, aggregate.activeLeaseCount);
+      if (candidate) {
+        retainCleanupCandidate(candidate, aggregate, aggregate.activeLeaseCount);
+      } else {
+        markRollbackUnconfirmed(aggregate.activeLeaseCount);
+      }
       return false;
     }
+  }
+
+  function markRollbackUnconfirmed(activeLeaseCount: number): void {
+    current = undefined;
+    lastStatus = idleStatus("recovery", activeLeaseCount, {
+      reasonCode: "MAIN_AGENT_SUPERVISION_ROLLBACK_UNCONFIRMED",
+      detail: "Main-agent supervision activation rollback could not be confirmed.",
+    });
   }
 
   function retainCleanupCandidate(
@@ -315,17 +298,9 @@ export function createMainAgentSupervisionService(
   }
 
   async function restorePrevious(previous: ManagedMainLease): Promise<void> {
-    let before: NativeGuardStatus;
-    try {
-      before = await options.coordinator.status();
-    } catch {
-      markRestoreFailed(lastStatus.activeLeaseCount);
-      return;
-    }
     const restored = await activateOwnedPolicy(
       previous.policyPackId,
       previous.policyPackDigest,
-      before,
       previous.gatewayInstanceId,
     );
     if (!restored) {
@@ -659,23 +634,6 @@ function findMainLeases(status: NativeGuardStatus): NativeGuardLeaseSummary[] {
     lease.rootSessionKey === MAIN_ROOT_SESSION_KEY &&
     lease.mode === "supervision" &&
     isMainScope(lease.scope));
-}
-
-function newlyAddedMainLeases(
-  status: NativeGuardStatus,
-  beforeIds: ReadonlySet<string>,
-): NativeGuardLeaseSummary[] {
-  return findMainLeases(status).filter((lease) => !beforeIds.has(lease.leaseId));
-}
-
-function newlyAddedActivationCandidates(
-  status: NativeGuardStatus,
-  beforeIds: ReadonlySet<string>,
-  requestedPolicyPackId: string,
-): NativeGuardLeaseSummary[] {
-  return statusLeases(status).filter((lease) =>
-    !beforeIds.has(lease.leaseId) &&
-    lease.policyPackId === requestedPolicyPackId);
 }
 
 function statusLeases(status: NativeGuardStatus): NativeGuardLeaseSummary[] {

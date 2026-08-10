@@ -287,7 +287,7 @@ test("an invalid activation result is revoked and never exposed as active", asyn
 });
 
 test("activation requires an exact usable summary with its own Gateway identity", async () => {
-  for (const invalid of ["root", "scope", "usable", "gateway"] as const) {
+  for (const invalid of ["policy", "root", "scope", "usable", "gateway"] as const) {
     const fixture = createFixture({ invalidActivation: invalid });
 
     await assert.rejects(
@@ -305,6 +305,22 @@ test("malformed activation rollback ignores a concurrent new different-policy le
     leaseId: "lease.concurrent",
     policyPackId: "policy.concurrent",
   });
+
+  await assert.rejects(
+    fixture.service.start("policy.main"),
+    isServiceError("MAIN_AGENT_SUPERVISION_ACTIVATION_FAILED", 503),
+  );
+
+  assert.deepEqual(fixture.revokeLeaseIds, ["lease-1"]);
+  assert.deepEqual(fixture.activeLeaseIds(), ["lease.concurrent"]);
+});
+
+test("explicit activation identity never revokes a concurrent new same-policy lease", async () => {
+  const fixture = createFixture({ invalidActivation: "scope" });
+  fixture.setConcurrentActivationLease(mainLease({
+    leaseId: "lease.concurrent",
+    gatewayInstanceId: "gateway.concurrent.test",
+  }));
 
   await assert.rejects(
     fixture.service.start("policy.main"),
@@ -413,7 +429,7 @@ type FixtureOptions = {
   unrelatedLease?: boolean;
   beforeActivate?: () => Promise<void>;
   activationCoverage?: NativeGuardStatus["coverage"];
-  invalidActivation?: "root" | "scope" | "usable" | "gateway";
+  invalidActivation?: "policy" | "root" | "scope" | "usable" | "gateway";
   renewError?: Error;
   revokeFailures?: number;
   revokeUnconfirmedCount?: number;
@@ -425,6 +441,7 @@ function createFixture(options: FixtureOptions = {}) {
   let activeMain: NativeGuardLeaseSummary | undefined;
   let externalMain: NativeGuardLeaseSummary | undefined;
   let concurrentActivationLease: NativeGuardLeaseSummary | undefined;
+  let pendingConcurrentActivationLease: NativeGuardLeaseSummary | undefined;
   let unrelatedActive = options.unrelatedLease === true;
   let revokeFailures = options.revokeFailures ?? 0;
   let revokeUnconfirmedCount = options.revokeUnconfirmedCount ?? 0;
@@ -454,7 +471,7 @@ function createFixture(options: FixtureOptions = {}) {
     setUnrelatedActive(value: boolean) { unrelatedActive = value; },
     setExternalMain(value: NativeGuardLeaseSummary | undefined) { externalMain = value; },
     setConcurrentActivationLease(value: NativeGuardLeaseSummary | undefined) {
-      concurrentActivationLease = value;
+      pendingConcurrentActivationLease = value;
     },
     failNextActivation(policyPackId: string) {
       activationFailures.set(policyPackId, (activationFailures.get(policyPackId) ?? 0) + 1);
@@ -499,8 +516,7 @@ function createFixture(options: FixtureOptions = {}) {
       ...(activeLeases.length === 1 ? { activeLease: activeLeases[0] } : {}),
     };
   };
-  const coordinator = {
-    async activate(input: Record<string, unknown>) {
+  async function activate(input: Record<string, unknown>) {
       activateInputs.push(structuredClone(input));
       order.push(`activate:${String(input.policyPackId)}`);
       await options.beforeActivate?.();
@@ -517,7 +533,9 @@ function createFixture(options: FixtureOptions = {}) {
         ...(options.invalidActivation === "root"
           ? { rootSessionKey: "agent:main:wrong" }
           : {}),
-        policyPackId,
+        policyPackId: options.invalidActivation === "policy"
+          ? "policy.malformed"
+          : policyPackId,
         policyPackDigest: coordinatorPolicyDigests.get(policyPackId) ??
           digestJson(policyPack(policyPackId)),
         gatewayInstanceId: coordinatorGateways.get(policyPackId) ?? "gateway.host.test",
@@ -530,7 +548,16 @@ function createFixture(options: FixtureOptions = {}) {
           : {}),
       });
       if (options.invalidActivation !== "usable") usableLeaseIds.add(leaseId);
+      concurrentActivationLease = pendingConcurrentActivationLease;
+      pendingConcurrentActivationLease = undefined;
       return aggregate(activeMain, options.activationCoverage);
+  }
+  const coordinator = {
+    activate,
+    async activateWithIdentity(input: Record<string, unknown>) {
+      const status = await activate(input);
+      assert.ok(activeMain);
+      return { status, leaseId: activeMain.leaseId };
     },
     async renew(leaseId: string, ttlMs?: number) {
       renewLeaseIds.push(leaseId);

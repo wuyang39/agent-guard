@@ -63,6 +63,10 @@ export type ActivateNativeGuardInput = {
 
 export type NativeGuardCoordinator = {
   activate(input: ActivateNativeGuardInput): Promise<NativeGuardStatus>;
+  activateWithIdentity(input: ActivateNativeGuardInput): Promise<{
+    status: NativeGuardStatus;
+    leaseId: string;
+  }>;
   renew(leaseId: string, ttlMs?: number): Promise<NativeGuardStatus>;
   revoke(leaseId: string): Promise<NativeGuardStatus>;
   status(): Promise<NativeGuardStatus>;
@@ -458,8 +462,10 @@ export function createNativeGuardCoordinator(
     return { ...inspected, gatewayInstanceId: attestation.gatewayInstanceId };
   }
 
-  return {
-    async activate(input: ActivateNativeGuardInput): Promise<NativeGuardStatus> {
+  async function activateWithIdentity(input: ActivateNativeGuardInput): Promise<{
+    status: NativeGuardStatus;
+    leaseId: string;
+  }> {
       const backend = readBackendStatus(options.leaseService);
       if (!backend.available) {
         setLastStatus(backendUnavailableStatus(lastStatus));
@@ -569,7 +575,10 @@ export function createNativeGuardCoordinator(
           }
           managed.phase = "active";
           managed.pluginVersion = pluginStatus.pluginVersion;
-          return setLastStatus(aggregateManagedStatus());
+          return {
+            status: setLastStatus(aggregateManagedStatus()),
+            leaseId: activation.leaseId,
+          };
         } catch {
           if (!ownsManagedPhase(leases, managed, "activating")) {
             throw coordinatorError(
@@ -589,7 +598,14 @@ export function createNativeGuardCoordinator(
       } finally {
         activationReservations.delete(reservation);
       }
+  }
+
+  return {
+    async activate(input: ActivateNativeGuardInput): Promise<NativeGuardStatus> {
+      return (await activateWithIdentity(input)).status;
     },
+
+    activateWithIdentity,
 
     async renew(leaseId: string, ttlMs?: number): Promise<NativeGuardStatus> {
       const managed = leases.get(leaseId);

@@ -59,6 +59,7 @@ export type NativeGuardRouteDependencies = {
   coordinator: Pick<
     NativeGuardCoordinator,
     | "activate"
+    | "activateWithIdentity"
     | "renew"
     | "revoke"
     | "status"
@@ -289,6 +290,9 @@ function createLazyNativeGuardCoordinator(
   return {
     async activate(input) {
       return delegate((coordinator) => coordinator.activate(input));
+    },
+    async activateWithIdentity(input) {
+      return delegate((coordinator) => coordinator.activateWithIdentity(input));
     },
     async renew(leaseId, ttlMs) {
       return delegate((coordinator) => coordinator.renew(leaseId, ttlMs));

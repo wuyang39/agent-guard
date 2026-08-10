@@ -100,7 +100,17 @@ npm run verify:native-guard:docker -- --required
 npm run verify:openclaw:load
 ```
 
-`d895b2d...` artifact 的 real registry gate、公开 GHCR digest 的 required Docker default/controlled gate，以及最终 `npm run verify:all` 均已在当前工作树 fresh 通过；两轮 Docker cleanup 残留均为 0。旧 fork artifact 或本机可变 tag 的结果不能替代这组证据。
+这三条命令和最终 `npm run verify:all` 都要在候选工作树 fresh 运行，记录退出码和完整日志。旧 fork artifact、本机可变 tag 或先前工作树的通过记录不能替代本轮结果；provider/model、plugin live inventory 或 Docker 外部状态导致的失败也必须保留，不能用 skip 或降级参数改写发布结论。
+
+### 5.1 main 全会话监督与 detection 共存
+
+先按 [OpenClaw main Agent 全会话监督黑盒验收](./openclaw-main-global-supervision-blackbox.md) 第 1 至 4 节启动 host main supervision，确认 `coverage=active`、`mainLeaseCount=1`，并记录 host `leaseId`、`gatewayInstanceId` 和到期时间。不要停止这条 lease。在 frontend 启动一条 Docker OpenClaw detection case，运行中刷新原生监督状态，完成后再刷新一次。
+
+运行中应看到 aggregate `activeLeaseCount` 从 1 变为 2：一条是 host `{ kind: "agent", agentId: "main" }` lease，另一条是 sandbox canonical session 的 exact-session detection lease。两条 lease 的 `leaseId` 和 `gatewayInstanceId` 必须不同；sandbox RunGroup 使用自己的 attested Gateway/capability context，不能复用 host main 身份。
+
+case 完成或取消后，sandbox revoke 只撤销 detection lease，`activeLeaseCount` 应从 2 回到 1。host 的 `leaseId`、`gatewayInstanceId` 和 main active 状态保持不变；再执行一次 main deny 探针，确认 sandbox cleanup 没有关闭或替换 host supervision。若计数未回落、host 身份变化或 main 恢复 allow，本次共存检查失败，保留两个 Gateway、两个 lease 和 RunGroup 的日志再定位。
+
+这项共存检查与 main 黑盒中的已有/新建 main deny、worker allow、stop 后 allow 都是现场发布证据。离线 verifier 全绿不能替代真实 provider/model、plugin live inventory、Docker case 和原生工具副作用检查。
 
 ## 6. 十个手动验收场景
 
@@ -524,8 +534,9 @@ while ($true) {
 以下项目仍未完成，必须与已有 fresh 专项 gate 区分：
 
 - [x] 在最终工作树分别完成 protocol/plugin、real registry 与 required Docker gate，覆盖 `verify:native-guard:all` 的全部子项。
-- [x] 在最终工作树运行完整非 live 回归与 `npm run verify:all`。
+- [x] 在当前候选工作树运行完整非 live 回归与 `npm run verify:all`；2026-08-11 加载生成的固定 OpenClaw profile 后 exit 0。
 - [ ] 完成上述十个手动场景，尤其是需要 fixture/人工交互的 4、5、7、8、9。
+- [ ] 完成 main 全会话监督黑盒及 main active/Docker detection 共存检查，归档两个 Gateway、两个 lease、main/worker 副作用和 stop 后 allow 证据。
 - [ ] 执行最终 `git diff --check`、范围审计和 secret scan。
 - [x] 提供可重复的 `docker/openclaw-sandbox/Dockerfile`、README 与 build 脚本，并以脚本输出作为权威本机 digest。
 - [x] 在 `d895b2d...` artifact 上 fresh 完成 real registry gate（28.4 秒）。

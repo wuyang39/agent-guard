@@ -237,6 +237,67 @@ test("buildApp registers one injected main supervision service and closes it", a
   assert.deepEqual(calls, ["status", "close"]);
 });
 
+test("buildApp blocks unapproved browser origins before native supervision mutations", async () => {
+  const calls: string[] = [];
+  const service = appSupervisionService(calls);
+  const dependencies = appNativeGuardDependencies();
+  dependencies.allowedOrigins = ["http://allowed.example"];
+  const app = await buildApp({
+    logger: false,
+    nativeGuardDependencies: dependencies,
+    mainAgentSupervisionService: service,
+  });
+
+  for (const request of [
+    {
+      method: "POST" as const,
+      url: "/api/v1/openclaw/native-supervision/stop",
+      headers: { origin: "http://malicious.example" },
+    },
+    {
+      method: "POST" as const,
+      url: "/api/v1/openclaw/native-supervision/start",
+      headers: { origin: "null" },
+      payload: { policyPackId: "policy.main" },
+    },
+  ]) {
+    const response = await app.inject(request);
+    assert.equal(response.statusCode, 403);
+    assert.equal(response.json().error.code, "NATIVE_GUARD_ORIGIN_FORBIDDEN");
+  }
+  assert.deepEqual(calls, []);
+
+  const allowed = await app.inject({
+    method: "POST",
+    url: "/api/v1/openclaw/native-supervision/start",
+    headers: { origin: "http://allowed.example" },
+    payload: { policyPackId: "policy.main" },
+  });
+  const localCli = await app.inject({
+    method: "POST",
+    url: "/api/v1/openclaw/native-supervision/stop",
+  });
+  assert.equal(allowed.statusCode, 200);
+  assert.equal(localCli.statusCode, 200);
+  assert.deepEqual(calls, ["start:policy.main", "stop"]);
+  await app.close();
+});
+
+function appSupervisionService(calls: string[]): MainAgentSupervisionService {
+  const ready = {
+    coverage: "ready" as const,
+    scope: { kind: "agent" as const, agentId: "main" as const },
+    activeLeaseCount: 0,
+    mainLeaseCount: 0 as const,
+  };
+  return {
+    async status() { calls.push("status"); return ready; },
+    async start(policyPackId) { calls.push(`start:${policyPackId}`); return ready; },
+    async stop() { calls.push("stop"); return ready; },
+    async close() {},
+  };
+}
+
 function appNativeGuardDependencies() {
   const runtimeEventStore = createNativeGuardEventStore();
   return createNativeGuardRouteDependencies({

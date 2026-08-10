@@ -135,6 +135,112 @@ test("valid replacement validates before cancelling and revoking the old lease",
   assert.equal(status.leaseId, "lease-2");
 });
 
+test("failed replacement restores the prior exact policy and renewal timer", async () => {
+  const fixture = createFixture();
+  const first = await fixture.service.start("policy.main");
+  fixture.failNextActivation("policy.next");
+
+  await assert.rejects(
+    fixture.service.start("policy.next"),
+    isServiceError("MAIN_AGENT_SUPERVISION_ACTIVATION_FAILED", 503),
+  );
+
+  const restored = await fixture.service.status();
+  assert.equal(restored.coverage, "active");
+  assert.equal(restored.policyPackId, "policy.main");
+  assert.notEqual(restored.leaseId, first.leaseId);
+  assert.equal(fixture.scheduled.length, 2);
+  assert.deepEqual(
+    fixture.activateInputs.map((input) => (input as { policyPackId: string }).policyPackId),
+    ["policy.main", "policy.next", "policy.main"],
+  );
+});
+
+test("failed replacement and failed restoration expose recovery without false active", async () => {
+  const fixture = createFixture();
+  await fixture.service.start("policy.main");
+  fixture.failNextActivation("policy.next");
+  fixture.failNextActivation("policy.main");
+
+  await assert.rejects(
+    fixture.service.start("policy.next"),
+    isServiceError("MAIN_AGENT_SUPERVISION_ACTIVATION_FAILED", 503),
+  );
+
+  const status = await fixture.service.status();
+  assert.equal(status.coverage, "recovery");
+  assert.equal(status.reasonCode, "MAIN_AGENT_SUPERVISION_RESTORE_FAILED");
+  assert.equal(status.mainLeaseCount, 0);
+  assert.equal(status.leaseId, undefined);
+});
+
+test("restoration rejects a changed Gateway identity for the prior policy", async () => {
+  const fixture = createFixture();
+  await fixture.service.start("policy.main");
+  fixture.failNextActivation("policy.next");
+  fixture.setCoordinatorGateway("policy.main", "gateway.changed.test");
+
+  await assert.rejects(
+    fixture.service.start("policy.next"),
+    isServiceError("MAIN_AGENT_SUPERVISION_ACTIVATION_FAILED", 503),
+  );
+
+  const status = await fixture.service.status();
+  assert.equal(status.coverage, "recovery");
+  assert.equal(status.reasonCode, "MAIN_AGENT_SUPERVISION_RESTORE_FAILED");
+  assert.equal(status.mainLeaseCount, 0);
+});
+
+test("invalid replacement rolls back only the newly-added main lease before restoring", async () => {
+  const fixture = createFixture();
+  await fixture.service.start("policy.main");
+  fixture.setExternalMain(mainLease({
+    leaseId: "lease.external",
+    policyPackId: "policy.next",
+    policyPackDigest: digestJson(policyPack("policy.next")),
+    gatewayInstanceId: "gateway.external.test",
+  }));
+  fixture.setCoordinatorPolicyDigest("policy.next", "f".repeat(64));
+
+  await assert.rejects(
+    fixture.service.start("policy.next"),
+    isServiceError("MAIN_AGENT_SUPERVISION_ACTIVATION_FAILED", 503),
+  );
+
+  assert.deepEqual(fixture.revokeLeaseIds, ["lease-1", "lease-2"]);
+  assert.deepEqual(fixture.activeLeaseIds().sort(), ["lease-3", "lease.external"]);
+  const restored = await fixture.service.status();
+  assert.equal(restored.policyPackId, "policy.main");
+  assert.equal(restored.activeLeaseCount, 2);
+});
+
+test("does not adopt or renew an unmanaged main lease and fresh start conflicts", async () => {
+  const fixture = createFixture();
+  fixture.setExternalMain(mainLease({ leaseId: "lease.external" }));
+
+  const status = await fixture.service.status();
+  assert.equal(status.coverage, "recovery");
+  assert.equal(status.reasonCode, "MAIN_AGENT_SUPERVISION_UNMANAGED_LEASE");
+  assert.equal(status.mainLeaseCount, 1);
+  assert.equal(fixture.scheduled.length, 0);
+  await assert.rejects(
+    fixture.service.start("policy.main"),
+    isServiceError("MAIN_AGENT_SUPERVISION_UNMANAGED_LEASE", 409),
+  );
+  assert.equal(fixture.activateInputs.length, 0);
+});
+
+test("projects unrelated sandbox coverage as main ready while preserving system count", async () => {
+  const fixture = createFixture({ unrelatedLease: true });
+
+  const status = await fixture.service.status();
+
+  assert.equal(status.coverage, "ready");
+  assert.equal(status.activeLeaseCount, 1);
+  assert.equal(status.mainLeaseCount, 0);
+  assert.equal(status.gatewayInstanceId, undefined);
+});
+
 test("concurrent same-policy starts serialize to one activation", async () => {
   const activationGate = deferred<void>();
   const fixture = createFixture({ beforeActivate: () => activationGate.promise });
@@ -188,7 +294,17 @@ test("activation requires an exact usable summary with its own Gateway identity"
       fixture.service.start("policy.main"),
       isServiceError("MAIN_AGENT_SUPERVISION_ACTIVATION_FAILED", 503),
     );
-    assert.deepEqual(fixture.revokeLeaseIds, ["lease-1"], invalid);
+    assert.deepEqual(
+      fixture.revokeLeaseIds,
+      invalid === "scope" ? [] : ["lease-1"],
+      invalid,
+    );
+    if (invalid === "scope") {
+      assert.equal(
+        (await fixture.service.status()).reasonCode,
+        "MAIN_AGENT_SUPERVISION_ROLLBACK_UNCONFIRMED",
+      );
+    }
   }
 });
 
@@ -259,6 +375,25 @@ test("revoke failure returns recovery with identity retained for retry", async (
   assert.equal(retried.mainLeaseCount, 0);
 });
 
+test("plugin-unconfirmed stop retains identity and blocks replacement until retry", async () => {
+  const fixture = createFixture({ revokeUnconfirmedCount: 2 });
+  await fixture.service.start("policy.main");
+
+  const first = await fixture.service.stop();
+  assert.equal(first.coverage, "recovery");
+  assert.equal(first.reasonCode, "NATIVE_GUARD_PLUGIN_REVOKE_UNCONFIRMED");
+  assert.equal(first.leaseId, "lease-1");
+  await assert.rejects(
+    fixture.service.start("policy.next"),
+    isServiceError("MAIN_AGENT_SUPERVISION_REPLACE_CONFLICT", 409),
+  );
+  assert.equal(fixture.activateInputs.length, 1);
+
+  const retried = await fixture.service.stop();
+  assert.equal(retried.mainLeaseCount, 0);
+  assert.deepEqual(fixture.revokeLeaseIds, ["lease-1", "lease-1", "lease-1"]);
+});
+
 test("close best-effort stops the lease without leaking revoke errors", async () => {
   const fixture = createFixture({ revokeFailures: 1 });
   await fixture.service.start("policy.main");
@@ -274,14 +409,20 @@ type FixtureOptions = {
   invalidActivation?: "scope" | "usable" | "gateway";
   renewError?: Error;
   revokeFailures?: number;
+  revokeUnconfirmedCount?: number;
 };
 
 function createFixture(options: FixtureOptions = {}) {
   let leaseSequence = 0;
   let timerSequence = 0;
   let activeMain: NativeGuardLeaseSummary | undefined;
+  let externalMain: NativeGuardLeaseSummary | undefined;
   let unrelatedActive = options.unrelatedLease === true;
   let revokeFailures = options.revokeFailures ?? 0;
+  let revokeUnconfirmedCount = options.revokeUnconfirmedCount ?? 0;
+  const activationFailures = new Map<string, number>();
+  const coordinatorPolicyDigests = new Map<string, string>();
+  const coordinatorGateways = new Map<string, string>();
   const usableLeaseIds = new Set<string>();
   const activateInputs: unknown[] = [];
   const renewLeaseIds: string[] = [];
@@ -303,6 +444,19 @@ function createFixture(options: FixtureOptions = {}) {
     order,
     scheduled,
     setUnrelatedActive(value: boolean) { unrelatedActive = value; },
+    setExternalMain(value: NativeGuardLeaseSummary | undefined) { externalMain = value; },
+    failNextActivation(policyPackId: string) {
+      activationFailures.set(policyPackId, (activationFailures.get(policyPackId) ?? 0) + 1);
+    },
+    setCoordinatorPolicyDigest(policyPackId: string, digest: string) {
+      coordinatorPolicyDigests.set(policyPackId, digest);
+    },
+    setCoordinatorGateway(policyPackId: string, gatewayInstanceId: string) {
+      coordinatorGateways.set(policyPackId, gatewayInstanceId);
+    },
+    activeLeaseIds() {
+      return [externalMain, activeMain].flatMap((lease) => lease ? [lease.leaseId] : []);
+    },
     setMainGatewayInstanceId(value: string | undefined) {
       if (activeMain) activeMain = { ...activeMain, gatewayInstanceId: value };
     },
@@ -311,10 +465,13 @@ function createFixture(options: FixtureOptions = {}) {
   const unrelated = unrelatedLease();
   const aggregate = (
     main = activeMain,
-    coverage: NativeGuardStatus["coverage"] = main ? "active" : unrelatedActive ? "active" : "ready",
+    coverage: NativeGuardStatus["coverage"] = main || externalMain || unrelatedActive
+      ? "active"
+      : "ready",
   ): NativeGuardStatus => {
     const activeLeases = [
       ...(unrelatedActive ? [unrelated] : []),
+      ...(externalMain ? [externalMain] : []),
       ...(main ? [main] : []),
     ];
     return {
@@ -333,12 +490,20 @@ function createFixture(options: FixtureOptions = {}) {
       activateInputs.push(structuredClone(input));
       order.push(`activate:${String(input.policyPackId)}`);
       await options.beforeActivate?.();
+      const policyPackId = String(input.policyPackId);
+      const failures = activationFailures.get(policyPackId) ?? 0;
+      if (failures > 0) {
+        activationFailures.set(policyPackId, failures - 1);
+        throw new Error("activation failed");
+      }
       const leaseId = `lease-${String(++leaseSequence)}`;
       const expiresAt = new Date(fixture.nowMs + TTL_MS).toISOString();
       activeMain = mainLease({
         leaseId,
-        policyPackId: String(input.policyPackId),
-        policyPackDigest: digestJson(policyPack(String(input.policyPackId))),
+        policyPackId,
+        policyPackDigest: coordinatorPolicyDigests.get(policyPackId) ??
+          digestJson(policyPack(policyPackId)),
+        gatewayInstanceId: coordinatorGateways.get(policyPackId) ?? "gateway.host.test",
         expiresAt,
         ...(options.invalidActivation === "scope"
           ? { scope: { kind: "session" as const, sessionKey: "agent:main:main" } }
@@ -368,6 +533,20 @@ function createFixture(options: FixtureOptions = {}) {
       if (revokeFailures > 0) {
         revokeFailures -= 1;
         throw new Error("secret revoke failure");
+      }
+      if (revokeUnconfirmedCount > 0) {
+        revokeUnconfirmedCount -= 1;
+        usableLeaseIds.delete(leaseId);
+        return {
+          coverage: "recovery" as const,
+          finalizerAssurance: "exclusive_before_hook" as const,
+          activeLeaseCount: (unrelatedActive ? 1 : 0) + (externalMain ? 1 : 0),
+          activeLeases: [
+            ...(unrelatedActive ? [unrelated] : []),
+            ...(externalMain ? [externalMain] : []),
+          ],
+          reasonCode: "NATIVE_GUARD_PLUGIN_REVOKE_UNCONFIRMED",
+        };
       }
       usableLeaseIds.delete(leaseId);
       if (activeMain?.leaseId === leaseId) activeMain = undefined;

@@ -200,6 +200,7 @@ test("requires activation acknowledgements to match every credential-free lease 
     { policyPackId: "wrong-policy" },
     { policyPackDigest: "wrong-digest" },
     { expiresAt: "2026-08-02T00:04:00.000Z" },
+    { gatewayInstanceId: "gateway.instance.other" },
   ];
   for (const activationAckOverrides of mismatches) {
     const fixture = coordinatorFixture({ activationAckOverrides });
@@ -795,19 +796,31 @@ test("binds host renewal and status rechecks to the attested Gateway instance", 
   assert.equal(status.reasonCode, "NATIVE_GUARD_CAPABILITY_CHANGED");
 });
 
-test("deletes the backend lease after an offline plugin revoke and keeps repeats idempotent", async () => {
-  const fixture = coordinatorFixture({ revokeError: new Error("offline") });
+test("retains an offline plugin revoke for retry without pretending the backend lease is active", async () => {
+  const fixture = coordinatorFixture();
   await fixture.coordinator.activate(supervisionInput());
   const leaseId = fixture.activationCalls[0].leaseId;
+  const confirmedRevoke = fixture.controlClient.revoke.bind(fixture.controlClient);
+  let attempts = 0;
+  fixture.controlClient.revoke = async (...args) => {
+    attempts += 1;
+    if (attempts === 1) throw new Error("offline");
+    return confirmedRevoke(...args);
+  };
 
   const first = await fixture.coordinator.revoke(leaseId);
+  const duringRetry = await fixture.coordinator.status();
   const second = await fixture.coordinator.revoke(leaseId);
 
   assert.equal(fixture.leaseService.status().activeLeaseCount, 0);
-  assert.equal(first.coverage, "ready");
+  assert.equal(first.coverage, "recovery");
   assert.equal(first.reasonCode, "NATIVE_GUARD_PLUGIN_REVOKE_UNCONFIRMED");
+  assert.equal(fixture.coordinator.hasManagedLeases(), false, "second retry released ownership");
+  assert.equal(duringRetry.coverage, "recovery");
+  assert.equal(duringRetry.activeLeaseCount, 0);
+  assert.equal(duringRetry.reasonCode, "NATIVE_GUARD_PLUGIN_REVOKE_UNCONFIRMED");
   assert.equal(second.coverage, "ready");
-  assert.equal(fixture.revokeCalls.length, 1);
+  assert.equal(attempts, 2);
 });
 
 test("marks a lease revoking before awaiting the plugin, then deletes the backend secret", async () => {
@@ -849,17 +862,61 @@ test("marks a lease revoking before awaiting the plugin, then deletes the backen
   assert.equal(result.coverage, "ready");
 });
 
-test("deletes the backend lease and warns when plugin revoke still reports active", async () => {
+test("retains plugin-active revoke status until a later acknowledgement", async () => {
   const fixture = coordinatorFixture();
   await fixture.coordinator.activate(supervisionInput());
   const activation = fixture.activationCalls[0];
-  fixture.controlClient.revoke = async () => status("active", activation.leaseId, activation);
+  let attempts = 0;
+  fixture.controlClient.revoke = async () => {
+    attempts += 1;
+    return attempts === 1
+      ? status("active", activation.leaseId, activation)
+      : status("ready");
+  };
 
-  const result = await fixture.coordinator.revoke(activation.leaseId);
+  const first = await fixture.coordinator.revoke(activation.leaseId);
+  assert.equal(fixture.coordinator.hasManagedLeases(), true);
+  const second = await fixture.coordinator.revoke(activation.leaseId);
 
   assert.equal(fixture.leaseService.status().activeLeaseCount, 0);
-  assert.equal(result.coverage, "ready");
-  assert.equal(result.reasonCode, "NATIVE_GUARD_PLUGIN_REVOKE_UNCONFIRMED");
+  assert.equal(first.coverage, "recovery");
+  assert.equal(first.reasonCode, "NATIVE_GUARD_PLUGIN_REVOKE_UNCONFIRMED");
+  assert.equal(second.coverage, "ready");
+  assert.equal(fixture.coordinator.hasManagedLeases(), false);
+});
+
+test("retries an unconfirmed sandbox revoke through its original Gateway client", async () => {
+  const fixture = scopedCoordinatorFixture();
+  const host = await fixture.coordinator.activate(agentScopeInput());
+  const sandbox = await fixture.coordinator.activate({
+    ...exactScopeInput("agent:sandbox:cleanup-retry"),
+    sandbox: fixture.sandbox.context,
+  });
+  const sandboxLease = sandbox.activeLeases!.find((lease) =>
+    lease.gatewayInstanceId === fixture.sandbox.gatewayInstanceId)!;
+  const confirmedRevoke = fixture.sandbox.controlClient.revoke.bind(
+    fixture.sandbox.controlClient,
+  );
+  let attempts = 0;
+  fixture.sandbox.controlClient.revoke = async (...args) => {
+    attempts += 1;
+    if (attempts === 1) throw new Error("sandbox offline");
+    return confirmedRevoke(...args);
+  };
+
+  const first = await fixture.coordinator.revoke(sandboxLease.leaseId);
+  assert.equal(first.coverage, "recovery");
+  assert.equal(first.activeLeaseCount, 1);
+  assert.equal(first.activeLease?.leaseId, host.activeLease?.leaseId);
+  assert.equal(fixture.coordinator.isLeaseRevoking(sandboxLease.leaseId), true);
+  assert.equal(fixture.host.revokeCalls.length, 0);
+
+  const second = await fixture.coordinator.revoke(sandboxLease.leaseId);
+  assert.equal(second.coverage, "active");
+  assert.equal(attempts, 2);
+  assert.equal(fixture.sandbox.revokeCalls.length, 1);
+  assert.equal(fixture.host.revokeCalls.length, 0);
+  assert.equal(fixture.coordinator.isLeaseRevoking(sandboxLease.leaseId), false);
 });
 
 test("accepts the plugin OFF response as a confirmed revoke", async () => {

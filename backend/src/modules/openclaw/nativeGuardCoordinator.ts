@@ -535,7 +535,7 @@ export function createNativeGuardCoordinator(
               "OpenClaw native guard activation lost lease ownership.",
             );
           }
-          if (!pluginConfirmsActivation(pluginStatus, activation)) {
+          if (!pluginConfirmsActivation(pluginStatus, managed)) {
             throw coordinatorError(
               "NATIVE_GUARD_ACTIVATION_FAILED",
               "OpenClaw did not confirm the native guard lease.",
@@ -641,7 +641,10 @@ export function createNativeGuardCoordinator(
             "Native guard renewal lost lease ownership.",
           );
         }
-        if (!pluginConfirmsActivation(pluginStatus, activation)) {
+        if (!pluginConfirmsActivation(pluginStatus, {
+          ...activation,
+          gatewayInstanceId: managed.gatewayInstanceId,
+        })) {
           throw coordinatorError(
             "NATIVE_GUARD_RENEW_FAILED",
             "OpenClaw did not confirm the renewed native guard lease.",
@@ -777,8 +780,15 @@ export function createNativeGuardCoordinator(
           "Native guard backend revocation could not be confirmed.",
         );
       }
+      if (!pluginConfirmed) {
+        return setLastStatus(aggregateManagedStatus(
+          "recovery",
+          "NATIVE_GUARD_PLUGIN_REVOKE_UNCONFIRMED",
+          "OpenClaw plugin lease revocation could not be confirmed.",
+        ));
+      }
       leases.delete(leaseId);
-      return setLastStatus(postCleanupStatus(managed.capability, !pluginConfirmed));
+      return setLastStatus(postCleanupStatus(managed.capability));
     },
 
     async status(): Promise<NativeGuardStatus> {
@@ -789,6 +799,13 @@ export function createNativeGuardCoordinator(
       }
       const backendStatus = backend.status;
       if (managed) {
+        if ([...leases.values()].some((candidate) => candidate.phase === "revoking")) {
+          return setLastStatus(aggregateManagedStatus(
+            "recovery",
+            "NATIVE_GUARD_PLUGIN_REVOKE_UNCONFIRMED",
+            "OpenClaw plugin lease revocation could not be confirmed.",
+          ));
+        }
         const pluginStatuses = new Map<ManagedLease, NativeGuardStatus>();
         for (const candidate of leases.values()) {
           let capability: NativeGuardCapability;
@@ -1092,11 +1109,11 @@ function policy(
 
 function pluginConfirmsActivation(
   status: NativeGuardStatus,
-  activation: NativeGuardLeaseActivation,
+  expected: NativeGuardLeaseActivation | NativeGuardLeaseSummary | ManagedLease,
 ): boolean {
-  const summary = findStatusLease(status, activation.leaseId);
+  const summary = findStatusLease(status, expected.leaseId);
   return status.coverage === "active" && Boolean(summary &&
-    leaseSummaryMatches(summary, activation));
+    leaseSummaryMatches(summary, expected));
 }
 
 function capabilitiesCompatible(
@@ -1239,6 +1256,10 @@ function leaseSummaryMatches(
     summary.leaseEpoch === expected.leaseEpoch &&
     summary.rootSessionKey === expected.rootSessionKey &&
     scopesEqual(summary.scope, expected.scope) &&
+    (summary.gatewayInstanceId === undefined ||
+      summary.gatewayInstanceId === (
+        "gatewayInstanceId" in expected ? expected.gatewayInstanceId : undefined
+      )) &&
     summary.mode === expected.mode &&
     summary.policyPackId === expected.policyPackId &&
     summary.policyPackDigest === expected.policyPackDigest &&

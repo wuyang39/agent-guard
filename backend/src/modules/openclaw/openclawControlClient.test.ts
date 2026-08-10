@@ -1260,6 +1260,11 @@ test("strictly validates scoped activeLeases summaries and array invariants", as
   invalid.push({ ...multiple, activeLeaseCount: 1 });
   invalid.push({ ...multiple, activeLeases: [multiple.activeLeases![0], multiple.activeLeases![0]] });
   invalid.push({ ...multiple, activeLease: first.activeLease });
+  invalid.push({
+    ...first,
+    activeLeases: [{ ...first.activeLeases![0], gatewayInstanceId: "gateway.host.test" }],
+    activeLease: first.activeLease,
+  });
   invalid.push({ ...first, activeLease: undefined });
   invalid.push({
     ...first,

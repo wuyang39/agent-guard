@@ -163,7 +163,11 @@ export async function buildApp(opts?: {
   // ---- 插件 ----
   app.addHook("onRequest", async (request, reply) => {
     if (
-      request.url.startsWith("/api/v1/openclaw/native-guard/") &&
+      (
+        request.url.startsWith("/api/v1/openclaw/native-guard/") ||
+        request.url === "/api/v1/openclaw/native-supervision" ||
+        request.url.startsWith("/api/v1/openclaw/native-supervision/")
+      ) &&
       request.headers.origin !== undefined &&
       !nativeGuardDependencies.allowedOrigins.includes(request.headers.origin)
     ) {

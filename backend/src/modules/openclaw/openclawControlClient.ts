@@ -698,6 +698,7 @@ function sameLeaseSummary(
     left.leaseEpoch === right.leaseEpoch &&
     left.rootSessionKey === right.rootSessionKey &&
     JSON.stringify(left.scope) === JSON.stringify(right.scope) &&
+    left.gatewayInstanceId === right.gatewayInstanceId &&
     left.mode === right.mode &&
     left.policyPackId === right.policyPackId &&
     left.policyPackDigest === right.policyPackDigest &&

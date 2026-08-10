@@ -2778,6 +2778,9 @@ function createFixture() {
         calls.usable += 1;
         return true;
       },
+      hasManagedLeases() {
+        return false;
+      },
       markLeaseRootEnded() {
         return true;
       },

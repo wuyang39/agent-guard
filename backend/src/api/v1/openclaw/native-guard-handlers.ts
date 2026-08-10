@@ -65,6 +65,7 @@ export type NativeGuardRouteDependencies = {
     | "status"
     | "isLeaseUsable"
     | "isLeaseEvidenceUsable"
+    | "hasManagedLeases"
     | "markLeaseRootEnded"
     | "getLastStatus"
   >;

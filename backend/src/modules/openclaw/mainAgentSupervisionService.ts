@@ -20,7 +20,12 @@ type LoadedOpenClawPolicyPack = {
 
 type MainCoordinator = Pick<
   NativeGuardCoordinator,
-  "activateWithIdentity" | "renew" | "revoke" | "status" | "isLeaseUsable"
+  | "activateWithIdentity"
+  | "renew"
+  | "revoke"
+  | "status"
+  | "isLeaseUsable"
+  | "hasManagedLeases"
 >;
 
 export type MainAgentSupervisionStatus = {
@@ -146,6 +151,7 @@ export function createMainAgentSupervisionService(
     const previous = current && current.policyPackId !== policyPackId
       ? { ...current, failure: undefined }
       : undefined;
+    const cleanupUncertain = hasUnownedCleanupUncertainty();
     if (!current) {
       const status = await readCoordinatorStatusForStart();
       const unmanaged = findMainLeases(status);
@@ -156,6 +162,10 @@ export function createMainAgentSupervisionService(
           409,
           "An unmanaged main-agent supervision lease is already active.",
         );
+      }
+      if (cleanupUncertain && retainedCleanupIsUnconfirmed(status)) {
+        preserveUnownedCleanupFailure(status.activeLeaseCount);
+        throw activationFailed();
       }
     }
     if (current) {
@@ -433,13 +443,7 @@ export function createMainAgentSupervisionService(
 
   async function statusInternal(): Promise<MainAgentSupervisionStatus> {
     if (current?.failure) return cloneStatus(lastStatus);
-    if (
-      !current &&
-      (lastStatus.reasonCode === "MAIN_AGENT_SUPERVISION_RESTORE_FAILED" ||
-        lastStatus.reasonCode === "MAIN_AGENT_SUPERVISION_ROLLBACK_UNCONFIRMED")
-    ) {
-      return cloneStatus(lastStatus);
-    }
+    const cleanupUncertain = hasUnownedCleanupUncertainty();
     let aggregate: NativeGuardStatus;
     try {
       aggregate = await options.coordinator.status();
@@ -455,6 +459,10 @@ export function createMainAgentSupervisionService(
       const unmanaged = findMainLeases(aggregate);
       if (unmanaged.length > 0) {
         lastStatus = unmanagedLeaseStatus(aggregate, unmanaged);
+        return cloneStatus(lastStatus);
+      }
+      if (cleanupUncertain && retainedCleanupIsUnconfirmed(aggregate)) {
+        preserveUnownedCleanupFailure(aggregate.activeLeaseCount);
         return cloneStatus(lastStatus);
       }
       lastStatus = publicWithoutMain(aggregate);
@@ -500,12 +508,44 @@ export function createMainAgentSupervisionService(
     },
     async close() {
       try {
-        await serialize(stopInternal);
+        await serialize(async () => {
+          await stopInternal();
+          if (
+            !current &&
+            (hasUnownedCleanupUncertainty() || options.coordinator.hasManagedLeases())
+          ) {
+            try {
+              await options.coordinator.status();
+            } catch {
+              // Close remains best effort while still driving retained cleanup once.
+            }
+          }
+        });
       } catch {
         cancelRenewal();
       }
     },
   };
+
+  function hasUnownedCleanupUncertainty(): boolean {
+    return !current && (
+      lastStatus.reasonCode === "MAIN_AGENT_SUPERVISION_ACTIVATION_FAILED" ||
+      lastStatus.reasonCode === "MAIN_AGENT_SUPERVISION_RESTORE_FAILED" ||
+      lastStatus.reasonCode === "MAIN_AGENT_SUPERVISION_ROLLBACK_UNCONFIRMED"
+    );
+  }
+
+  function preserveUnownedCleanupFailure(activeLeaseCount: number): void {
+    lastStatus = idleStatus("recovery", activeLeaseCount, {
+      ...(lastStatus.reasonCode ? { reasonCode: lastStatus.reasonCode } : {}),
+      ...(lastStatus.detail ? { detail: lastStatus.detail } : {}),
+    });
+  }
+}
+
+function retainedCleanupIsUnconfirmed(status: NativeGuardStatus): boolean {
+  return status.coverage === "recovery" &&
+    status.reasonCode === "NATIVE_GUARD_PLUGIN_REVOKE_UNCONFIRMED";
 }
 
 function managedLease(

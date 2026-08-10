@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { generateKeyPairSync } from "node:crypto";
 import test from "node:test";
 import type {
+  NativeGuardLeaseActivation,
   NativeGuardLeaseSummary,
   NativeGuardStatus,
   SupervisionPolicyPack,
@@ -11,6 +13,9 @@ import {
   MainAgentSupervisionServiceError,
   type MainAgentSupervisionStatus,
 } from "./mainAgentSupervisionService";
+import { createNativeGuardCoordinator } from "./nativeGuardCoordinator";
+import { createNativeGuardLeaseService } from "./nativeGuardLeaseService";
+import type { OpenClawControlClient } from "./openclawControlClient";
 
 const NOW = Date.parse("2026-08-10T00:00:00.000Z");
 const TTL_MS = 3_000;
@@ -156,7 +161,7 @@ test("failed replacement restores the prior exact policy and renewal timer", asy
   );
 });
 
-test("failed replacement and failed restoration expose recovery without false active", async () => {
+test("failed replacement and restoration clear recovery after status verifies no main lease", async () => {
   const fixture = createFixture();
   await fixture.service.start("policy.main");
   fixture.failNextActivation("policy.next");
@@ -168,13 +173,84 @@ test("failed replacement and failed restoration expose recovery without false ac
   );
 
   const status = await fixture.service.status();
-  assert.equal(status.coverage, "recovery");
-  assert.equal(status.reasonCode, "MAIN_AGENT_SUPERVISION_RESTORE_FAILED");
+  assert.equal(status.coverage, "ready");
+  assert.equal(status.reasonCode, undefined);
   assert.equal(status.mainLeaseCount, 0);
   assert.equal(status.leaseId, undefined);
 });
 
-test("restoration rejects a changed Gateway identity for the prior policy", async () => {
+test("status retries retained replacement cleanup and permits a later start", async () => {
+  const fixture = createCleanupLivenessFixture(1);
+  await fixture.service.start("policy.main");
+
+  await assert.rejects(
+    fixture.service.start("policy.next"),
+    isServiceError("MAIN_AGENT_SUPERVISION_ACTIVATION_FAILED", 503),
+  );
+  const failedLeaseId = fixture.activationCalls.at(-1)!.leaseId;
+  assert.equal(fixture.coordinator.hasManagedLeases(), true);
+  assert.equal(fixture.coordinator.isLeaseRevoking(failedLeaseId), true);
+
+  const healed = await fixture.service.status();
+  assert.equal(healed.coverage, "ready");
+  assert.equal(healed.mainLeaseCount, 0);
+  assert.equal(fixture.coordinator.hasManagedLeases(), false);
+  assert.deepEqual(fixture.revokeCalls.slice(-2), [
+    { gatewayUrl: fixture.gatewayUrl, leaseId: failedLeaseId },
+    { gatewayUrl: fixture.gatewayUrl, leaseId: failedLeaseId },
+  ]);
+
+  const restarted = await fixture.service.start("policy.next");
+  assert.equal(restarted.coverage, "active");
+  assert.equal(restarted.policyPackId, "policy.next");
+});
+
+test("close retries retained replacement cleanup when no current lease exists", async () => {
+  const fixture = createCleanupLivenessFixture(1);
+  await fixture.service.start("policy.main");
+  await assert.rejects(
+    fixture.service.start("policy.next"),
+    isServiceError("MAIN_AGENT_SUPERVISION_ACTIVATION_FAILED", 503),
+  );
+  const failedLeaseId = fixture.activationCalls.at(-1)!.leaseId;
+  assert.equal(fixture.coordinator.isLeaseRevoking(failedLeaseId), true);
+
+  await assert.doesNotReject(fixture.service.close());
+
+  assert.equal(fixture.coordinator.hasManagedLeases(), false);
+  assert.deepEqual(fixture.revokeCalls.slice(-2), [
+    { gatewayUrl: fixture.gatewayUrl, leaseId: failedLeaseId },
+    { gatewayUrl: fixture.gatewayUrl, leaseId: failedLeaseId },
+  ]);
+});
+
+test("repeated replacement cleanup failure stays recovery with ownership retained", async () => {
+  const fixture = createCleanupLivenessFixture(3);
+  await fixture.service.start("policy.main");
+  await assert.rejects(
+    fixture.service.start("policy.next"),
+    isServiceError("MAIN_AGENT_SUPERVISION_ACTIVATION_FAILED", 503),
+  );
+  const failedLeaseId = fixture.activationCalls.at(-1)!.leaseId;
+
+  const first = await fixture.service.status();
+  const second = await fixture.service.status();
+
+  for (const status of [first, second]) {
+    assert.equal(status.coverage, "recovery");
+    assert.equal(status.reasonCode, "MAIN_AGENT_SUPERVISION_RESTORE_FAILED");
+    assert.equal(status.mainLeaseCount, 0);
+    assert.equal(status.leaseId, undefined);
+  }
+  assert.equal(fixture.coordinator.hasManagedLeases(), true);
+  assert.equal(fixture.coordinator.isLeaseRevoking(failedLeaseId), true);
+  assert.equal(
+    fixture.revokeCalls.filter((call) => call.leaseId === failedLeaseId).length,
+    3,
+  );
+});
+
+test("restoration rejects a changed Gateway identity and clears recovery after rollback", async () => {
   const fixture = createFixture();
   await fixture.service.start("policy.main");
   fixture.failNextActivation("policy.next");
@@ -186,8 +262,8 @@ test("restoration rejects a changed Gateway identity for the prior policy", asyn
   );
 
   const status = await fixture.service.status();
-  assert.equal(status.coverage, "recovery");
-  assert.equal(status.reasonCode, "MAIN_AGENT_SUPERVISION_RESTORE_FAILED");
+  assert.equal(status.coverage, "ready");
+  assert.equal(status.reasonCode, undefined);
   assert.equal(status.mainLeaseCount, 0);
 });
 
@@ -605,6 +681,9 @@ function createFixture(options: FixtureOptions = {}) {
     isLeaseUsable(leaseId: string) {
       return usableLeaseIds.has(leaseId);
     },
+    hasManagedLeases() {
+      return activeMain !== undefined || unrelatedActive;
+    },
   };
   fixture.service = createMainAgentSupervisionService({
     coordinator,
@@ -641,6 +720,133 @@ function createFixture(options: FixtureOptions = {}) {
     },
   });
   return fixture;
+}
+
+function createCleanupLivenessFixture(cleanupFailures: number) {
+  const gatewayUrl = "http://127.0.0.1:18789";
+  const gatewayInstanceId = "gateway.host.cleanup.test";
+  const { publicKey } = generateKeyPairSync("ed25519");
+  const leaseService = createNativeGuardLeaseService({ now: () => NOW });
+  const activationCalls: NativeGuardLeaseActivation[] = [];
+  const revokeCalls: Array<{ gatewayUrl: string; leaseId: string }> = [];
+  let remainingCleanupFailures = cleanupFailures;
+  let failNextReplacement = true;
+  let pluginStatus = cleanupPluginStatus();
+  const capability = {
+    openclawVersion: "2026.7.2",
+    supportsNativeGuard: true,
+    finalizerAssurance: "exclusive_before_hook" as const,
+    conflictingPluginIds: [],
+  };
+  const controlClient: OpenClawControlClient = {
+    async inspectCapabilities() {
+      return capability;
+    },
+    async attestGateway(input) {
+      return {
+        contractVersion: "native-guard-gateway-1",
+        signatureContext: "native_guard.gateway_attestation.v1",
+        challenge: input.challenge,
+        gatewayUrl: input.gatewayUrl,
+        gatewayInstanceId,
+        openclawVersion: capability.openclawVersion,
+        nativeGuard: {
+          contractVersion: "native-guard-1",
+          registrarStatus: "live",
+          finalBeforeToolCall: { pluginId: "agent-guard-supervision", exclusive: true },
+          trustedToolPolicy: { policyId: "agent-guard-admission", exclusive: true },
+          recoveryService: { serviceId: "agent-guard-runtime", live: true },
+          postApprovalLeaseRecheck: true,
+          paramsProvenance: "json-only",
+        },
+        signature: "test-signature",
+      };
+    },
+    async status() {
+      return pluginStatus;
+    },
+    async activate(_gatewayUrl, activation) {
+      activationCalls.push(structuredClone(activation));
+      if (activation.policyPackId === "policy.next" && failNextReplacement) {
+        failNextReplacement = false;
+        pluginStatus = cleanupPluginStatus({
+          ...activation,
+          policyPackDigest: "f".repeat(64),
+        });
+      } else {
+        pluginStatus = cleanupPluginStatus(activation);
+      }
+      return pluginStatus;
+    },
+    async renew(_gatewayUrl, activation) {
+      pluginStatus = cleanupPluginStatus(activation);
+      return pluginStatus;
+    },
+    async revoke(revokeGatewayUrl, leaseId) {
+      revokeCalls.push({ gatewayUrl: revokeGatewayUrl, leaseId });
+      const replacement = activationCalls.at(-1);
+      if (
+        replacement?.policyPackId === "policy.next" &&
+        replacement.leaseId === leaseId &&
+        remainingCleanupFailures > 0
+      ) {
+        remainingCleanupFailures -= 1;
+        throw new Error("plugin cleanup unavailable");
+      }
+      pluginStatus = cleanupPluginStatus();
+      return pluginStatus;
+    },
+  };
+  const loadPolicy = async (policyPackId: string) => {
+    const pack = policyPack(policyPackId);
+    return {
+      policyPack: pack,
+      policyPackDigest: digestJson(pack),
+      runGroupId: "run-group.cleanup",
+    };
+  };
+  const coordinator = createNativeGuardCoordinator({
+    leaseService,
+    controlClient,
+    loadStoredOpenClawPolicyPack: loadPolicy,
+    gatewayUrl,
+    backendUrl: "http://127.0.0.1:3000/api/v1/openclaw/native-guard/decision",
+    capabilityInput: { isolatedProfile: false },
+    gatewayAttestationPublicKey: publicKey,
+  });
+  const service = createMainAgentSupervisionService({
+    coordinator,
+    loadStoredOpenClawPolicyPack: loadPolicy,
+    ttlMs: TTL_MS,
+    now: () => NOW,
+    scheduleTimeout: () => "timer-cleanup",
+    cancelTimeout: () => undefined,
+  });
+  return { service, coordinator, activationCalls, revokeCalls, gatewayUrl };
+}
+
+function cleanupPluginStatus(activation?: NativeGuardLeaseActivation): NativeGuardStatus {
+  const activeLease = activation ? {
+    leaseId: activation.leaseId,
+    leaseEpoch: activation.leaseEpoch,
+    rootSessionKey: activation.rootSessionKey,
+    scope: structuredClone(activation.scope),
+    mode: activation.mode,
+    policyPackId: activation.policyPackId,
+    policyPackDigest: activation.policyPackDigest,
+    expiresAt: activation.expiresAt,
+    gatewayInstanceId: "gateway.host.cleanup.test",
+  } : undefined;
+  return {
+    coverage: activeLease ? "active" : "ready",
+    finalizerAssurance: "exclusive_before_hook",
+    openclawVersion: "2026.7.2",
+    gatewayInstanceId: "gateway.host.cleanup.test",
+    activeLeaseCount: activeLease ? 1 : 0,
+    activeLeases: activeLease ? [activeLease] : [],
+    ...(activeLease ? { activeLease } : {}),
+    conflictingPluginIds: [],
+  };
 }
 
 function mainLease(overrides: Partial<NativeGuardLeaseSummary> = {}): NativeGuardLeaseSummary {

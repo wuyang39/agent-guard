@@ -11,6 +11,7 @@ import type { NativeGuardCoordinator } from "./nativeGuardCoordinator";
 const MAIN_ROOT_SESSION_KEY = "agent:main:main";
 const DEFAULT_TTL_MS = 5 * 60 * 1_000;
 const MAIN_SCOPE = { kind: "agent", agentId: "main" } as const;
+const MIN_TIMER_DELAY_MS = 1;
 
 type LoadedOpenClawPolicyPack = {
   policyPack: SupervisionPolicyPack;
@@ -117,12 +118,27 @@ export function createMainAgentSupervisionService(
   function scheduleRenewal(lease: ManagedMainLease): void {
     cancelRenewal();
     const expiresAtMs = Date.parse(lease.expiresAt);
-    const delayMs = Number.isFinite(expiresAtMs)
-      ? Math.max(0, expiresAtMs - now() - ttlMs / 3)
-      : Math.floor(ttlMs * 2 / 3);
+    const remainingMs = expiresAtMs - now();
+    if (!Number.isFinite(remainingMs) || remainingMs <= ttlMs / 3) {
+      scheduleExpiryCleanup(lease, remainingMs);
+      return;
+    }
+    const delayMs = Math.max(MIN_TIMER_DELAY_MS, remainingMs - ttlMs / 3);
     renewalTimer = scheduleTimeout(() => {
       renewalTimer = undefined;
       void serialize(() => renewCurrent(lease.leaseId));
+    }, delayMs);
+  }
+
+  function scheduleExpiryCleanup(lease: ManagedMainLease, remainingMs: number): void {
+    const delayMs = Number.isFinite(remainingMs)
+      ? Math.max(MIN_TIMER_DELAY_MS, remainingMs)
+      : MIN_TIMER_DELAY_MS;
+    renewalTimer = scheduleTimeout(() => {
+      renewalTimer = undefined;
+      void serialize(async () => {
+        if (current?.leaseId === lease.leaseId) await stopInternal();
+      });
     }, delayMs);
   }
 

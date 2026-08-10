@@ -426,6 +426,84 @@ test("renew runs at two-thirds TTL and reschedules from the renewed expiry", asy
   assert.equal(status.expiresAt, "2026-08-10T00:00:05.000Z");
 });
 
+test("a non-advancing near-expiry renewal schedules one expiry cleanup instead of a zero-delay loop", async () => {
+  const fixture = createFixture({ renewReturnsUnchangedExpiry: true });
+  await fixture.service.start("policy.main");
+
+  fixture.nowMs += 2_500;
+  fixture.scheduled[0]!.callback();
+  await waitUntil(() => fixture.renewLeaseIds.length === 1);
+  await waitUntil(() => fixture.scheduled.length === 2);
+
+  assert.equal(fixture.scheduled[1]?.delayMs, 500);
+  assert.ok(fixture.scheduled[1]!.delayMs > 0);
+  assert.deepEqual(fixture.renewLeaseIds, ["lease-1"]);
+
+  fixture.nowMs += 500;
+  fixture.scheduled[1]!.callback();
+  await waitUntil(() => fixture.revokeLeaseIds.length === 1);
+
+  assert.deepEqual(fixture.revokeLeaseIds, ["lease-1"]);
+  assert.deepEqual(fixture.renewLeaseIds, ["lease-1"]);
+  assert.equal((await fixture.service.status()).coverage, "ready");
+  assert.equal((await fixture.service.status()).mainLeaseCount, 0);
+});
+
+test("replacement cancels a pending expiry cleanup timer", async () => {
+  const fixture = createFixture({ renewReturnsUnchangedExpiry: true });
+  await fixture.service.start("policy.main");
+
+  fixture.nowMs += 2_500;
+  fixture.scheduled[0]!.callback();
+  await waitUntil(() => fixture.scheduled.length === 2);
+  fixture.order.length = 0;
+
+  await fixture.service.start("policy.next");
+
+  assert.deepEqual(fixture.order, [
+    "load:policy.next",
+    "cancel:timer-2",
+    "revoke:lease-1",
+    "activate:policy.next",
+    "schedule:timer-3",
+  ]);
+});
+
+test("stop cancels a pending expiry cleanup timer", async () => {
+  const fixture = createFixture({ renewReturnsUnchangedExpiry: true });
+  await fixture.service.start("policy.main");
+
+  fixture.nowMs += 2_500;
+  fixture.scheduled[0]!.callback();
+  await waitUntil(() => fixture.scheduled.length === 2);
+  fixture.order.length = 0;
+
+  await fixture.service.stop();
+
+  assert.deepEqual(fixture.order, ["cancel:timer-2", "revoke:lease-1"]);
+});
+
+test("expiry cleanup revoke failure remains recovery instead of turning supervision off", async () => {
+  const fixture = createFixture({
+    renewReturnsUnchangedExpiry: true,
+    revokeFailures: 1,
+  });
+  await fixture.service.start("policy.main");
+
+  fixture.nowMs += 2_500;
+  fixture.scheduled[0]!.callback();
+  await waitUntil(() => fixture.scheduled.length === 2);
+  fixture.nowMs += 500;
+  fixture.scheduled[1]!.callback();
+  await waitUntil(() => fixture.revokeLeaseIds.length === 1);
+
+  const status = await fixture.service.status();
+  assert.equal(status.coverage, "recovery");
+  assert.equal(status.reasonCode, "MAIN_AGENT_SUPERVISION_STOP_FAILED");
+  assert.equal(status.leaseId, "lease-1");
+  assert.equal(fixture.scheduled.length, 2);
+});
+
 test("renew failure stops the timer and exposes stable recovery state", async () => {
   const fixture = createFixture({ renewError: new Error("secret renewal failure") });
   await fixture.service.start("policy.main");
@@ -507,6 +585,7 @@ type FixtureOptions = {
   activationCoverage?: NativeGuardStatus["coverage"];
   invalidActivation?: "policy" | "root" | "scope" | "usable" | "gateway";
   renewError?: Error;
+  renewReturnsUnchangedExpiry?: boolean;
   revokeFailures?: number;
   revokeUnconfirmedCount?: number;
 };
@@ -647,7 +726,9 @@ function createFixture(options: FixtureOptions = {}) {
       activeMain = {
         ...activeMain,
         leaseEpoch: activeMain.leaseEpoch + 1,
-        expiresAt: new Date(fixture.nowMs + TTL_MS).toISOString(),
+        expiresAt: options.renewReturnsUnchangedExpiry
+          ? activeMain.expiresAt
+          : new Date(fixture.nowMs + TTL_MS).toISOString(),
       };
       return aggregate();
     },

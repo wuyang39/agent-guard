@@ -376,22 +376,47 @@ export function createNativeGuardCoordinator(
     };
   }
 
-  async function compensateManagedLease(managed: ManagedLease): Promise<boolean> {
+  async function attemptManagedRevocation(managed: ManagedLease): Promise<{
+    backendConfirmed: boolean;
+    pluginConfirmed: boolean;
+  }> {
     managed.phase = "revoking";
-    let backendRevocationCompleted = false;
+    let pluginConfirmed = false;
+    try {
+      const pluginStatus = await managed.controlClient.revoke(
+        managed.gatewayUrl,
+        managed.leaseId,
+      );
+      pluginConfirmed = pluginConfirmsRevoke(pluginStatus, managed.leaseId);
+    } catch {
+      // Keep the stored control context for a later retry.
+    }
+    let backendConfirmed = false;
     try {
       options.leaseService.revoke(managed.leaseId);
-      backendRevocationCompleted = true;
+      backendConfirmed = true;
     } catch {
       // Keep cleanup errors contained so no dependency message can expose credentials.
     }
-    try {
-      await managed.controlClient.revoke(managed.gatewayUrl, managed.leaseId);
-    } catch {
-      // Plugin cleanup is best effort; the return value records backend invalidation.
+    if (backendConfirmed && pluginConfirmed) leases.delete(managed.leaseId);
+    return { backendConfirmed, pluginConfirmed };
+  }
+
+  function compensationStatus(
+    managed: ManagedLease,
+    result: { backendConfirmed: boolean; pluginConfirmed: boolean },
+  ): NativeGuardStatus {
+    if (result.backendConfirmed && result.pluginConfirmed) {
+      return postCleanupStatus(managed.capability);
     }
-    if (backendRevocationCompleted) leases.delete(managed.leaseId);
-    return backendRevocationCompleted;
+    if (result.backendConfirmed) {
+      return aggregateManagedStatus(
+        "recovery",
+        "NATIVE_GUARD_PLUGIN_REVOKE_UNCONFIRMED",
+        "OpenClaw plugin lease revocation could not be confirmed.",
+      );
+    }
+    return rollbackStatus(managed.capability);
   }
 
   async function inspectCompatibleCapability(
@@ -586,10 +611,8 @@ export function createNativeGuardCoordinator(
               "OpenClaw native guard activation lost lease ownership.",
             );
           }
-          const backendRevocationCompleted = await compensateManagedLease(managed);
-          setLastStatus(backendRevocationCompleted
-            ? postCleanupStatus(capability)
-            : rollbackStatus(capability));
+          const cleanup = await attemptManagedRevocation(managed);
+          setLastStatus(compensationStatus(managed, cleanup));
           throw coordinatorError(
             "NATIVE_GUARD_ACTIVATION_FAILED",
             "OpenClaw native guard activation failed and was rolled back.",
@@ -711,10 +734,8 @@ export function createNativeGuardCoordinator(
             "Native guard renewal lost lease ownership.",
           );
         }
-        const backendRevocationCompleted = await compensateManagedLease(managed);
-        setLastStatus(backendRevocationCompleted
-          ? postCleanupStatus(managed.capability)
-          : rollbackStatus(managed.capability));
+        const cleanup = await attemptManagedRevocation(managed);
+        setLastStatus(compensationStatus(managed, cleanup));
         throw coordinatorError(
           "NATIVE_GUARD_RENEW_FAILED",
           "Native guard renewal failed closed and the lease was revoked.",
@@ -772,39 +793,16 @@ export function createNativeGuardCoordinator(
           : "recovery",
         "NATIVE_GUARD_LIFECYCLE_PENDING",
       ));
-      let pluginConfirmed = false;
-      let backendRevocationFailed = false;
-      try {
-        try {
-          const pluginStatus = await managed.controlClient.revoke(managed.gatewayUrl, leaseId);
-          pluginConfirmed = pluginConfirmsRevoke(pluginStatus, leaseId);
-        } catch {
-          // The revoking gate remains authoritative while acknowledgement is unavailable.
-        }
-      } finally {
-        try {
-          // False means the backend secret was already absent and is still a safe success.
-          options.leaseService.revoke(leaseId);
-        } catch {
-          backendRevocationFailed = true;
-        }
-      }
-      if (backendRevocationFailed) {
-        setLastStatus(rollbackStatus(managed.capability));
+      const cleanup = await attemptManagedRevocation(managed);
+      const cleanupStatus = compensationStatus(managed, cleanup);
+      if (!cleanup.backendConfirmed) {
+        setLastStatus(cleanupStatus);
         throw coordinatorError(
           "NATIVE_GUARD_REVOKE_FAILED",
           "Native guard backend revocation could not be confirmed.",
         );
       }
-      if (!pluginConfirmed) {
-        return setLastStatus(aggregateManagedStatus(
-          "recovery",
-          "NATIVE_GUARD_PLUGIN_REVOKE_UNCONFIRMED",
-          "OpenClaw plugin lease revocation could not be confirmed.",
-        ));
-      }
-      leases.delete(leaseId);
-      return setLastStatus(postCleanupStatus(managed.capability));
+      return setLastStatus(cleanupStatus);
     },
 
     async status(): Promise<NativeGuardStatus> {
@@ -815,7 +813,23 @@ export function createNativeGuardCoordinator(
       }
       const backendStatus = backend.status;
       if (managed) {
-        if ([...leases.values()].some((candidate) => candidate.phase === "revoking")) {
+        const revoking = [...leases.values()].filter(
+          (candidate) => candidate.phase === "revoking",
+        );
+        if (revoking.length > 0) {
+          let backendFailure: ManagedLease | undefined;
+          let pluginUnconfirmed = false;
+          for (const candidate of revoking) {
+            const cleanup = await attemptManagedRevocation(candidate);
+            if (!cleanup.backendConfirmed) backendFailure ??= candidate;
+            if (!cleanup.pluginConfirmed) pluginUnconfirmed = true;
+          }
+          if (backendFailure) {
+            return setLastStatus(rollbackStatus(backendFailure.capability));
+          }
+          if (!pluginUnconfirmed) {
+            return setLastStatus(postCleanupStatus(managed.capability));
+          }
           return setLastStatus(aggregateManagedStatus(
             "recovery",
             "NATIVE_GUARD_PLUGIN_REVOKE_UNCONFIRMED",

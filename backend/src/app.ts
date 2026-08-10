@@ -162,14 +162,18 @@ export async function buildApp(opts?: {
 
   // ---- 插件 ----
   app.addHook("onRequest", async (request, reply) => {
+    const nativeSupervisionRequest = isNativeSupervisionRequest(request.url);
+    const origin = request.headers.origin;
     if (
       (
         request.url.startsWith("/api/v1/openclaw/native-guard/") ||
-        request.url === "/api/v1/openclaw/native-supervision" ||
-        request.url.startsWith("/api/v1/openclaw/native-supervision/")
+        nativeSupervisionRequest
       ) &&
-      request.headers.origin !== undefined &&
-      !nativeGuardDependencies.allowedOrigins.includes(request.headers.origin)
+      origin !== undefined &&
+      (
+        !nativeGuardDependencies.allowedOrigins.includes(origin) ||
+        (nativeSupervisionRequest && !isExactHttpOrigin(origin))
+      )
     ) {
       return reply.code(403).send(failure(
         "NATIVE_GUARD_ORIGIN_FORBIDDEN",
@@ -231,4 +235,23 @@ export async function buildApp(opts?: {
   await app.register(openClawNativeGuardRoutes, nativeGuardDependencies);
 
   return app;
+}
+
+function isNativeSupervisionRequest(url: string): boolean {
+  const base = "/api/v1/openclaw/native-supervision";
+  return url === base || url.startsWith(`${base}/`) || url.startsWith(`${base}?`);
+}
+
+function isExactHttpOrigin(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (
+      (url.protocol === "http:" || url.protocol === "https:") &&
+      url.username === "" &&
+      url.password === "" &&
+      url.origin === value
+    );
+  } catch {
+    return false;
+  }
 }

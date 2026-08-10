@@ -283,6 +283,36 @@ test("buildApp blocks unapproved browser origins before native supervision mutat
   await app.close();
 });
 
+test("native supervision rejects null Origin even when legacy native routes allow it", async () => {
+  const calls: string[] = [];
+  const dependencies = appNativeGuardDependencies();
+  assert.equal(dependencies.allowedOrigins.includes("null"), true);
+  const app = await buildApp({
+    logger: false,
+    nativeGuardDependencies: dependencies,
+    mainAgentSupervisionService: appSupervisionService(calls),
+  });
+
+  const stopped = await app.inject({
+    method: "POST",
+    url: "/api/v1/openclaw/native-supervision/stop",
+    headers: { origin: "null" },
+  });
+  const started = await app.inject({
+    method: "POST",
+    url: "/api/v1/openclaw/native-supervision/start",
+    headers: { origin: "http://malicious.example" },
+    payload: { policyPackId: "policy.main" },
+  });
+
+  assert.equal(stopped.statusCode, 403);
+  assert.equal(started.statusCode, 403);
+  assert.equal(stopped.json().error.code, "NATIVE_GUARD_ORIGIN_FORBIDDEN");
+  assert.equal(started.json().error.code, "NATIVE_GUARD_ORIGIN_FORBIDDEN");
+  assert.deepEqual(calls, []);
+  await app.close();
+});
+
 function appSupervisionService(calls: string[]): MainAgentSupervisionService {
   const ready = {
     coverage: "ready" as const,

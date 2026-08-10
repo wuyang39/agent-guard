@@ -304,6 +304,94 @@ test("returns its exact created lease identity without changing legacy activate"
   assert.equal(legacy.activationCalls.length, 1);
 });
 
+test("retains failed activation compensation until status confirms plugin cleanup", async () => {
+  const fixture = coordinatorFixture({
+    activationMismatch: true,
+    revokeError: new Error("plugin offline"),
+  });
+
+  await assert.rejects(
+    () => fixture.coordinator.activateWithIdentity(supervisionInput()),
+    hasCoordinatorCode("NATIVE_GUARD_ACTIVATION_FAILED"),
+  );
+  const leaseId = fixture.activationCalls[0].leaseId;
+  assert.equal(fixture.leaseService.status().activeLeaseCount, 0);
+  assert.equal(fixture.coordinator.hasManagedLeases(), true);
+  assert.equal(fixture.coordinator.isLeaseRevoking(leaseId), true);
+  assert.equal(
+    fixture.coordinator.getLastStatus().reasonCode,
+    "NATIVE_GUARD_PLUGIN_REVOKE_UNCONFIRMED",
+  );
+
+  let cleanupRetries = 0;
+  fixture.controlClient.revoke = async () => {
+    cleanupRetries += 1;
+    return status("ready");
+  };
+  const healed = await fixture.coordinator.status();
+
+  assert.equal(cleanupRetries, 1);
+  assert.equal(healed.coverage, "ready");
+  assert.equal(fixture.coordinator.hasManagedLeases(), false);
+});
+
+test("retains plugin-active compensation and explicit revoke retries the stored client", async () => {
+  const fixture = coordinatorFixture({ activationMismatch: true });
+  let cleanupAttempts = 0;
+  fixture.controlClient.revoke = async (_gatewayUrl, leaseId) => {
+    cleanupAttempts += 1;
+    return status("active", leaseId, fixture.activationCalls[0]);
+  };
+
+  await assert.rejects(
+    () => fixture.coordinator.activateWithIdentity(supervisionInput()),
+    hasCoordinatorCode("NATIVE_GUARD_ACTIVATION_FAILED"),
+  );
+  const leaseId = fixture.activationCalls[0].leaseId;
+  const pending = await fixture.coordinator.status();
+  assert.equal(pending.coverage, "recovery");
+  assert.equal(pending.reasonCode, "NATIVE_GUARD_PLUGIN_REVOKE_UNCONFIRMED");
+  assert.equal(fixture.coordinator.hasManagedLeases(), true);
+
+  fixture.controlClient.revoke = async () => {
+    cleanupAttempts += 1;
+    return status("ready");
+  };
+  const cleaned = await fixture.coordinator.revoke(leaseId);
+
+  assert.equal(cleaned.coverage, "ready");
+  assert.equal(cleanupAttempts, 3);
+  assert.equal(fixture.coordinator.hasManagedLeases(), false);
+});
+
+test("retains failed renewal compensation until revoke confirms plugin cleanup", async () => {
+  const fixture = coordinatorFixture({
+    renewMismatch: true,
+    revokeError: new Error("plugin offline"),
+  });
+  const active = await fixture.coordinator.activate(supervisionInput());
+  const leaseId = active.activeLease!.leaseId;
+
+  await assert.rejects(
+    () => fixture.coordinator.renew(leaseId),
+    hasCoordinatorCode("NATIVE_GUARD_RENEW_FAILED"),
+  );
+  assert.equal(fixture.leaseService.status().activeLeaseCount, 0);
+  assert.equal(fixture.coordinator.hasManagedLeases(), true);
+  assert.equal(fixture.coordinator.isLeaseRevoking(leaseId), true);
+
+  let cleanupRetries = 0;
+  fixture.controlClient.revoke = async () => {
+    cleanupRetries += 1;
+    return status("ready");
+  };
+  const cleaned = await fixture.coordinator.revoke(leaseId);
+
+  assert.equal(cleanupRetries, 1);
+  assert.equal(cleaned.coverage, "ready");
+  assert.equal(fixture.coordinator.hasManagedLeases(), false);
+});
+
 test("rejects root end during sandbox activation without losing rollback ownership", async () => {
   const fixture = coordinatorFixture();
   const sandboxRevokeCalls: string[] = [];
@@ -810,7 +898,7 @@ test("binds host renewal and status rechecks to the attested Gateway instance", 
   assert.equal(status.reasonCode, "NATIVE_GUARD_CAPABILITY_CHANGED");
 });
 
-test("retains an offline plugin revoke for retry without pretending the backend lease is active", async () => {
+test("retries an offline plugin revoke from status without pretending the backend lease is active", async () => {
   const fixture = coordinatorFixture();
   await fixture.coordinator.activate(supervisionInput());
   const leaseId = fixture.activationCalls[0].leaseId;
@@ -829,10 +917,10 @@ test("retains an offline plugin revoke for retry without pretending the backend 
   assert.equal(fixture.leaseService.status().activeLeaseCount, 0);
   assert.equal(first.coverage, "recovery");
   assert.equal(first.reasonCode, "NATIVE_GUARD_PLUGIN_REVOKE_UNCONFIRMED");
-  assert.equal(fixture.coordinator.hasManagedLeases(), false, "second retry released ownership");
-  assert.equal(duringRetry.coverage, "recovery");
+  assert.equal(fixture.coordinator.hasManagedLeases(), false, "status retry released ownership");
+  assert.equal(duringRetry.coverage, "ready");
   assert.equal(duringRetry.activeLeaseCount, 0);
-  assert.equal(duringRetry.reasonCode, "NATIVE_GUARD_PLUGIN_REVOKE_UNCONFIRMED");
+  assert.equal(duringRetry.reasonCode, undefined);
   assert.equal(second.coverage, "ready");
   assert.equal(attempts, 2);
 });

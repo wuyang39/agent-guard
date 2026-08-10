@@ -1404,6 +1404,7 @@ function activeStatus(activation: NativeGuardLeaseActivation): NativeGuardStatus
       leaseId: activation.leaseId,
       leaseEpoch: activation.leaseEpoch,
       rootSessionKey: activation.rootSessionKey,
+      scope: activation.scope,
       mode: activation.mode,
       policyPackId: activation.policyPackId,
       policyPackDigest: activation.policyPackDigest,

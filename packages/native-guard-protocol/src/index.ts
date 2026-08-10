@@ -22,6 +22,10 @@ export type NormalizedNativeGuardLeaseScope = Exclude<
   "session_tree"
 >;
 
+export type NativeGuardScopeComparisonContext = {
+  rootSessionKey: string;
+};
+
 export type BoundedParams = {
   canonical: string;
   digest: string;
@@ -96,8 +100,20 @@ export function normalizeNativeGuardLeaseScope(
 export function nativeGuardScopesEqual(
   left: NativeGuardLeaseScope | undefined,
   right: NativeGuardLeaseScope | undefined,
+  context?: NativeGuardScopeComparisonContext,
 ): boolean {
   if (left === right) return true;
+  if (
+    context !== undefined &&
+    (left === "session_tree" || right === "session_tree")
+  ) {
+    try {
+      left = normalizeNativeGuardLeaseScope(left, context.rootSessionKey);
+      right = normalizeNativeGuardLeaseScope(right, context.rootSessionKey);
+    } catch {
+      return false;
+    }
+  }
   if (
     left === undefined ||
     right === undefined ||

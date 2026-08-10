@@ -167,7 +167,7 @@ type LegacyNativeGuardLeaseSummary = Omit<NativeGuardLeaseSummary, "scope"> & {
   scope?: undefined;
 };
 
-export type NativeGuardStatus = {
+type NativeGuardStatusBase = {
   coverage: NativeGuardCoverageStatus;
   finalizerAssurance: "isolated_profile" | "exclusive_before_hook" | "unverified";
   pluginVersion?: string;
@@ -175,11 +175,20 @@ export type NativeGuardStatus = {
   gatewayInstanceId?: string;
   activeLeaseCount: number;
   conflictingPluginIds?: string[];
-  activeLease?: NativeGuardLeaseSummary | LegacyNativeGuardLeaseSummary;
-  activeLeases?: NativeGuardLeaseSummary[];
   reasonCode?: string;
   detail?: string;
 };
+
+export type NativeGuardStatus = NativeGuardStatusBase & (
+  | {
+      activeLeases: NativeGuardLeaseSummary[];
+      activeLease?: NativeGuardLeaseSummary;
+    }
+  | {
+      activeLeases?: undefined;
+      activeLease?: NativeGuardLeaseSummary | LegacyNativeGuardLeaseSummary;
+    }
+);
 
 export type OpenClawSandboxEvidence = {
   schemaVersion: "native-guard-1";

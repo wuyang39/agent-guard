@@ -39,9 +39,27 @@ test("native guard contracts retain legacy scope and expose scoped lease summari
     activeLease: summary,
     activeLeases: [summary],
   } satisfies NativeGuardStatus;
+  const legacyStatus = {
+    coverage: "active",
+    finalizerAssurance: "exclusive_before_hook",
+    activeLeaseCount: 1,
+    activeLease: {
+      leaseId: "lease.legacy",
+      leaseEpoch: 1,
+      rootSessionKey: "agent:main:cli:legacy",
+      mode: "detection",
+      policyPackId: "policy.legacy",
+      policyPackDigest: "b".repeat(64),
+      expiresAt: "2026-08-10T12:00:00.000Z",
+    },
+  } satisfies NativeGuardStatus;
+  // @ts-expect-error Scoped status collections cannot contain a scope-less active lease.
+  const invalidMixedStatus: NativeGuardStatus = { ...legacyStatus, activeLeases: [summary] };
 
   assert.equal(legacyScope, "session_tree");
   assert.deepEqual(status.activeLeases, [summary]);
+  assert.equal(legacyStatus.activeLease.rootSessionKey, "agent:main:cli:legacy");
+  assert.equal(invalidMixedStatus.activeLeases?.length, 1);
 });
 
 test("canonical OpenClaw session keys expose their agent identity", () => {
@@ -205,6 +223,23 @@ test("native guard scope equality compares semantic fields", () => {
       kind: "session",
       sessionKey: "agent:main:main",
     }),
+    false,
+  );
+});
+
+test("native guard scope equality resolves legacy sessions within activation context", () => {
+  const rootSessionKey = "agent:main:cli:abc";
+  const structuredScope: NativeGuardLeaseScope = { kind: "session", sessionKey: rootSessionKey };
+  const context = { rootSessionKey };
+
+  assert.equal(nativeGuardScopesEqual("session_tree", structuredScope, context), true);
+  assert.equal(nativeGuardScopesEqual(structuredScope, "session_tree", context), true);
+  assert.equal(
+    nativeGuardScopesEqual(
+      "session_tree",
+      { kind: "session", sessionKey: "agent:main:cli:other" },
+      context,
+    ),
     false,
   );
 });

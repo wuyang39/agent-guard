@@ -2336,6 +2336,107 @@ test("lazy native runtime refreshes an idle identity and rejects changes with an
   await activeApp.close();
 });
 
+test("lazy native runtime retains a root-ended coordinator until revoke removes ownership", async () => {
+  const handlers = await import("./native-guard-handlers");
+  const first = nativeAgent(
+    "agent.first",
+    "C:\\first\\openclaw.cmd",
+    "http://127.0.0.1:18790",
+  );
+  const second = nativeAgent(
+    "agent.second",
+    "C:\\second\\openclaw.cmd",
+    "http://127.0.0.1:18791",
+  );
+  const agents = [first, second, first, second];
+  let factoryCalls = 0;
+  let managed = false;
+  let phase: "active" | "root_ended" | undefined;
+  let revokeCalls = 0;
+  let lastStatus: NativeGuardStatus = {
+    coverage: "ready",
+    finalizerAssurance: "exclusive_before_hook",
+    activeLeaseCount: 0,
+  };
+  const dependencies = handlers.createNativeGuardRouteDependencies({
+    env: { AGENT_GUARD_CONTROL_TOKEN: CONTROL_TOKEN },
+    loadActiveAgentConfig: async () => agents.shift() ?? second,
+    createCoordinator(options) {
+      factoryCalls += 1;
+      if (factoryCalls > 1) {
+        assert.equal(options.gatewayUrl, second.gatewayUrl);
+        return coordinatorStub();
+      }
+      assert.equal(options.gatewayUrl, first.gatewayUrl);
+      return {
+        ...(coordinatorStub(lastStatus) as object),
+        async activate() {
+          managed = true;
+          phase = "active";
+          lastStatus = {
+            coverage: "active",
+            finalizerAssurance: "exclusive_before_hook",
+            activeLeaseCount: 1,
+          };
+          return structuredClone(lastStatus);
+        },
+        async revoke() {
+          revokeCalls += 1;
+          managed = false;
+          phase = undefined;
+          lastStatus = {
+            coverage: "ready",
+            finalizerAssurance: "exclusive_before_hook",
+            activeLeaseCount: 0,
+          };
+          return structuredClone(lastStatus);
+        },
+        markLeaseRootEnded() {
+          if (phase !== "active") return false;
+          phase = "root_ended";
+          lastStatus = {
+            coverage: "recovery",
+            finalizerAssurance: "exclusive_before_hook",
+            activeLeaseCount: 0,
+            reasonCode: "NATIVE_GUARD_ROOT_ENDED",
+          };
+          return true;
+        },
+        hasManagedLeases() {
+          return managed;
+        },
+        getLastStatus() {
+          return structuredClone(lastStatus);
+        },
+      } as never;
+    },
+    createDecisionService() {
+      return { async decide() { throw new Error("not called"); } };
+    },
+  });
+
+  await dependencies.coordinator.activate({} as never);
+  assert.equal(dependencies.coordinator.markLeaseRootEnded("lease.1"), true);
+  assert.equal(dependencies.coordinator.getLastStatus().coverage, "recovery");
+  assert.equal(dependencies.coordinator.getLastStatus().activeLeaseCount, 0);
+  await assert.rejects(
+    () => dependencies.coordinator.status(),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "NATIVE_GUARD_ACTIVE_AGENT_CHANGED",
+  );
+  assert.equal(factoryCalls, 1);
+
+  await dependencies.coordinator.revoke("lease.1");
+  assert.equal(revokeCalls, 1);
+  assert.equal(factoryCalls, 1);
+
+  const refreshed = await dependencies.coordinator.status();
+  assert.equal(refreshed.coverage, "ready");
+  assert.equal(factoryCalls, 2);
+});
+
 test("lazy native runtime reserves its identity while management is in flight", async () => {
   const handlers = await import("./native-guard-handlers");
   const first = nativeAgent(
@@ -2565,6 +2666,7 @@ function coordinatorStub(status: NativeGuardStatus = {
     async status() { return structuredClone(status); },
     isLeaseUsable() { return false; },
     isLeaseEvidenceUsable() { return false; },
+    hasManagedLeases() { return status.activeLeaseCount > 0; },
     markLeaseRootEnded() { return false; },
     isLeaseRevoking() { return false; },
     getLastStatus() { return structuredClone(status); },

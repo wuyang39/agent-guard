@@ -507,6 +507,20 @@ function parseNativeGuardStatus(value: unknown): NativeGuardStatus {
   if (!isRecord(value)) {
     throw controlError("OPENCLAW_CONTROL_INVALID_RESPONSE", "OpenClaw control status was invalid.");
   }
+  const allowedKeys = new Set([
+    "coverage",
+    "finalizerAssurance",
+    "pluginVersion",
+    "openclawVersion",
+    "gatewayInstanceId",
+    "activeLeaseCount",
+    "activeLeases",
+    "activeLease",
+    "conflictingPluginIds",
+    "reasonCode",
+    "detail",
+  ]);
+  if (Object.keys(value).some((key) => !allowedKeys.has(key))) invalidControlStatus();
   const coverageValues: NativeGuardStatus["coverage"][] = [
     "off", "ready", "active", "recovery", "conditional", "unsupported", "misconfigured",
   ];

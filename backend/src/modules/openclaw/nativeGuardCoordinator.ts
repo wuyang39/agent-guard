@@ -68,6 +68,7 @@ export type NativeGuardCoordinator = {
   status(): Promise<NativeGuardStatus>;
   isLeaseUsable(leaseId: string): boolean;
   isLeaseEvidenceUsable(leaseId: string): boolean;
+  hasManagedLeases(): boolean;
   markLeaseRootEnded(leaseId: string): boolean;
   isLeaseRevoking(leaseId: string): boolean;
   getLastStatus(): NativeGuardStatus;
@@ -938,9 +939,13 @@ export function createNativeGuardCoordinator(
         phase === "renewing" || phase === "root_ended";
     },
 
+    hasManagedLeases(): boolean {
+      return leases.size > 0;
+    },
+
     markLeaseRootEnded(leaseId: string): boolean {
       const managed = leases.get(leaseId);
-      if (managed === undefined || managed.phase === "revoking") return false;
+      if (managed?.phase !== "active") return false;
       managed.phase = "root_ended";
       setLastStatus(aggregateManagedStatus("recovery", "NATIVE_GUARD_ROOT_ENDED"));
       return true;

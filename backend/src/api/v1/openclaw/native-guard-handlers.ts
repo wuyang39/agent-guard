@@ -262,7 +262,7 @@ function createLazyNativeGuardCoordinator(
         "Native guard active agent changed during a management operation.",
       );
     }
-    if (current && current.getLastStatus().activeLeaseCount > 0) {
+    if (current && current.hasManagedLeases()) {
       throw runtimeConfigError(
         "NATIVE_GUARD_ACTIVE_AGENT_CHANGED",
         "Native guard active agent changed while a lease is managed.",
@@ -309,6 +309,13 @@ function createLazyNativeGuardCoordinator(
     isLeaseEvidenceUsable(leaseId) {
       try {
         return current?.isLeaseEvidenceUsable(leaseId) === true;
+      } catch {
+        return false;
+      }
+    },
+    hasManagedLeases() {
+      try {
+        return current?.hasManagedLeases() === true;
       } catch {
         return false;
       }

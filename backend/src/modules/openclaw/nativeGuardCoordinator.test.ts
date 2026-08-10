@@ -289,6 +289,81 @@ test("keeps the lease unusable after plugin activation ACK until final backend c
   assert.equal(isLeaseUsable(fixture.coordinator, leaseId), true);
 });
 
+test("rejects root end during sandbox activation without losing rollback ownership", async () => {
+  const fixture = coordinatorFixture();
+  const sandboxRevokeCalls: string[] = [];
+  let rootEndResult: boolean | undefined;
+  const sandboxClient = {
+    ...fixture.controlClient,
+    activate: async (_gatewayUrl: string, activation: NativeGuardLeaseActivation) => {
+      fixture.activationCalls.push(activation);
+      rootEndResult = fixture.coordinator.markLeaseRootEnded(activation.leaseId);
+      return status("active", "wrong-lease", activation);
+    },
+    revoke: async (_gatewayUrl: string, leaseId: string) => {
+      sandboxRevokeCalls.push(leaseId);
+      return status("ready");
+    },
+  };
+
+  await assert.rejects(
+    () => fixture.coordinator.activate({
+      ...supervisionInput(),
+      sandbox: {
+        controlClient: sandboxClient,
+        gatewayUrl: "http://127.0.0.1:18889",
+        capabilityInput: { isolatedProfile: true },
+      },
+    }),
+    hasCoordinatorCode("NATIVE_GUARD_ACTIVATION_FAILED"),
+  );
+
+  const leaseId = fixture.activationCalls[0].leaseId;
+  assert.equal(rootEndResult, false);
+  assert.deepEqual(sandboxRevokeCalls, [leaseId]);
+  assert.deepEqual(fixture.revokeCalls, []);
+  assert.equal(fixture.leaseService.status().activeLeaseCount, 0);
+  assert.equal(fixture.coordinator.hasManagedLeases(), false);
+});
+
+test("rejects root end during sandbox renewal without losing rollback ownership", async () => {
+  const fixture = coordinatorFixture();
+  const sandboxRevokeCalls: string[] = [];
+  let rootEndResult: boolean | undefined;
+  const sandboxClient = {
+    ...fixture.controlClient,
+    revoke: async (_gatewayUrl: string, leaseId: string) => {
+      sandboxRevokeCalls.push(leaseId);
+      return status("ready");
+    },
+  };
+  await fixture.coordinator.activate({
+    ...supervisionInput(),
+    sandbox: {
+      controlClient: sandboxClient,
+      gatewayUrl: "http://127.0.0.1:18889",
+      capabilityInput: { isolatedProfile: true },
+    },
+  });
+  sandboxClient.renew = async (_gatewayUrl, activation) => {
+    fixture.renewCalls.push(activation);
+    rootEndResult = fixture.coordinator.markLeaseRootEnded(activation.leaseId);
+    return status("active", "wrong-lease", activation);
+  };
+
+  const leaseId = fixture.activationCalls[0].leaseId;
+  await assert.rejects(
+    () => fixture.coordinator.renew(leaseId),
+    hasCoordinatorCode("NATIVE_GUARD_RENEW_FAILED"),
+  );
+
+  assert.equal(rootEndResult, false);
+  assert.deepEqual(sandboxRevokeCalls, [leaseId]);
+  assert.deepEqual(fixture.revokeCalls, []);
+  assert.equal(fixture.leaseService.status().activeLeaseCount, 0);
+  assert.equal(fixture.coordinator.hasManagedLeases(), false);
+});
+
 test("evidence stays usable through activation, renewal, and root-ended drain only", async () => {
   const fixture = coordinatorFixture();
   const activateStarted = deferred<void>();
@@ -308,6 +383,7 @@ test("evidence stays usable through activation, renewal, and root-ended drain on
   assert.equal(fixture.coordinator.isLeaseEvidenceUsable(leaseId), true);
   releaseActivate.resolve();
   await activating;
+  assert.equal(fixture.coordinator.hasManagedLeases(), true);
 
   const renewStarted = deferred<void>();
   const releaseRenew = deferred<void>();
@@ -326,8 +402,10 @@ test("evidence stays usable through activation, renewal, and root-ended drain on
   await renewing;
 
   assert.equal(fixture.coordinator.markLeaseRootEnded(leaseId), true);
+  assert.equal(fixture.coordinator.markLeaseRootEnded(leaseId), false);
   assert.equal(fixture.coordinator.isLeaseUsable(leaseId), false);
   assert.equal(fixture.coordinator.isLeaseEvidenceUsable(leaseId), true);
+  assert.equal(fixture.coordinator.hasManagedLeases(), true);
   assert.equal(fixture.coordinator.getLastStatus().coverage, "recovery");
   assert.equal(fixture.coordinator.getLastStatus().activeLeaseCount, 0);
   await assert.rejects(
@@ -336,6 +414,7 @@ test("evidence stays usable through activation, renewal, and root-ended drain on
   );
   await fixture.coordinator.revoke(leaseId);
   assert.equal(fixture.coordinator.isLeaseEvidenceUsable(leaseId), false);
+  assert.equal(fixture.coordinator.hasManagedLeases(), false);
 });
 
 test("does not let activation reclaim active phase after public revoke takes ownership", async () => {
@@ -361,6 +440,7 @@ test("does not let activation reclaim active phase after public revoke takes own
   const leaseId = fixture.activationCalls[0].leaseId;
   const revoking = fixture.coordinator.revoke(leaseId);
   await revokeStarted.promise;
+  assert.equal(fixture.coordinator.markLeaseRootEnded(leaseId), false);
   releaseActivate.resolve();
   const outcome = await operationOutcome(activating);
   const usableWhileRevoking = isLeaseUsable(fixture.coordinator, leaseId);

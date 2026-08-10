@@ -43,7 +43,7 @@ test("converts ws loopback URLs, fixes the status route, and sends bearer auth w
     gatewayToken: TOKEN,
     fetch: async (input, init) => {
       request = { url: String(input), init };
-      return jsonResponse({ ...readyStatus(), ignoredPluginField: TOKEN });
+      return jsonResponse(readyStatus());
     },
   });
 
@@ -91,7 +91,7 @@ test("requires and projects the complete credential-free active lease acknowledg
   const complete = activeStatus(ACTIVATION);
   const projectedClient = createOpenClawControlClient({
     gatewayToken: TOKEN,
-    fetch: async () => jsonResponse({ ...complete, ignored: "plugin-body" }),
+    fetch: async () => jsonResponse(complete),
   });
   const projected = await projectedClient.status("http://localhost");
   assert.equal(projected.activeLease?.leaseEpoch, ACTIVATION.leaseEpoch);
@@ -110,6 +110,21 @@ test("requires and projects the complete credential-free active lease acknowledg
       hasCode("OPENCLAW_CONTROL_INVALID_RESPONSE"),
     );
   }
+});
+
+test("rejects unknown top-level native guard status fields", async () => {
+  const client = createOpenClawControlClient({
+    gatewayToken: TOKEN,
+    fetch: async () => jsonResponse({
+      ...readyStatus(),
+      ignoredPluginField: "unexpected",
+    }),
+  });
+
+  await assert.rejects(
+    () => client.status("http://localhost"),
+    hasCode("OPENCLAW_CONTROL_INVALID_RESPONSE"),
+  );
 });
 
 test("rejects oversized response bodies from content-length and streaming readers", async () => {

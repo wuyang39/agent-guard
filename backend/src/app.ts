@@ -44,6 +44,8 @@ import {
   createMainAgentSupervisionService,
   type MainAgentSupervisionService,
 } from "./modules/openclaw/mainAgentSupervisionService";
+import { createNativeGuardRealtimeBridge } from "./modules/openclaw/nativeGuardRealtimeBridge";
+import { emitNativeToolHookEvent } from "./modules/openclaw/realtimeMcpServer";
 import { failure } from "./api/response";
 
 export function requireNativeGuardRuntimeEventStore(
@@ -127,7 +129,9 @@ export async function buildApp(opts?: {
       eventStore: sharedEventStore,
     });
   }
-  requireNativeGuardRuntimeEventStore(nativeGuardDependencies);
+  const runtimeEventStore = requireNativeGuardRuntimeEventStore(
+    nativeGuardDependencies,
+  );
   const mainAgentSupervisionService = opts?.mainAgentSupervisionService ??
     createMainAgentSupervisionService({
       coordinator: nativeGuardDependencies.coordinator,
@@ -156,7 +160,12 @@ export async function buildApp(opts?: {
   const app = Fastify({
     logger,
   });
+  const nativeGuardRealtimeBridge = createNativeGuardRealtimeBridge({
+    eventStore: runtimeEventStore,
+    emit: emitNativeToolHookEvent,
+  });
   app.addHook("onClose", async () => {
+    nativeGuardRealtimeBridge.close();
     await mainAgentSupervisionService.close();
   });
 

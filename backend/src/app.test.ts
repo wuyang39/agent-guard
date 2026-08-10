@@ -4,6 +4,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import type { NativeGuardEvent } from "@agent-guard/contracts";
 import { createNativeGuardRouteDependencies } from "./api/v1/openclaw/native-guard-handlers";
 import {
   buildApp,
@@ -12,6 +13,10 @@ import {
 } from "./app";
 import { createNativeGuardEventStore } from "./storage/nativeGuardEventStore";
 import type { MainAgentSupervisionService } from "./modules/openclaw/mainAgentSupervisionService";
+import {
+  subscribeRealtimeEvents,
+  type RealtimeEvent,
+} from "./modules/openclaw/realtimeMcpServer";
 
 function attestedCapability() {
   return {
@@ -237,6 +242,52 @@ test("buildApp registers one injected main supervision service and closes it", a
   assert.deepEqual(calls, ["status", "close"]);
 });
 
+test("buildApp streams durable native guard events until the app closes", async (t) => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "agent-guard-app-realtime-"));
+  t.after(() => rm(rootDir, { recursive: true, force: true }));
+  const runtimeEventStore = createNativeGuardEventStore({ rootDir });
+  const app = await buildApp({
+    logger: false,
+    nativeGuardDependencies: appNativeGuardDependencies(runtimeEventStore),
+    mainAgentSupervisionService: appSupervisionService([]),
+  });
+  const received: RealtimeEvent[] = [];
+  const unsubscribe = subscribeRealtimeEvents((event) => {
+    if (event.runtimeSessionId === "agent:main:dashboard:app-lifecycle") {
+      received.push(event);
+    }
+  });
+  t.after(unsubscribe);
+  const unsubscribeFailure = subscribeRealtimeEvents((event) => {
+    if (event.runtimeSessionId === "agent:main:dashboard:app-lifecycle") {
+      throw new Error("simulated SSE subscriber failure");
+    }
+  });
+  t.after(unsubscribeFailure);
+
+  assert.equal(await runtimeEventStore.append(appNativeDecision({
+    eventId: "event.app-open",
+    toolCallId: "call.app-open",
+  })), true);
+  assert.equal(received.length, 1);
+  assert.equal(received[0]?.type, "native_tool_hook");
+  assert.equal(received[0]?.toolId, "call.app-open");
+  assert.equal(received[0]?.detail?.source, "native_guard");
+  assert.deepEqual(
+    (await runtimeEventStore.listBySession(
+      "agent:main:dashboard:app-lifecycle",
+    )).map(({ eventId }) => eventId),
+    ["event.app-open"],
+  );
+
+  await app.close();
+  assert.equal(await runtimeEventStore.append(appNativeDecision({
+    eventId: "event.app-closed",
+    toolCallId: "call.app-closed",
+  })), true);
+  assert.equal(received.length, 1);
+});
+
 test("buildApp blocks unapproved browser origins before native supervision mutations", async () => {
   const calls: string[] = [];
   const service = appSupervisionService(calls);
@@ -328,8 +379,9 @@ function appSupervisionService(calls: string[]): MainAgentSupervisionService {
   };
 }
 
-function appNativeGuardDependencies() {
-  const runtimeEventStore = createNativeGuardEventStore();
+function appNativeGuardDependencies(
+  runtimeEventStore = createNativeGuardEventStore(),
+) {
   return createNativeGuardRouteDependencies({
     coordinator: {
       async status() {
@@ -356,4 +408,30 @@ function appNativeGuardDependencies() {
       return { async decide() { throw new Error("not called"); } };
     },
   });
+}
+
+function appNativeDecision(
+  overrides: Partial<NativeGuardEvent> = {},
+): NativeGuardEvent {
+  return {
+    schemaVersion: "native-guard-1",
+    eventId: "event.app",
+    type: "decision",
+    leaseId: "lease.app",
+    leaseEpoch: 1,
+    sessionKey: "agent:main:dashboard:app-lifecycle",
+    runId: "run.app",
+    toolCallId: "call.app",
+    decisionId: "decision.app",
+    timestamp: "2026-08-10T00:00:00.000Z",
+    detail: {
+      requestId: "request.app",
+      action: "deny",
+      reasonCode: "policy_deny",
+      targetType: "tool_call",
+      toolName: "exec",
+      paramsDigest: "a".repeat(64),
+    },
+    ...overrides,
+  };
 }

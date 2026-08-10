@@ -87,6 +87,13 @@ type ManagedMainLease = {
   };
 };
 
+type ScheduledTimer = {
+  generation: number;
+  handle: unknown;
+};
+
+type LeaseExpirySnapshot = Pick<ManagedMainLease, "leaseId" | "leaseEpoch" | "expiresAt">;
+
 export function createMainAgentSupervisionService(
   options: MainAgentSupervisionServiceOptions,
 ): MainAgentSupervisionService {
@@ -98,7 +105,8 @@ export function createMainAgentSupervisionService(
     clearTimeout(timer as ReturnType<typeof setTimeout>));
   const loadPolicyPack = options.loadStoredOpenClawPolicyPack ?? loadStoredPolicyPack;
   let current: ManagedMainLease | undefined;
-  let renewalTimer: unknown;
+  let renewalTimer: ScheduledTimer | undefined;
+  let timerGeneration = 0;
   let operationTail: Promise<void> = Promise.resolve();
   let lastStatus = idleStatus("off", 0);
 
@@ -112,7 +120,22 @@ export function createMainAgentSupervisionService(
     if (renewalTimer === undefined) return;
     const timer = renewalTimer;
     renewalTimer = undefined;
-    cancelTimeout(timer);
+    cancelTimeout(timer.handle);
+  }
+
+  function scheduleTimer(callback: () => void, delayMs: number): void {
+    const timer: ScheduledTimer = { generation: ++timerGeneration, handle: undefined };
+    renewalTimer = timer;
+    try {
+      timer.handle = scheduleTimeout(() => {
+        if (renewalTimer?.generation !== timer.generation) return;
+        renewalTimer = undefined;
+        callback();
+      }, delayMs);
+    } catch (error) {
+      if (renewalTimer === timer) renewalTimer = undefined;
+      throw error;
+    }
   }
 
   function scheduleRenewal(lease: ManagedMainLease): void {
@@ -124,8 +147,7 @@ export function createMainAgentSupervisionService(
       return;
     }
     const delayMs = Math.max(MIN_TIMER_DELAY_MS, remainingMs - ttlMs / 3);
-    renewalTimer = scheduleTimeout(() => {
-      renewalTimer = undefined;
+    scheduleTimer(() => {
       void serialize(() => renewCurrent(lease.leaseId));
     }, delayMs);
   }
@@ -134,12 +156,29 @@ export function createMainAgentSupervisionService(
     const delayMs = Number.isFinite(remainingMs)
       ? Math.max(MIN_TIMER_DELAY_MS, remainingMs)
       : MIN_TIMER_DELAY_MS;
-    renewalTimer = scheduleTimeout(() => {
-      renewalTimer = undefined;
-      void serialize(async () => {
-        if (current?.leaseId === lease.leaseId) await stopInternal();
-      });
+    const snapshot: LeaseExpirySnapshot = {
+      leaseId: lease.leaseId,
+      leaseEpoch: lease.leaseEpoch,
+      expiresAt: lease.expiresAt,
+    };
+    scheduleTimer(() => {
+      void serialize(() => cleanupExpiredLease(snapshot));
     }, delayMs);
+  }
+
+  async function cleanupExpiredLease(snapshot: LeaseExpirySnapshot): Promise<void> {
+    const lease = current;
+    if (!lease || lease.leaseId !== snapshot.leaseId) return;
+    if (lease.leaseEpoch !== snapshot.leaseEpoch || lease.expiresAt !== snapshot.expiresAt) {
+      scheduleRenewal(lease);
+      return;
+    }
+    const expiresAtMs = Date.parse(lease.expiresAt);
+    if (!Number.isFinite(expiresAtMs) || now() < expiresAtMs) {
+      scheduleRenewal(lease);
+      return;
+    }
+    await stopInternal();
   }
 
   async function loadExactPolicy(policyPackId: string): Promise<LoadedOpenClawPolicyPack> {

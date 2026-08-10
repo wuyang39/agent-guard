@@ -504,6 +504,55 @@ test("expiry cleanup revoke failure remains recovery instead of turning supervis
   assert.equal(fixture.scheduled.length, 2);
 });
 
+test("a cancelled expiry callback cannot clear the replacement lease timer", async () => {
+  const fixture = createFixture({ renewReturnsUnchangedExpiry: true });
+  await fixture.service.start("policy.main");
+  fixture.nowMs += 2_500;
+  fixture.scheduled[0]!.callback();
+  await waitUntil(() => fixture.scheduled.length === 2);
+  const cancelledTimer = fixture.scheduled[1]!;
+  await fixture.service.start("policy.next");
+  fixture.order.length = 0;
+
+  cancelledTimer.callback();
+  await fixture.service.stop();
+
+  assert.deepEqual(fixture.order, ["cancel:timer-3", "revoke:lease-2"]);
+  assert.deepEqual(fixture.revokeLeaseIds, ["lease-1", "lease-2"]);
+});
+
+test("an expiry cleanup callback fired before expiry reschedules without revoking", async () => {
+  const fixture = createFixture({ renewReturnsUnchangedExpiry: true });
+  await fixture.service.start("policy.main");
+
+  fixture.nowMs += 2_500;
+  fixture.scheduled[0]!.callback();
+  await waitUntil(() => fixture.scheduled.length === 2);
+  fixture.nowMs -= 100;
+  fixture.scheduled[1]!.callback();
+  await waitUntil(() => fixture.scheduled.length === 3);
+
+  assert.deepEqual(fixture.revokeLeaseIds, []);
+  assert.equal(fixture.scheduled[2]?.delayMs, 600);
+});
+
+test("an expiry cleanup callback preserves a same-id lease renewed before it runs", async () => {
+  const fixture = createFixture({ renewReturnsUnchangedExpiry: true });
+  await fixture.service.start("policy.main");
+
+  fixture.nowMs += 2_500;
+  fixture.scheduled[0]!.callback();
+  await waitUntil(() => fixture.scheduled.length === 2);
+  fixture.advanceMainLease();
+  await fixture.service.status();
+  fixture.nowMs += 500;
+  fixture.scheduled[1]!.callback();
+  await waitUntil(() => fixture.scheduled.length === 3);
+
+  assert.deepEqual(fixture.revokeLeaseIds, []);
+  assert.equal(fixture.scheduled[2]?.delayMs, 1_500);
+});
+
 test("renew failure stops the timer and exposes stable recovery state", async () => {
   const fixture = createFixture({ renewError: new Error("secret renewal failure") });
   await fixture.service.start("policy.main");
@@ -643,6 +692,14 @@ function createFixture(options: FixtureOptions = {}) {
     },
     setMainGatewayInstanceId(value: string | undefined) {
       if (activeMain) activeMain = { ...activeMain, gatewayInstanceId: value };
+    },
+    advanceMainLease() {
+      assert.ok(activeMain);
+      activeMain = {
+        ...activeMain,
+        leaseEpoch: activeMain.leaseEpoch + 1,
+        expiresAt: new Date(fixture.nowMs + TTL_MS).toISOString(),
+      };
     },
     service: undefined as unknown as ReturnType<typeof createMainAgentSupervisionService>,
   };

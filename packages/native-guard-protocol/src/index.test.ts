@@ -244,6 +244,25 @@ test("native guard scope equality resolves legacy sessions within activation con
   );
 });
 
+test("native guard scope equality resolves missing scopes within activation context", () => {
+  const rootSessionKey = "agent:main:cli:abc";
+  const structuredScope: NativeGuardLeaseScope = { kind: "session", sessionKey: rootSessionKey };
+  const context = { rootSessionKey };
+
+  assert.equal(nativeGuardScopesEqual(undefined, structuredScope), false);
+  assert.equal(nativeGuardScopesEqual(structuredScope, undefined), false);
+  assert.equal(nativeGuardScopesEqual(undefined, structuredScope, context), true);
+  assert.equal(nativeGuardScopesEqual(structuredScope, undefined, context), true);
+  assert.equal(
+    nativeGuardScopesEqual(
+      undefined,
+      { kind: "session", sessionKey: "agent:main:cli:other" },
+      context,
+    ),
+    false,
+  );
+});
+
 test("canonical JSON is stable across key order", () => {
   assert.equal(canonicalJson({ z: 1, nested: { b: true, a: "x" } }), canonicalJson({ nested: { a: "x", b: true }, z: 1 }));
   assert.equal(digestJson({ z: 1, nested: { b: true, a: "x" } }), digestJson({ nested: { a: "x", b: true }, z: 1 }));

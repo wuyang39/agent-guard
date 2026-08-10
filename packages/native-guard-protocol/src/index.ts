@@ -105,7 +105,10 @@ export function nativeGuardScopesEqual(
   if (left === right) return true;
   if (
     context !== undefined &&
-    (left === "session_tree" || right === "session_tree")
+    (left === undefined ||
+      right === undefined ||
+      left === "session_tree" ||
+      right === "session_tree")
   ) {
     try {
       left = normalizeNativeGuardLeaseScope(left, context.rootSessionKey);

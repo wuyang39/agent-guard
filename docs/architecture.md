@@ -493,7 +493,7 @@ launcher 完成 marker 和 live registry 检查后原子 spawn `--` 后的 Gatew
 
 插件按 `exact-session > main-agent fallback > OFF` 解析会话。某个 session 已有 exact active、recovery 或 `root_ended` 状态时，该状态 shadow agent fallback，不能借 main lease 绕过 exact lease 的恢复或终止状态。agent scope 下的 `session_end` 只清理该会话的绑定，不结束 agent lease；停止全局监督必须显式 revoke。声称属于 main、但不符合 canonical session key 的身份在 main agent coverage 存在时 fail closed。
 
-后端公开 `GET /api/v1/openclaw/native-supervision`、`POST /api/v1/openclaw/native-supervision/start` 和 `POST /api/v1/openclaw/native-supervision/stop`。start 只接受存储中真实且 digest 匹配的 `SupervisionPolicyPack`，激活成功并确认 `coverage=active`、`mainLeaseCount=1` 后才返回 active。默认 TTL 是五分钟，在到期前约一个 TTL 的三分之一，也就是已使用约三分之二 TTL 时自动 renew。stop 显式 revoke；激活回滚、续租、替换、状态确认或撤销失败时保留 `recovery`/`conditional` 和稳定 `reasonCode`，不能把未确认状态显示成 OFF。
+后端公开 `GET /api/v1/openclaw/native-supervision`、`POST /api/v1/openclaw/native-supervision/start` 和 `POST /api/v1/openclaw/native-supervision/stop`。start 只接受存储中真实且 digest 匹配的 `SupervisionPolicyPack`，激活成功并确认 `coverage=active`、`mainLeaseCount=1` 后才返回 active；在线租约不支持替换，必须先显式 stop。默认 TTL 是五分钟，在到期前约一个 TTL 的三分之一，也就是已使用约三分之二 TTL 时自动 renew。stop 显式 revoke；激活回滚、续租、状态确认或撤销失败时保留 `recovery`/`conditional` 和稳定 `reasonCode`，不能把未确认状态显示成 OFF。
 
 Frontend 对 refresh/start/stop 共用 latest-wins operation gate，旧请求不能覆盖较新的状态。点击开始监督时，只有 active 响应返回后才打开 SSE；SSE 打开失败不回滚已激活 lease。点击停止监督只调用 stop/revoke，不主动关闭 SSE，操作员仍可观察和筛选已有事件。
 

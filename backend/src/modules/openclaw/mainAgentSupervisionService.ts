@@ -207,35 +207,27 @@ export function createMainAgentSupervisionService(
     }
 
     const loaded = await loadExactPolicy(policyPackId);
-    const previous = current && current.policyPackId !== policyPackId
-      ? { ...current, failure: undefined }
-      : undefined;
-    const cleanupUncertain = hasUnownedCleanupUncertainty();
-    if (!current) {
-      const status = await readCoordinatorStatusForStart();
-      const unmanaged = findMainLeases(status);
-      if (unmanaged.length > 0) {
-        lastStatus = unmanagedLeaseStatus(status, unmanaged);
-        throw serviceError(
-          "MAIN_AGENT_SUPERVISION_UNMANAGED_LEASE",
-          409,
-          "An unmanaged main-agent supervision lease is already active.",
-        );
-      }
-      if (cleanupUncertain && retainedCleanupIsUnconfirmed(status)) {
-        preserveUnownedCleanupFailure(status.activeLeaseCount);
-        throw activationFailed();
-      }
-    }
     if (current) {
-      await stopInternal();
-      if (current) {
-        throw serviceError(
-          "MAIN_AGENT_SUPERVISION_REPLACE_CONFLICT",
-          409,
-          "The current main-agent supervision lease could not be replaced.",
-        );
-      }
+      throw serviceError(
+        "MAIN_AGENT_SUPERVISION_REPLACE_CONFLICT",
+        409,
+        "Stop main-agent supervision before starting a policy.",
+      );
+    }
+    const cleanupUncertain = hasUnownedCleanupUncertainty();
+    const status = await readCoordinatorStatusForStart();
+    const unmanaged = findMainLeases(status);
+    if (unmanaged.length > 0) {
+      lastStatus = unmanagedLeaseStatus(status, unmanaged);
+      throw serviceError(
+        "MAIN_AGENT_SUPERVISION_UNMANAGED_LEASE",
+        409,
+        "An unmanaged main-agent supervision lease is already active.",
+      );
+    }
+    if (cleanupUncertain && retainedCleanupIsUnconfirmed(status)) {
+      preserveUnownedCleanupFailure(status.activeLeaseCount);
+      throw activationFailed();
     }
 
     const activated = await activateOwnedPolicy(
@@ -243,17 +235,12 @@ export function createMainAgentSupervisionService(
       loaded.policyPackDigest,
     );
     if (activated) return cloneStatus(lastStatus);
-
-    if (previous && current === undefined) {
-      await restorePrevious(previous);
-    }
     throw activationFailed();
   }
 
   async function activateOwnedPolicy(
     policyPackId: string,
     policyPackDigest: string,
-    expectedGatewayInstanceId?: string,
   ): Promise<boolean> {
     let aggregate: NativeGuardStatus;
     let ownedLeaseId: string;
@@ -286,8 +273,6 @@ export function createMainAgentSupervisionService(
       !exact ||
       !nonEmpty(exact.gatewayInstanceId) ||
       !hasFiniteExpiry(exact.expiresAt) ||
-      (expectedGatewayInstanceId !== undefined &&
-        exact.gatewayInstanceId !== expectedGatewayInstanceId) ||
       !options.coordinator.isLeaseUsable(exact.leaseId)
     ) {
       await rollbackInvalidActivation(aggregate, ownedLeaseId);
@@ -365,35 +350,6 @@ export function createMainAgentSupervisionService(
       },
     };
     lastStatus = degradedStatus(current);
-  }
-
-  async function restorePrevious(previous: ManagedMainLease): Promise<void> {
-    const restored = await activateOwnedPolicy(
-      previous.policyPackId,
-      previous.policyPackDigest,
-      previous.gatewayInstanceId,
-    );
-    if (!restored) {
-      if (current) {
-        current.failure = {
-          coverage: "recovery",
-          reasonCode: "MAIN_AGENT_SUPERVISION_RESTORE_FAILED",
-          detail: "The prior main-agent supervision policy could not be restored.",
-        };
-        lastStatus = degradedStatus(current);
-      } else {
-        markRestoreFailed(lastStatus.activeLeaseCount);
-      }
-    }
-  }
-
-  function markRestoreFailed(activeLeaseCount: number): void {
-    current = undefined;
-    cancelRenewal();
-    lastStatus = idleStatus("recovery", activeLeaseCount, {
-      reasonCode: "MAIN_AGENT_SUPERVISION_RESTORE_FAILED",
-      detail: "The prior main-agent supervision policy could not be restored.",
-    });
   }
 
   async function readCoordinatorStatusForStart(): Promise<NativeGuardStatus> {
@@ -595,7 +551,6 @@ export function createMainAgentSupervisionService(
   function hasUnownedCleanupUncertainty(): boolean {
     return !current && (
       lastStatus.reasonCode === "MAIN_AGENT_SUPERVISION_ACTIVATION_FAILED" ||
-      lastStatus.reasonCode === "MAIN_AGENT_SUPERVISION_RESTORE_FAILED" ||
       lastStatus.reasonCode === "MAIN_AGENT_SUPERVISION_ROLLBACK_UNCONFIRMED"
     );
   }

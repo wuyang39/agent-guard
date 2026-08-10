@@ -94,19 +94,21 @@ test("same-policy start is idempotent while its lease is usable", async () => {
   assert.equal(fixture.revokeLeaseIds.length, 0);
 });
 
-test("invalid replacement policy never revokes the current main lease", async () => {
+test("invalid replacement policy returns 400 without changing the current main lease", async () => {
   const fixture = createFixture();
-  await fixture.service.start("policy.main");
+  const first = await fixture.service.start("policy.main");
   fixture.invalidPolicyIds.add("policy.missing");
+  fixture.order.length = 0;
 
   await assert.rejects(
     fixture.service.start("policy.missing"),
     isServiceError("MAIN_AGENT_SUPERVISION_POLICY_INVALID", 400),
   );
 
+  assert.deepEqual(fixture.order, ["load:policy.missing"]);
   assert.equal(fixture.revokeLeaseIds.length, 0);
   assert.equal(fixture.activateInputs.length, 1);
-  assert.equal((await fixture.service.status()).policyPackId, "policy.main");
+  assert.deepEqual(await fixture.service.status(), first);
 });
 
 test("policy prevalidation rejects malformed shapes, mismatched ids, digests, and sources", async () => {
@@ -122,66 +124,66 @@ test("policy prevalidation rejects malformed shapes, mismatched ids, digests, an
   }
 });
 
-test("valid replacement validates before cancelling and revoking the old lease", async () => {
+test("online policy replacement conflicts without changing the current main lease", async () => {
+  const fixture = createFixture();
+  const first = await fixture.service.start("policy.main");
+  fixture.order.length = 0;
+
+  await assert.rejects(
+    fixture.service.start("policy.next"),
+    (error: unknown) =>
+      isServiceError("MAIN_AGENT_SUPERVISION_REPLACE_CONFLICT", 409)(error) &&
+      (error as MainAgentSupervisionServiceError).message ===
+        "Stop main-agent supervision before starting a policy.",
+  );
+
+  assert.deepEqual(fixture.order, ["load:policy.next"]);
+  assert.deepEqual(fixture.revokeLeaseIds, []);
+  assert.equal(fixture.activateInputs.length, 1);
+  assert.equal(fixture.scheduled.length, 1);
+  assert.deepEqual(await fixture.service.status(), first);
+});
+
+test("explicit stop permits starting a different policy", async () => {
   const fixture = createFixture();
   await fixture.service.start("policy.main");
   fixture.order.length = 0;
 
-  const status = await fixture.service.start("policy.next");
+  const stopped = await fixture.service.stop();
+  const started = await fixture.service.start("policy.next");
 
   assert.deepEqual(fixture.order, [
-    "load:policy.next",
     "cancel:timer-1",
     "revoke:lease-1",
+    "load:policy.next",
     "activate:policy.next",
     "schedule:timer-2",
   ]);
-  assert.equal(status.policyPackId, "policy.next");
-  assert.equal(status.leaseId, "lease-2");
+  assert.equal(stopped.mainLeaseCount, 0);
+  assert.equal(started.policyPackId, "policy.next");
+  assert.equal(started.leaseId, "lease-2");
 });
 
-test("failed replacement restores the prior exact policy and renewal timer", async () => {
-  const fixture = createFixture();
-  const first = await fixture.service.start("policy.main");
-  fixture.failNextActivation("policy.next");
-
-  await assert.rejects(
-    fixture.service.start("policy.next"),
-    isServiceError("MAIN_AGENT_SUPERVISION_ACTIVATION_FAILED", 503),
-  );
-
-  const restored = await fixture.service.status();
-  assert.equal(restored.coverage, "active");
-  assert.equal(restored.policyPackId, "policy.main");
-  assert.notEqual(restored.leaseId, first.leaseId);
-  assert.equal(fixture.scheduled.length, 2);
-  assert.deepEqual(
-    fixture.activateInputs.map((input) => (input as { policyPackId: string }).policyPackId),
-    ["policy.main", "policy.next", "policy.main"],
-  );
-});
-
-test("failed replacement and restoration clear recovery after status verifies no main lease", async () => {
+test("a degraded current lease requires explicit stop before the same policy can start", async () => {
   const fixture = createFixture();
   await fixture.service.start("policy.main");
-  fixture.failNextActivation("policy.next");
-  fixture.failNextActivation("policy.main");
+  fixture.setMainGatewayInstanceId("gateway.changed.test");
+  const degraded = await fixture.service.status();
+  fixture.order.length = 0;
 
   await assert.rejects(
-    fixture.service.start("policy.next"),
-    isServiceError("MAIN_AGENT_SUPERVISION_ACTIVATION_FAILED", 503),
+    fixture.service.start("policy.main"),
+    isServiceError("MAIN_AGENT_SUPERVISION_REPLACE_CONFLICT", 409),
   );
 
-  const status = await fixture.service.status();
-  assert.equal(status.coverage, "ready");
-  assert.equal(status.reasonCode, undefined);
-  assert.equal(status.mainLeaseCount, 0);
-  assert.equal(status.leaseId, undefined);
+  assert.deepEqual(fixture.order, ["load:policy.main"]);
+  assert.deepEqual(fixture.revokeLeaseIds, []);
+  assert.equal(fixture.activateInputs.length, 1);
+  assert.deepEqual(await fixture.service.status(), degraded);
 });
 
-test("status retries retained replacement cleanup and permits a later start", async () => {
+test("status retries retained fresh-start cleanup and permits a later start", async () => {
   const fixture = createCleanupLivenessFixture(1);
-  await fixture.service.start("policy.main");
 
   await assert.rejects(
     fixture.service.start("policy.next"),
@@ -205,9 +207,8 @@ test("status retries retained replacement cleanup and permits a later start", as
   assert.equal(restarted.policyPackId, "policy.next");
 });
 
-test("close retries retained replacement cleanup when no current lease exists", async () => {
+test("close retries retained fresh-start cleanup when no current lease exists", async () => {
   const fixture = createCleanupLivenessFixture(1);
-  await fixture.service.start("policy.main");
   await assert.rejects(
     fixture.service.start("policy.next"),
     isServiceError("MAIN_AGENT_SUPERVISION_ACTIVATION_FAILED", 503),
@@ -224,9 +225,8 @@ test("close retries retained replacement cleanup when no current lease exists", 
   ]);
 });
 
-test("repeated replacement cleanup failure stays recovery with ownership retained", async () => {
+test("repeated fresh-start cleanup failure stays recovery with ownership retained", async () => {
   const fixture = createCleanupLivenessFixture(3);
-  await fixture.service.start("policy.main");
   await assert.rejects(
     fixture.service.start("policy.next"),
     isServiceError("MAIN_AGENT_SUPERVISION_ACTIVATION_FAILED", 503),
@@ -238,7 +238,7 @@ test("repeated replacement cleanup failure stays recovery with ownership retaine
 
   for (const status of [first, second]) {
     assert.equal(status.coverage, "recovery");
-    assert.equal(status.reasonCode, "MAIN_AGENT_SUPERVISION_RESTORE_FAILED");
+    assert.equal(status.reasonCode, "MAIN_AGENT_SUPERVISION_ACTIVATION_FAILED");
     assert.equal(status.mainLeaseCount, 0);
     assert.equal(status.leaseId, undefined);
   }
@@ -250,32 +250,15 @@ test("repeated replacement cleanup failure stays recovery with ownership retaine
   );
 });
 
-test("restoration rejects a changed Gateway identity and clears recovery after rollback", async () => {
+test("invalid fresh activation rolls back only the newly-added main lease", async () => {
   const fixture = createFixture();
-  await fixture.service.start("policy.main");
-  fixture.failNextActivation("policy.next");
-  fixture.setCoordinatorGateway("policy.main", "gateway.changed.test");
-
-  await assert.rejects(
-    fixture.service.start("policy.next"),
-    isServiceError("MAIN_AGENT_SUPERVISION_ACTIVATION_FAILED", 503),
-  );
-
-  const status = await fixture.service.status();
-  assert.equal(status.coverage, "ready");
-  assert.equal(status.reasonCode, undefined);
-  assert.equal(status.mainLeaseCount, 0);
-});
-
-test("invalid replacement rolls back only the newly-added main lease before restoring", async () => {
-  const fixture = createFixture();
-  await fixture.service.start("policy.main");
-  fixture.setExternalMain(mainLease({
+  fixture.setExternalMain({
+    ...unrelatedLease(),
     leaseId: "lease.external",
-    policyPackId: "policy.next",
-    policyPackDigest: digestJson(policyPack("policy.next")),
+    policyPackId: "policy.external",
+    policyPackDigest: digestJson(policyPack("policy.external")),
     gatewayInstanceId: "gateway.external.test",
-  }));
+  });
   fixture.setCoordinatorPolicyDigest("policy.next", "f".repeat(64));
 
   await assert.rejects(
@@ -283,11 +266,11 @@ test("invalid replacement rolls back only the newly-added main lease before rest
     isServiceError("MAIN_AGENT_SUPERVISION_ACTIVATION_FAILED", 503),
   );
 
-  assert.deepEqual(fixture.revokeLeaseIds, ["lease-1", "lease-2"]);
-  assert.deepEqual(fixture.activeLeaseIds().sort(), ["lease-3", "lease.external"]);
-  const restored = await fixture.service.status();
-  assert.equal(restored.policyPackId, "policy.main");
-  assert.equal(restored.activeLeaseCount, 2);
+  assert.deepEqual(fixture.revokeLeaseIds, ["lease-1"]);
+  assert.deepEqual(fixture.activeLeaseIds(), ["lease.external"]);
+  const status = await fixture.service.status();
+  assert.equal(status.policyPackId, undefined);
+  assert.equal(status.activeLeaseCount, 1);
 });
 
 test("does not adopt or renew an unmanaged main lease and fresh start conflicts", async () => {
@@ -449,7 +432,7 @@ test("a non-advancing near-expiry renewal schedules one expiry cleanup instead o
   assert.equal((await fixture.service.status()).mainLeaseCount, 0);
 });
 
-test("replacement cancels a pending expiry cleanup timer", async () => {
+test("explicit stop cancels a pending expiry cleanup timer before starting a new policy", async () => {
   const fixture = createFixture({ renewReturnsUnchangedExpiry: true });
   await fixture.service.start("policy.main");
 
@@ -458,12 +441,13 @@ test("replacement cancels a pending expiry cleanup timer", async () => {
   await waitUntil(() => fixture.scheduled.length === 2);
   fixture.order.length = 0;
 
+  await fixture.service.stop();
   await fixture.service.start("policy.next");
 
   assert.deepEqual(fixture.order, [
-    "load:policy.next",
     "cancel:timer-2",
     "revoke:lease-1",
+    "load:policy.next",
     "activate:policy.next",
     "schedule:timer-3",
   ]);
@@ -529,13 +513,14 @@ test("a malformed status expiry is cleaned up without retaining the renewal time
   assert.equal(status.mainLeaseCount, 0);
 });
 
-test("a cancelled expiry callback cannot clear the replacement lease timer", async () => {
+test("a cancelled expiry callback cannot clear the explicitly restarted lease timer", async () => {
   const fixture = createFixture({ renewReturnsUnchangedExpiry: true });
   await fixture.service.start("policy.main");
   fixture.nowMs += 2_500;
   fixture.scheduled[0]!.callback();
   await waitUntil(() => fixture.scheduled.length === 2);
   const cancelledTimer = fixture.scheduled[1]!;
+  await fixture.service.stop();
   await fixture.service.start("policy.next");
   fixture.order.length = 0;
 
@@ -626,7 +611,7 @@ test("revoke failure returns recovery with identity retained for retry", async (
   assert.equal(retried.mainLeaseCount, 0);
 });
 
-test("plugin-unconfirmed stop retains identity and blocks replacement until retry", async () => {
+test("plugin-unconfirmed stop retains identity and requires explicit stop retries", async () => {
   const fixture = createFixture({ revokeUnconfirmedCount: 2 });
   await fixture.service.start("policy.main");
 
@@ -639,9 +624,12 @@ test("plugin-unconfirmed stop retains identity and blocks replacement until retr
     isServiceError("MAIN_AGENT_SUPERVISION_REPLACE_CONFLICT", 409),
   );
   assert.equal(fixture.activateInputs.length, 1);
+  assert.deepEqual(fixture.revokeLeaseIds, ["lease-1"]);
 
   const retried = await fixture.service.stop();
-  assert.equal(retried.mainLeaseCount, 0);
+  assert.equal(retried.mainLeaseCount, 1);
+  const stopped = await fixture.service.stop();
+  assert.equal(stopped.mainLeaseCount, 0);
   assert.deepEqual(fixture.revokeLeaseIds, ["lease-1", "lease-1", "lease-1"]);
 });
 

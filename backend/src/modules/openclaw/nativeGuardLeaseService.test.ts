@@ -4,6 +4,7 @@ import { describe, test } from "node:test";
 import type {
   NativeGuardEvidenceProof,
   NativeGuardLeaseActivation,
+  NativeGuardLeaseScope,
   NativeToolDecisionResponse,
   SupervisionPolicyPack,
 } from "@agent-guard/contracts";
@@ -63,11 +64,22 @@ test("manages a session-tree lease through authentication, renewal, and expiry",
       leaseId: created.activation.leaseId,
       leaseEpoch: created.activation.leaseEpoch,
       rootSessionKey: ROOT_SESSION_KEY,
+      scope: "session_tree",
       mode: "supervision",
       policyPackId: policyPack.policyPackId,
       policyPackDigest,
       expiresAt: "2026-08-01T00:05:00.000Z",
     },
+    activeLeases: [{
+      leaseId: created.activation.leaseId,
+      leaseEpoch: created.activation.leaseEpoch,
+      rootSessionKey: ROOT_SESSION_KEY,
+      scope: "session_tree",
+      mode: "supervision",
+      policyPackId: policyPack.policyPackId,
+      policyPackDigest,
+      expiresAt: "2026-08-01T00:05:00.000Z",
+    }],
     reasonCode: "NATIVE_GUARD_FINALIZER_UNVERIFIED",
   });
 
@@ -112,6 +124,191 @@ test("manages a session-tree lease through authentication, renewal, and expiry",
     coverage: "ready",
     finalizerAssurance: "unverified",
     activeLeaseCount: 0,
+    activeLeases: [],
+  });
+});
+
+describe("main agent lease scope", () => {
+  test("resolves current and future canonical main sessions while excluding other identities", () => {
+    const service = createNativeGuardLeaseService({
+      now: () => new Date("2026-08-01T00:00:00.000Z"),
+    });
+    const main = createAgentLease(service);
+
+    assert.deepEqual(main.scope, { kind: "agent", agentId: "main" });
+    for (const sessionKey of [
+      "agent:main:dashboard:existing",
+      "agent:main:cli:future",
+      "agent:main:subagent:child",
+    ]) {
+      const active = service.resolveBySession(sessionKey);
+      assert.equal(active?.leaseId, main.leaseId);
+      assert.deepEqual(active?.scope, { kind: "agent", agentId: "main" });
+    }
+    for (const sessionKey of [
+      "agent:worker:dashboard:existing",
+      "agent:main",
+      "agent:main:dashboard:bad..tail",
+      "session.main.dashboard",
+    ]) {
+      assert.equal(service.resolveBySession(sessionKey), undefined, sessionKey);
+    }
+  });
+
+  test("allows exact main sessions to coexist and take lookup precedence", () => {
+    const service = createNativeGuardLeaseService({
+      now: () => new Date("2026-08-01T00:00:00.000Z"),
+    });
+    const main = createAgentLease(service);
+    const exact = createLease(service, "agent:main:dashboard:exact");
+
+    assert.equal(
+      service.resolveBySession("agent:main:dashboard:exact")?.leaseId,
+      exact.leaseId,
+    );
+    assert.equal(
+      service.resolveBySession("agent:main:dashboard:other")?.leaseId,
+      main.leaseId,
+    );
+  });
+
+  test("rejects a duplicate main agent lease without conflicting with session leases", () => {
+    const service = createNativeGuardLeaseService({
+      now: () => new Date("2026-08-01T00:00:00.000Z"),
+    });
+    createLease(service, "agent:main:main");
+    createAgentLease(service);
+
+    assert.throws(() => createAgentLease(service), /already bound/i);
+  });
+
+  test("keeps the agent lease active across session lifecycle acknowledgements", () => {
+    const service = createNativeGuardLeaseService({
+      now: () => new Date("2026-08-01T00:00:00.000Z"),
+    });
+    const main = createAgentLease(service);
+    const binding = {
+      leaseId: main.leaseId,
+      leaseEpoch: main.leaseEpoch,
+      parentSessionKey: "agent:main:dashboard:parent",
+      childSessionKey: "agent:main:subagent:child",
+    };
+
+    assert.equal(service.bindChildWithEvidence(binding, main.evidenceCredential), true);
+    assert.equal(service.bindChildWithEvidence({
+      ...binding,
+      childSessionKey: "agent:worker:subagent:child",
+    }, main.evidenceCredential), false);
+    assert.equal(service.bindChildWithEvidence({
+      ...binding,
+      parentSessionKey: "agent:main",
+    }, main.evidenceCredential), false);
+
+    assert.doesNotThrow(() => createLease(service, binding.childSessionKey));
+    service.endSession("agent:main:dashboard:parent");
+    assert.equal(service.endSessionWithEvidence({
+      leaseId: main.leaseId,
+      leaseEpoch: main.leaseEpoch,
+      sessionKey: "agent:main:cli:current",
+    }, main.evidenceCredential), true);
+    assert.equal(service.endSessionWithEvidence({
+      leaseId: main.leaseId,
+      leaseEpoch: main.leaseEpoch,
+      sessionKey: "agent:worker:cli:current",
+    }, main.evidenceCredential), false);
+    assert.equal(service.authenticate(main.leaseId, main.credential)?.state, "active");
+    assert.equal(
+      service.resolveBySession("agent:main:dashboard:future")?.leaseId,
+      main.leaseId,
+    );
+  });
+
+  test("preserves agent scope on renewal and cleans its index on revoke and expiry", () => {
+    let nowMs = Date.parse("2026-08-01T00:00:00.000Z");
+    const service = createNativeGuardLeaseService({ now: () => nowMs });
+    const first = createAgentLease(service, 1_000);
+    const renewed = service.renew(first.leaseId, 1_000);
+
+    assert.deepEqual(renewed.scope, { kind: "agent", agentId: "main" });
+    assert.deepEqual(
+      service.authenticate(renewed.leaseId, renewed.credential)?.scope,
+      { kind: "agent", agentId: "main" },
+    );
+    assert.equal(service.revoke(renewed.leaseId), true);
+    const afterRevoke = createAgentLease(service, 1_000);
+
+    nowMs += 1_000;
+    assert.equal(service.resolveBySession("agent:main:dashboard:expired"), undefined);
+    const afterExpiry = createAgentLease(service);
+    assert.notEqual(afterExpiry.leaseId, afterRevoke.leaseId);
+  });
+
+  test("reports every active scope and only exposes the singular compatibility field", () => {
+    const service = createNativeGuardLeaseService({
+      now: () => new Date("2026-08-01T00:00:00.000Z"),
+    });
+    const main = createAgentLease(service);
+    const exact = createLease(service, "agent:main:dashboard:detection");
+    const status = service.status();
+
+    assert.equal(status.activeLeaseCount, 2);
+    assert.equal(status.activeLease, undefined);
+    assert.deepEqual(status.activeLeases?.map((lease) => ({
+      leaseId: lease.leaseId,
+      scope: lease.scope,
+    })), [
+      { leaseId: main.leaseId, scope: { kind: "agent", agentId: "main" } },
+      { leaseId: exact.leaseId, scope: "session_tree" },
+    ]);
+  });
+
+  test("authorizes agent evidence by scope without falling back from stale exact callers", () => {
+    const service = createNativeGuardLeaseService({
+      now: () => new Date("2026-08-01T00:00:00.000Z"),
+    });
+    const main = createAgentLease(service);
+    const exactSessionKey = "agent:main:dashboard:exact-evidence";
+    const exact = createLease(service, exactSessionKey);
+
+    assert.equal(service.authorizeEvidence(
+      main.leaseId,
+      main.leaseEpoch,
+      "agent:main:cli:future-evidence",
+      main.evidenceCredential,
+    ), true);
+    assert.equal(service.authorizeEvidence(
+      main.leaseId,
+      main.leaseEpoch,
+      "agent:worker:cli:future-evidence",
+      main.evidenceCredential,
+    ), false);
+    assert.equal(service.authorizeEvidence(
+      exact.leaseId,
+      exact.leaseEpoch,
+      exactSessionKey,
+      main.evidenceCredential,
+    ), false);
+    assert.equal(service.authorizeEvidence(
+      exact.leaseId,
+      exact.leaseEpoch + 1,
+      exactSessionKey,
+      exact.evidenceCredential,
+    ), false);
+
+    assert.equal(service.revoke(exact.leaseId), true);
+    assert.equal(service.resolveBySession(exactSessionKey)?.leaseId, main.leaseId);
+    assert.equal(service.authorizeEvidence(
+      exact.leaseId,
+      exact.leaseEpoch,
+      exactSessionKey,
+      exact.evidenceCredential,
+    ), false);
+    assert.equal(service.authorizeEvidence(
+      main.leaseId,
+      main.leaseEpoch,
+      exactSessionKey,
+      main.evidenceCredential,
+    ), true);
   });
 });
 
@@ -654,6 +851,7 @@ describe("security and recovery boundaries", () => {
       coverage: "ready",
       finalizerAssurance: "unverified",
       activeLeaseCount: 0,
+      activeLeases: [],
     });
     assert.notEqual(service.authenticateEvidence(root.leaseId, root.evidenceCredential), undefined);
     assert.equal(service.revoke(root.leaseId), true);
@@ -792,6 +990,23 @@ function createLease(
   const policyPack = buildPolicyPack();
   return service.create({
     rootSessionKey,
+    mode: "supervision",
+    policyPack,
+    policyPackDigest: digestJson(policyPack),
+    backendUrl: BACKEND_URL,
+    ttlMs,
+  }).activation;
+}
+
+function createAgentLease(
+  service: ReturnType<typeof createNativeGuardLeaseService>,
+  ttlMs?: number,
+): NativeGuardLeaseActivation {
+  const policyPack = buildPolicyPack();
+  const scope: NativeGuardLeaseScope = { kind: "agent", agentId: "main" };
+  return service.create({
+    rootSessionKey: "agent:main:main",
+    scope,
     mode: "supervision",
     policyPack,
     policyPackDigest: digestJson(policyPack),

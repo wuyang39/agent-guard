@@ -12,6 +12,7 @@ import type {
   NativeGuardEvidenceProof,
   NativeGuardLifecycleAcknowledgement,
   NativeGuardLeaseActivation,
+  NativeGuardLeaseScope,
   NativeGuardMode,
   NativeGuardStatus,
   NativeToolDecisionResponse,
@@ -19,8 +20,11 @@ import type {
 } from "@agent-guard/contracts";
 import {
   digestJson,
+  normalizeNativeGuardLeaseScope,
+  parseCanonicalOpenClawSessionKey,
   signNativeGuardPayload,
   verifyNativeGuardPayload,
+  type NormalizedNativeGuardLeaseScope,
 } from "@agent-guard/native-guard-protocol";
 
 const DEFAULT_TTL_MS = 5 * 60 * 1_000;
@@ -39,6 +43,7 @@ type FailurePolicy = NativeGuardLeaseActivation["failurePolicy"];
 
 export type CreateLeaseInput = {
   rootSessionKey: string;
+  scope?: NativeGuardLeaseScope;
   mode: NativeGuardMode;
   policyPack: SupervisionPolicyPack;
   policyPackDigest: string;
@@ -134,6 +139,8 @@ type StoredLease = {
   leaseId: string;
   leaseEpoch: number;
   rootSessionKey: string;
+  scope: NativeGuardLeaseScope;
+  normalizedScope: NormalizedNativeGuardLeaseScope;
   mode: NativeGuardMode;
   policyPack: SupervisionPolicyPack;
   policyPackDigest: string;
@@ -183,6 +190,7 @@ export function createNativeGuardLeaseService(
   const now = options.now ?? (() => new Date());
   const leases = new Map<string, StoredLease>();
   const sessions = new Map<string, SessionBinding>();
+  const agents = new Map<string, string>();
   const historicalSessions = new Map<string, HistoricalSessionBinding[]>();
 
   function currentTimeMs(): number {
@@ -213,6 +221,12 @@ export function createNativeGuardLeaseService(
 
     lease.leaseEpoch += 1;
     leases.delete(leaseId);
+    if (
+      lease.normalizedScope.kind === "agent" &&
+      agents.get(lease.normalizedScope.agentId) === leaseId
+    ) {
+      agents.delete(lease.normalizedScope.agentId);
+    }
     for (const [sessionKey, binding] of sessions) {
       if (binding.leaseId === leaseId) {
         sessions.delete(sessionKey);
@@ -299,7 +313,7 @@ export function createNativeGuardLeaseService(
       leaseEpoch: lease.leaseEpoch,
       rootSessionKey: lease.rootSessionKey,
       mode: lease.mode,
-      scope: "session_tree",
+      scope: emittedScopeFor(lease),
       policyPackId: lease.policyPack.policyPackId,
       policyPackDigest: lease.policyPackDigest,
       backendUrl: lease.backendUrl,
@@ -322,7 +336,7 @@ export function createNativeGuardLeaseService(
       leaseEpoch: lease.leaseEpoch,
       rootSessionKey: lease.rootSessionKey,
       mode: lease.mode,
-      scope: "session_tree",
+      scope: emittedScopeFor(lease),
       policyPackId: lease.policyPack.policyPackId,
       policyPackDigest: lease.policyPackDigest,
       backendUrl: lease.backendUrl,
@@ -337,6 +351,16 @@ export function createNativeGuardLeaseService(
 
   function evidenceLeaseFor(lease: StoredLease): EvidenceNativeGuardLease {
     return { ...activeLeaseFor(lease), state: lease.phase };
+  }
+
+  function emittedScopeFor(lease: StoredLease): NativeGuardLeaseScope {
+    return typeof lease.scope === "string" ? lease.scope : { ...lease.scope };
+  }
+
+  function matchesAgentScope(lease: StoredLease, sessionKey: string): boolean {
+    if (lease.normalizedScope.kind !== "agent") return false;
+    const parsed = parseCanonicalOpenClawSessionKey(sessionKey);
+    return parsed?.agentId === lease.normalizedScope.agentId;
   }
 
   function verifyEvidenceRequest(
@@ -418,26 +442,27 @@ export function createNativeGuardLeaseService(
 
   function status(): NativeGuardStatus {
     cleanExpired();
-    const activeLeases = [...leases.values()].filter((lease) => lease.phase === "active");
-    const activeLease = activeLeases[0];
+    const activeStoredLeases = [...leases.values()].filter((lease) => lease.phase === "active");
+    const activeLeases = activeStoredLeases.map((lease) => ({
+      leaseId: lease.leaseId,
+      leaseEpoch: lease.leaseEpoch,
+      rootSessionKey: lease.rootSessionKey,
+      scope: emittedScopeFor(lease),
+      mode: lease.mode,
+      policyPackId: lease.policyPack.policyPackId,
+      policyPackDigest: lease.policyPackDigest,
+      expiresAt: new Date(lease.expiresAtMs).toISOString(),
+    }));
+    const activeLease = activeLeases.length === 1 ? activeLeases[0] : undefined;
     return {
-      coverage: activeLease ? "conditional" : "ready",
+      coverage: activeLeases.length > 0 ? "conditional" : "ready",
       finalizerAssurance: "unverified",
       activeLeaseCount: activeLeases.length,
+      activeLeases,
       ...(activeLease
-        ? {
-            activeLease: {
-              leaseId: activeLease.leaseId,
-              leaseEpoch: activeLease.leaseEpoch,
-              rootSessionKey: activeLease.rootSessionKey,
-              mode: activeLease.mode,
-              policyPackId: activeLease.policyPack.policyPackId,
-              policyPackDigest: activeLease.policyPackDigest,
-              expiresAt: new Date(activeLease.expiresAtMs).toISOString(),
-            },
-          }
+        ? { activeLease }
         : {}),
-      ...(activeLease
+      ...(activeLeases.length > 0
         ? { reasonCode: "NATIVE_GUARD_FINALIZER_UNVERIFIED" }
         : {}),
     };
@@ -451,8 +476,21 @@ export function createNativeGuardLeaseService(
       cleanExpired();
       const issuedAtMs = currentTimeMs();
       const ttlMs = validateTtl(input.ttlMs ?? DEFAULT_TTL_MS);
-      if (sessions.has(input.rootSessionKey)) {
+      const normalizedScope = normalizeNativeGuardLeaseScope(
+        input.scope,
+        input.rootSessionKey,
+      );
+      if (
+        normalizedScope.kind === "session" &&
+        sessions.has(normalizedScope.sessionKey)
+      ) {
         throw new Error("Native guard root session is already bound");
+      }
+      if (
+        normalizedScope.kind === "agent" &&
+        agents.has(normalizedScope.agentId)
+      ) {
+        throw new Error("Native guard agent is already bound");
       }
       const policyPack = deepFreeze(structuredClone(input.policyPack));
       if (digestJson(policyPack) !== input.policyPackDigest) {
@@ -471,6 +509,10 @@ export function createNativeGuardLeaseService(
         leaseId,
         leaseEpoch: 1,
         rootSessionKey: input.rootSessionKey,
+        scope: input.scope === undefined || input.scope === "session_tree"
+          ? "session_tree"
+          : normalizedScope,
+        normalizedScope,
         mode: input.mode,
         policyPack,
         policyPackDigest: input.policyPackDigest,
@@ -489,7 +531,15 @@ export function createNativeGuardLeaseService(
         policyExpiresAtMs,
       };
       leases.set(leaseId, lease);
-      sessions.set(input.rootSessionKey, { leaseId, boundEpoch: 1, children: new Set() });
+      if (normalizedScope.kind === "session") {
+        sessions.set(normalizedScope.sessionKey, {
+          leaseId,
+          boundEpoch: 1,
+          children: new Set(),
+        });
+      } else {
+        agents.set(normalizedScope.agentId, leaseId);
+      }
       return {
         activation: activationFor(
           lease,
@@ -671,6 +721,9 @@ export function createNativeGuardLeaseService(
         typeof sessionKey !== "string" ||
         serviceForEvidence(leaseId, credential) === undefined
       ) return false;
+      if (lease.normalizedScope.kind === "agent") {
+        return matchesAgentScope(lease, sessionKey);
+      }
       const live = sessions.get(sessionKey);
       if (
         live?.leaseId === leaseId &&
@@ -685,8 +738,15 @@ export function createNativeGuardLeaseService(
     resolveBySession(sessionKey: string): ActiveNativeGuardLease | undefined {
       cleanExpired();
       const binding = sessions.get(sessionKey);
-      if (!binding) return undefined;
-      const lease = leases.get(binding.leaseId);
+      if (binding) {
+        const lease = leases.get(binding.leaseId);
+        return lease?.phase === "active" ? activeLeaseFor(lease) : undefined;
+      }
+      const parsed = parseCanonicalOpenClawSessionKey(sessionKey);
+      if (!parsed) return undefined;
+      const leaseId = agents.get(parsed.agentId);
+      if (!leaseId) return undefined;
+      const lease = leases.get(leaseId);
       return lease?.phase === "active" ? activeLeaseFor(lease) : undefined;
     },
 
@@ -715,6 +775,11 @@ export function createNativeGuardLeaseService(
         !validSessionKey(input.parentSessionKey) ||
         !validSessionKey(input.childSessionKey)
       ) return false;
+      if (lease.normalizedScope.kind === "agent") {
+        return input.parentSessionKey !== input.childSessionKey &&
+          matchesAgentScope(lease, input.parentSessionKey) &&
+          matchesAgentScope(lease, input.childSessionKey);
+      }
       return bindChildAtEpoch(lease, input.parentSessionKey, input.childSessionKey);
     },
 
@@ -754,6 +819,9 @@ export function createNativeGuardLeaseService(
         input.leaseEpoch !== lease.leaseEpoch ||
         !validSessionKey(input.sessionKey)
       ) return false;
+      if (lease.normalizedScope.kind === "agent") {
+        return lease.phase === "active" && matchesAgentScope(lease, input.sessionKey);
+      }
       if (lease.phase === "root_ended") {
         return input.sessionKey === lease.rootSessionKey &&
           historicalSessions.get(input.sessionKey)?.some((historical) =>

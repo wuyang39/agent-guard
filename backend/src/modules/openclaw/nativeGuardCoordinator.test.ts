@@ -294,6 +294,7 @@ test("returns its exact created lease identity without changing legacy activate"
   const explicit = coordinatorFixture();
   const owned = await explicit.coordinator.activateWithIdentity(supervisionInput());
   assert.equal(owned.leaseId, explicit.activationCalls[0].leaseId);
+  assert.equal(owned.leaseEpoch, explicit.activationCalls[0].leaseEpoch);
   assert.equal(owned.status.activeLease?.leaseId, owned.leaseId);
   assert.equal(explicit.activationCalls.length, 1);
 

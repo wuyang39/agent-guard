@@ -2644,7 +2644,11 @@ test("lazy native runtime delegates explicit activation identity through one coo
         ...coordinatorStub(status),
         async activateWithIdentity() {
           explicitCalls += 1;
-          return { status: structuredClone(status), leaseId: "lease.explicit" };
+          return {
+            status: structuredClone(status),
+            leaseId: "lease.explicit",
+            leaseEpoch: 3,
+          };
         },
       } as never;
     },
@@ -2656,6 +2660,7 @@ test("lazy native runtime delegates explicit activation identity through one coo
   const result = await dependencies.coordinator.activateWithIdentity({} as never);
 
   assert.equal(result.leaseId, "lease.explicit");
+  assert.equal(result.leaseEpoch, 3);
   assert.equal(result.status.coverage, "active");
   assert.equal(factoryCalls, 1);
   assert.equal(explicitCalls, 1);
@@ -2712,6 +2717,7 @@ function coordinatorStub(status: NativeGuardStatus = {
       return {
         status: structuredClone(status),
         leaseId: status.activeLease?.leaseId ?? "lease.stub",
+        leaseEpoch: status.activeLease?.leaseEpoch ?? 1,
       };
     },
     async renew() { return structuredClone(status); },
@@ -2761,7 +2767,7 @@ function createFixture() {
       async activateWithIdentity(input) {
         calls.activate += 1;
         calls.activationInputs.push(input);
-        return { status: readyStatus, leaseId: "lease.fixture" };
+        return { status: readyStatus, leaseId: "lease.fixture", leaseEpoch: 1 };
       },
       async renew(leaseId, ttlMs) {
         calls.renew += 1;

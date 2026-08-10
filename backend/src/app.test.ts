@@ -103,6 +103,7 @@ test("sandbox activation gives cold capability inspection the preflight command 
         assert.equal(capability?.supportsNativeGuard, true);
         return {
           leaseId: "lease-cold-start",
+          leaseEpoch: 1,
           status: { activeLease: { leaseId: "lease-cold-start", leaseEpoch: 1 } },
         } as never;
       },
@@ -162,6 +163,7 @@ test("sandbox activation gives cold Gateway control requests the detection comma
         } as never);
         return {
           leaseId: "lease-cold-control",
+          leaseEpoch: 1,
           status: { activeLease: { leaseId: "lease-cold-control", leaseEpoch: 1 } },
         } as never;
       },
@@ -203,6 +205,7 @@ test("sandbox activation reuses the run-scoped attested capability snapshot", as
         assert.deepEqual(second.conflictingPluginIds, []);
         return {
           leaseId: "lease-cached",
+          leaseEpoch: 1,
           status: { activeLease: { leaseId: "lease-cached", leaseEpoch: 1 } },
         } as never;
       },
@@ -226,6 +229,93 @@ test("sandbox activation reuses the run-scoped attested capability snapshot", as
     runGroupId: "run-cached-capability",
   }), { leaseId: "lease-cached", leaseEpoch: 1 });
   assert.equal(capabilityInspections, 2);
+});
+
+test("sandbox activation returns the coordinator's authoritative lease identity", async () => {
+  const runtimeEventStore = createNativeGuardEventStore();
+  const dependencies = createNativeGuardRouteDependencies({
+    coordinator: {
+      async activateWithIdentity() {
+        return {
+          leaseId: "lease-authoritative",
+          leaseEpoch: 7,
+          status: {
+            coverage: "active",
+            finalizerAssurance: "isolated_profile",
+            activeLeaseCount: 2,
+          },
+        } as never;
+      },
+    } as never,
+    leaseService: {} as never,
+    eventStore: runtimeEventStore,
+    createDecisionService() {
+      return { async decide() { throw new Error("not called"); } };
+    },
+  });
+  const runGuard = createSandboxCoordinatorFactory(dependencies)({
+    gatewayUrl: "http://127.0.0.1:18789",
+    gatewayToken: "sandbox-token",
+    profileEnv: {},
+    capabilitySnapshot: attestedCapability(),
+  });
+
+  assert.deepEqual(await runGuard.activate({
+    rootSessionKey: "agent:sandbox:authoritative",
+    runGroupId: "run-authoritative",
+  }), { leaseId: "lease-authoritative", leaseEpoch: 7 });
+});
+
+test("sandbox activation revokes malformed authoritative identities before rejecting", async (t) => {
+  for (const invalid of [
+    { leaseId: "", leaseEpoch: 1 },
+    { leaseId: "lease-zero-epoch", leaseEpoch: 0 },
+    { leaseId: "lease-fractional-epoch", leaseEpoch: 1.5 },
+  ]) {
+    await t.test(JSON.stringify(invalid), async () => {
+      const revokeLeaseIds: string[] = [];
+      const runtimeEventStore = createNativeGuardEventStore();
+      const dependencies = createNativeGuardRouteDependencies({
+        coordinator: {
+          async activateWithIdentity() {
+            return {
+              ...invalid,
+              status: {
+                coverage: "active",
+                finalizerAssurance: "isolated_profile",
+                activeLeaseCount: 1,
+              },
+            } as never;
+          },
+          async revoke(leaseId: string) {
+            revokeLeaseIds.push(leaseId);
+            if (invalid.leaseEpoch === 1.5) throw new Error("cleanup unavailable");
+            return {} as never;
+          },
+        } as never,
+        leaseService: {} as never,
+        eventStore: runtimeEventStore,
+        createDecisionService() {
+          return { async decide() { throw new Error("not called"); } };
+        },
+      });
+      const runGuard = createSandboxCoordinatorFactory(dependencies)({
+        gatewayUrl: "http://127.0.0.1:18789",
+        gatewayToken: "sandbox-token",
+        profileEnv: {},
+        capabilitySnapshot: attestedCapability(),
+      });
+
+      await assert.rejects(
+        runGuard.activate({
+          rootSessionKey: "agent:sandbox:malformed",
+          runGroupId: "run-malformed",
+        }),
+        { message: "Sandbox guard activation returned an invalid lease identity." },
+      );
+      assert.deepEqual(revokeLeaseIds, [invalid.leaseId]);
+    });
+  }
 });
 
 test("buildApp registers one injected main supervision service and closes it", async () => {

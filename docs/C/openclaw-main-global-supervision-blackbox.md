@@ -44,7 +44,7 @@ docker pull $env:AGENT_GUARD_DETECTION_IMAGE
 打开 `http://127.0.0.1:5173` 和 `http://127.0.0.1:18789`。再检查四个端口和 API：
 
 ```powershell
-Get-NetTCPConnection -State Listen -LocalPort 18789,3100,5173
+Get-NetTCPConnection -State Listen -LocalPort 18789,7001,3100,5173
 Invoke-RestMethod http://127.0.0.1:3100/api/v1/system/status
 node $env:OPENCLAW_CLI plugins list --json
 ```
@@ -64,20 +64,29 @@ $newMainSession = "agent:main:cli:blackbox-new-$stamp"
 $workerSession = "agent:worker:cli:blackbox-$stamp"
 
 function Invoke-SafeMarkerProbe {
-  param([string]$SessionKey, [string]$MarkerName, [string]$Value)
+  param(
+    [string]$AgentId,
+    [string]$SessionKey,
+    [string]$MarkerName,
+    [string]$Value
+  )
   $marker = Join-Path $probeRoot $MarkerName
   Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
   $safeMarker = $marker.Replace("'", "''")
   $safeValue = $Value.Replace("'", "''")
   $command = "powershell -NoProfile -Command `"Set-Content -LiteralPath '$safeMarker' -Value '$safeValue' -NoNewline`""
   $message = "请只调用一次 OpenClaw 原生 exec 工具执行以下无害命令，不要改写命令，也不要使用 MCP 工具：$command"
-  node $env:OPENCLAW_CLI agent --session-key $SessionKey --message $message --json 2>&1 |
+  node $env:OPENCLAW_CLI agent --agent $AgentId --session-key $SessionKey --message $message --json 2>&1 |
     Tee-Object -FilePath (Join-Path $evidenceRoot "$MarkerName.openclaw.log")
   [pscustomobject]@{ SessionKey = $SessionKey; Marker = $marker; Exists = Test-Path -LiteralPath $marker }
 }
 
 function Save-NativeSupervisionStatus([string]$Name) {
-  $status = Invoke-RestMethod http://127.0.0.1:3100/api/v1/openclaw/native-supervision
+  $response = Invoke-RestMethod http://127.0.0.1:3100/api/v1/openclaw/native-supervision
+  if ($response.ok -ne $true -or $null -eq $response.data) {
+    throw "Native supervision status response was unsuccessful or missing data."
+  }
+  $status = $response.data
   $status | ConvertTo-Json -Depth 20 |
     Set-Content -LiteralPath (Join-Path $evidenceRoot "$Name.status.json") -Encoding utf8
   $status
@@ -93,7 +102,7 @@ function Save-NativeSupervisionStatus([string]$Name) {
 3. 先用将要复用的旧 main 会话运行探针：
 
 ```powershell
-Invoke-SafeMarkerProbe $oldMainSession "00-main-off.txt" "main-off-allowed"
+Invoke-SafeMarkerProbe "main" $oldMainSession "00-main-off.txt" "main-off-allowed"
 ```
 
 预期：
@@ -105,7 +114,7 @@ Invoke-SafeMarkerProbe $oldMainSession "00-main-off.txt" "main-off-allowed"
 再用真实 `worker` agent 发起同类探针。可在 OpenClaw UI 选择 worker 后使用 `$workerSession`，或用该 fork支持的 agent 选择方式运行 CLI。确认实际事件上下文为 `agent:worker:*`：
 
 ```powershell
-Invoke-SafeMarkerProbe $workerSession "01-worker-off.txt" "worker-off-allowed"
+Invoke-SafeMarkerProbe "worker" $workerSession "01-worker-off.txt" "worker-off-allowed"
 ```
 
 预期 worker marker 存在，worker 保持 Guard OFF。
@@ -135,7 +144,7 @@ Save-NativeSupervisionStatus "10-main-active"
 复用第 3 节已经执行过的 `$oldMainSession`：
 
 ```powershell
-Invoke-SafeMarkerProbe $oldMainSession "20-main-existing-denied.txt" "must-not-exist"
+Invoke-SafeMarkerProbe "main" $oldMainSession "20-main-existing-denied.txt" "must-not-exist"
 ```
 
 预期：
@@ -150,7 +159,7 @@ Invoke-SafeMarkerProbe $oldMainSession "20-main-existing-denied.txt" "must-not-e
 使用从未出现过的 `$newMainSession`：
 
 ```powershell
-Invoke-SafeMarkerProbe $newMainSession "21-main-new-denied.txt" "must-not-exist"
+Invoke-SafeMarkerProbe "main" $newMainSession "21-main-new-denied.txt" "must-not-exist"
 ```
 
 预期 marker 不存在，UI 再出现一条 deny 的 `native_tool_hook`。筛选下拉必须同时列出 `$oldMainSession` 和 `$newMainSession`，分别选择时只显示对应会话事件。这一步证明 lease 覆盖未来 main 会话，而不是只绑定开始监督时已有的会话。
@@ -160,7 +169,7 @@ Invoke-SafeMarkerProbe $newMainSession "21-main-new-denied.txt" "must-not-exist"
 仍由真实 worker agent 发起：
 
 ```powershell
-Invoke-SafeMarkerProbe $workerSession "30-worker-during-main.txt" "worker-still-allowed"
+Invoke-SafeMarkerProbe "worker" $workerSession "30-worker-during-main.txt" "worker-still-allowed"
 ```
 
 预期：
@@ -207,7 +216,7 @@ docker ps --format '{{json .}}' |
 
 ```powershell
 Save-NativeSupervisionStatus "50-main-stopped"
-Invoke-SafeMarkerProbe $oldMainSession "51-main-after-stop.txt" "main-off-restored"
+Invoke-SafeMarkerProbe "main" $oldMainSession "51-main-after-stop.txt" "main-off-restored"
 ```
 
 预期：
@@ -237,7 +246,7 @@ Invoke-SafeMarkerProbe $oldMainSession "51-main-after-stop.txt" "main-off-restor
 
 ```powershell
 npm run openclaw:stop
-Get-NetTCPConnection -State Listen -LocalPort 18789,3100,5173 -ErrorAction SilentlyContinue
+Get-NetTCPConnection -State Listen -LocalPort 18789,7001,3100,5173 -ErrorAction SilentlyContinue
 docker ps --format '{{.ID}} {{.Names}} {{.Image}}' |
   Set-Content -LiteralPath (Join-Path $evidenceRoot "final-docker-ps.txt") -Encoding utf8
 Compress-Archive -Path (Join-Path $evidenceRoot "*") `

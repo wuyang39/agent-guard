@@ -66,6 +66,7 @@ export type NativeGuardCoordinator = {
   activateWithIdentity(input: ActivateNativeGuardInput): Promise<{
     status: NativeGuardStatus;
     leaseId: string;
+    leaseEpoch: number;
   }>;
   renew(leaseId: string, ttlMs?: number): Promise<NativeGuardStatus>;
   revoke(leaseId: string): Promise<NativeGuardStatus>;
@@ -490,6 +491,7 @@ export function createNativeGuardCoordinator(
   async function activateWithIdentity(input: ActivateNativeGuardInput): Promise<{
     status: NativeGuardStatus;
     leaseId: string;
+    leaseEpoch: number;
   }> {
       const backend = readBackendStatus(options.leaseService);
       if (!backend.available) {
@@ -603,6 +605,7 @@ export function createNativeGuardCoordinator(
           return {
             status: setLastStatus(aggregateManagedStatus()),
             leaseId: activation.leaseId,
+            leaseEpoch: activation.leaseEpoch,
           };
         } catch {
           if (!ownsManagedPhase(leases, managed, "activating")) {

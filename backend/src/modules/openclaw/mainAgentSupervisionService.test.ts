@@ -633,7 +633,11 @@ function createFixture(options: FixtureOptions = {}) {
     async activateWithIdentity(input: Record<string, unknown>) {
       const status = await activate(input);
       assert.ok(activeMain);
-      return { status, leaseId: activeMain.leaseId };
+      return {
+        status,
+        leaseId: activeMain.leaseId,
+        leaseEpoch: activeMain.leaseEpoch,
+      };
     },
     async renew(leaseId: string, ttlMs?: number) {
       renewLeaseIds.push(leaseId);

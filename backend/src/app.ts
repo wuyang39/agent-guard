@@ -97,13 +97,24 @@ export function createSandboxCoordinatorFactory(
         } as Parameters<
           typeof nativeGuardDependencies.coordinator.activateWithIdentity
         >[0]);
-        const lease = activated.status.activeLeases?.find(
-          (candidate) => candidate.leaseId === activated.leaseId,
-        ) ?? (activated.status.activeLease?.leaseId === activated.leaseId
-          ? activated.status.activeLease
-          : undefined);
-        if (!lease) throw new Error("Sandbox guard activation returned no active lease.");
-        return { leaseId: lease.leaseId, leaseEpoch: lease.leaseEpoch };
+        if (
+          !activated.leaseId.trim() ||
+          !Number.isSafeInteger(activated.leaseEpoch) ||
+          activated.leaseEpoch <= 0
+        ) {
+          try {
+            await nativeGuardDependencies.coordinator.revoke(activated.leaseId);
+          } catch {
+            // Preserve the activation identity error after best-effort cleanup.
+          }
+          throw new Error(
+            "Sandbox guard activation returned an invalid lease identity.",
+          );
+        }
+        return {
+          leaseId: activated.leaseId,
+          leaseEpoch: activated.leaseEpoch,
+        };
       },
       revoke: async (leaseId) => {
         await nativeGuardDependencies.coordinator.revoke(leaseId);

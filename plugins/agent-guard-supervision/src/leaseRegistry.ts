@@ -857,7 +857,7 @@ export class LeaseRegistry {
           record.lease,
           record.lease.childSessionKeys.filter((key) => !subtree.has(key)),
         );
-        const queue = record.lifecycleQueue.slice(1);
+        const queue = pruneCoveredLifecycleTail(subtree, record.lifecycleQueue.slice(1));
         const parentByChild = new Map(record.parentByChild);
         for (const key of subtree) parentByChild.delete(key);
         await this.#markerStore.write(markerFromLease(

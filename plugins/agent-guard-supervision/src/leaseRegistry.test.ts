@@ -635,6 +635,49 @@ test("agent session end prunes descendants of an external canonical parent", asy
   assert.equal(await direct.registry.bindChild("lease.1", parentSessionKey, childSessionKey), true);
 });
 
+test("agent session end prunes covered descendant lifecycle tail intents", async () => {
+  const parentSessionKey = "agent:main:dashboard:queued-parent";
+  const childSessionKey = "agent:main:cli:queued-child";
+  const grandchildSessionKey = "agent:main:cli:queued-grandchild";
+  const store = new MemoryMarkerStore();
+  const registry = new LeaseRegistry({ markerStore: store, now: () => new Date(NOW) });
+  await registry.start();
+  await registry.activate(agentActivation());
+  assert.equal(await registry.bindChild("lease.1", parentSessionKey, childSessionKey), true);
+  assert.deepEqual(await registry.prepareSessionEnd(parentSessionKey), {
+    kind: "end_session",
+    sessionKey: parentSessionKey,
+  });
+  assert.equal(await registry.prepareChildBinding(
+    "lease.1",
+    childSessionKey,
+    grandchildSessionKey,
+  ), true);
+  assert.deepEqual(await registry.prepareSessionEnd(childSessionKey), {
+    kind: "end_session",
+    sessionKey: childSessionKey,
+  });
+  assert.equal(store.writes.at(-1)?.lifecycleQueue?.length, 3);
+
+  assert.equal(await registry.completeSessionEnd("lease.1", parentSessionKey), true);
+
+  const persisted = store.writes.at(-1);
+  assert.deepEqual(persisted?.childSessionKeys, []);
+  assert.equal(persisted?.sessionBindings, undefined);
+  assert.equal(persisted?.lifecycleIntent, undefined);
+  assert.equal(persisted?.lifecycleQueue, undefined);
+  assert.equal(await registry.pendingLifecycle("lease.1"), undefined);
+  assert.equal(await registry.completeChildBinding(
+    "lease.1",
+    childSessionKey,
+    grandchildSessionKey,
+  ), false);
+  const active = await registry.lookup("agent:main:dashboard:future");
+  assert.equal(active.state, "active");
+  if (active.state === "active") assert.deepEqual(active.childSessionKeys, []);
+  assert.equal(await registry.bindChild("lease.1", parentSessionKey, childSessionKey), true);
+});
+
 test("agent expiry removes fallback and malformed-main fail-closed state", async () => {
   let now = new Date(NOW);
   const store = new MemoryMarkerStore();

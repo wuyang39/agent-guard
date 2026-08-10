@@ -442,6 +442,10 @@ export class DetectionSandboxManager {
             "The started OpenClaw Gateway did not provide the required live native guard capability.",
           );
         }
+        this.staticCapability = {
+          ...capability,
+          gatewayInstanceId: gatewayAttestation.gatewayInstanceId,
+        };
         this.assertGatewayAlive(launchedGateway, generation, false);
         this.liveValidated = true;
       }, false);

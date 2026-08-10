@@ -1778,13 +1778,41 @@ test("exposes detached capability snapshots only while the live Gateway is valid
   try {
     await manager.start();
     const first = manager.getAttestedCapabilitySnapshot();
-    assert.deepEqual(first, readyCapability());
+    assert.deepEqual(first, {
+      ...readyCapability(),
+      gatewayInstanceId: "gateway.instance.1",
+    });
     first!.conflictingPluginIds.push("mutated-outside-manager");
-    assert.deepEqual(manager.getAttestedCapabilitySnapshot(), readyCapability());
+    assert.deepEqual(manager.getAttestedCapabilitySnapshot(), {
+      ...readyCapability(),
+      gatewayInstanceId: "gateway.instance.1",
+    });
   } finally {
     await manager.cleanup().catch(() => undefined);
   }
   assert.equal(manager.getAttestedCapabilitySnapshot(), undefined);
+});
+
+test("rejects a Gateway instance ID changed after its bootstrap-key signature", async () => {
+  const { runner } = runnerFor();
+  const manager = new DetectionSandboxManager({
+    runGroupId: "run-tampered-gateway-instance",
+    image: `openclaw@sha256:${"a".repeat(64)}`,
+    commandRunner: runner,
+    ...readyGatewayTestOptions(),
+    gatewayAttestationProbe: async (input) => ({
+      ...readyGatewayAttestation(input),
+      gatewayInstanceId: "gateway.instance.tampered",
+    }),
+  });
+
+  await assert.rejects(
+    () => manager.start(),
+    (error: unknown) => error instanceof SandboxPreflightError &&
+      error.code === "OPENCLAW_CAPABILITY_UNAVAILABLE",
+  );
+  assert.equal(manager.getAttestedCapabilitySnapshot(), undefined);
+  await manager.cleanup().catch(() => undefined);
 });
 
 test("production start binds host identity through direct core HTTP and checks plugin status", async () => {

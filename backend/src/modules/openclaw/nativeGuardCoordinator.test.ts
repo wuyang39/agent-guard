@@ -908,8 +908,11 @@ test("does not promote backend conditional status unless plugin and lease identi
   assert.equal(combined.reasonCode, "NATIVE_GUARD_STATUS_MISMATCH");
 });
 
-test("projects a capable idle plugin OFF state as ready", async () => {
-  const fixture = coordinatorFixture();
+test("attests a capable idle host before projecting the plugin OFF state as ready", async () => {
+  const fixture = coordinatorFixture({
+    capability: { ...verifiedCapability(), gatewayInstanceId: undefined },
+    gatewayAttestationPublicKey: generateKeyPairSync("ed25519").publicKey,
+  });
   fixture.pluginStatus = status("off");
 
   const combined = await fixture.coordinator.status();
@@ -917,6 +920,28 @@ test("projects a capable idle plugin OFF state as ready", async () => {
   assert.equal(combined.coverage, "ready");
   assert.equal(combined.activeLeaseCount, 0);
   assert.equal(combined.reasonCode, undefined);
+  assert.equal(combined.gatewayInstanceId, "gateway.instance.test.1");
+  assert.equal(fixture.attestationCalls.length, 1);
+});
+
+test("does not report an idle host ready without a valid signed Gateway attestation", async () => {
+  const missing = coordinatorFixture({
+    capability: { ...verifiedCapability(), gatewayInstanceId: undefined },
+  });
+  missing.pluginStatus = status("off");
+  const missingStatus = await missing.coordinator.status();
+  assert.equal(missingStatus.coverage, "unsupported");
+  assert.equal(missingStatus.reasonCode, "NATIVE_GUARD_CAPABILITY_UNAVAILABLE");
+
+  const invalid = coordinatorFixture({
+    capability: { ...verifiedCapability(), gatewayInstanceId: undefined },
+    gatewayAttestationPublicKey: generateKeyPairSync("ed25519").publicKey,
+    attestationError: new Error("wrong idle attestation key"),
+  });
+  invalid.pluginStatus = status("off");
+  const invalidStatus = await invalid.coordinator.status();
+  assert.equal(invalidStatus.coverage, "unsupported");
+  assert.equal(invalidStatus.reasonCode, "NATIVE_GUARD_CAPABILITY_UNAVAILABLE");
 });
 
 test("reports anomalous backend multiplicity honestly and never promotes it active", async () => {

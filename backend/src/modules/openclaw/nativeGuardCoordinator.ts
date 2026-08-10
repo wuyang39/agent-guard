@@ -150,6 +150,9 @@ export function createNativeGuardCoordinator(
       coverage: "ready",
       finalizerAssurance: capability.finalizerAssurance,
       openclawVersion: capability.openclawVersion,
+      ...(capability.gatewayInstanceId
+        ? { gatewayInstanceId: capability.gatewayInstanceId }
+        : {}),
       activeLeaseCount: 0,
       activeLeases: [],
       conflictingPluginIds: [...capability.conflictingPluginIds],
@@ -853,13 +856,24 @@ export function createNativeGuardCoordinator(
 
       let capability: NativeGuardCapability;
       try {
-        capability = await options.controlClient.inspectCapabilities(options.capabilityInput);
+        capability = await inspectControlCapability(controlContext());
       } catch {
         return setLastStatus({
           coverage: backendStatus.activeLeaseCount > 0 ? "conditional" : "unsupported",
           finalizerAssurance: "unverified",
           activeLeaseCount: backendStatus.activeLeaseCount,
           ...(backendStatus.activeLeases ? { activeLeases: backendStatus.activeLeases } : {}),
+          reasonCode: "NATIVE_GUARD_CAPABILITY_UNAVAILABLE",
+        });
+      }
+      if (!capability.gatewayInstanceId) {
+        return setLastStatus({
+          coverage: backendStatus.activeLeaseCount > 0 ? "conditional" : "unsupported",
+          finalizerAssurance: capability.finalizerAssurance,
+          openclawVersion: capability.openclawVersion,
+          activeLeaseCount: backendStatus.activeLeaseCount,
+          ...(backendStatus.activeLeases ? { activeLeases: backendStatus.activeLeases } : {}),
+          conflictingPluginIds: [...capability.conflictingPluginIds],
           reasonCode: "NATIVE_GUARD_CAPABILITY_UNAVAILABLE",
         });
       }

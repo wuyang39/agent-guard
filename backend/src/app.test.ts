@@ -429,6 +429,29 @@ test("buildApp exchanges a bootstrap token and authenticates native supervision 
   assert.equal(allowedPreflight.statusCode, 204);
   assert.equal(allowedPreflight.headers["access-control-allow-origin"], frontendOrigin);
   assert.equal(allowedPreflight.headers["access-control-allow-credentials"], "true");
+
+  const rejectedSsePreflight = await app.inject({
+    method: "OPTIONS",
+    url: "/api/v1/openclaw/realtime/events/stream",
+    headers: {
+      origin: "https://attacker.example",
+      "access-control-request-method": "GET",
+    },
+  });
+  assert.equal(rejectedSsePreflight.statusCode, 403);
+  assert.equal(rejectedSsePreflight.headers["access-control-allow-origin"], undefined);
+
+  const allowedSsePreflight = await app.inject({
+    method: "OPTIONS",
+    url: "/api/v1/openclaw/realtime/events/stream",
+    headers: {
+      origin: frontendOrigin,
+      "access-control-request-method": "GET",
+    },
+  });
+  assert.equal(allowedSsePreflight.statusCode, 204);
+  assert.equal(allowedSsePreflight.headers["access-control-allow-origin"], frontendOrigin);
+  assert.equal(allowedSsePreflight.headers["access-control-allow-credentials"], "true");
   await app.close();
 });
 

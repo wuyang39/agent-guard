@@ -18,7 +18,10 @@ import { supervisionRoutes } from "./api/v1/supervision/handlers";
 import { askRoutes } from "./api/v1/supervision/ask-handlers";
 import { traceRoutes } from "./api/v1/traces/handlers";
 import { reportRoutes, artifactRoutes, policyRoutes } from "./api/v1/reports/handlers";
-import { openClawRealtimeMcpRoutes } from "./api/v1/openclaw/realtime-mcp-handlers";
+import {
+  isOpenClawRealtimeEventsStreamRequest,
+  openClawRealtimeMcpRoutes,
+} from "./api/v1/openclaw/realtime-mcp-handlers";
 import { runtimeConfigRoutes } from "./api/v1/runtime-config/handlers";
 import { openClawPyritOpenAiRoutes } from "./api/v1/openclaw/pyrit-openai-handlers";
 import {
@@ -222,7 +225,10 @@ export async function buildApp(opts?: {
   app.addHook("onRequest", async (request, reply) => {
     const origin = request.headers.origin;
     if (
-      isNativeSupervisionRequest(request.url) &&
+      (
+        isNativeSupervisionRequest(request.url) ||
+        isOpenClawRealtimeEventsStreamRequest(request.url)
+      ) &&
       !isAllowedNativeSupervisionOrigin(origin, nativeSupervisionAllowedOriginList)
     ) {
       return reply.code(403).send(failure(
@@ -287,7 +293,10 @@ export async function buildApp(opts?: {
   await app.register(reportRoutes);
   await app.register(artifactRoutes);
   await app.register(policyRoutes);
-  await app.register(openClawRealtimeMcpRoutes);
+  await app.register(openClawRealtimeMcpRoutes, {
+    accessService: nativeSupervisionAccessService,
+    allowedOrigins: nativeSupervisionAllowedOriginList,
+  });
   await app.register(runtimeConfigRoutes);
   await app.register(openClawPyritOpenAiRoutes);
   await app.register(openClawNativeSupervisionRoutes, {

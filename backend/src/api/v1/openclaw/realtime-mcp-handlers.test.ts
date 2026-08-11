@@ -1,12 +1,18 @@
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
 import http from "node:http";
+import os from "node:os";
+import path from "node:path";
 import test, { type TestContext } from "node:test";
+import type { NativeGuardEvent } from "@agent-guard/contracts";
 import Fastify from "fastify";
 import type { NativeSupervisionAccessService } from "../../../modules/openclaw/nativeSupervisionAccessService";
+import { createNativeGuardRealtimeBridge } from "../../../modules/openclaw/nativeGuardRealtimeBridge";
 import {
   emitNativeToolHookEvent,
   subscribeRealtimeEvents,
 } from "../../../modules/openclaw/realtimeMcpServer";
+import { createNativeGuardEventStore } from "../../../storage/nativeGuardEventStore";
 import {
   NATIVE_SUPERVISION_CONTROL_COOKIE,
   NATIVE_SUPERVISION_EVENTS_COOKIE,
@@ -90,6 +96,61 @@ test("authorized realtime events echo the exact origin and stream native guard h
   assert.match(response.body, /"runtimeSessionId":"agent:main:cli:sse-auth-test"/);
   assert.match(response.body, /"toolId":"call.sse-auth-test"/);
   assert.match(response.body, /"source":"native_guard"/);
+  assert.equal(fixture.subscribeCalls(), 1);
+});
+
+test("authorized replay projects durable native guard events without raw secrets", async (t) => {
+  const fixture = await startFixture(t);
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "native-sse-replay-"));
+  t.after(() => fs.rm(rootDir, { recursive: true, force: true }));
+  const eventStore = createNativeGuardEventStore({ rootDir });
+  const bridge = createNativeGuardRealtimeBridge({
+    eventStore,
+    emit: emitNativeToolHookEvent,
+  });
+  t.after(() => bridge.close());
+  const durableEvent: NativeGuardEvent = {
+    schemaVersion: "native-guard-1",
+    eventId: "event.sse-replay",
+    type: "decision",
+    leaseId: "lease.sse-replay",
+    leaseEpoch: 3,
+    sessionKey: "agent:main:cli:sse-replay-test",
+    runId: "run.sse-replay",
+    toolCallId: "call.sse-replay",
+    decisionId: "decision.sse-replay",
+    timestamp: "2026-08-11T00:00:00.000Z",
+    detail: {
+      requestId: "request.sse-replay",
+      action: "deny",
+      reasonCode: "policy_deny",
+      targetType: "tool_call",
+      toolName: "exec",
+      paramsDigest: "a".repeat(64),
+      credential: "credential-must-not-replay",
+      token: "token-must-not-replay",
+      params: { command: "secret-command-must-not-replay" },
+    },
+  };
+  assert.equal(await eventStore.append(durableEvent), true);
+
+  const response = await requestUntil(fixture.url.replace("replay=0", "replay=1"), {
+    headers: {
+      origin: ALLOWED_ORIGIN,
+      cookie: `${NATIVE_SUPERVISION_EVENTS_COOKIE}=${EVENT_TOKEN}`,
+    },
+    stopWhen: (body) => body.includes('"toolId":"call.sse-replay"'),
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.match(response.body, /event: native_tool_hook/);
+  assert.match(response.body, /"runtimeSessionId":"agent:main:cli:sse-replay-test"/);
+  assert.match(response.body, /"toolId":"call.sse-replay"/);
+  assert.match(response.body, /"source":"native_guard"/);
+  assert.doesNotMatch(
+    response.body,
+    /credential-must-not-replay|token-must-not-replay|secret-command-must-not-replay|paramsDigest/,
+  );
   assert.equal(fixture.subscribeCalls(), 1);
 });
 

@@ -49,6 +49,11 @@ export async function openClawRealtimeMcpRoutes(
   app: FastifyInstance,
   options: OpenClawRealtimeMcpRouteOptions,
 ): Promise<void> {
+  const activeEventStreams = new Set<() => void>();
+  app.addHook("preClose", async () => {
+    for (const closeStream of [...activeEventStreams]) closeStream();
+  });
+
   app.get(MCP_PATH, async (_request, _reply) => {
     await refreshRealtimeMcpTools();
     const activePolicy = await getRealtimeActivePolicyState();
@@ -269,9 +274,16 @@ export async function openClawRealtimeMcpRoutes(
       { replay: query.replay !== "0" },
     );
 
-    request.raw.on("close", () => {
+    let closed = false;
+    const closeStream = () => {
+      if (closed) return;
+      closed = true;
+      activeEventStreams.delete(closeStream);
       unsubscribe();
-    });
+      if (!reply.raw.destroyed && !reply.raw.writableEnded) reply.raw.end();
+    };
+    activeEventStreams.add(closeStream);
+    request.raw.once("close", closeStream);
   });
 }
 

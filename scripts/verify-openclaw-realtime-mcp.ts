@@ -7,6 +7,13 @@
  */
 
 import { buildApp } from "../backend/src/app";
+import {
+  NATIVE_SUPERVISION_CONTROL_COOKIE,
+  NATIVE_SUPERVISION_EVENTS_COOKIE,
+} from "../backend/src/api/v1/openclaw/native-supervision-handlers";
+
+const BROWSER_ORIGIN = "http://127.0.0.1:5173";
+const UI_BOOTSTRAP_TOKEN = "r".repeat(43);
 
 type ApiResponse<T> = {
   ok: boolean;
@@ -93,6 +100,7 @@ async function callTool(
 async function readEventStreamUntil(
   baseUrl: string,
   pattern: RegExp,
+  eventCookie: string,
 ): Promise<string> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5_000);
@@ -101,7 +109,10 @@ async function readEventStreamUntil(
   try {
     const response = await fetch(
       `${baseUrl}/api/v1/openclaw/realtime/events/stream?replay=1`,
-      { signal: controller.signal },
+      {
+        headers: { origin: BROWSER_ORIGIN, cookie: eventCookie },
+        signal: controller.signal,
+      },
     );
     assert(response.ok, `events stream returned ${response.status}`);
     assert(response.body, "events stream missing body");
@@ -128,11 +139,43 @@ async function readEventStreamUntil(
   return body;
 }
 
+async function mintEventCookie(baseUrl: string): Promise<string> {
+  const bootstrap = await fetch(
+    `${baseUrl}/api/v1/openclaw/native-supervision/access/bootstrap`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: BROWSER_ORIGIN },
+      body: JSON.stringify({ token: UI_BOOTSTRAP_TOKEN }),
+    },
+  );
+  assert(bootstrap.status === 204, `bootstrap exchange returned ${bootstrap.status}`);
+  const controlCookie = readCookiePair(bootstrap, NATIVE_SUPERVISION_CONTROL_COOKIE);
+  const events = await fetch(
+    `${baseUrl}/api/v1/openclaw/native-supervision/access/events`,
+    {
+      method: "POST",
+      headers: { origin: BROWSER_ORIGIN, cookie: controlCookie },
+    },
+  );
+  assert(events.status === 204, `event capability returned ${events.status}`);
+  return readCookiePair(events, NATIVE_SUPERVISION_EVENTS_COOKIE);
+}
+
+function readCookiePair(response: Response, name: string): string {
+  const setCookie = response.headers.get("set-cookie") ?? "";
+  const match = new RegExp(`(?:^|,\\s*)(${name}=[A-Za-z0-9_-]{43})(?:;|$)`).exec(setCookie);
+  assert(match?.[1] !== undefined, `${name} cookie missing`);
+  return match[1];
+}
+
 async function main(): Promise<void> {
   process.env.AGENT_GUARD_ASK_TIMEOUT = "demo_approve";
   process.env.AGENT_GUARD_ASK_TIMEOUT_MS = "50";
 
-  const app = await buildApp({ logger: false });
+  const app = await buildApp({
+    logger: false,
+    nativeSupervisionBootstrapToken: UI_BOOTSTRAP_TOKEN,
+  });
   const baseUrl = await app.listen({ port: 0, host: "127.0.0.1" });
 
   try {
@@ -247,7 +290,12 @@ async function main(): Promise<void> {
     assert((trace.data?.trace.events.length ?? 0) > 0, "trace events missing");
     console.log(`8. trace query ok (events=${trace.data?.trace.events.length})`);
 
-    const streamBody = await readEventStreamUntil(baseUrl, /event: supervision_decision/);
+    const eventCookie = await mintEventCookie(baseUrl);
+    const streamBody = await readEventStreamUntil(
+      baseUrl,
+      /event: supervision_decision/,
+      eventCookie,
+    );
     assert(
       streamBody.includes("event: supervision_decision"),
       "events stream did not replay supervision_decision",

@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test, { type TestContext } from "node:test";
 import type { NativeGuardEvent } from "@agent-guard/contracts";
-import Fastify from "fastify";
+import Fastify, { type FastifyInstance } from "fastify";
 import type { NativeSupervisionAccessService } from "../../../modules/openclaw/nativeSupervisionAccessService";
 import { createNativeGuardRealtimeBridge } from "../../../modules/openclaw/nativeGuardRealtimeBridge";
 import {
@@ -154,18 +154,52 @@ test("authorized replay projects durable native guard events without raw secrets
   assert.equal(fixture.subscribeCalls(), 1);
 });
 
+test("closing Fastify ends active event streams and releases subscriptions", async (t) => {
+  const fixture = await startFixture(t);
+  const controller = new AbortController();
+  const response = await fetch(fixture.url, {
+    headers: {
+      origin: ALLOWED_ORIGIN,
+      cookie: `${NATIVE_SUPERVISION_EVENTS_COOKIE}=${EVENT_TOKEN}`,
+    },
+    signal: controller.signal,
+  });
+  assert.equal(response.status, 200);
+  const firstFrame = await response.body?.getReader().read();
+  assert.equal(firstFrame?.done, false);
+  assert.equal(fixture.subscribeCalls(), 1);
+
+  const closePromise = fixture.app.close();
+  const closedPromptly = await Promise.race([
+    closePromise.then(() => true),
+    new Promise<false>((resolve) => setTimeout(() => resolve(false), 250)),
+  ]);
+  if (!closedPromptly) controller.abort();
+  await closePromise;
+
+  assert.equal(closedPromptly, true);
+  assert.equal(fixture.unsubscribeCalls(), 1);
+});
+
 async function startFixture(t: TestContext): Promise<{
+  app: FastifyInstance;
   url: string;
   subscribeCalls(): number;
+  unsubscribeCalls(): number;
 }> {
   let calls = 0;
+  let releases = 0;
   const app = Fastify({ logger: false });
   await app.register(openClawRealtimeMcpRoutes, {
     accessService: accessServiceFixture(),
     allowedOrigins: [ALLOWED_ORIGIN],
     subscribeEvents(listener, options) {
       calls += 1;
-      return subscribeRealtimeEvents(listener, options);
+      const unsubscribe = subscribeRealtimeEvents(listener, options);
+      return () => {
+        releases += 1;
+        unsubscribe();
+      };
     },
   });
   await app.listen({ host: "127.0.0.1", port: 0 });
@@ -173,8 +207,10 @@ async function startFixture(t: TestContext): Promise<{
   const address = app.server.address();
   assert.ok(address && typeof address === "object");
   return {
+    app,
     url: `http://127.0.0.1:${String(address.port)}/api/v1/openclaw/realtime/events/stream?replay=0`,
     subscribeCalls: () => calls,
+    unsubscribeCalls: () => releases,
   };
 }
 

@@ -162,6 +162,7 @@ test("portable launcher isolates native supervision secrets per child process", 
     assert.match(unprivileged, /"AGENT_GUARD_UI_BOOTSTRAP_TOKEN"\s*=\s*\$null/);
     assert.match(unprivileged, /"AGENT_GUARD_FRONTEND_ORIGIN"\s*=\s*\$null/);
   }
+  assert.doesNotMatch(gatewayStart, /"--token"/);
   for (const noGatewayCredential of [sampleStart, frontendStart]) {
     assert.match(noGatewayCredential, /"OPENCLAW_GATEWAY_TOKEN"\s*=\s*\$null/);
   }
@@ -182,7 +183,7 @@ test("portable launcher keeps the one-time pairing URL out of persisted metadata
   assert.match(source, /\$pairingUrl\s*=\s*"\$\{frontendOrigin\}\/\#agent-guard-bootstrap=\$uiBootstrapToken"/);
   assert.doesNotMatch(planBlock, /uiBootstrapToken|pairingUrl/i);
   assert.doesNotMatch(recordBlock, /uiBootstrapToken|pairingUrl/i);
-  assert.match(source, /if \(\$NoBrowser\) \{[\s\S]*?Write-Host[^\r\n]*\$pairingUrl[\s\S]*?\} else \{[\s\S]*?Start-Process \$pairingUrl/);
+  assert.match(source, /Open-PairingUrl \$pairingUrl \(\[bool\]\$NoBrowser\)/);
 
   const sentinels = {
     OPENCLAW_GATEWAY_TOKEN: "plan-gateway-sentinel",
@@ -380,6 +381,52 @@ $logs = [string]((Get-ChildItem -LiteralPath $logDir -File | ForEach-Object {
   ]) {
     assert.doesNotMatch(logs, new RegExp(secret));
   }
+});
+
+test("browser launch failure prints one pairing URL without failing the launcher", async (t) => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "agent-guard-browser-probe-"));
+  t.after(() => rm(tempRoot, { recursive: true, force: true }));
+  const harnessPath = path.join(tempRoot, "browser-harness.ps1");
+  const pairingUrl = `http://127.0.0.1:5173/#agent-guard-bootstrap=${"b".repeat(43)}`;
+  await writeFile(harnessPath, String.raw`
+param([string]$RepoRoot, [string]$PairingUrl)
+$ErrorActionPreference = "Stop"
+$tokens = $null
+$parseErrors = $null
+$launcherPath = Join-Path $RepoRoot "scripts\start-agent-guard-openclaw.ps1"
+$ast = [System.Management.Automation.Language.Parser]::ParseFile(
+  $launcherPath,
+  [ref]$tokens,
+  [ref]$parseErrors
+)
+if ($parseErrors.Count -gt 0) { throw "Launcher parse failed" }
+$functionAst = $ast.Find({
+  param($node)
+  $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+    $node.Name -eq "Open-PairingUrl"
+}, $true)
+if ($null -eq $functionAst) { throw "Open-PairingUrl was not found" }
+. ([scriptblock]::Create($functionAst.Extent.Text))
+function Start-Process { throw "URL handler is unavailable" }
+Open-PairingUrl $PairingUrl $false
+`, "utf8");
+
+  const result = await execFileAsync(
+    powershell,
+    [
+      "-NoProfile",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      harnessPath,
+      "-RepoRoot",
+      repoRoot,
+      "-PairingUrl",
+      pairingUrl,
+    ],
+    { cwd: repoRoot, windowsHide: true },
+  );
+  assert.equal(result.stdout.split(pairingUrl).length - 1, 1);
 });
 
 test("host launcher creates an exclusive fd3 bootstrap file and preserves normal launches", async (t) => {

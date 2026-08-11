@@ -128,6 +128,19 @@ function Start-NodeService(
   }
 }
 
+function Open-PairingUrl([string]$PairingUrl, [bool]$PrintOnly) {
+  if ($PrintOnly) {
+    Write-Host "Pairing:  $PairingUrl"
+    return
+  }
+  try {
+    Start-Process -FilePath $PairingUrl -ErrorAction Stop | Out-Null
+  } catch {
+    Write-Warning "The browser could not be opened automatically. Open the pairing URL below."
+    Write-Host "Pairing:  $PairingUrl"
+  }
+}
+
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 if (-not $RuntimeRoot) { $RuntimeRoot = Join-Path $repoRoot "outputs" }
 $RuntimeRoot = Resolve-FullPath $RuntimeRoot $repoRoot
@@ -206,7 +219,7 @@ try {
   $gateway = Start-NodeService "gateway" @(
     "--import", "tsx", $guardLauncher, "--",
     "gateway", "run", "--bind", "loopback", "--port", [string]$GatewayPort,
-    "--token", $gatewayToken, "--allow-unconfigured"
+    "--allow-unconfigured"
   ) $repoRoot $logDir @{
     "OPENCLAW_GATEWAY_TOKEN" = $gatewayToken
     "AGENT_GUARD_CONTROL_TOKEN" = $null
@@ -282,8 +295,4 @@ Write-Host "API:      http://127.0.0.1:$ApiPort/api/v1/system/status"
 Write-Host "OpenClaw: http://127.0.0.1:$GatewayPort"
 Write-Host "Logs:     $logDir"
 Write-Host "Stop:     .\scripts\stop-agent-guard-openclaw.ps1 -RuntimeRoot '$RuntimeRoot'"
-if ($NoBrowser) {
-  Write-Host "Pairing:  $pairingUrl"
-} else {
-  Start-Process $pairingUrl
-}
+Open-PairingUrl $pairingUrl ([bool]$NoBrowser)

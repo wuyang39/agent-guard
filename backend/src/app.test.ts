@@ -375,7 +375,7 @@ test("buildApp exchanges a bootstrap token and authenticates native supervision 
     nativeGuardDependencies: appNativeGuardDependencies(),
     mainAgentSupervisionService: appSupervisionService(calls),
     nativeSupervisionBootstrapToken: bootstrapToken,
-    additionalNativeSupervisionAllowedOrigins: [frontendOrigin],
+    nativeSupervisionAllowedOrigins: [frontendOrigin],
   });
 
   const unauthenticated = await app.inject({
@@ -405,6 +405,15 @@ test("buildApp exchanges a bootstrap token and authenticates native supervision 
     headers: { origin: frontendOrigin, cookie },
   });
   assert.equal(authenticated.statusCode, 200);
+  assert.deepEqual(calls, ["status"]);
+
+  const rejectedDefaultOrigin = await app.inject({
+    method: "GET",
+    url: "/api/v1/openclaw/native-supervision",
+    headers: { origin: "http://127.0.0.1:5173", cookie },
+  });
+  assert.equal(rejectedDefaultOrigin.statusCode, 403);
+  assert.equal(rejectedDefaultOrigin.json().error.code, "NATIVE_SUPERVISION_ORIGIN_FORBIDDEN");
   assert.deepEqual(calls, ["status"]);
 
   const rejectedPreflight = await app.inject({

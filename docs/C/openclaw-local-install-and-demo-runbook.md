@@ -66,7 +66,7 @@ Start the supervised OpenClaw Gateway, sample agent, backend, and frontend:
 npm run openclaw:start
 ```
 
-The launcher opens a one-time browser pairing URL after all four services are ready. The fragment is removed from the address bar before the frontend exchanges it for an HttpOnly control cookie. A fresh pairing URL is generated on every launcher start and is never written to the service logs, PID registry, or runtime plan.
+The launcher opens a one-time browser pairing URL after all four services are ready. If Windows cannot open the browser, startup remains successful and the same URL is printed once in the controlling terminal. The fragment is removed from the address bar before the frontend exchanges it for an HttpOnly control cookie. A fresh pairing URL is generated on every launcher start and is never written to the service logs, PID registry, or runtime plan.
 
 For a terminal-only start, print the pairing URL once instead of opening the browser:
 

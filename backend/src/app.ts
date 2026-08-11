@@ -153,7 +153,7 @@ export async function buildApp(opts?: {
   mainAgentSupervisionService?: MainAgentSupervisionService;
   nativeSupervisionAccessService?: NativeSupervisionAccessService;
   nativeSupervisionBootstrapToken?: string;
-  additionalNativeSupervisionAllowedOrigins?: readonly string[];
+  nativeSupervisionAllowedOrigins?: readonly string[];
 }) {
   let nativeGuardDependencies = opts?.nativeGuardDependencies;
   if (!nativeGuardDependencies) {
@@ -176,10 +176,8 @@ export async function buildApp(opts?: {
       bootstrapToken: opts?.nativeSupervisionBootstrapToken ??
         process.env.AGENT_GUARD_UI_BOOTSTRAP_TOKEN ?? randomBytes(32).toString("base64url"),
     });
-  const nativeSupervisionAllowedOrigins = new Set(
-    nativeGuardDependencies.allowedOrigins,
-  );
-  for (const origin of opts?.additionalNativeSupervisionAllowedOrigins ?? []) {
+  const nativeSupervisionAllowedOrigins = new Set<string>();
+  for (const origin of opts?.nativeSupervisionAllowedOrigins ?? nativeGuardDependencies.allowedOrigins) {
     if (isAllowedNativeSupervisionOrigin(origin, [origin])) {
       nativeSupervisionAllowedOrigins.add(origin);
     }

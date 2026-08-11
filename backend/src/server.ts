@@ -62,7 +62,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
   const bootstrap = createNativeSupervisionServerBootstrap(env);
   const app = await buildApp({
     nativeSupervisionBootstrapToken: bootstrap.bootstrapToken,
-    additionalNativeSupervisionAllowedOrigins: bootstrap.pairingOrigin
+    nativeSupervisionAllowedOrigins: bootstrap.pairingOrigin
       ? [bootstrap.pairingOrigin]
       : undefined,
   });

@@ -10,8 +10,10 @@
     "baseUrl": ".",
     "paths": {
       "@agent-guard/contracts": ["packages/contracts/src/index.ts"],
-      "@agent-guard/contracts/*": ["packages/contracts/src/*"]
+      "@agent-guard/contracts/*": ["packages/contracts/src/*"],
+      "@agent-guard/native-guard-protocol": ["packages/native-guard-protocol/src/index.ts"],
+      "@agent-guard/native-guard-protocol/*": ["packages/native-guard-protocol/src/*"]
     }
   },
-  "include": ["backend/src/**/*.ts", "packages/contracts/src/**/*.ts"]
+  "include": ["backend/src/**/*.ts", "packages/contracts/src/**/*.ts", "packages/native-guard-protocol/src/**/*.ts"]
 }

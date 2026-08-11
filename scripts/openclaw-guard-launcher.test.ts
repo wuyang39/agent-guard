@@ -1,0 +1,520 @@
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+import {
+  hasLiveGuardRegistry,
+  inspectGuardedMarkers,
+  runCli,
+  runLiveRegistryCli,
+} from "./openclaw-guard-launcher";
+
+const LAUNCHER = path.resolve("scripts/openclaw-guard-launcher.ts");
+
+test("CLI runner uses the default timeout or an explicit bounded timeout", () => {
+  const timeouts: Array<number | undefined> = [];
+  const spawn = (
+    _command: string,
+    _args: string[],
+    options: { timeout?: number },
+  ) => {
+    timeouts.push(options.timeout);
+    return { status: 0, stdout: "", stderr: "" };
+  };
+
+  runCli(["--version"], process.execPath, { spawn });
+  runCli(["plugins", "list", "--json", "--live"], process.execPath, {
+    spawn,
+    timeoutMs: 120_000,
+  });
+
+  assert.deepEqual(timeouts, [15_000, 120_000]);
+});
+
+test("CLI runner rejects invalid or unbounded timeouts before spawning", () => {
+  let spawnCalls = 0;
+  const spawn = () => {
+    spawnCalls += 1;
+    return { status: 0, stdout: "", stderr: "" };
+  };
+
+  for (const timeoutMs of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 120_001]) {
+    assert.throws(
+      () => runCli(["--version"], process.execPath, { spawn, timeoutMs }),
+      /CLI timeout must be an integer between 1 and 120000 milliseconds/,
+    );
+  }
+  assert.equal(spawnCalls, 0);
+});
+
+test("live registry runner uses the exact contract with the cold-start timeout", () => {
+  const calls: Array<{ args: string[]; timeout: number }> = [];
+  const spawn = (
+    _command: string,
+    args: string[],
+    options: { timeout: number },
+  ) => {
+    calls.push({ args, timeout: options.timeout });
+    return { status: 0, stdout: "{}", stderr: "" };
+  };
+
+  runLiveRegistryCli(process.execPath, { spawn });
+
+  assert.deepEqual(calls, [{
+    args: ["plugins", "list", "--json", "--live"],
+    timeout: 120_000,
+  }]);
+});
+
+function launchGuard(params: {
+  cliPath: string;
+  markerDir: string;
+  homeDir: string;
+  args?: string[];
+  env?: NodeJS.ProcessEnv;
+  timeoutMs?: number;
+}) {
+  return spawnSync(
+    process.execPath,
+    ["--import", "tsx", LAUNCHER, ...(params.args ?? [])],
+    {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        ...params.env,
+        OPENCLAW_CLI: params.cliPath,
+        OPENCLAW_HOME: params.homeDir,
+        AGENT_GUARD_MARKER_DIR: params.markerDir,
+      },
+      encoding: "utf8",
+      shell: false,
+      windowsHide: true,
+      timeout: params.timeoutMs ?? 30_000,
+    },
+  );
+}
+
+async function writeRecordingCli(params: {
+  root: string;
+  callsPath: string;
+  registryOutput?: string;
+  versionOutput?: string;
+}): Promise<string> {
+  const entry = path.join(params.root, "recording-cli.mjs");
+  await writeFile(entry, [
+    "#!/usr/bin/env node",
+    "import fs from 'node:fs';",
+    `const callsPath = ${JSON.stringify(params.callsPath)};`,
+    "const args = process.argv.slice(2);",
+    "fs.appendFileSync(callsPath, `${JSON.stringify(args)}\\n`, 'utf8');",
+    `if (args.join(' ') === 'plugins list --json --live') console.log(${JSON.stringify(params.registryOutput ?? JSON.stringify(liveRegistry()))});`,
+    `else if (args.join(' ') === '--version') console.log(${JSON.stringify(params.versionOutput ?? "OpenClaw 2026.7.2")});`,
+    "else process.exit(Number(process.env.FAKE_GATEWAY_EXIT_CODE ?? '0'));",
+  ].join("\n"), { encoding: "utf8", mode: 0o700 });
+  return entry;
+}
+
+async function readRecordedCalls(callsPath: string): Promise<string[][]> {
+  try {
+    const contents = await readFile(callsPath, "utf8");
+    return contents.trim().split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line) as string[]);
+  } catch (error) {
+    if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") {
+      return [];
+    }
+    throw error;
+  }
+}
+
+test("guarded launcher does not start the child when live registry validation fails", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "openclaw-launcher-invalid-spawn-"));
+  const markerDir = path.join(root, "markers");
+  const callsPath = path.join(root, "calls.jsonl");
+  await mkdir(markerDir, { recursive: true });
+  await writeFile(path.join(markerDir, "lease.json"), "{}", "utf8");
+  const cliPath = await writeRecordingCli({
+    root,
+    callsPath,
+    registryOutput: "{invalid registry",
+  });
+
+  try {
+    const result = launchGuard({
+      cliPath,
+      markerDir,
+      homeDir: root,
+      args: ["--", "gateway", "run", "--port", "18789"],
+    });
+    assert.equal(result.status, 1, result.stderr || result.stdout);
+    assert.deepEqual(await readRecordedCalls(callsPath), [
+      ["plugins", "list", "--json", "--live"],
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("guarded launcher starts the child with exact args and propagates its exit code", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "openclaw-launcher-valid-spawn-"));
+  const markerDir = path.join(root, "markers");
+  const callsPath = path.join(root, "calls.jsonl");
+  await mkdir(markerDir, { recursive: true });
+  await writeFile(path.join(markerDir, "lease.json"), "{}", "utf8");
+  const cliPath = await writeRecordingCli({ root, callsPath });
+
+  try {
+    const result = launchGuard({
+      cliPath,
+      markerDir,
+      homeDir: root,
+      args: ["--", "gateway", "run", "--label", "two words"],
+      env: { FAKE_GATEWAY_EXIT_CODE: "37" },
+    });
+    assert.equal(result.status, 37, result.stderr || result.stdout);
+    assert.deepEqual(await readRecordedCalls(callsPath), [
+      ["plugins", "list", "--json", "--live"],
+      ["--version"],
+      ["gateway", "run", "--label", "two words"],
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("unguarded launcher passes through without registry probes and propagates the child exit code", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "openclaw-launcher-unguarded-spawn-"));
+  const markerDir = path.join(root, "missing-markers");
+  const callsPath = path.join(root, "calls.jsonl");
+  const cliPath = await writeRecordingCli({ root, callsPath });
+
+  try {
+    const result = launchGuard({
+      cliPath,
+      markerDir,
+      homeDir: root,
+      args: ["--", "gateway", "run", "--port", "19001"],
+      env: { FAKE_GATEWAY_EXIT_CODE: "23" },
+    });
+    assert.equal(result.status, 23, result.stderr || result.stdout);
+    assert.deepEqual(await readRecordedCalls(callsPath), [
+      ["gateway", "run", "--port", "19001"],
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("launcher fails closed when no child command follows the separator", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "openclaw-launcher-missing-child-"));
+  const callsPath = path.join(root, "calls.jsonl");
+  const cliPath = await writeRecordingCli({ root, callsPath });
+
+  try {
+    const result = launchGuard({
+      cliPath,
+      markerDir: path.join(root, "missing-markers"),
+      homeDir: root,
+      args: ["--"],
+    });
+    assert.equal(result.status, 2, result.stderr || result.stdout);
+    assert.match(result.stderr, /child command/i);
+    assert.deepEqual(await readRecordedCalls(callsPath), []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("maintenance mode never starts the requested Gateway child", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "openclaw-launcher-maintenance-spawn-"));
+  const markerDir = path.join(root, "markers");
+  const callsPath = path.join(root, "calls.jsonl");
+  await mkdir(markerDir, { recursive: true });
+  await writeFile(path.join(markerDir, "lease.json"), "{}", "utf8");
+  const cliPath = await writeRecordingCli({ root, callsPath });
+
+  try {
+    const result = launchGuard({
+      cliPath,
+      markerDir,
+      homeDir: root,
+      args: ["--maintenance", "--", "gateway", "run"],
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.deepEqual(await readRecordedCalls(callsPath), []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("managed PowerShell startup routes Gateway launch through the guard launcher", async () => {
+  const script = await readFile(path.resolve("scripts/start-agent-guard-openclaw.ps1"), "utf8");
+  assert.match(script, /\$guardLauncher\s*=\s*Join-Path[^\r\n]*openclaw-guard-launcher\.ts/i);
+  assert.match(script, /node[^\r\n]*\$guardLauncher[^\r\n]*--\s+gateway\s+run/i);
+  assert.doesNotMatch(
+    script,
+    /^\s*(?:&\s*)?(?:\.\\openclaw-local\.cmd|\$openClawCli)\s+gateway\s+run\b/im,
+  );
+});
+
+test("marker inventory distinguishes an absent directory from guarded state", () => {
+  const missing = Object.assign(new Error("missing"), { code: "ENOENT" });
+  assert.equal(inspectGuardedMarkers("unused", () => { throw missing; }), "none");
+  assert.equal(inspectGuardedMarkers("unused", () => ["lease.json"]), "guarded");
+  assert.equal(
+    inspectGuardedMarkers("unused", () => ["lease.tmp.json", "lease.corrupt.json"]),
+    "none",
+  );
+});
+
+test("marker inventory fails closed when the directory cannot be read", () => {
+  const denied = Object.assign(new Error("denied"), { code: "EACCES" });
+  assert.throws(
+    () => inspectGuardedMarkers("unused", () => { throw denied; }),
+    /denied/,
+  );
+});
+
+test("launcher rejects boolean-only or version-only live claims", () => {
+  const complete = liveRegistry();
+  assert.equal(
+    hasLiveGuardRegistry(
+      { ...complete, registry: { liveAttestation: true } },
+      "OpenClaw 2026.7.1-agentguard.1",
+    ),
+    false,
+  );
+  assert.equal(
+    hasLiveGuardRegistry(complete, "OpenClaw 2026.7.1-2"),
+    false,
+  );
+});
+
+test("launcher accepts a complete live registry from a compatible build", () => {
+  assert.equal(
+    hasLiveGuardRegistry(liveRegistry(), "OpenClaw 2026.7.1-agentguard.1"),
+    true,
+  );
+  assert.equal(
+    hasLiveGuardRegistry(liveRegistry(), "OpenClaw 2026.7.2"),
+    true,
+  );
+});
+
+test("launcher rejects static inventory and incomplete live contributions", () => {
+  const staticInventory = {
+    registry: {
+      source: "derived",
+      diagnostics: [],
+    },
+    plugins: [{
+      id: "agent-guard-supervision",
+      enabled: true,
+      status: "loaded",
+      hookNames: [],
+      services: [],
+      contracts: { trustedToolPolicies: ["agent-guard-admission"] },
+    }],
+    diagnostics: [],
+  };
+  assert.equal(
+    hasLiveGuardRegistry(staticInventory, "OpenClaw 2026.7.1-agentguard.1"),
+    false,
+  );
+
+  for (const missing of ["hook", "service", "policy", "capability"] as const) {
+    const incomplete = structuredClone(liveRegistry());
+    const plugin = (incomplete.plugins as Array<Record<string, unknown>>)[0];
+    assert.ok(plugin);
+    if (missing === "hook") plugin.hookNames = [];
+    if (missing === "service") plugin.services = [];
+    if (missing === "policy") plugin.trustedToolPolicies = [];
+    if (missing === "capability") {
+      (incomplete.registry as Record<string, unknown>).nativeGuard = null;
+    }
+    assert.equal(
+      hasLiveGuardRegistry(incomplete, "OpenClaw 2026.7.1-agentguard.1"),
+      false,
+      `missing ${missing}`,
+    );
+  }
+});
+
+test("guarded launcher requests the exact live CLI contract", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "openclaw-launcher-live-contract-"));
+  const markerDir = path.join(root, "markers");
+  const entry = path.join(root, "cli.mjs");
+  const callsPath = path.join(root, "calls.txt");
+  await mkdir(markerDir, { recursive: true });
+  await writeFile(path.join(markerDir, "lease.json"), "{}", "utf8");
+  await writeFile(entry, [
+    "#!/usr/bin/env node",
+    "import fs from 'node:fs';",
+    `const callsPath = ${JSON.stringify(callsPath)};`,
+    "const call = process.argv.slice(2).join(' ');",
+    "fs.appendFileSync(callsPath, `${call}\\n`, 'utf8');",
+    "if (call === '--version') console.log('OpenClaw 2026.7.1-agentguard.1');",
+    `else if (call === 'plugins list --json --live') console.log(${JSON.stringify(JSON.stringify(liveRegistry()))});`,
+    "else console.log(JSON.stringify({registry:{source:'derived',diagnostics:[]},plugins:[],diagnostics:[]}));",
+  ].join("\n"), { encoding: "utf8", mode: 0o700 });
+
+  try {
+    const result = launchGuard({
+      cliPath: entry,
+      markerDir,
+      homeDir: root,
+      args: ["--", "gateway", "run"],
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const calls = await readFile(callsPath, "utf8");
+    assert.deepEqual(calls.trim().split(/\r?\n/), [
+      "plugins list --json --live",
+      "--version",
+      "gateway run",
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("launcher fails closed with bounded output when the CLI exceeds maxBuffer", {
+  skip: process.platform !== "win32",
+}, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "openclaw-launcher-buffer-"));
+  const entry = path.join(root, "dist", "cli.js");
+  const wrapper = path.join(root, "openclaw-agentguard.cmd");
+  await mkdir(path.dirname(entry), { recursive: true });
+  await writeFile(
+    entry,
+    "process.stdout.write('x'.repeat(512 * 1024));\n",
+    "utf8",
+  );
+  await writeFile(
+    wrapper,
+    '@echo off\r\nnode "%~dp0dist\\cli.js" %*\r\n',
+    "utf8",
+  );
+
+  try {
+    const result = runCli(["plugins", "list", "--json"], wrapper);
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /output.*limit/i);
+    assert.ok(Buffer.byteLength(result.stderr, "utf8") < 1024);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("launcher run-scoped env overrides Windows wrapper-local defaults", {
+  skip: process.platform !== "win32",
+}, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "openclaw-launcher-env-"));
+  const entry = path.join(root, "dist", "cli.js");
+  const wrapper = path.join(root, "openclaw-agentguard.cmd");
+  const runHome = path.join(root, "isolated-run");
+  await mkdir(path.dirname(entry), { recursive: true });
+  await mkdir(path.join(root, "config"), { recursive: true });
+  await writeFile(path.join(root, "config", "openclaw.json"), "{}", "utf8");
+  await writeFile(
+    entry,
+    "process.stdout.write(JSON.stringify({home:process.env.OPENCLAW_HOME,config:process.env.OPENCLAW_CONFIG_PATH}));\n",
+    "utf8",
+  );
+  await writeFile(
+    wrapper,
+    '@echo off\r\nnode "%~dp0dist\\cli.js" %*\r\n',
+    "utf8",
+  );
+  const previousHome = process.env.OPENCLAW_HOME;
+  const previousConfig = process.env.OPENCLAW_CONFIG_PATH;
+  process.env.OPENCLAW_HOME = runHome;
+  process.env.OPENCLAW_CONFIG_PATH = path.join(runHome, "openclaw.json");
+
+  try {
+    const result = runCli(["plugins", "list", "--json"], wrapper);
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), {
+      home: runHome,
+      config: path.join(runHome, "openclaw.json"),
+    });
+  } finally {
+    if (previousHome === undefined) delete process.env.OPENCLAW_HOME;
+    else process.env.OPENCLAW_HOME = previousHome;
+    if (previousConfig === undefined) delete process.env.OPENCLAW_CONFIG_PATH;
+    else process.env.OPENCLAW_CONFIG_PATH = previousConfig;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("invalid registry JSON is allowed only for maintenance cleanup", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "openclaw-launcher-maintenance-"));
+  const markerDir = path.join(root, "markers");
+  const entry = path.join(root, "cli.mjs");
+  await mkdir(markerDir, { recursive: true });
+  await writeFile(path.join(markerDir, "lease.json"), "{}", "utf8");
+  await writeFile(entry, [
+    "#!/usr/bin/env node",
+    "if (process.argv.includes('--version')) console.log('OpenClaw 2026.7.2');",
+    "else console.log('{invalid registry');",
+  ].join("\n"), { encoding: "utf8", mode: 0o700 });
+  let cliPath = entry;
+  if (process.platform === "win32") {
+    cliPath = path.join(root, "openclaw.cmd");
+    await writeFile(cliPath, '@echo off\r\nnode "%~dp0cli.mjs" %*\r\n', "utf8");
+  }
+  const launch = (args: string[]) => launchGuard({
+    cliPath,
+    markerDir,
+    homeDir: root,
+    args,
+  });
+
+  try {
+    const maintenance = launch(["--maintenance"]);
+    assert.equal(maintenance.status, 0, maintenance.stderr || maintenance.stdout);
+    const normal = launch(["--", "gateway", "run"]);
+    assert.equal(normal.status, 1, normal.stderr || normal.stdout);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+function liveRegistry(): Record<string, unknown> {
+  return {
+    workspaceDir: "C:\\isolated\\workspace",
+    plugins: [{
+      id: "agent-guard-supervision",
+      enabled: true,
+      status: "loaded",
+      activated: true,
+      hookNames: ["before_tool_call"],
+      services: ["agent-guard-runtime"],
+      trustedToolPolicies: ["agent-guard-admission"],
+    }],
+    registry: {
+      contractVersion: "openclaw.plugins.live.v1",
+      liveAttestation: true,
+      nativeGuard: {
+        contractVersion: "native-guard-1",
+        registrarStatus: "live",
+        finalBeforeToolCall: {
+          pluginId: "agent-guard-supervision",
+          exclusive: true,
+        },
+        trustedToolPolicy: {
+          policyId: "agent-guard-admission",
+          exclusive: true,
+        },
+        recoveryService: {
+          serviceId: "agent-guard-runtime",
+          live: true,
+        },
+        postApprovalLeaseRecheck: true,
+        paramsProvenance: "json-only",
+      },
+    },
+    diagnostics: [],
+  };
+}

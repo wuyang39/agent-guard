@@ -9,17 +9,29 @@ import {
 import { DeveloperDetails } from "../../components/ui/DeveloperDetails";
 import { ErrorBlock, LoadingBlock } from "../../components/ui/StateBlock";
 import { agentGuardApi } from "../../lib/api/client";
+import { apiBaseUrl } from "../../lib/api/core";
 import type {
   AskTimeoutConfig,
   DefenseDetailView,
   LiveSupervisionEvent,
+  MainAgentSupervisionStatus,
   PendingSupervisionAsk,
   RealtimeActivePolicyState,
   RealtimePreparedSession,
 } from "../../lib/api/types";
 import { actionLabel, actionTone } from "../../lib/formatters/risk";
 import { formatDateTime } from "../../lib/formatters/time";
-import { shouldDisplayRealtimeEvent } from "../../lib/models/realtime";
+import {
+  addObservedMainSessionKey,
+  createLatestOperationGate,
+  createRealtimeStreamController,
+  shouldDisplayRealtimeEvent,
+} from "../../lib/models/realtime";
+import type {
+  LatestOperationToken,
+  RealtimeEventSource,
+  RealtimeStreamController,
+} from "../../lib/models/realtime";
 
 type LiveSupervisionPageProps = {
   onGoDefense: () => void;
@@ -27,7 +39,7 @@ type LiveSupervisionPageProps = {
   onRealtimeEvent?: (event: LiveSupervisionEvent) => void;
 };
 
-const REALTIME_EVENT_TYPES: LiveSupervisionEvent["type"][] = [
+export const REALTIME_EVENT_TYPES = [
   "active_policy_updated",
   "session_reset",
   "session_created",
@@ -39,9 +51,141 @@ const REALTIME_EVENT_TYPES: LiveSupervisionEvent["type"][] = [
   "supervision_batch_started",
   "supervision_batch_completed",
   "defense_report_generated",
-];
+  "native_tool_hook",
+] as const satisfies readonly LiveSupervisionEvent["type"][];
 
-const REALTIME_MCP_URL = "http://127.0.0.1:3100/api/v1/openclaw/realtime/mcp";
+const REALTIME_MCP_URL = `${apiBaseUrl}/api/v1/openclaw/realtime/mcp`;
+
+export async function startMainSupervision(
+  policyPackId: string,
+  commands: {
+    ensureAccess: () => Promise<void>;
+    mintEventCapability: () => Promise<void>;
+    start: (policyPackId: string) => Promise<MainAgentSupervisionStatus>;
+    openStream: () => void;
+    onListeningError?: (error: unknown) => void;
+  },
+  operation: LatestOperationToken = { isCurrent: () => true },
+): Promise<MainAgentSupervisionStatus> {
+  await commands.ensureAccess();
+  if (!operation.isCurrent()) {
+    throw new Error("Native supervision operation is no longer current.");
+  }
+  await commands.mintEventCapability();
+  if (!operation.isCurrent()) {
+    throw new Error("Native supervision operation is no longer current.");
+  }
+  const status = await commands.start(policyPackId);
+  if (!operation.isCurrent()) return status;
+  if (status.coverage !== "active" || status.mainLeaseCount !== 1) {
+    throw Object.assign(
+      new Error(
+        status.reasonCode ?? status.detail ??
+          `原生监督未激活（coverage=${status.coverage}, mainLeaseCount=${status.mainLeaseCount}）。`,
+      ),
+      { nativeStatus: status },
+    );
+  }
+  try {
+    commands.openStream();
+  } catch (error) {
+    commands.onListeningError?.(error);
+  }
+  return status;
+}
+
+export async function stopMainSupervision(
+  stop: () => Promise<MainAgentSupervisionStatus>,
+): Promise<MainAgentSupervisionStatus> {
+  return stop();
+}
+
+export async function openNativeSupervisionStream(
+  commands: {
+    mintEventCapability: () => Promise<void>;
+    openStream: () => void;
+  },
+  operation: LatestOperationToken = { isCurrent: () => true },
+): Promise<void> {
+  await commands.mintEventCapability();
+  if (operation.isCurrent()) commands.openStream();
+}
+
+export function stopNativeSupervisionStream(
+  closeStream: () => void,
+  invalidatePendingOpen: () => void,
+): void {
+  invalidatePendingOpen();
+  closeStream();
+}
+
+export function nativeStatusFromError(error: unknown): MainAgentSupervisionStatus | undefined {
+  if (!error || typeof error !== "object" || !("nativeStatus" in error)) return undefined;
+  const status = (error as { nativeStatus?: unknown }).nativeStatus;
+  if (!status || typeof status !== "object") return undefined;
+  const candidate = status as Partial<MainAgentSupervisionStatus> & {
+    scope?: { kind?: unknown; agentId?: unknown };
+  };
+  const coverages = new Set([
+    "off",
+    "ready",
+    "active",
+    "recovery",
+    "conditional",
+    "unsupported",
+    "misconfigured",
+  ]);
+  if (
+    !coverages.has(String(candidate.coverage)) ||
+    candidate.scope?.kind !== "agent" ||
+    candidate.scope.agentId !== "main" ||
+    !Number.isInteger(candidate.activeLeaseCount) ||
+    (candidate.mainLeaseCount !== 0 && candidate.mainLeaseCount !== 1) ||
+    !hasOptionalString(candidate.policyPackId) ||
+    !hasOptionalString(candidate.leaseId) ||
+    !(candidate.leaseEpoch === undefined || Number.isInteger(candidate.leaseEpoch)) ||
+    !hasOptionalString(candidate.expiresAt) ||
+    !hasOptionalString(candidate.gatewayInstanceId) ||
+    !hasOptionalString(candidate.reasonCode) ||
+    !hasOptionalString(candidate.detail)
+  ) {
+    return undefined;
+  }
+  return candidate as MainAgentSupervisionStatus;
+}
+
+function hasOptionalString(value: unknown): boolean {
+  return value === undefined || typeof value === "string";
+}
+
+export async function reconcileNativeStatusAfterStartFailure(options: {
+  error: unknown;
+  operation: LatestOperationToken;
+  loadStatus: () => Promise<MainAgentSupervisionStatus>;
+  applyStatus: (status: MainAgentSupervisionStatus) => void;
+  applyError: (message: string) => void;
+}): Promise<void> {
+  if (!options.operation.isCurrent()) return;
+  const errorMessage = options.error instanceof Error
+    ? options.error.message
+    : String(options.error);
+  options.applyError(errorMessage);
+
+  const embeddedStatus = nativeStatusFromError(options.error);
+  if (embeddedStatus) {
+    if (!options.operation.isCurrent()) return;
+    options.applyStatus(embeddedStatus);
+    return;
+  }
+
+  try {
+    const authoritativeStatus = await options.loadStatus();
+    if (!options.operation.isCurrent()) return;
+    options.applyStatus(authoritativeStatus);
+  } catch {
+    // The activation error remains authoritative for the command outcome.
+  }
+}
 
 export function LiveSupervisionPage({
   onGoDefense,
@@ -49,32 +193,113 @@ export function LiveSupervisionPage({
   onRealtimeEvent,
 }: LiveSupervisionPageProps) {
   const [activePolicy, setActivePolicy] = useState<RealtimeActivePolicyState | undefined>();
+  const [nativeStatus, setNativeStatus] = useState<MainAgentSupervisionStatus | undefined>();
   const [preparedSession, setPreparedSession] = useState<RealtimePreparedSession | undefined>();
   const [statusError, setStatusError] = useState<string | undefined>();
+  const [listeningError, setListeningError] = useState<string | undefined>();
   const [events, setEvents] = useState<LiveSupervisionEvent[]>([]);
+  const [observedMainSessionKeys, setObservedMainSessionKeys] =
+    useState<readonly string[]>([]);
+  const [selectedMainSessionId, setSelectedMainSessionId] = useState<string | undefined>();
   const [includeHistory, setIncludeHistory] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [finalizing, setFinalizing] = useState(false);
+  const [nativeCommandPending, setNativeCommandPending] = useState(false);
   const [pendingAsks, setPendingAsks] = useState<PendingSupervisionAsk[]>([]);
   const [askConfig, setAskConfig] = useState<AskTimeoutConfig | undefined>();
   const [respondingAskIds, setRespondingAskIds] = useState<Set<string>>(() => new Set());
-  const sourceRef = useRef<EventSource | undefined>(undefined);
-  const askSourceRef = useRef<EventSource | undefined>(undefined);
+  const mountedRef = useRef(false);
+  const nativeStatusGateRef = useRef(createLatestOperationGate());
+  const streamOpenGateRef = useRef(createLatestOperationGate());
+  const onRealtimeEventRef = useRef(onRealtimeEvent);
+  const streamControllerRef = useRef<RealtimeStreamController | undefined>(undefined);
+  onRealtimeEventRef.current = onRealtimeEvent;
+
+  if (!streamControllerRef.current) {
+    streamControllerRef.current = createRealtimeStreamController({
+      eventTypes: REALTIME_EVENT_TYPES,
+      createEventSource(url, init) {
+        const source = init?.withCredentials
+          ? new EventSource(url, { withCredentials: true })
+          : new EventSource(url);
+        return source as unknown as RealtimeEventSource;
+      },
+      onEvent: acceptStreamEvent,
+      onAskConfig: setAskConfig,
+      onAskDecision(ask) {
+        setPendingAsks((current) =>
+          upsertAsk(current, ask).filter((item) => item.status === "pending"),
+        );
+      },
+      onAskResolved(ask) {
+        setPendingAsks((current) =>
+          upsertAsk(current, ask).filter((item) => item.status === "pending"),
+        );
+        setRespondingAskIds((current) => {
+          const next = new Set(current);
+          next.delete(ask.askId);
+          return next;
+        });
+      },
+      onError: acceptStreamError,
+      onStreamingChange(nextStreaming) {
+        if (mountedRef.current) setStreaming(nextStreaming);
+      },
+    });
+  }
 
   useEffect(() => {
-    void refreshActivePolicy();
+    mountedRef.current = true;
+    nativeStatusGateRef.current.mount();
+    streamOpenGateRef.current.mount();
+    void refreshSupervisionStatus();
     void prepareSession();
     return () => {
-      sourceRef.current?.close();
-      askSourceRef.current?.close();
+      mountedRef.current = false;
+      nativeStatusGateRef.current.dispose();
+      streamOpenGateRef.current.dispose();
+      streamControllerRef.current?.close();
     };
   }, []);
+
+  async function refreshSupervisionStatus() {
+    const operation = nativeStatusGateRef.current.begin();
+    setStatusError(undefined);
+    try {
+      const [nextActivePolicy, nextNativeStatus] = await Promise.all([
+        agentGuardApi.activeRealtimePolicy(),
+        agentGuardApi.nativeSupervisionStatus(),
+      ]);
+      if (!operation.isCurrent()) return;
+      setActivePolicy(nextActivePolicy);
+      setNativeStatus(nextNativeStatus);
+    } catch (error) {
+      if (!operation.isCurrent()) return;
+      setStatusError(error instanceof Error ? error.message : String(error));
+    }
+  }
 
   async function refreshActivePolicy() {
     setStatusError(undefined);
     try {
-      setActivePolicy(await agentGuardApi.activeRealtimePolicy());
+      const policy = await agentGuardApi.activeRealtimePolicy();
+      if (!mountedRef.current) return;
+      setActivePolicy(policy);
     } catch (error) {
+      if (!mountedRef.current) return;
+      setStatusError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function refreshNativeSupervisionStatus() {
+    const operation = nativeStatusGateRef.current.begin();
+    setStatusError(undefined);
+    try {
+      const status = await agentGuardApi.nativeSupervisionStatus();
+      if (!operation.isCurrent()) return;
+      setNativeStatus(status);
+    } catch (error) {
+      if (!operation.isCurrent()) return;
       setStatusError(error instanceof Error ? error.message : String(error));
     }
   }
@@ -82,8 +307,11 @@ export function LiveSupervisionPage({
   async function prepareSession(policyPackId?: string) {
     setStatusError(undefined);
     try {
-      setPreparedSession(await agentGuardApi.createRealtimeSession(policyPackId));
+      const session = await agentGuardApi.createRealtimeSession(policyPackId);
+      if (!mountedRef.current) return;
+      setPreparedSession(session);
     } catch (error) {
+      if (!mountedRef.current) return;
       setStatusError(error instanceof Error ? error.message : String(error));
     }
   }
@@ -91,121 +319,154 @@ export function LiveSupervisionPage({
   async function resetSession() {
     setStatusError(undefined);
     try {
-      sourceRef.current?.close();
-      askSourceRef.current?.close();
-      setStreaming(false);
+      streamControllerRef.current?.close();
       if (preparedSession) {
         await agentGuardApi.resetRealtimeSessions(preparedSession.runtimeSessionId);
+        if (!mountedRef.current) return;
       }
-      setPreparedSession(
-        await agentGuardApi.createRealtimeSession(activePolicy?.resolvedPolicyPackId),
+      const session = await agentGuardApi.createRealtimeSession(
+        activePolicy?.resolvedPolicyPackId,
       );
+      if (!mountedRef.current) return;
+      setPreparedSession(session);
       setEvents([]);
       setPendingAsks([]);
+      setObservedMainSessionKeys([]);
+      setSelectedMainSessionId(undefined);
       await refreshActivePolicy();
     } catch (error) {
+      if (!mountedRef.current) return;
       setStatusError(error instanceof Error ? error.message : String(error));
     }
   }
 
-  function startStream() {
-    openStream(includeHistory);
+  async function startStream() {
+    const operation = streamOpenGateRef.current.begin();
+    setListeningError(undefined);
+    try {
+      await openNativeSupervisionStream({
+        mintEventCapability: agentGuardApi.issueNativeSupervisionEventCapability,
+        openStream: () => openStream(includeHistory),
+      }, operation);
+    } catch (error) {
+      if (!operation.isCurrent()) return;
+      setListeningError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function startSupervision() {
+    if (!activePolicy) return;
+    const operation = nativeStatusGateRef.current.begin();
+    const streamOperation = streamOpenGateRef.current.begin();
+    setNativeCommandPending(true);
+    setStatusError(undefined);
+    setListeningError(undefined);
+    try {
+      const status = await startMainSupervision(activePolicy.resolvedPolicyPackId, {
+        ensureAccess: agentGuardApi.ensureNativeSupervisionAccess,
+        mintEventCapability: agentGuardApi.issueNativeSupervisionEventCapability,
+        start: agentGuardApi.startNativeSupervision,
+        openStream: () => {
+          if (streamOperation.isCurrent()) openStream(includeHistory);
+        },
+        onListeningError(error) {
+          if (!operation.isCurrent()) return;
+          setListeningError(error instanceof Error ? error.message : String(error));
+        },
+      }, operation);
+      if (!operation.isCurrent()) return;
+      setNativeStatus(status);
+    } catch (error) {
+      if (!operation.isCurrent()) return;
+      await reconcileNativeStatusAfterStartFailure({
+        error,
+        operation,
+        loadStatus: agentGuardApi.nativeSupervisionStatus,
+        applyStatus: setNativeStatus,
+        applyError: setStatusError,
+      });
+    } finally {
+      if (operation.isCurrent()) setNativeCommandPending(false);
+    }
+  }
+
+  async function stopSupervision() {
+    const operation = nativeStatusGateRef.current.begin();
+    setNativeCommandPending(true);
+    setStatusError(undefined);
+    try {
+      const status = await stopMainSupervision(agentGuardApi.stopNativeSupervision);
+      if (!operation.isCurrent()) return;
+      setNativeStatus(status);
+    } catch (error) {
+      if (!operation.isCurrent()) return;
+      setStatusError(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (operation.isCurrent()) setNativeCommandPending(false);
+    }
   }
 
   function openStream(nextIncludeHistory: boolean) {
-    sourceRef.current?.close();
-    askSourceRef.current?.close();
     setEvents([]);
     setPendingAsks([]);
-    setStreaming(true);
     const runtimeSessionId = preparedSession?.runtimeSessionId;
-    const source = new EventSource(
-      agentGuardApi.liveSupervisionUrl({ includeHistory: nextIncludeHistory }),
-    );
-    sourceRef.current = source;
+    streamControllerRef.current?.open({
+      mainUrl: agentGuardApi.liveSupervisionUrl({ includeHistory: nextIncludeHistory }),
+      askUrl: agentGuardApi.supervisionAskStreamUrl({ sessionId: runtimeSessionId }),
+      runtimeSessionId,
+      includeHistory: nextIncludeHistory,
+    });
+  }
 
-    for (const eventType of REALTIME_EVENT_TYPES) {
-      source.addEventListener(eventType, (message) => {
-        const event = JSON.parse((message as MessageEvent).data) as LiveSupervisionEvent;
-        if (!shouldDisplayRealtimeEvent(event, runtimeSessionId, nextIncludeHistory)) {
-          return;
-        }
-        setEvents((current) => [...current, event]);
-        if (!nextIncludeHistory) {
-          onRealtimeEvent?.(event);
-        }
-        if (event.type === "active_policy_updated") {
-          void refreshActivePolicy();
-        }
-      });
+  function acceptStreamEvent(
+    event: LiveSupervisionEvent,
+    context: { runtimeSessionId: string | undefined; includeHistory: boolean },
+  ) {
+    if (event.type === "native_tool_hook") {
+      setObservedMainSessionKeys((current) => addObservedMainSessionKey(current, event));
     }
-
-    source.onerror = () => {
-      const errorEvent: LiveSupervisionEvent = {
-        timestamp: new Date().toISOString(),
-        type: "live_error",
-        message: "实时事件连接失败。",
-      };
-      setEvents((current) => [...current, errorEvent]);
-      onRealtimeEvent?.(errorEvent);
-      setStreaming(false);
-      source.close();
-    };
-
-    openAskStream(runtimeSessionId);
+    if (!shouldDisplayRealtimeEvent(
+      event,
+      context.runtimeSessionId,
+      context.includeHistory,
+    )) return;
+    setEvents((current) => [...current, event]);
+    if (!context.includeHistory) onRealtimeEventRef.current?.(event);
+    if (event.type === "active_policy_updated") void refreshActivePolicy();
   }
 
-  function openAskStream(runtimeSessionId: string | undefined) {
-    askSourceRef.current?.close();
-    const source = new EventSource(
-      agentGuardApi.supervisionAskStreamUrl({ sessionId: runtimeSessionId }),
-    );
-    askSourceRef.current = source;
-
-    source.addEventListener("config", (message) => {
-      setAskConfig(JSON.parse((message as MessageEvent).data) as AskTimeoutConfig);
-    });
-
-    source.addEventListener("ask_decision", (message) => {
-      const ask = JSON.parse((message as MessageEvent).data) as PendingSupervisionAsk;
-      setPendingAsks((current) => upsertAsk(current, ask).filter((item) => item.status === "pending"));
-    });
-
-    source.addEventListener("ask_resolved", (message) => {
-      const ask = JSON.parse((message as MessageEvent).data) as PendingSupervisionAsk;
-      setPendingAsks((current) =>
-        upsertAsk(current, ask).filter((item) => item.status === "pending"),
-      );
-      setRespondingAskIds((current) => {
-        const next = new Set(current);
-        next.delete(ask.askId);
-        return next;
-      });
-    });
-
-    source.onerror = () => {
-      const errorEvent: LiveSupervisionEvent = {
-        timestamp: new Date().toISOString(),
-        type: "live_error",
-        message: "Ask 确认通道连接失败。",
-      };
-      setEvents((current) => [...current, errorEvent]);
-      onRealtimeEvent?.(errorEvent);
-      source.close();
+  function acceptStreamError(message: string) {
+    const errorEvent: LiveSupervisionEvent = {
+      timestamp: new Date().toISOString(),
+      type: "live_error",
+      message,
     };
+    setEvents((current) => [...current, errorEvent]);
+    setListeningError(message);
+    onRealtimeEventRef.current?.(errorEvent);
   }
 
-  function changeStreamMode(nextIncludeHistory: boolean) {
+  async function changeStreamMode(nextIncludeHistory: boolean) {
     setIncludeHistory(nextIncludeHistory);
     if (streaming) {
-      openStream(nextIncludeHistory);
+      const operation = streamOpenGateRef.current.begin();
+      try {
+        await openNativeSupervisionStream({
+          mintEventCapability: agentGuardApi.issueNativeSupervisionEventCapability,
+          openStream: () => openStream(nextIncludeHistory),
+        }, operation);
+      } catch (error) {
+        if (!operation.isCurrent()) return;
+        setListeningError(error instanceof Error ? error.message : String(error));
+      }
     }
   }
 
   function stopStream() {
-    sourceRef.current?.close();
-    askSourceRef.current?.close();
-    setStreaming(false);
+    stopNativeSupervisionStream(
+      () => streamControllerRef.current?.close(),
+      () => streamOpenGateRef.current.invalidate(),
+    );
   }
 
   async function respondAsk(askId: string, decision: "approve" | "reject") {
@@ -213,10 +474,12 @@ export function LiveSupervisionPage({
     setStatusError(undefined);
     try {
       const resolved = await agentGuardApi.respondSupervisionAsk(askId, decision);
+      if (!mountedRef.current) return;
       setPendingAsks((current) =>
         upsertAsk(current, resolved).filter((item) => item.status === "pending"),
       );
     } catch (error) {
+      if (!mountedRef.current) return;
       setStatusError(error instanceof Error ? error.message : String(error));
       setRespondingAskIds((current) => {
         const next = new Set(current);
@@ -231,27 +494,38 @@ export function LiveSupervisionPage({
     setStatusError(undefined);
     try {
       const session = preparedSession ?? await agentGuardApi.createRealtimeSession(activePolicy?.resolvedPolicyPackId);
+      if (!mountedRef.current) return;
       setPreparedSession(session);
       const detail = await agentGuardApi.finalizeRealtimeDefenseReport(session.runtimeSessionId);
+      if (!mountedRef.current) return;
       onReportGenerated(detail);
       onGoDefense();
     } catch (error) {
+      if (!mountedRef.current) return;
       setStatusError(error instanceof Error ? error.message : String(error));
     } finally {
-      setFinalizing(false);
+      if (mountedRef.current) setFinalizing(false);
     }
   }
 
-  if (!activePolicy && !statusError) {
-    return <LoadingBlock message="正在读取 OpenClaw realtime MCP 监督状态..." />;
+  if ((!activePolicy || !nativeStatus) && !statusError) {
+    return <LoadingBlock message="正在读取 OpenClaw realtime MCP 与原生监督状态..." />;
   }
 
-  const decisionEvents = events.filter((event) => event.type === "supervision_decision");
+  const visibleEvents = events.filter((event) =>
+    shouldDisplayRealtimeEvent(
+      event,
+      preparedSession?.runtimeSessionId,
+      includeHistory,
+      selectedMainSessionId,
+    ),
+  );
+  const decisionEvents = visibleEvents.filter((event) => event.type === "supervision_decision");
   const denyCount = decisionEvents.filter((event) => event.action === "deny").length;
   const redactCount = decisionEvents.filter((event) => event.action === "redact").length;
   const askCount = decisionEvents.filter((event) => event.action === "ask").length;
   const allowCount = decisionEvents.filter((event) => event.action === "allow").length;
-  const newestEvents = [...events].reverse();
+  const newestEvents = [...visibleEvents].reverse();
 
   return (
     <div className="page-stack fill-page supervision-page">
@@ -261,9 +535,6 @@ export function LiveSupervisionPage({
           <h1>实时监督</h1>
         </div>
         <div className="hero-actions">
-          <button className="primary-button hero-button" onClick={streaming ? stopStream : startStream}>
-            {streaming ? "停止监听" : "监听实时事件"}
-          </button>
           <button className="primary-button" disabled={finalizing} onClick={finalizeReport}>
             {finalizing ? "生成中..." : "生成防御报告"}
           </button>
@@ -271,6 +542,20 @@ export function LiveSupervisionPage({
       </section>
 
       {statusError ? <ErrorBlock title="实时监督状态读取失败" message={statusError} /> : null}
+      {listeningError ? <ErrorBlock title="实时监听失败" message={listeningError} /> : null}
+
+      {nativeStatus ? (
+        <MainSupervisionStatusPanel
+          commandPending={nativeCommandPending}
+          onRefresh={() => void refreshNativeSupervisionStatus()}
+          onStart={() => void startSupervision()}
+          onStartListening={startStream}
+          onStop={() => void stopSupervision()}
+          onStopListening={stopStream}
+          status={nativeStatus}
+          streaming={streaming}
+        />
+      ) : null}
 
       <section className="workspace-grid supervision-workspace">
         <div className="workspace-main panel grow-panel event-console">
@@ -279,6 +564,20 @@ export function LiveSupervisionPage({
               <h2>实时事件流</h2>
             </div>
             <div className="event-toolbar">
+              <label className="field event-session-filter">
+                <span>原生 main 会话</span>
+                <select
+                  onChange={(event) =>
+                    setSelectedMainSessionId(event.target.value || undefined)
+                  }
+                  value={selectedMainSessionId ?? ""}
+                >
+                  <option value="">全部 main 会话</option>
+                  {observedMainSessionKeys.map((sessionKey) => (
+                    <option key={sessionKey} value={sessionKey}>{sessionKey}</option>
+                  ))}
+                </select>
+              </label>
               <div className="segmented-control" aria-label="实时事件范围">
                 <button
                   className={!includeHistory ? "active" : ""}
@@ -298,13 +597,13 @@ export function LiveSupervisionPage({
             </div>
           </div>
           <div className="event-list">
-            {events.length ? (
+            {visibleEvents.length ? (
               newestEvents.map((event, index) => (
                 <article
                   className={`event-row ${eventRowClass(event)}`}
                   key={`${event.eventId ?? event.timestamp}-${index}`}
                 >
-                  <div className="event-index">{events.length - index}</div>
+                  <div className="event-index">{visibleEvents.length - index}</div>
                   <div className="event-body">
                     <div className="event-title">
                       <strong>{eventTitle(event)}</strong>
@@ -447,6 +746,106 @@ export function LiveSupervisionPage({
   );
 }
 
+export function MainSupervisionStatusPanel({
+  status,
+  commandPending,
+  streaming,
+  onStart,
+  onStop,
+  onRefresh,
+  onStartListening,
+  onStopListening,
+}: {
+  status: MainAgentSupervisionStatus;
+  commandPending: boolean;
+  streaming: boolean;
+  onStart: () => void;
+  onStop: () => void;
+  onRefresh: () => void;
+  onStartListening: () => void;
+  onStopListening: () => void;
+}) {
+  return (
+    <section className="panel native-supervision-status" aria-label="main Agent 原生监督状态">
+      <div className="section-header compact">
+        <div>
+          <h2>main Agent 原生工具监督</h2>
+          <p className="muted">固定范围：main Agent 全部当前/未来会话</p>
+        </div>
+        <Badge tone={nativeCoverageTone(status.coverage)}>{status.coverage}</Badge>
+      </div>
+
+      <div className="id-grid native-supervision-grid">
+        <div><span>Policy pack</span><code>{status.policyPackId ?? "未绑定"}</code></div>
+        <div><span>mainLeaseCount</span><code>{status.mainLeaseCount}</code></div>
+        <div><span>activeLeaseCount</span><code>{status.activeLeaseCount}</code></div>
+        <div><span>Gateway instance</span><code>{status.gatewayInstanceId ?? "未知"}</code></div>
+        <div><span>到期时间</span><code>{status.expiresAt ?? "无"}</code></div>
+      </div>
+
+      {status.reasonCode || status.detail ? (
+        <div className="native-supervision-fault" role="status">
+          {status.reasonCode ? <strong>{status.reasonCode}</strong> : null}
+          {status.detail ? <p>{status.detail}</p> : null}
+        </div>
+      ) : null}
+
+      <div className="button-row native-supervision-actions">
+        <button
+          className="primary-button"
+          disabled={commandPending}
+          onClick={onStart}
+          type="button"
+        >
+          {commandPending ? "处理中..." : "开始监督"}
+        </button>
+        <button
+          className="secondary-button"
+          disabled={commandPending}
+          onClick={onStop}
+          type="button"
+        >
+          停止监督
+        </button>
+        <button
+          className="secondary-button"
+          disabled={commandPending}
+          onClick={onRefresh}
+          type="button"
+        >
+          刷新监督
+        </button>
+        {streaming ? (
+          <button
+            className="secondary-button"
+            disabled={commandPending}
+            onClick={onStopListening}
+            type="button"
+          >
+            停止监听
+          </button>
+        ) : (
+          <button
+            className="secondary-button"
+            disabled={commandPending}
+            onClick={onStartListening}
+            type="button"
+          >
+            监听事件
+          </button>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function nativeCoverageTone(coverage: MainAgentSupervisionStatus["coverage"]): string {
+  if (coverage === "active") return "tone-low";
+  if (coverage === "conditional" || coverage === "recovery") return "tone-high";
+  if (coverage === "off" || coverage === "ready") return "tone-neutral";
+  return "tone-critical";
+}
+
 function upsertAsk(
   current: PendingSupervisionAsk[],
   nextAsk: PendingSupervisionAsk,
@@ -568,6 +967,7 @@ function eventTypeLabel(type: LiveSupervisionEvent["type"]): string {
     supervision_batch_started: "批量测试开始",
     supervision_batch_completed: "批量测试完成",
     defense_report_generated: "防御报告已生成",
+    native_tool_hook: "原生工具 Hook",
     live_error: "实时连接错误",
   };
   return labels[type];

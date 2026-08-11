@@ -18,6 +18,23 @@ export type AgentRunMeta = {
   agentId: string;
 };
 
+export type NativeGuardReconciliationSummary = {
+  reconciled: boolean;
+  coverageBreachCount: number;
+  mismatchCount: number;
+};
+
+export type AgentNativeGuardRuntimeEvidence = {
+  sessionKey?: string;
+  leaseId?: string;
+  leaseEpoch?: number;
+  nativeGuardEvents: import("@agent-guard/contracts").NativeGuardEvent[];
+  supervisionRecords: import("@agent-guard/contracts").RuntimeSupervisionRecord[];
+  reconciliation?: NativeGuardReconciliationSummary;
+  revokeError?: string;
+  evidenceError?: string;
+};
+
 export type AgentSession = {
   agent: AgentUnderTest;
   config: AgentAdapterConfig;
@@ -27,6 +44,10 @@ export type AgentSession = {
     runMeta?: AgentRunMeta,
   ): Promise<AgentRunResult>;
   close?(): Promise<void>;
+  /** Task 12-14: Drain runtime evidence from native guard events after a run.
+   *  Returns real Hook events, supervision records, reconciliation status,
+   *  and any revoke error for persistence in the run group. */
+  drainRuntimeEvidence?(): Promise<AgentNativeGuardRuntimeEvidence>;
 };
 
 export type AgentAdapter = {

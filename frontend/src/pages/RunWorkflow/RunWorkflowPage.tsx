@@ -17,6 +17,11 @@ import {
   runPhaseTone,
 } from "../../lib/formatters/run";
 import { formatDateTime } from "../../lib/formatters/time";
+import {
+  MAX_SELECTION_CASE_COUNT,
+  MIN_SELECTION_CASE_COUNT,
+  SELECTION_CASE_COUNT_PRESETS,
+} from "../../selectionDefaults";
 
 type RunWorkflowPageProps = {
   summaryState: LoadState<CLineDashboardSummary>;
@@ -97,8 +102,8 @@ export function RunWorkflowPage({
                 <span>LLM 选样数量</span>
                 <input
                   disabled={busy}
-                  max={500}
-                  min={3}
+                  max={MAX_SELECTION_CASE_COUNT}
+                  min={MIN_SELECTION_CASE_COUNT}
                   onChange={(event) =>
                     onSelectionCaseCountChange(Number(event.target.value))
                   }
@@ -108,7 +113,7 @@ export function RunWorkflowPage({
                 />
               </label>
               <div className="button-row sample-count-presets">
-                {[10, 30, 120, 300].map((count) => (
+                {SELECTION_CASE_COUNT_PRESETS.map((count) => (
                   <button
                     className={
                       selectionCaseCount === count

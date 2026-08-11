@@ -1,7 +1,16 @@
-const { app, BrowserWindow, dialog, shell } = require("electron");
+const { app, BrowserWindow, dialog, session, shell } = require("electron");
+const { randomBytes } = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
+const { pathToFileURL } = require("node:url");
+const {
+  isExternalHttpUrl,
+  isTrustedRendererUrl,
+  normalizeElectronRequestDetails,
+  probeApiOwnership,
+  withControlTokenHeaders,
+} = require("./control-plane-security.cjs");
 
 const API_PORT = process.env.API_PORT || "3100";
 const SAMPLE_PORT = process.env.SAMPLE_AGENT_PORT || process.env.DEMO_SAMPLE_PORT || "7001";
@@ -11,12 +20,18 @@ const FRONTEND_BASE = `http://127.0.0.1:${FRONTEND_PORT}`;
 const HEALTH_TIMEOUT_MS = 45000;
 const POLL_INTERVAL_MS = 450;
 const PRODUCT_NAME = "AgentSleuth";
+const CONTROL_TOKEN = process.env.AGENT_GUARD_CONTROL_TOKEN || randomBytes(32).toString("base64url");
+const UI_PARTITION = "agent-guard-ui";
 
 const isDev = !app.isPackaged || process.env.AGENT_GUARD_DESKTOP_DEV === "1";
 const appRoot = app.isPackaged ? app.getAppPath() : path.resolve(__dirname, "..");
+const PACKAGED_INDEX_URL = pathToFileURL(
+  path.join(appRoot, "dist", "frontend", "index.html"),
+).href;
 const childProcesses = [];
 
 let mainWindow;
+let uiSession;
 let shuttingDown = false;
 
 app.setAppUserModelId("cn.agentsleuth.desktop");
@@ -35,6 +50,8 @@ app.whenReady().then(async () => {
   try {
     process.chdir(appRoot);
     applyBundledOpenClawDefaults();
+    uiSession = session.fromPartition(UI_PARTITION, { cache: false });
+    installApiControlTokenHeader(uiSession);
     if (process.env.AGENT_GUARD_DESKTOP_SMOKE === "1") {
       await ensureServicesReady();
       console.log(`${PRODUCT_NAME} desktop smoke check passed.`);
@@ -62,6 +79,7 @@ app.on("window-all-closed", () => {
 });
 
 function createMainWindow() {
+  if (!uiSession) throw new Error("AgentSleuth UI session is unavailable.");
   mainWindow = new BrowserWindow({
     width: 1460,
     height: 940,
@@ -76,6 +94,8 @@ function createMainWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      session: uiSession,
+      webviewTag: false,
     },
   });
 
@@ -85,11 +105,30 @@ function createMainWindow() {
   });
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith("http://127.0.0.1") || url.startsWith("http://localhost")) {
-      return { action: "allow" };
+    if (!isTrustedRendererUrl(url, rendererTrustContext()) && isExternalHttpUrl(url)) {
+      void shell.openExternal(url);
     }
-    void shell.openExternal(url);
     return { action: "deny" };
+  });
+
+  mainWindow.webContents.on("will-navigate", (event, url) => {
+    if (isTrustedRendererUrl(url, rendererTrustContext())) return;
+    event.preventDefault();
+    if (isExternalHttpUrl(url)) void shell.openExternal(url);
+  });
+
+  mainWindow.webContents.on("will-frame-navigate", (details) => {
+    if (details.isMainFrame && isTrustedRendererUrl(details.url, rendererTrustContext())) {
+      return;
+    }
+    details.preventDefault();
+    if (details.isMainFrame && isExternalHttpUrl(details.url)) {
+      void shell.openExternal(details.url);
+    }
+  });
+
+  mainWindow.webContents.on("will-attach-webview", (event) => {
+    event.preventDefault();
   });
 
   mainWindow.on("closed", () => {
@@ -115,19 +154,32 @@ async function ensureServicesReady() {
   ensureDirectory(path.join(appRoot, "outputs", "runs"));
 
   const sampleHealthUrl = `http://127.0.0.1:${SAMPLE_PORT}/health`;
-  const apiStatusUrl = `${API_BASE}/api/v1/system/status`;
   ensureSampleAgentReadyOptional(sampleHealthUrl);
 
-  if (!(await isApiReady(apiStatusUrl))) {
+  const ownership = await probeApiOwnership({
+    apiBase: API_BASE,
+    controlToken: CONTROL_TOKEN,
+  });
+  if (ownership.kind === "wrong_service") {
+    throw new Error(`Port ${API_PORT} is occupied by a different service.`);
+  }
+  if (ownership.kind === "token_mismatch") {
+    throw new Error("The existing AgentSleuth API uses a different desktop control token.");
+  }
+  if (ownership.kind === "ownership_unavailable") {
+    throw new Error("The existing AgentSleuth API control endpoint is unavailable.");
+  }
+  if (ownership.kind === "unreachable") {
     startNodeChild("api", ["--import", "tsx", "backend/src/server.ts"], {
       API_PORT,
       API_HOST: "127.0.0.1",
       SAMPLE_AGENT_PORT: SAMPLE_PORT,
       SAMPLE_AGENT_HOST: "127.0.0.1",
       VITE_AGENT_GUARD_API_BASE: API_BASE,
+      AGENT_GUARD_CONTROL_TOKEN: CONTROL_TOKEN,
     });
   }
-  await waitForApi(apiStatusUrl, `${PRODUCT_NAME} API`);
+  await waitForApi(API_BASE, `${PRODUCT_NAME} API`);
 
   if (isDev && !(await isHttpReady(FRONTEND_BASE))) {
     startNodeChild(
@@ -148,6 +200,20 @@ async function ensureServicesReady() {
     );
     await waitForHttp(FRONTEND_BASE, `${PRODUCT_NAME} Frontend`);
   }
+}
+
+function installApiControlTokenHeader(targetSession) {
+  targetSession.webRequest.onBeforeSendHeaders(
+    { urls: [`${API_BASE}/*`] },
+    (details, callback) => {
+      const requestHeaders = withControlTokenHeaders(
+        normalizeElectronRequestDetails(details),
+        rendererTrustContext(),
+        CONTROL_TOKEN,
+      );
+      callback({ requestHeaders });
+    },
+  );
 }
 
 function ensureSampleAgentReadyOptional(sampleHealthUrl) {
@@ -175,11 +241,14 @@ function startNodeChild(label, args, extraEnv = {}) {
   const errPath = path.join(logDir, `desktop-${label}.err.log`);
   const outStream = fs.createWriteStream(outPath, { flags: "a" });
   const errStream = fs.createWriteStream(errPath, { flags: "a" });
+  const inheritedEnv = { ...process.env };
+  delete inheritedEnv.AGENT_GUARD_CONTROL_TOKEN;
+  delete inheritedEnv.VITE_AGENT_GUARD_CONTROL_TOKEN;
 
   const child = spawn(process.execPath, args, {
     cwd: appRoot,
     env: {
-      ...process.env,
+      ...inheritedEnv,
       ...extraEnv,
       ELECTRON_RUN_AS_NODE: "1",
       AGENT_GUARD_DESKTOP: "1",
@@ -223,13 +292,26 @@ function shutdownChildren() {
   }
 }
 
-async function waitForApi(url, label) {
+async function waitForApi(apiBase, label) {
   const deadline = Date.now() + HEALTH_TIMEOUT_MS;
   while (Date.now() < deadline) {
-    if (await isApiReady(url)) return;
+    const ownership = await probeApiOwnership({
+      apiBase,
+      controlToken: CONTROL_TOKEN,
+    });
+    if (ownership.kind === "ready") return;
+    if (ownership.kind === "wrong_service") {
+      throw new Error(`Port ${API_PORT} is occupied by a different service.`);
+    }
+    if (ownership.kind === "token_mismatch") {
+      throw new Error("The AgentSleuth API rejected the desktop control token.");
+    }
+    if (ownership.kind === "ownership_unavailable") {
+      throw new Error("The AgentSleuth API control endpoint did not become ready.");
+    }
     await delay(POLL_INTERVAL_MS);
   }
-  throw new Error(`${label} did not become ready at ${url}. See outputs/runs/desktop-api.err.log.`);
+  throw new Error(`${label} did not become ready at ${apiBase}. See outputs/runs/desktop-api.err.log.`);
 }
 
 async function waitForHttp(url, label) {
@@ -241,17 +323,6 @@ async function waitForHttp(url, label) {
   throw new Error(`${label} did not become ready at ${url}.`);
 }
 
-async function isApiReady(url) {
-  try {
-    const response = await fetch(url, { signal: AbortSignal.timeout(1600) });
-    if (!response.ok) return false;
-    const body = await response.json().catch(() => undefined);
-    return body?.ok === true;
-  } catch {
-    return false;
-  }
-}
-
 async function isHttpReady(url) {
   try {
     const response = await fetch(url, { signal: AbortSignal.timeout(1600) });
@@ -259,6 +330,16 @@ async function isHttpReady(url) {
   } catch {
     return false;
   }
+}
+
+function rendererTrustContext() {
+  return {
+    apiBase: API_BASE,
+    mainWebContentsId: mainWindow?.webContents.id,
+    currentRendererUrl: mainWindow?.webContents.getURL() || "",
+    trustedViteOrigin: FRONTEND_BASE,
+    packagedIndexUrl: PACKAGED_INDEX_URL,
+  };
 }
 
 function delay(ms) {

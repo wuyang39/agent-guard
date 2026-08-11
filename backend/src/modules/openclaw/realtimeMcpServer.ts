@@ -43,13 +43,13 @@ import {
   loadLlmClientConfig,
 } from "../llm/llmClient";
 import { buildDefenseReport } from "../defense/defenseReportBuilder";
+import { loadStoredOpenClawPolicyPack } from "../policy/policyPackRepository";
 import {
   exportDefenseHtmlReport,
   exportDefenseJsonReport,
 } from "../defense/defenseReportExporter";
 import { getReportEntry, indexArtifact, indexReport } from "../../storage/fileReportStore";
 import {
-  getRunGroup,
   getSessionRecords,
   listRunGroups,
   saveRunGroup,
@@ -138,7 +138,8 @@ export type RealtimeEvent = {
     | "provider_refresh_failed"
     | "supervision_batch_started"
     | "supervision_batch_completed"
-    | "defense_report_generated";
+    | "defense_report_generated"
+    | "native_tool_hook";
   timestamp: string;
   runtimeSessionId?: string;
   policyPackId?: string;
@@ -656,17 +657,25 @@ export function resetRealtimeSessions(runtimeSessionId?: string): number {
 }
 
 export function subscribeRealtimeEvents(
-  listener: (event: RealtimeEvent) => void,
+  listener: (event: RealtimeEvent) => void | Promise<void>,
   opts: { replay?: boolean } = {},
 ): () => void {
+  const safeListener = (event: RealtimeEvent): void => {
+    try {
+      void Promise.resolve(listener(event)).catch(() => undefined);
+    } catch {
+      // One broken realtime consumer must not interrupt event fan-out.
+    }
+  };
+
   if (opts.replay) {
     for (const event of eventHistory) {
-      listener(event);
+      safeListener(event);
     }
   }
 
-  realtimeEvents.on("event", listener);
-  return () => realtimeEvents.off("event", listener);
+  realtimeEvents.on("event", safeListener);
+  return () => realtimeEvents.off("event", safeListener);
 }
 
 export async function handleRealtimeMcpJsonRpc(
@@ -1160,10 +1169,11 @@ async function resolvePolicyPack(
     };
   }
   if (explicit) {
-    const loaded = await loadOpenClawPolicyPackById(explicit);
+    const loaded = await loadStoredOpenClawPolicyPack(explicit);
     if (loaded) {
       return {
-        ...loaded,
+        policyPack: loaded.policyPack,
+        runGroupId: loaded.runGroupId,
         source: requestedPolicyPackId
           ? "request"
           : activePolicyPackId
@@ -1181,8 +1191,14 @@ async function resolvePolicyPack(
   for (const run of runs) {
     if (!run.policyPackId) continue;
     if (run.policyContextSource && run.policyContextSource !== "stored_detection") continue;
-    const loaded = await loadOpenClawPolicyPackById(run.policyPackId);
-    if (loaded) return { ...loaded, source: "latest" };
+    const loaded = await loadStoredOpenClawPolicyPack(run.policyPackId);
+    if (loaded) {
+      return {
+        policyPack: loaded.policyPack,
+        runGroupId: loaded.runGroupId,
+        source: "latest",
+      };
+    }
   }
 
   return {
@@ -1190,31 +1206,6 @@ async function resolvePolicyPack(
     policyPack: buildFallbackRealtimePolicyPack(),
     source: "fallback",
   };
-}
-
-async function loadPolicyPackById(
-  policyPackId: string,
-): Promise<{ policyPack: SupervisionPolicyPack; runGroupId: string } | undefined> {
-  const entry = await getReportEntry(policyPackId);
-  if (!entry || entry.reportType !== "policy_pack") return undefined;
-  const filePath = path.join(resolveInsideDirectory(REPORTS_DIR, entry.runGroupId), "supervision-policy-pack.json");
-  const policyPack = JSON.parse(await fs.readFile(filePath, "utf-8")) as SupervisionPolicyPack;
-  return { policyPack, runGroupId: entry.runGroupId };
-}
-
-async function loadOpenClawPolicyPackById(
-  policyPackId: string,
-): Promise<{ policyPack: SupervisionPolicyPack; runGroupId: string } | undefined> {
-  const loaded = await loadPolicyPackById(policyPackId);
-  if (!loaded) return undefined;
-  const runGroup = await getRunGroup(loaded.runGroupId);
-  if (!runGroup || runGroup.adapterKind !== "openclaw") {
-    return undefined;
-  }
-  if (runGroup.policyContextSource && runGroup.policyContextSource !== "stored_detection") {
-    return undefined;
-  }
-  return loaded;
 }
 
 async function loadPolicyContext(
@@ -1831,6 +1822,31 @@ function emitRealtimeEvent(
   }
   realtimeEvents.emit("event", event);
   return event;
+}
+
+/**
+ * Task 13: Publish native tool hook events to the realtime stream.
+ * Each native guard decision or outcome is emitted as a `native_tool_hook` event.
+ */
+export function emitNativeToolHookEvent(input: {
+  runtimeSessionId?: string;
+  toolCallId?: string;
+  toolName?: string;
+  action?: string;
+  leaseId?: string;
+  leaseEpoch?: number;
+  coverage?: string;
+  detail?: Record<string, unknown>;
+}): RealtimeEvent {
+  return emitRealtimeEvent({
+    type: "native_tool_hook",
+    runtimeSessionId: input.runtimeSessionId,
+    toolId: input.toolCallId,
+    toolName: input.toolName,
+    action: input.action as RuntimeSupervisionRecord["action"] | undefined,
+    message: input.coverage,
+    detail: input.detail as JsonObject | undefined,
+  });
 }
 
 function buildFallbackRealtimePolicyPack(): SupervisionPolicyPack {

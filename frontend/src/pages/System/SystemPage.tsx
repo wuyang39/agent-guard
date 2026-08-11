@@ -14,6 +14,35 @@ type SystemPageProps = {
   state: LoadState<SystemStatus>;
 };
 
+function renderNativeGuardCoverage(nativeGuard?: Record<string, unknown>): string {
+  if (!nativeGuard) return "不可用 — 插件未安装或未配置";
+  const { coverage, activeLeaseCount, finalizerAssurance, pluginVersion, openclawVersion, reasonCode, conflictingPluginIds } = nativeGuard as Record<string, unknown>;
+  const version = [pluginVersion, openclawVersion].filter(Boolean).join(" / ") || "未知";
+  const conflicts = Array.isArray(conflictingPluginIds) && conflictingPluginIds.length > 0
+    ? `; 冲突: ${(conflictingPluginIds as string[]).join(", ")}`
+    : "";
+  const reason = reasonCode ? `; 原因: ${String(reasonCode)}` : "";
+
+  switch (String(coverage)) {
+    case "active":
+      return `✓ 完整监督 — 原生工具受控 | ${String(activeLeaseCount)} 个租约 | v${String(version)} | ${String(finalizerAssurance)}${conflicts}${reason}`;
+    case "conditional":
+      return `⚠ 有条件 — 仅部分原生工具受控，降级：存在配置冲突或依赖缺失 | v${String(version)}${conflicts}${reason}`;
+    case "unsupported":
+      return `✗ 不支持 — OpenClaw 版本过低或缺少插件能力 | v${String(version)}${reason}`;
+    case "misconfigured":
+      return `✗ 配置错误 — 插件、认证、策略或 Docker 配置异常 | v${String(version)}${reason}`;
+    case "off":
+      return "○ 关闭 — 未启用原生工具监督";
+    case "recovery":
+      return `⟳ 恢复中 — 从异常恢复，功能受限 | ${String(activeLeaseCount)} 个租约${reason}`;
+    case "ready":
+      return `○ 就绪 — 等待激活 | v${String(version)}`;
+    default:
+      return `未知状态: ${String(coverage)}`;
+  }
+}
+
 export function SystemPage({ state }: SystemPageProps) {
   if (state.status === "idle" || state.status === "loading") {
     return <LoadingBlock message="正在读取系统状态..." />;
@@ -51,6 +80,7 @@ export function SystemPage({ state }: SystemPageProps) {
           { label: "OpenClaw CLI", value: state.data.health?.openclawCli },
           { label: "Realtime MCP", value: state.data.health?.realtimeMcp },
           { label: "已配置智能体", value: state.data.health?.configuredAgents },
+          { label: "原生工具监护", value: renderNativeGuardCoverage(state.data.health?.nativeGuard) },
           { label: "功能开关", value: state.data.features ? Object.keys(state.data.features).length : undefined },
         ]}
         title="系统详情"

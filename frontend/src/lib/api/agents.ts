@@ -6,7 +6,7 @@ import type {
 } from "./types";
 
 const DEFAULT_AGENT_TIMEOUT_MS = 120000;
-const DEFAULT_OPENCLAW_TIMEOUT_MS = 300000;
+const DEFAULT_OPENCLAW_TIMEOUT_MS = 90000;
 
 export const agentsApi = {
   async agents(): Promise<AgentListResponse> {

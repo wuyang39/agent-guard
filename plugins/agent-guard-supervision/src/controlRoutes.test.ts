@@ -1,0 +1,2616 @@
+import assert from "node:assert/strict";
+import { createHash, generateKeyPairSync } from "node:crypto";
+import { getEventListeners, once } from "node:events";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { connect } from "node:net";
+import { Readable } from "node:stream";
+import test from "node:test";
+import {
+  createServer,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
+import type {
+  NativeGuardEvidenceProof,
+  NativeGuardLeaseActivation,
+  NativeToolDecisionRequest,
+} from "@agent-guard/contracts";
+import { digestJson, signNativeGuardPayload } from "@agent-guard/native-guard-protocol";
+import type {
+  SessionEndEvent,
+  SessionEndReason,
+  SessionStartEvent,
+} from "openclaw/plugin-sdk/plugin-entry";
+import {
+  registerAgentGuardPlugin,
+  registerAgentGuardLifecycle,
+  registerControlRoutes,
+} from "./controlRoutes";
+import {
+  FileMarkerStore,
+  type GuardedMarker,
+  type MarkerStore,
+} from "./leaseRegistry";
+import { AgentGuardRuntime as ProductionAgentGuardRuntime } from "./runtime";
+
+const NOW = "2026-08-02T00:00:00.000Z";
+const PUBLIC_KEY = generateKeyPairSync("ed25519").publicKey.export({
+  type: "spki",
+  format: "pem",
+}).toString();
+const EVIDENCE_PRIVATE_KEY = generateKeyPairSync("ed25519").privateKey.export({
+  type: "pkcs8",
+  format: "pem",
+}).toString();
+const RENEWED_EVIDENCE_PRIVATE_KEY = generateKeyPairSync("ed25519").privateKey.export({
+  type: "pkcs8",
+  format: "pem",
+}).toString();
+const EXPECTED_REGISTRATIONS = [
+  "hook:before_tool_call",
+  "hook:after_tool_call",
+  "policy:agent-guard-admission",
+  "service:agent-guard-runtime",
+  "hook:subagent_spawned",
+  "hook:subagent_ended",
+  "hook:session_end",
+  "route:/agent-guard/native-guard/v1/leases/activate",
+  "route:/agent-guard/native-guard/v1/leases/renew",
+  "route:/agent-guard/native-guard/v1/leases/revoke",
+  "route:/agent-guard/native-guard/v1/status",
+] as const;
+
+class AgentGuardRuntime extends ProductionAgentGuardRuntime {
+  constructor(
+    options: ConstructorParameters<typeof ProductionAgentGuardRuntime>[0] = {},
+  ) {
+    super({
+      ...options,
+      emitEvent: options.emitEvent ?? (async () => undefined),
+      lifecycleClient: options.lifecycleClient ?? {
+        async bindChild() { return; },
+        async endSession() { return; },
+      },
+      approvalLeaseRecheckAttested: true,
+    });
+    this.finalizeRegistrationAttestation(true);
+  }
+}
+
+type Route = {
+  path: string;
+  auth: "gateway" | "plugin";
+  match?: "exact" | "prefix";
+  handler: (request: IncomingMessage, response: ServerResponse) => Promise<boolean | void> | boolean | void;
+};
+
+class MemoryMarkerStore implements MarkerStore {
+  readonly markers = new Map<string, GuardedMarker>();
+  readonly writes: GuardedMarker[] = [];
+  readonly removes: string[] = [];
+  loadCalls = 0;
+
+  constructor(markers: GuardedMarker[] = []) {
+    for (const marker of markers) this.markers.set(marker.leaseId, structuredClone(marker));
+  }
+
+  async load(): Promise<unknown[]> {
+    this.loadCalls += 1;
+    return [...this.markers.values()].map((marker) => structuredClone(marker));
+  }
+
+  async write(marker: GuardedMarker): Promise<void> {
+    this.writes.push(structuredClone(marker));
+    this.markers.set(marker.leaseId, structuredClone(marker));
+  }
+
+  async remove(leaseId: string): Promise<void> {
+    this.removes.push(leaseId);
+    this.markers.delete(leaseId);
+  }
+}
+
+type HookHandler = (
+  event: Record<string, unknown>,
+  context: Record<string, unknown>,
+) => Promise<unknown> | unknown;
+
+type HookRegistration = {
+  name: string;
+  handler: HookHandler;
+  options?: { priority?: number; timeoutMs?: number };
+};
+
+type Service = {
+  id: string;
+  start: (context: Record<string, unknown>) => Promise<void> | void;
+  stop?: (context: Record<string, unknown>) => Promise<void> | void;
+};
+
+type TrustedPolicy = {
+  id: string;
+  description: string;
+  evaluate: (
+    event: Record<string, unknown>,
+    context: Record<string, unknown>,
+  ) => Promise<unknown> | unknown;
+};
+
+type SessionReadParams = {
+  agentId?: string;
+  sessionKey: string;
+  readConsistency?: "latest";
+};
+
+type SessionEntry = { spawnedBy?: string; parentSessionKey?: string };
+type SessionResolver = (params: SessionReadParams) => SessionEntry | undefined;
+
+function activation(
+  overrides: Partial<NativeGuardLeaseActivation> = {},
+): NativeGuardLeaseActivation {
+  return {
+    schemaVersion: "native-guard-1",
+    leaseId: "lease.1",
+    leaseEpoch: 1,
+    rootSessionKey: "agent:guard:run.1",
+    mode: "supervision",
+    scope: "session_tree",
+    policyPackId: "policy.1",
+    policyPackDigest: "a".repeat(64),
+    backendUrl: "http://127.0.0.1:3100/api/v1/openclaw/native-guard/decision",
+    decisionPublicKey: PUBLIC_KEY,
+    failurePolicy: {
+      lowRisk: "warn",
+      highRisk: "deny",
+      unknownRisk: "deny",
+    },
+    issuedAt: NOW,
+    expiresAt: "2026-08-02T00:05:00.000Z",
+    credential: "credential-that-must-not-be-returned",
+    evidenceCredential: "evidence-credential-that-must-not-be-returned",
+    evidenceSigningKeyId: "evidence.control-test",
+    evidenceSigningPrivateKey: EVIDENCE_PRIVATE_KEY,
+    ...overrides,
+  };
+}
+
+function liveActivation(
+  overrides: Partial<NativeGuardLeaseActivation> = {},
+): NativeGuardLeaseActivation {
+  const now = Date.now();
+  return activation({
+    issuedAt: new Date(now).toISOString(),
+    expiresAt: new Date(now + 5 * 60_000).toISOString(),
+    ...overrides,
+  });
+}
+
+function createHost(options: {
+  pluginConfig?: Record<string, unknown>;
+  getSessionEntry?: SessionResolver;
+  registrationResult?: (contribution: string) => true | false | undefined;
+  nativeGuard?: {
+    postApprovalLeaseRecheck: boolean;
+    paramsProvenance: "json-only";
+  };
+} = {}): {
+  routes: Route[];
+  hooks: HookRegistration[];
+  services: Service[];
+  policies: TrustedPolicy[];
+  sessionReads: SessionReadParams[];
+  sessionResolver: SessionResolver;
+  registrations: string[];
+  api: Parameters<typeof registerControlRoutes>[0] &
+    Parameters<typeof registerAgentGuardLifecycle>[0] &
+    Parameters<typeof registerAgentGuardPlugin>[0];
+} {
+  const routes: Route[] = [];
+  const hooks: HookRegistration[] = [];
+  const services: Service[] = [];
+  const policies: TrustedPolicy[] = [];
+  const registrations: string[] = [];
+  const sessionReads: SessionReadParams[] = [];
+  const sessionResolver: SessionResolver = (params) => {
+    sessionReads.push({ ...params });
+    return options.getSessionEntry?.(params);
+  };
+  return {
+    routes,
+    hooks,
+    services,
+    policies,
+    sessionReads,
+    sessionResolver,
+    registrations,
+    api: {
+      pluginConfig: options.pluginConfig,
+      registerHttpRoute: (route: Route) => {
+        routes.push(route);
+        const contribution = `route:${route.path}`;
+        registrations.push(contribution);
+        return options.registrationResult?.(contribution);
+      },
+      on: (
+        name: string,
+        handler: HookHandler,
+        hookOptions?: { priority?: number; timeoutMs?: number },
+      ) => {
+        hooks.push({ name, handler, options: hookOptions });
+        const contribution = `hook:${name}`;
+        registrations.push(contribution);
+        return options.registrationResult?.(contribution);
+      },
+      registerService: (service: Service) => {
+        services.push(service);
+        const contribution = `service:${service.id}`;
+        registrations.push(contribution);
+        return options.registrationResult?.(contribution);
+      },
+      registerTrustedToolPolicy: (policy: TrustedPolicy) => {
+        policies.push(policy);
+        const contribution = `policy:${policy.id}`;
+        registrations.push(contribution);
+        return options.registrationResult?.(contribution);
+      },
+      runtime: {
+        ...(options.nativeGuard === undefined ? {} : { nativeGuard: options.nativeGuard }),
+        agent: {
+          session: {
+            getSessionEntry: sessionResolver,
+          },
+        },
+      },
+    } as Parameters<typeof registerControlRoutes>[0] &
+      Parameters<typeof registerAgentGuardLifecycle>[0] &
+      Parameters<typeof registerAgentGuardPlugin>[0],
+  };
+}
+
+type CapturedResponse = {
+  statusCode: number;
+  headers: Record<string, string>;
+  body: unknown;
+  rawBody: string;
+};
+
+async function invoke(
+  route: Route,
+  options: {
+    method?: string;
+    body?: unknown;
+    rawBody?: string | Buffer;
+    chunks?: Buffer[];
+    headers?: Record<string, string>;
+    request?: IncomingMessage;
+    idempotencyKey?: string | null;
+  } = {},
+): Promise<CapturedResponse> {
+  const hasBody = Object.hasOwn(options, "body");
+  const rawBody = options.rawBody ?? (hasBody ? JSON.stringify(options.body) : "");
+  const chunks = options.chunks ?? (rawBody === "" ? [] : [Buffer.from(rawBody)]);
+  const request = options.request ?? Readable.from(chunks) as IncomingMessage;
+  request.method = options.method ?? (hasBody ? "POST" : "GET");
+  const defaultIdempotencyKey = createHash("sha256")
+    .update(`${route.path}\0`)
+    .update(rawBody)
+    .digest("base64url");
+  const idempotencyKey = options.idempotencyKey === undefined
+    ? defaultIdempotencyKey
+    : options.idempotencyKey;
+  request.headers = {
+    ...(hasBody ? { "content-type": "application/json" } : {}),
+    ...((hasBody || request.method === "POST") && idempotencyKey !== null
+      ? { "x-idempotency-key": idempotencyKey }
+      : {}),
+    ...options.headers,
+  };
+  const headers: Record<string, string> = {};
+  let responseBody = "";
+  const response = {
+    statusCode: 200,
+    setHeader(name: string, value: string | number | readonly string[]) {
+      headers[name.toLowerCase()] = Array.isArray(value) ? value.join(", ") : String(value);
+      return this;
+    },
+    end(chunk?: string | Buffer) {
+      if (chunk !== undefined) responseBody += chunk.toString();
+      return this;
+    },
+  } as unknown as ServerResponse;
+
+  await route.handler(request, response);
+  return {
+    statusCode: response.statusCode,
+    headers,
+    body: responseBody === "" ? undefined : JSON.parse(responseBody),
+    rawBody: responseBody,
+  };
+}
+
+test("registers the exact gateway-authenticated lease control surface", async () => {
+  const runtime = new AgentGuardRuntime({
+    markerStore: new MemoryMarkerStore(),
+    now: () => new Date(NOW),
+  });
+  await runtime.start();
+  const host = createHost();
+
+  registerControlRoutes(host.api, runtime);
+
+  assert.deepEqual(
+    host.routes.map(({ path, auth, match }) => ({ path, auth, match })),
+    [
+      {
+        path: "/agent-guard/native-guard/v1/leases/activate",
+        auth: "gateway",
+        match: "exact",
+      },
+      {
+        path: "/agent-guard/native-guard/v1/leases/renew",
+        auth: "gateway",
+        match: "exact",
+      },
+      {
+        path: "/agent-guard/native-guard/v1/leases/revoke",
+        auth: "gateway",
+        match: "exact",
+      },
+      {
+        path: "/agent-guard/native-guard/v1/status",
+        auth: "gateway",
+        match: "exact",
+      },
+    ],
+  );
+});
+
+test("activate, renew, status, and revoke return raw credential-free status", async () => {
+  const runtime = new AgentGuardRuntime({
+    markerStore: new MemoryMarkerStore(),
+    now: () => new Date(NOW),
+  });
+  await runtime.start();
+  const host = createHost();
+  registerControlRoutes(host.api, runtime);
+  const routes = new Map(host.routes.map((route) => [route.path, route]));
+
+  const activate = await invoke(
+    routes.get("/agent-guard/native-guard/v1/leases/activate")!,
+    { body: activation() },
+  );
+  assert.equal(activate.statusCode, 200);
+  assert.equal((activate.body as { coverage: string }).coverage, "active");
+  assert.equal((await runtime.registry.lookup("agent:guard:run.1")).state, "active");
+  assert.equal(activate.headers["cache-control"], "no-store");
+  assert.equal(activate.headers["content-type"], "application/json; charset=utf-8");
+  assert.equal(activate.rawBody.includes("credential"), false);
+
+  const renewed = await invoke(
+    routes.get("/agent-guard/native-guard/v1/leases/renew")!,
+    {
+      body: activation({
+        leaseEpoch: 2,
+        expiresAt: "2026-08-02T00:06:00.000Z",
+        credential: "rotated-credential-that-must-not-be-returned",
+        evidenceCredential: "rotated-evidence-credential-that-must-not-be-returned",
+        evidenceSigningKeyId: "evidence.control-test.renewed",
+        evidenceSigningPrivateKey: RENEWED_EVIDENCE_PRIVATE_KEY,
+      }),
+    },
+  );
+  assert.equal((renewed.body as { activeLease: { leaseEpoch: number } }).activeLease.leaseEpoch, 2);
+  assert.equal(renewed.rawBody.includes("rotated-credential"), false);
+
+  const status = await invoke(
+    routes.get("/agent-guard/native-guard/v1/status")!,
+    { method: "GET" },
+  );
+  assert.deepEqual(status.body, renewed.body);
+
+  const revoked = await invoke(
+    routes.get("/agent-guard/native-guard/v1/leases/revoke")!,
+    { body: { leaseId: "lease.1" } },
+  );
+  assert.equal((revoked.body as { coverage: string }).coverage, "off");
+  assert.equal((await runtime.registry.lookup("agent:guard:run.1")).state, "off");
+});
+
+test("rejects wrong methods and missing or invalid JSON content types", async (t) => {
+  for (const [name, options, expectedStatus, expectedCode] of [
+    ["wrong method", { method: "GET" }, 405, "METHOD_NOT_ALLOWED"],
+    ["missing content type", { body: activation(), headers: { "content-type": "" } }, 415, "UNSUPPORTED_MEDIA_TYPE"],
+    ["wrong content type", { body: activation(), headers: { "content-type": "text/plain" } }, 415, "UNSUPPORTED_MEDIA_TYPE"],
+  ] as const) {
+    await t.test(name, async () => {
+      const { route } = await routeFixture("/agent-guard/native-guard/v1/leases/activate");
+      const response = await invoke(route, options);
+      assert.equal(response.statusCode, expectedStatus);
+      assert.deepEqual(response.body, {
+        error: {
+          code: expectedCode,
+          message: expectedCode === "METHOD_NOT_ALLOWED"
+            ? "Native guard control method is not allowed."
+            : "Native guard control request must be JSON.",
+        },
+      });
+      assert.equal(response.headers["cache-control"], "no-store");
+    });
+  }
+});
+
+test("rejects declared, streamed, and deceptive request lengths before activation", async (t) => {
+  const cases: Array<{
+    name: string;
+    rawBody: string | Buffer;
+    chunks?: Buffer[];
+    headers?: Record<string, string>;
+    expectedStatus: number;
+    expectedCode: string;
+  }> = [
+    {
+      name: "declared oversize",
+      rawBody: "{}",
+      headers: { "content-length": "65537" },
+      expectedStatus: 413,
+      expectedCode: "REQUEST_TOO_LARGE",
+    },
+    {
+      name: "streamed oversize",
+      rawBody: "",
+      chunks: [Buffer.alloc(40_000, 0x20), Buffer.alloc(25_537, 0x20)],
+      expectedStatus: 413,
+      expectedCode: "REQUEST_TOO_LARGE",
+    },
+    {
+      name: "declared shorter than stream",
+      rawBody: JSON.stringify(activation()),
+      headers: { "content-length": "2" },
+      expectedStatus: 400,
+      expectedCode: "INVALID_REQUEST",
+    },
+    {
+      name: "truncated declared body",
+      rawBody: "{}",
+      headers: { "content-length": "10" },
+      expectedStatus: 400,
+      expectedCode: "INVALID_REQUEST",
+    },
+    {
+      name: "malformed content length",
+      rawBody: "{}",
+      headers: { "content-length": "1e2" },
+      expectedStatus: 400,
+      expectedCode: "INVALID_REQUEST",
+    },
+  ];
+
+  for (const entry of cases) {
+    await t.test(entry.name, async () => {
+      const { route, runtime, store } = await routeFixture(
+        "/agent-guard/native-guard/v1/leases/activate",
+      );
+      const response = await invoke(route, {
+        method: "POST",
+        rawBody: entry.rawBody,
+        chunks: entry.chunks,
+        headers: { "content-type": "application/json", ...entry.headers },
+      });
+      assert.equal(response.statusCode, entry.expectedStatus);
+      assert.equal((response.body as { error: { code: string } }).error.code, entry.expectedCode);
+      assert.deepEqual(await runtime.lookup("agent:guard:run.1"), { state: "off" });
+      assert.equal(store.writes.length, 0);
+    });
+  }
+});
+
+test("maps empty, invalid, and truncated JSON to stable request errors", async (t) => {
+  for (const [name, rawBody] of [
+    ["empty", ""],
+    ["invalid", "not-json"],
+    ["truncated", "{\"leaseId\":"],
+  ] as const) {
+    await t.test(name, async () => {
+      const { route } = await routeFixture("/agent-guard/native-guard/v1/leases/activate");
+      const response = await invoke(route, {
+        method: "POST",
+        rawBody,
+        headers: { "content-type": "application/json" },
+      });
+      assert.equal(response.statusCode, 400);
+      assert.deepEqual(response.body, {
+        error: {
+          code: "INVALID_REQUEST",
+          message: "Native guard control request is invalid.",
+        },
+      });
+    });
+  }
+});
+
+test("maps invalid activation schemas, endpoints, and times without echoing input", async (t) => {
+  for (const [name, body] of [
+    ["schema mismatch", activation({ schemaVersion: "other" as "native-guard-1" })],
+    ["non-loopback backend", activation({ backendUrl: "https://example.com/credential-secret" })],
+    ["expired activation", activation({ expiresAt: NOW })],
+  ] as const) {
+    await t.test(name, async () => {
+      const { route } = await routeFixture("/agent-guard/native-guard/v1/leases/activate");
+      const response = await invoke(route, { body });
+      assert.equal(response.statusCode, 400);
+      assert.equal((response.body as { error: { code: string } }).error.code, "INVALID_ACTIVATION");
+      assert.equal(response.rawBody.includes("credential"), false);
+      assert.equal(response.rawBody.includes("example.com"), false);
+    });
+  }
+});
+
+test("renew with a different root session returns a stable conflict", async () => {
+  const fixture = await routeFixture("/agent-guard/native-guard/v1/leases/renew");
+  await fixture.runtime.registry.activate(activation());
+
+  const response = await invoke(fixture.route, {
+    body: activation({
+      leaseEpoch: 2,
+      rootSessionKey: "agent:guard:other-root",
+      credential: "rotated-secret",
+    }),
+  });
+
+  assert.equal(response.statusCode, 409);
+  assert.deepEqual(response.body, {
+    error: {
+      code: "LEASE_CONFLICT",
+      message: "Native guard lease state conflicts with the request.",
+    },
+  });
+  assert.equal(response.rawBody.includes("rotated-secret"), false);
+});
+
+test("client abort settles the handler without activating or echoing the request", async () => {
+  const { route, runtime, store } = await routeFixture(
+    "/agent-guard/native-guard/v1/leases/activate",
+  );
+  const request = new Readable({ read() {} }) as IncomingMessage;
+  queueMicrotask(() => request.emit("aborted"));
+
+  const response = await Promise.race([
+    invoke(route, {
+      method: "POST",
+      request,
+      headers: { "content-type": "application/json" },
+    }),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("aborted request handler remained pending")), 50);
+    }),
+  ]);
+
+  assert.equal(response.statusCode, 400);
+  assert.equal((response.body as { error: { code: string } }).error.code, "REQUEST_ABORTED");
+  assert.deepEqual(await runtime.lookup("agent:guard:run.1"), { state: "off" });
+  assert.equal(store.writes.length, 0);
+});
+
+test("control mutations reject every Content-Encoding without registry work", async (t) => {
+  for (const contentEncoding of ["identity", "gzip", "br"]) {
+    await t.test(contentEncoding, async () => {
+      const { route, store } = await routeFixture(
+        "/agent-guard/native-guard/v1/leases/activate",
+      );
+      const response = await invoke(route, {
+        body: activation(),
+        headers: { "content-encoding": contentEncoding },
+      });
+      assert.equal(response.statusCode, 415);
+      assert.deepEqual(response.body, {
+        error: {
+          code: "UNSUPPORTED_CONTENT_ENCODING",
+          message: "Native guard control request encoding is unsupported.",
+        },
+      });
+      assert.equal(store.writes.length, 0);
+    });
+  }
+});
+
+test("Content-Encoding rejection precedes idempotency key validation", async (t) => {
+  for (const idempotencyKey of [null, "short"]) {
+    await t.test(idempotencyKey ?? "missing", async () => {
+      const { route, store } = await routeFixture(
+        "/agent-guard/native-guard/v1/leases/activate",
+      );
+      const response = await invoke(route, {
+        body: activation(),
+        headers: { "content-encoding": "identity" },
+        idempotencyKey,
+      });
+      assert.equal(response.statusCode, 415);
+      assert.deepEqual(response.body, {
+        error: {
+          code: "UNSUPPORTED_CONTENT_ENCODING",
+          message: "Native guard control request encoding is unsupported.",
+        },
+      });
+      assert.equal(store.writes.length, 0);
+    });
+  }
+});
+
+test("slow partial body times out at two seconds and cleans all reader resources", async () => {
+  const store = new MemoryMarkerStore();
+  const runtime = new AgentGuardRuntime({ markerStore: store, now: () => new Date(NOW) });
+  await runtime.start();
+  const timers = fakeTimers();
+  const host = createHost();
+  registerControlRoutes(host.api, runtime, {
+    scheduleTimeout: timers.schedule,
+    cancelTimeout: timers.cancel,
+  });
+  const route = host.routes.find((candidate) => candidate.path.endsWith("/activate"))!;
+  const request = new Readable({ read() {} }) as IncomingMessage;
+  const pending = invoke(route, {
+    method: "POST",
+    request,
+    headers: { "content-type": "application/json" },
+  });
+  request.push(Buffer.from("{\"schemaVersion\":"));
+  await Promise.resolve();
+
+  assert.deepEqual(timers.delays(), [2_000]);
+  timers.fireDelay(2_000);
+  const response = await pending;
+
+  assert.equal(response.statusCode, 408);
+  assert.equal((response.body as { error: { code: string } }).error.code, "REQUEST_TIMEOUT");
+  assert.equal(response.headers.connection, "close");
+  assert.equal(store.writes.length, 0);
+  assert.equal(timers.activeCount(), 0);
+  assertReaderClean(request, runtime.abortSignal);
+});
+
+test("close before end settles as an incomplete request without activation", async () => {
+  const { route, runtime, store } = await routeFixture(
+    "/agent-guard/native-guard/v1/leases/activate",
+  );
+  const request = new Readable({ read() {} }) as IncomingMessage;
+  queueMicrotask(() => request.emit("close"));
+
+  const response = await Promise.race([
+    invoke(route, {
+      method: "POST",
+      request,
+      headers: { "content-type": "application/json" },
+    }),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("closed request handler remained pending")), 50);
+    }),
+  ]);
+
+  assert.equal(response.statusCode, 400);
+  assert.equal((response.body as { error: { code: string } }).error.code, "REQUEST_INCOMPLETE");
+  assert.equal(store.writes.length, 0);
+  assertReaderClean(request, runtime.abortSignal);
+});
+
+test("runtime stop aborts a pending body read and clears its timeout", async () => {
+  const store = new MemoryMarkerStore();
+  const runtime = new AgentGuardRuntime({ markerStore: store, now: () => new Date(NOW) });
+  await runtime.start();
+  const timers = fakeTimers();
+  const host = createHost();
+  registerControlRoutes(host.api, runtime, {
+    scheduleTimeout: timers.schedule,
+    cancelTimeout: timers.cancel,
+  });
+  const route = host.routes.find((candidate) => candidate.path.endsWith("/activate"))!;
+  const request = new Readable({ read() {} }) as IncomingMessage;
+  const pending = invoke(route, {
+    method: "POST",
+    request,
+    headers: { "content-type": "application/json" },
+  });
+  await Promise.resolve();
+
+  await runtime.stop();
+  const response = await Promise.race([
+    pending,
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("stopped body reader remained pending")), 50);
+    }),
+  ]);
+
+  assert.equal(response.statusCode, 400);
+  assert.equal((response.body as { error: { code: string } }).error.code, "REQUEST_ABORTED");
+  assert.equal(store.writes.length, 0);
+  assert.equal(timers.activeCount(), 0);
+  assertReaderClean(request, runtime.abortSignal);
+});
+
+test("body reader timeout configuration stays below the service stop budget", () => {
+  for (const bodyTimeoutMs of [0, -1, 4_000, 5_000, 1.5]) {
+    const runtime = new AgentGuardRuntime({
+      markerStore: new MemoryMarkerStore(),
+      now: () => new Date(NOW),
+    });
+    const host = createHost();
+    assert.throws(
+      () => registerControlRoutes(host.api, runtime, { bodyTimeoutMs }),
+      /body timeout/i,
+    );
+    assert.equal(host.routes.length, 0);
+  }
+});
+
+test("streamed oversize returns stable JSON over a real HTTP connection", async (t) => {
+  const runtime = new AgentGuardRuntime({
+    markerStore: new MemoryMarkerStore(),
+    now: () => new Date(NOW),
+  });
+  const host = createHost();
+  registerControlRoutes(host.api, runtime);
+  const route = host.routes.find((candidate) => candidate.path.endsWith("/activate"));
+  assert.ok(route);
+  const server = createServer((request, response) => {
+    void route.handler(request, response);
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise<void>((resolve, reject) => {
+    server.close((error) => error ? reject(error) : resolve());
+  }));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+
+  const response = await fetch(
+    `http://127.0.0.1:${String(address.port)}/agent-guard/native-guard/v1/leases/activate`,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-idempotency-key": "o".repeat(43),
+      },
+      body: " ".repeat(65_537),
+    },
+  );
+
+  assert.equal(response.status, 413);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.deepEqual(await response.json(), {
+    error: {
+      code: "REQUEST_TOO_LARGE",
+      message: "Native guard control request is too large.",
+    },
+  });
+});
+
+test("GET status rejects every request framing header before runtime work", async (t) => {
+  const headerCases: Array<Record<string, string>> = [
+    { "content-length": "0" },
+    { "transfer-encoding": "identity" },
+    { "content-encoding": "identity" },
+    { "content-length": "0", "content-encoding": "identity" },
+  ];
+  for (const headers of headerCases) {
+    await t.test(JSON.stringify(headers), async () => {
+      const runtime = new AgentGuardRuntime({
+        markerStore: new MemoryMarkerStore(),
+        now: () => new Date(NOW),
+      });
+      let statusReads = 0;
+      Object.defineProperty(runtime, "status", {
+        value: async () => {
+          statusReads += 1;
+          return { coverage: "off", finalizerAssurance: "unverified", activeLeaseCount: 0 };
+        },
+      });
+      const host = createHost();
+      registerControlRoutes(host.api, runtime);
+      const route = host.routes.find((candidate) => candidate.path.endsWith("/status"));
+      assert.ok(route);
+
+      const response = await invoke(route, { method: "GET", headers });
+
+      assert.equal(response.statusCode, 400);
+      assert.equal(response.headers.connection, "close");
+      assert.equal(response.headers["cache-control"], "no-store");
+      assert.equal((response.body as { error: { code: string } }).error.code, "INVALID_REQUEST");
+      assert.equal(statusReads, 0);
+    });
+  }
+});
+
+test("invalid GET framing closes a real keepalive socket before a second request", async (t) => {
+  const runtime = new AgentGuardRuntime({
+    markerStore: new MemoryMarkerStore(),
+    now: () => new Date(NOW),
+  });
+  let statusReads = 0;
+  Object.defineProperty(runtime, "status", {
+    value: async () => {
+      statusReads += 1;
+      return { coverage: "off", finalizerAssurance: "unverified", activeLeaseCount: 0 };
+    },
+  });
+  const host = createHost();
+  registerControlRoutes(host.api, runtime);
+  const route = host.routes.find((candidate) => candidate.path.endsWith("/status"));
+  assert.ok(route);
+  const server = createServer((request, response) => {
+    void route.handler(request, response);
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise<void>((resolve, reject) => {
+    server.close((error) => error ? reject(error) : resolve());
+  }));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const socket = connect(address.port, "127.0.0.1");
+  const chunks: Buffer[] = [];
+  socket.on("data", (chunk: Buffer) => chunks.push(chunk));
+  await once(socket, "connect");
+  socket.write(
+    "GET /agent-guard/native-guard/v1/status HTTP/1.1\r\n" +
+    "Host: 127.0.0.1\r\n" +
+    "Content-Length: 4\r\n" +
+    "Connection: keep-alive\r\n\r\n" +
+    "JUNK" +
+    "GET /agent-guard/native-guard/v1/status HTTP/1.1\r\n" +
+    "Host: 127.0.0.1\r\n" +
+    "Connection: close\r\n\r\n",
+  );
+  await Promise.race([
+    once(socket, "close"),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("framed GET socket remained open")), 1_000);
+    }),
+  ]);
+  const raw = Buffer.concat(chunks).toString("utf8");
+
+  assert.equal((raw.match(/HTTP\/1\.1 400/g) ?? []).length, 1);
+  assert.equal(raw.includes("HTTP/1.1 200"), false);
+  assert.match(raw, /Connection: close/i);
+  assert.match(raw, /Cache-Control: no-store/i);
+  assert.equal(statusReads, 0);
+});
+
+async function routeFixture(path: string): Promise<{
+  route: Route;
+  runtime: AgentGuardRuntime;
+  store: MemoryMarkerStore;
+}> {
+  const store = new MemoryMarkerStore();
+  const runtime = new AgentGuardRuntime({ markerStore: store, now: () => new Date(NOW) });
+  await runtime.start();
+  const host = createHost();
+  registerControlRoutes(host.api, runtime);
+  const route = host.routes.find((candidate) => candidate.path === path);
+  assert.ok(route);
+  return { route, runtime, store };
+}
+
+test("registers one service and one handler for each session-tree lifecycle event", () => {
+  const runtime = new AgentGuardRuntime({
+    markerStore: new MemoryMarkerStore(),
+    now: () => new Date(NOW),
+  });
+  const host = createHost();
+
+  registerAgentGuardLifecycle(host.api, runtime);
+
+  assert.deepEqual(host.services.map((service) => service.id), ["agent-guard-runtime"]);
+  assert.equal(typeof host.services[0].start, "function");
+  assert.equal(typeof host.services[0].stop, "function");
+  assert.deepEqual(
+    host.hooks.map((hook) => hook.name),
+    ["subagent_spawned", "subagent_ended", "session_end"],
+  );
+  assert.deepEqual(host.policies.map((policy) => policy.id), ["agent-guard-admission"]);
+});
+
+test("local SDK session lifecycle declarations match the pinned host contract", async () => {
+  const sdk = await readFile(new URL("./openclaw-sdk.d.ts", import.meta.url), "utf8");
+  assert.match(sdk, /type SessionEndReason\s*=\s*[\s\S]*?"new"[\s\S]*?"reset"[\s\S]*?"idle"[\s\S]*?"daily"[\s\S]*?"compaction"[\s\S]*?"deleted"[\s\S]*?"shutdown"[\s\S]*?"restart"[\s\S]*?"unknown"\s*;/);
+  assert.doesNotMatch(sdk, /type SessionEndEvent\s*=\s*\{[\s\S]*?reason\?:\s*string/);
+  for (const field of [
+    "sessionId: string",
+    "sessionKey?: string",
+    "messageCount: number",
+    "durationMs?: number",
+    "sessionFile?: string",
+    "transcriptArchived?: boolean",
+    "nextSessionId?: string",
+    "nextSessionKey?: string",
+  ]) {
+    assert.equal(sdk.includes(field), true, field);
+  }
+});
+
+test("trusted policy forwards the complete event and context to the extensible runtime entry point", async () => {
+  const runtime = new AgentGuardRuntime({
+    markerStore: new MemoryMarkerStore(),
+    now: () => new Date(NOW),
+  });
+  assert.equal(typeof runtime.trustedAdmission, "function");
+  const host = createHost();
+  const event = {
+    toolName: "exec",
+    params: { command: "echo guarded" },
+    runId: "run.forwarded",
+    toolCallId: "call.forwarded",
+    derivedPaths: ["C:\\guarded.txt"],
+  };
+  const context = {
+    agentId: "main",
+    sessionKey: "agent:guard:forwarded",
+    sessionId: "session.forwarded",
+    runId: "run.forwarded",
+    toolName: "exec",
+    toolCallId: "call.forwarded",
+    channelId: "channel.forwarded",
+  };
+  const delegated = {
+    block: true,
+    blockReason: "delegated admission",
+  };
+  let forwardedEvent: unknown;
+  let forwardedContext: unknown;
+  Object.defineProperty(runtime, "trustedAdmission", {
+    configurable: true,
+    value: async (receivedEvent: unknown, receivedContext: unknown) => {
+      forwardedEvent = receivedEvent;
+      forwardedContext = receivedContext;
+      return delegated;
+    },
+  });
+
+  registerAgentGuardLifecycle(host.api, runtime);
+
+  assert.equal(host.policies.length, 1);
+  assert.equal(host.policies[0].id, "agent-guard-admission");
+  assert.equal(await host.policies[0].evaluate(event, context), delegated);
+  assert.equal(forwardedEvent, event);
+  assert.equal(forwardedContext, context);
+});
+
+test("final hook lazy-starts once and leaves a clean OFF tool call unchanged", async () => {
+  const store = new BlockingLoadMarkerStore();
+  let sessionReads = 0;
+  const runtime = new AgentGuardRuntime({
+    markerStore: store,
+    now: () => new Date(NOW),
+    sessionResolver: () => {
+      sessionReads += 1;
+      throw new Error("OFF must not resolve host sessions");
+    },
+  });
+  const event = { toolName: "exec", params: { command: "echo unchanged" } };
+  const context = { agentId: "main", sessionKey: "agent:ordinary", toolName: "exec" };
+  const original = structuredClone(event);
+
+  const pending = [
+    runtime.beforeToolCall(event, context),
+    runtime.beforeToolCall(event, context),
+  ];
+  await store.loadStarted;
+  assert.equal(store.loadInvocations, 1);
+  store.releaseLoad();
+
+  assert.deepEqual(await Promise.all(pending), [undefined, undefined]);
+  assert.equal(store.loadCalls, 1);
+  assert.equal(sessionReads, 0);
+  assert.deepEqual(event, original);
+});
+
+test("final hook contains admission failures and its internal deadline", async () => {
+  const failedRuntime = new AgentGuardRuntime({
+    markerStore: new MemoryMarkerStore(),
+    now: () => new Date(NOW),
+  });
+  Object.defineProperty(failedRuntime, "trustedAdmission", {
+    value: async () => {
+      throw new Error("admission leaked credential-secret");
+    },
+  });
+  const fixedBlock = {
+    block: true,
+    blockReason: "Native guard admission failed closed.",
+  };
+  assert.deepEqual(
+    await failedRuntime.beforeToolCall(
+      { toolName: "exec", params: {} },
+      { sessionKey: "agent:guard:child", toolName: "exec" },
+    ),
+    fixedBlock,
+  );
+
+  const timers = fakeTimers();
+  const timedRuntime = new AgentGuardRuntime({
+    markerStore: new MemoryMarkerStore(),
+    now: () => new Date(NOW),
+    scheduleTimeout: timers.schedule,
+    cancelTimeout: timers.cancel,
+  });
+  Object.defineProperty(timedRuntime, "trustedAdmission", {
+    value: async () => new Promise<never>(() => undefined),
+  });
+  const pending = timedRuntime.beforeToolCall(
+    { toolName: "exec", params: {} },
+    { sessionKey: "agent:guard:child", toolName: "exec" },
+  );
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(timers.delays(), [4_000]);
+  timers.fireDelay(4_000);
+  assert.deepEqual(await pending, fixedBlock);
+  assert.equal(timers.activeCount(), 0);
+});
+
+test("registered final hook forwards exact inputs to runtime.beforeToolCall", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "agent-guard-final-hook-forward-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const host = createHost({
+    pluginConfig: { markerDir: join(parent, "markers") },
+    registrationResult: () => true,
+  });
+  const runtime = registerAgentGuardPlugin(host.api);
+  const event = { toolName: "exec", params: { command: "echo forwarded" } };
+  const context = { agentId: "main", sessionKey: "agent:forwarded", toolName: "exec" };
+  let forwardedEvent: unknown;
+  let forwardedContext: unknown;
+  Object.defineProperty(runtime, "beforeToolCall", {
+    value: async (receivedEvent: unknown, receivedContext: unknown) => {
+      forwardedEvent = receivedEvent;
+      forwardedContext = receivedContext;
+      return undefined;
+    },
+  });
+
+  assert.equal(await hook(host, "before_tool_call")(event, context), undefined);
+  assert.equal(forwardedEvent, event);
+  assert.equal(forwardedContext, context);
+  assert.equal(host.hooks.filter((entry) => entry.name === "before_tool_call").length, 1);
+});
+
+test("service start keeps clean OFF free of marker writes and recovers an existing marker", async () => {
+  const cleanStore = new MemoryMarkerStore();
+  const cleanRuntime = new AgentGuardRuntime({
+    markerStore: cleanStore,
+    now: () => new Date(NOW),
+  });
+  const cleanHost = createHost();
+  registerAgentGuardLifecycle(cleanHost.api, cleanRuntime);
+
+  assert.deepEqual(await cleanRuntime.lookup("agent:guard:missing"), { state: "off" });
+  assert.equal(cleanStore.loadCalls, 0);
+  await cleanHost.services[0].start({});
+  assert.deepEqual(await cleanRuntime.status(), {
+    coverage: "off",
+    finalizerAssurance: "unverified",
+    activeLeaseCount: 0,
+  });
+  assert.equal(cleanStore.loadCalls, 1);
+  assert.equal(cleanStore.writes.length, 0);
+  assert.equal(cleanStore.removes.length, 0);
+  assert.equal(cleanRuntime.abortSignal.aborted, false);
+
+  const recoveryStore = new MemoryMarkerStore([marker()]);
+  const recoveryRuntime = new AgentGuardRuntime({
+    markerStore: recoveryStore,
+    now: () => new Date(NOW),
+  });
+  const recoveryHost = createHost();
+  registerAgentGuardLifecycle(recoveryHost.api, recoveryRuntime);
+  assert.deepEqual(await recoveryRuntime.lookup("agent:guard:run.1"), { state: "off" });
+
+  await recoveryHost.services[0].start({});
+
+  assert.equal((await recoveryRuntime.lookup("agent:guard:run.1")).state, "recovery");
+  assert.equal(recoveryStore.loadCalls, 1);
+  assert.equal(recoveryStore.writes.length, 0);
+});
+
+test("service startup failure remains misconfigured after host cleanup and retries safely", async () => {
+  const store = new MemoryMarkerStore();
+  store.load = async () => {
+    store.loadCalls += 1;
+    throw new Error("marker startup failed with credential-secret");
+  };
+  const runtime = new AgentGuardRuntime({ markerStore: store, now: () => new Date(NOW) });
+  const host = createHost();
+  registerAgentGuardLifecycle(host.api, runtime);
+
+  await assert.rejects(() => Promise.resolve(host.services[0].start({})), (error: unknown) =>
+    error instanceof Error &&
+    /marker recovery failed/.test(error.message) &&
+    !error.message.includes("credential-secret"));
+  await host.services[0].stop?.({});
+
+  assert.deepEqual(await runtime.status(), {
+    coverage: "misconfigured",
+    finalizerAssurance: "unverified",
+    activeLeaseCount: 0,
+    reasonCode: "MARKER_RECOVERY_FAILED",
+  });
+  await assert.rejects(runtime.lookup("agent:guard:run.1"), /marker recovery failed/);
+  await assert.rejects(runtime.activate(activation()), /marker recovery failed/);
+  assert.equal(store.writes.length, 0);
+
+  store.load = async () => {
+    store.loadCalls += 1;
+    return [];
+  };
+  await runtime.start();
+  assert.deepEqual(await runtime.status(), {
+    coverage: "off",
+    finalizerAssurance: "unverified",
+    activeLeaseCount: 0,
+  });
+});
+
+test("admission stays zero-effect OFF and passes ordinary roots beside active or recovery guards", async () => {
+  const cleanHost = createHost({
+    getSessionEntry: ({ sessionKey }) => sessionKey.endsWith(".empty") ? {} : undefined,
+  });
+  const cleanRuntime = new AgentGuardRuntime({
+    markerStore: new MemoryMarkerStore(),
+    now: () => new Date(NOW),
+    sessionResolver: cleanHost.sessionResolver,
+  });
+  registerAgentGuardLifecycle(cleanHost.api, cleanRuntime);
+  await cleanHost.services[0].start({});
+  assert.equal(await evaluatePolicy(cleanHost, "agent:guard:off"), undefined);
+  assert.equal(cleanHost.sessionReads.length, 0);
+
+  await cleanRuntime.activate(activation());
+  assert.equal(await evaluatePolicy(cleanHost, "agent:guard:run.1"), undefined);
+  assert.equal(await evaluatePolicy(cleanHost, "agent:ordinary.undefined"), undefined);
+  assert.equal(await evaluatePolicy(cleanHost, "agent:ordinary.empty"), undefined);
+  assert.deepEqual(cleanHost.sessionReads.map((entry) => entry.sessionKey), [
+    "agent:ordinary.undefined",
+    "agent:ordinary.empty",
+  ]);
+
+  const recoveryHost = createHost({
+    getSessionEntry: ({ sessionKey }) => sessionKey.endsWith(".empty") ? {} : undefined,
+  });
+  const recoveryRuntime = new AgentGuardRuntime({
+    markerStore: new MemoryMarkerStore([marker()]),
+    now: () => new Date(NOW),
+    sessionResolver: recoveryHost.sessionResolver,
+  });
+  registerAgentGuardLifecycle(recoveryHost.api, recoveryRuntime);
+  await recoveryHost.services[0].start({});
+  assert.deepEqual(await evaluatePolicy(recoveryHost, "agent:guard:run.1"), {
+    block: true,
+    blockReason: "[Agent Guard:NATIVE_GUARD_RECOVERY] Native guard recovery blocks this tool.",
+  });
+  assert.equal(await evaluatePolicy(recoveryHost, "agent:ordinary.undefined"), undefined);
+  assert.equal(await evaluatePolicy(recoveryHost, "agent:ordinary.empty"), undefined);
+  assert.deepEqual(recoveryHost.sessionReads.map((entry) => entry.sessionKey), [
+    "agent:ordinary.undefined",
+    "agent:ordinary.empty",
+  ]);
+});
+
+test("first child admission waits for its durable lazy binding before passing", async () => {
+  const parent = "agent:guard:run.1";
+  const child = "agent:guard:child.1";
+  const store = new BlockingMarkerStore();
+  const host = createHost({
+    getSessionEntry: ({ sessionKey }) => sessionKey === child
+      ? { spawnedBy: parent, parentSessionKey: parent }
+      : undefined,
+  });
+  const runtime = new AgentGuardRuntime({
+    markerStore: store,
+    now: () => new Date(NOW),
+    sessionResolver: host.sessionResolver,
+  });
+  registerAgentGuardLifecycle(host.api, runtime);
+  await host.services[0].start({});
+  await runtime.activate(activation());
+  store.blockWrites();
+  let settled = false;
+
+  const admission = Promise.resolve(evaluatePolicy(host, child)).then((result) => {
+    settled = true;
+    return result;
+  });
+  await store.writeStarted;
+
+  assert.equal(settled, false);
+  assert.deepEqual(host.sessionReads, [{
+    agentId: "main",
+    sessionKey: child,
+    readConsistency: "latest",
+  }]);
+  store.releaseWrites();
+  assert.equal(await admission, undefined);
+  assert.equal((await runtime.lookup(child)).state, "active");
+});
+
+test("concurrent first-child admissions pass only after one binding wins and the loser rechecks", async () => {
+  const parent = "agent:guard:run.1";
+  const child = "agent:guard:child.1";
+  const store = new BlockingMarkerStore();
+  const host = createHost({
+    getSessionEntry: () => ({ spawnedBy: parent, parentSessionKey: parent }),
+  });
+  const runtime = new AgentGuardRuntime({
+    markerStore: store,
+    now: () => new Date(NOW),
+    sessionResolver: host.sessionResolver,
+  });
+  registerAgentGuardLifecycle(host.api, runtime);
+  await host.services[0].start({});
+  await runtime.activate(activation());
+  store.blockWrites();
+
+  const admissions = [evaluatePolicy(host, child), evaluatePolicy(host, child)];
+  await store.writeStarted;
+  store.releaseWrites();
+
+  assert.deepEqual(await Promise.all(admissions), [undefined, undefined]);
+  assert.deepEqual(store.writes.at(-1)?.childSessionKeys, [child]);
+  assert.equal(store.writes.filter((entry) => entry.childSessionKeys.includes(child)).length, 1);
+});
+
+test("admission passes a child from an unrelated OFF tree without marker writes", async () => {
+  const parent = "agent:unrelated:parent";
+  const child = "agent:unrelated:child";
+  const store = new MemoryMarkerStore();
+  const host = createHost({
+    getSessionEntry: () => ({ spawnedBy: parent, parentSessionKey: parent }),
+  });
+  const runtime = new AgentGuardRuntime({
+    markerStore: store,
+    now: () => new Date(NOW),
+    sessionResolver: host.sessionResolver,
+  });
+  registerAgentGuardLifecycle(host.api, runtime);
+  await host.services[0].start({});
+  await runtime.activate(activation());
+  const writes = store.writes.length;
+
+  assert.equal(await evaluatePolicy(host, child), undefined);
+  assert.equal(store.writes.length, writes);
+  assert.deepEqual(await runtime.lookup(child), { state: "off" });
+});
+
+test("admission blocks a child whose proven parent remains in recovery", async () => {
+  const parent = "agent:guard:run.1";
+  const child = "agent:guard:child.1";
+  const store = new MemoryMarkerStore([marker()]);
+  const host = createHost({
+    getSessionEntry: () => ({ spawnedBy: parent, parentSessionKey: parent }),
+  });
+  const runtime = new AgentGuardRuntime({
+    markerStore: store,
+    now: () => new Date(NOW),
+    sessionResolver: host.sessionResolver,
+  });
+  registerAgentGuardLifecycle(host.api, runtime);
+  await host.services[0].start({});
+  const writes = store.writes.length;
+
+  assert.deepEqual(await evaluatePolicy(host, child), {
+    block: true,
+    blockReason: "[Agent Guard:NATIVE_GUARD_RECOVERY] Native guard recovery blocks this tool.",
+  });
+  assert.equal(store.writes.length, writes);
+});
+
+test("admission blocks partial, invalid, or contradictory host lineage", async (t) => {
+  const parent = "agent:guard:run.1";
+  for (const [name, entry] of [
+    ["missing spawnedBy", { parentSessionKey: parent }],
+    ["missing parentSessionKey", { spawnedBy: parent }],
+    ["conflict", { spawnedBy: parent, parentSessionKey: "agent:guard:other" }],
+    ["invalid", { spawnedBy: "../unsafe", parentSessionKey: "../unsafe" }],
+  ] as const) {
+    await t.test(name, async () => {
+      const store = new MemoryMarkerStore();
+      const host = createHost({ getSessionEntry: () => entry });
+      const runtime = new AgentGuardRuntime({
+        markerStore: store,
+        now: () => new Date(NOW),
+        sessionResolver: host.sessionResolver,
+      });
+      registerAgentGuardLifecycle(host.api, runtime);
+      await host.services[0].start({});
+      await runtime.activate(activation());
+      const writes = store.writes.length;
+
+      assert.deepEqual(await evaluatePolicy(host, "agent:guard:child.1"), {
+        block: true,
+        blockReason: "Native guard session inheritance could not be proven.",
+      });
+      assert.equal(store.writes.length, writes);
+    });
+  }
+});
+
+test("admission contains resolver, parent lookup, and active binding failures", async () => {
+  const missingResolverRuntime = new AgentGuardRuntime({
+    markerStore: new MemoryMarkerStore(),
+    now: () => new Date(NOW),
+  });
+  const missingResolverHost = createHost();
+  registerAgentGuardLifecycle(missingResolverHost.api, missingResolverRuntime);
+  await missingResolverHost.services[0].start({});
+  await missingResolverRuntime.activate(activation());
+  assert.deepEqual(await evaluatePolicy(missingResolverHost, "agent:guard:child.1"), {
+    block: true,
+    blockReason: "Native guard session inheritance could not be proven.",
+  });
+
+  const readFailureHost = createHost({
+    getSessionEntry: () => {
+      throw new Error("host session read failed");
+    },
+  });
+  const runtime = new AgentGuardRuntime({
+    markerStore: new MemoryMarkerStore(),
+    now: () => new Date(NOW),
+    sessionResolver: readFailureHost.sessionResolver,
+  });
+  registerAgentGuardLifecycle(readFailureHost.api, runtime);
+  await readFailureHost.services[0].start({});
+  await runtime.activate(activation());
+  assert.deepEqual(await evaluatePolicy(readFailureHost, "agent:guard:child.1"), {
+    block: true,
+    blockReason: "Native guard session inheritance could not be proven.",
+  });
+
+  const failingStore = new MemoryMarkerStore();
+  const bindingFailureHost = createHost({
+    getSessionEntry: () => ({
+      spawnedBy: "agent:guard:run.1",
+      parentSessionKey: "agent:guard:run.1",
+    }),
+  });
+  const failingRuntime = new AgentGuardRuntime({
+    markerStore: failingStore,
+    now: () => new Date(NOW),
+    sessionResolver: bindingFailureHost.sessionResolver,
+  });
+  registerAgentGuardLifecycle(bindingFailureHost.api, failingRuntime);
+  await bindingFailureHost.services[0].start({});
+  await failingRuntime.activate(activation());
+  failingStore.write = async () => {
+    throw new Error("marker binding failed");
+  };
+  assert.deepEqual(await evaluatePolicy(bindingFailureHost, "agent:guard:child.1"), {
+    block: true,
+    blockReason: "Native guard session inheritance could not be proven.",
+  });
+
+  const parentLookupHost = createHost({
+    getSessionEntry: () => ({
+      spawnedBy: "agent:guard:run.1",
+      parentSessionKey: "agent:guard:run.1",
+    }),
+  });
+  const parentLookupRuntime = new AgentGuardRuntime({
+    markerStore: new MemoryMarkerStore(),
+    now: () => new Date(NOW),
+    sessionResolver: parentLookupHost.sessionResolver,
+  });
+  registerAgentGuardLifecycle(parentLookupHost.api, parentLookupRuntime);
+  await parentLookupHost.services[0].start({});
+  await parentLookupRuntime.activate(activation());
+  const lookup = parentLookupRuntime.lookup.bind(parentLookupRuntime);
+  Object.defineProperty(parentLookupRuntime, "lookup", {
+    value: async (sessionKey: string) => sessionKey === "agent:guard:run.1"
+      ? Promise.reject(new Error("parent lookup leaked secret"))
+      : lookup(sessionKey),
+  });
+  assert.deepEqual(await evaluatePolicy(parentLookupHost, "agent:guard:child.1"), {
+    block: true,
+    blockReason: "Native guard session inheritance could not be proven.",
+  });
+
+  const inconsistentHost = createHost({
+    getSessionEntry: () => ({
+      spawnedBy: "agent:guard:run.1",
+      parentSessionKey: "agent:guard:run.1",
+    }),
+  });
+  const inconsistentRuntime = new AgentGuardRuntime({
+    markerStore: new MemoryMarkerStore(),
+    now: () => new Date(NOW),
+    sessionResolver: inconsistentHost.sessionResolver,
+  });
+  registerAgentGuardLifecycle(inconsistentHost.api, inconsistentRuntime);
+  await inconsistentHost.services[0].start({});
+  await inconsistentRuntime.activate(activation());
+  Object.defineProperty(inconsistentRuntime, "bindChild", { value: async () => false });
+  assert.deepEqual(await evaluatePolicy(inconsistentHost, "agent:guard:child.1"), {
+    block: true,
+    blockReason: "Native guard session inheritance could not be proven.",
+  });
+});
+
+test("spawn hook rejects contradictory child identities before binding", async () => {
+  const store = new MemoryMarkerStore();
+  const runtime = new AgentGuardRuntime({ markerStore: store, now: () => new Date(NOW) });
+  const host = createHost();
+  registerAgentGuardLifecycle(host.api, runtime);
+  await host.services[0].start({});
+  await runtime.activate(activation());
+  const writes = store.writes.length;
+
+  await hook(host, "subagent_spawned")(spawnedEvent("agent:guard:child.1"), {
+    requesterSessionKey: "agent:guard:run.1",
+    childSessionKey: "agent:guard:other-child",
+  });
+
+  assert.equal(store.writes.length, writes);
+  assert.deepEqual(await runtime.lookup("agent:guard:child.1"), { state: "off" });
+});
+
+test("shutdown, restart, and compaction drains preserve root and child markers", async () => {
+  for (const reason of ["shutdown", "restart", "compaction"] as const) {
+    const store = new MemoryMarkerStore();
+    const runtime = new AgentGuardRuntime({ markerStore: store, now: () => new Date(NOW) });
+    const host = createHost();
+    registerAgentGuardLifecycle(host.api, runtime);
+    await host.services[0].start({});
+    await runtime.activate(activation());
+    await runtime.bindChild("lease.1", "agent:guard:run.1", "agent:guard:child.1");
+    const successor: SessionStartEvent = {
+      sessionId: "session.successor",
+      sessionKey: "agent:guard:run.1",
+      resumedFrom: "session.original",
+    };
+    const ended: SessionEndEvent = {
+      sessionId: "session.original",
+      sessionKey: "agent:guard:run.1",
+      messageCount: 8,
+      reason,
+      ...(reason === "compaction"
+        ? { nextSessionId: successor.sessionId, nextSessionKey: successor.sessionKey }
+        : {}),
+    };
+
+    await hook(host, "session_end")(ended, {
+      sessionId: ended.sessionId,
+      sessionKey: ended.sessionKey,
+    });
+
+    assert.equal(successor.sessionKey, ended.nextSessionKey ?? successor.sessionKey);
+    assert.equal((await runtime.lookup("agent:guard:run.1")).state, "active", reason);
+    assert.equal((await runtime.lookup("agent:guard:child.1")).state, "active", reason);
+    assert.equal(store.markers.has("lease.1"), true, reason);
+    await host.services[0].stop?.({});
+
+    assert.equal(store.removes.length, 0, reason);
+    const restarted = new AgentGuardRuntime({ markerStore: store, now: () => new Date(NOW) });
+    await restarted.start();
+    assert.equal((await restarted.lookup("agent:guard:run.1")).state, "recovery", reason);
+    assert.equal((await restarted.lookup("agent:guard:child.1")).state, "recovery", reason);
+  }
+});
+
+test("terminal session reasons tombstone the guarded tree until explicit revoke", async (t) => {
+  const terminalReasons: SessionEndReason[] = ["new", "reset", "idle", "daily", "deleted", "unknown"];
+  for (const reason of terminalReasons) {
+    await t.test(reason, async () => {
+      const store = new MemoryMarkerStore();
+      const runtime = new AgentGuardRuntime({ markerStore: store, now: () => new Date(NOW) });
+      const host = createHost();
+      registerAgentGuardLifecycle(host.api, runtime);
+      await host.services[0].start({});
+      await runtime.activate(activation());
+      await runtime.bindChild("lease.1", "agent:guard:run.1", "agent:guard:child.1");
+
+      await hook(host, "session_end")({
+        sessionId: `session.${reason}`,
+        sessionKey: "agent:guard:run.1",
+        messageCount: 3,
+        reason,
+      }, {
+        sessionId: `session.${reason}`,
+        sessionKey: "agent:guard:run.1",
+      });
+
+      assert.equal((await runtime.lookup("agent:guard:run.1")).state, "root_ended");
+      assert.equal((await runtime.lookup("agent:guard:child.1")).state, "root_ended");
+      assert.deepEqual(await runtime.beforeToolCall({
+        toolName: "exec",
+        params: { command: "echo blocked" },
+        toolCallId: `call.root-ended.${reason}`,
+      }, {
+        toolName: "exec",
+        sessionKey: "agent:guard:run.1",
+        toolCallId: `call.root-ended.${reason}`,
+      }), {
+        block: true,
+        blockReason: "[Agent Guard:NATIVE_GUARD_ROOT_ENDED] Native guard root session has ended.",
+      });
+      assert.deepEqual(store.removes, []);
+      assert.equal(await runtime.revoke("lease.1"), true);
+      assert.deepEqual(await runtime.lookup("agent:guard:run.1"), { state: "off" });
+      assert.deepEqual(await runtime.lookup("agent:guard:child.1"), { state: "off" });
+      assert.deepEqual(store.removes, ["lease.1"]);
+    });
+  }
+});
+
+test("spawn binds only a child whose requester proves an active parent lease", async () => {
+  const store = new MemoryMarkerStore();
+  const runtime = new AgentGuardRuntime({ markerStore: store, now: () => new Date(NOW) });
+  const host = createHost();
+  registerAgentGuardLifecycle(host.api, runtime);
+  await host.services[0].start({});
+  await runtime.activate(activation());
+  const spawned = hook(host, "subagent_spawned");
+
+  await spawned(spawnedEvent("agent:guard:child.1"), {
+    requesterSessionKey: "agent:guard:run.1",
+    childSessionKey: "agent:guard:child.1",
+  });
+
+  assert.equal((await runtime.lookup("agent:guard:child.1")).state, "active");
+  assert.deepEqual(store.writes.at(-1)?.childSessionKeys, ["agent:guard:child.1"]);
+  const writesAfterBinding = store.writes.length;
+
+  await spawned(spawnedEvent("agent:guard:unknown-child"), {
+    requesterSessionKey: "agent:guard:unknown-parent",
+    childSessionKey: "agent:guard:unknown-child",
+  });
+  await spawned(spawnedEvent("agent:guard:no-requester"), {});
+  await spawned(spawnedEvent("agent:guard:child.1"), {
+    requesterSessionKey: "agent:guard:run.1",
+    childSessionKey: "agent:guard:child.1",
+  });
+
+  assert.equal(store.writes.length, writesAfterBinding);
+  assert.deepEqual(await runtime.lookup("agent:guard:unknown-child"), { state: "off" });
+  assert.deepEqual(await runtime.lookup("agent:guard:no-requester"), { state: "off" });
+});
+
+test("spawn never binds from a recovery marker", async () => {
+  const store = new MemoryMarkerStore([marker()]);
+  const runtime = new AgentGuardRuntime({ markerStore: store, now: () => new Date(NOW) });
+  const host = createHost();
+  registerAgentGuardLifecycle(host.api, runtime);
+  await host.services[0].start({});
+
+  await hook(host, "subagent_spawned")(spawnedEvent("agent:guard:child.1"), {
+    requesterSessionKey: "agent:guard:run.1",
+    childSessionKey: "agent:guard:child.1",
+  });
+
+  assert.equal((await runtime.lookup("agent:guard:run.1")).state, "recovery");
+  assert.deepEqual(await runtime.lookup("agent:guard:child.1"), { state: "off" });
+  assert.equal(store.writes.length, 0);
+});
+
+test("subagent and session end hooks remove trees idempotently with event identity precedence", async () => {
+  const store = new MemoryMarkerStore();
+  const runtime = new AgentGuardRuntime({ markerStore: store, now: () => new Date(NOW) });
+  const host = createHost();
+  registerAgentGuardLifecycle(host.api, runtime);
+  await host.services[0].start({});
+  await runtime.activate(activation());
+  await hook(host, "subagent_spawned")(spawnedEvent("agent:guard:child.1"), {
+    requesterSessionKey: "agent:guard:run.1",
+    childSessionKey: "agent:guard:child.1",
+  });
+
+  const ended = hook(host, "subagent_ended");
+  await ended({
+    targetSessionKey: "agent:guard:child.1",
+    targetKind: "subagent",
+    reason: "completed",
+  }, {});
+  const writesAfterEnd = store.writes.length;
+  await ended({
+    targetSessionKey: "agent:guard:child.1",
+    targetKind: "subagent",
+    reason: "duplicate",
+  }, {});
+  assert.equal(store.writes.length, writesAfterEnd);
+  assert.deepEqual(await runtime.lookup("agent:guard:child.1"), { state: "off" });
+
+  await hook(host, "session_end")(
+    { sessionKey: "agent:guard:run.1" },
+    { sessionKey: "agent:guard:wrong-context" },
+  );
+  assert.equal((await runtime.lookup("agent:guard:run.1")).state, "root_ended");
+  assert.deepEqual(await runtime.beforeToolCall({
+    toolName: "exec",
+    params: { command: "echo blocked" },
+    toolCallId: "call.root-ended",
+  }, {
+    toolName: "exec",
+    sessionKey: "agent:guard:run.1",
+    toolCallId: "call.root-ended",
+  }), {
+    block: true,
+    blockReason: "[Agent Guard:NATIVE_GUARD_ROOT_ENDED] Native guard root session has ended.",
+  });
+  assert.deepEqual(store.removes, []);
+  assert.equal(await runtime.revoke("lease.1"), true);
+  assert.deepEqual(await runtime.lookup("agent:guard:run.1"), { state: "off" });
+  assert.deepEqual(store.removes, ["lease.1"]);
+});
+
+test("service stop aborts immediately, flushes marker writes, and rejects later writes", async () => {
+  const store = new BlockingMarkerStore();
+  const timers = fakeTimers();
+  const runtime = new AgentGuardRuntime({
+    markerStore: store,
+    now: () => new Date(NOW),
+    scheduleTimeout: timers.schedule,
+    cancelTimeout: timers.cancel,
+  });
+  const host = createHost();
+  registerAgentGuardLifecycle(host.api, runtime);
+  await host.services[0].start({});
+  store.blockWrites();
+  const activating = runtime.activate(activation());
+  await store.writeStarted;
+
+  const stopping = host.services[0].stop!({});
+
+  assert.equal(runtime.abortSignal.aborted, true);
+  assert.deepEqual(timers.delays(), [4_000]);
+  assert.equal(store.writes.length, 0);
+  store.releaseWrites();
+  await activating;
+  await stopping;
+  await assert.rejects(runtime.bindChild(
+    "lease.1",
+    "agent:guard:run.1",
+    "agent:guard:late-child",
+  ), /stopped/i);
+  assert.equal(store.writes.length, 1);
+  assert.equal(timers.activeCount(), 0);
+});
+
+test("four-second stop timeout prevents queued marker operations from writing later", async () => {
+  const store = new BlockingMarkerStore();
+  const timers = fakeTimers();
+  const runtime = new AgentGuardRuntime({
+    markerStore: store,
+    now: () => new Date(NOW),
+    scheduleTimeout: timers.schedule,
+    cancelTimeout: timers.cancel,
+  });
+  await runtime.start();
+  store.blockWrites();
+  const first = runtime.activate(activation());
+  await store.writeStarted;
+  const queued = runtime.activate(activation({
+    leaseId: "lease.2",
+    rootSessionKey: "agent:guard:run.2",
+    credential: "credential.2",
+  }));
+
+  const stopping = runtime.stop();
+  assert.deepEqual(timers.delays(), [4_000]);
+  timers.fireAll();
+  await stopping;
+  assert.equal(runtime.abortSignal.aborted, true);
+  await assert.rejects(runtime.activate(activation({ leaseId: "lease.3" })), /stopped/i);
+
+  store.releaseWrites();
+  await first;
+  await assert.rejects(queued, /stopped/i);
+  assert.deepEqual(store.writes.map((entry) => entry.leaseId), ["lease.1"]);
+});
+
+test("stop during startup waits for marker recovery and cannot return to running", async () => {
+  const store = new BlockingLoadMarkerStore();
+  const timers = fakeTimers();
+  const runtime = new AgentGuardRuntime({
+    markerStore: store,
+    now: () => new Date(NOW),
+    scheduleTimeout: timers.schedule,
+    cancelTimeout: timers.cancel,
+  });
+  const starting = runtime.start();
+  await store.loadStarted;
+
+  const stopping = runtime.stop();
+
+  assert.equal(runtime.abortSignal.aborted, true);
+  assert.deepEqual(timers.delays(), [4_000]);
+  store.releaseLoad();
+  await starting;
+  await stopping;
+  assert.deepEqual(await runtime.status(), {
+    coverage: "off",
+    finalizerAssurance: "unverified",
+    activeLeaseCount: 0,
+  });
+  await assert.rejects(runtime.activate(activation()), /stopped/i);
+  assert.equal(timers.activeCount(), 0);
+});
+
+test("internal stop deadline completes before the host five-second deadline", async () => {
+  const store = new BlockingMarkerStore();
+  const timers = fakeTimers();
+  const runtime = new AgentGuardRuntime({
+    markerStore: store,
+    now: () => new Date(NOW),
+    scheduleTimeout: timers.schedule,
+    cancelTimeout: timers.cancel,
+  });
+  await runtime.start();
+  store.blockWrites();
+  const activating = runtime.activate(activation());
+  await store.writeStarted;
+  let hostTimedOut = false;
+
+  const stopping = runtime.stop();
+  timers.schedule(() => {
+    hostTimedOut = true;
+  }, 5_000);
+
+  assert.deepEqual(timers.delays(), [4_000, 5_000]);
+  timers.fireDelay(4_000);
+  await stopping;
+  assert.equal(hostTimedOut, false);
+  timers.fireDelay(5_000);
+  assert.equal(hostTimedOut, true);
+  store.releaseWrites();
+  await activating;
+});
+
+test("spawn hook does not resolve before the child marker write completes", async () => {
+  const store = new BlockingMarkerStore();
+  const runtime = new AgentGuardRuntime({ markerStore: store, now: () => new Date(NOW) });
+  const host = createHost();
+  registerAgentGuardLifecycle(host.api, runtime);
+  await host.services[0].start({});
+  await runtime.activate(activation());
+  store.blockWrites();
+  let settled = false;
+
+  const binding = Promise.resolve(hook(host, "subagent_spawned")(
+    spawnedEvent("agent:guard:child.1"),
+    {
+      requesterSessionKey: "agent:guard:run.1",
+      childSessionKey: "agent:guard:child.1",
+    },
+  )).then(() => {
+    settled = true;
+  });
+  await store.writeStarted;
+
+  assert.equal(settled, false);
+  store.releaseWrites();
+  await binding;
+  assert.equal(settled, true);
+  assert.equal((await runtime.lookup("agent:guard:child.1")).state, "active");
+});
+
+test("status projects an allowlist and never returns secrets, policy contents, or the session tree", async () => {
+  const runtime = new AgentGuardRuntime({
+    markerStore: new MemoryMarkerStore(),
+    now: () => new Date(NOW),
+  });
+  Object.defineProperty(runtime, "status", {
+    value: async () => ({
+      coverage: "active",
+      finalizerAssurance: "unverified",
+      activeLeaseCount: 1,
+      credential: "status-credential-secret",
+      decisionPrivateKey: "-----BEGIN PRIVATE KEY-----",
+      detail: "policies: allow every tool",
+      activeLeases: [{
+        leaseId: "lease.1",
+        leaseEpoch: 1,
+        rootSessionKey: "agent:main:main",
+        scope: { kind: "agent", agentId: "main" },
+        mode: "supervision",
+        policyPackId: "policy.1",
+        policyPackDigest: "a".repeat(64),
+        expiresAt: "2026-08-02T00:05:00.000Z",
+        credential: "list-credential-secret",
+        decisionPublicKey: PUBLIC_KEY,
+      }],
+      activeLease: {
+        leaseId: "lease.1",
+        leaseEpoch: 1,
+        rootSessionKey: "agent:guard:run.1",
+        scope: { kind: "session", sessionKey: "agent:guard:run.1" },
+        mode: "supervision",
+        policyPackId: "policy.1",
+        policyPackDigest: "a".repeat(64),
+        expiresAt: "2026-08-02T00:05:00.000Z",
+        credential: "nested-credential-secret",
+        decisionPublicKey: PUBLIC_KEY,
+        backendUrl: "http://127.0.0.1/private",
+        childSessionKeys: ["agent:guard:child.1"],
+      },
+    }),
+  });
+  const host = createHost();
+  registerControlRoutes(host.api, runtime);
+
+  const response = await invoke(
+    host.routes.find((route) => route.path.endsWith("/status"))!,
+    { method: "GET" },
+  );
+
+  assert.deepEqual(response.body, {
+    coverage: "active",
+    finalizerAssurance: "unverified",
+    activeLeaseCount: 1,
+    activeLeases: [{
+      leaseId: "lease.1",
+      leaseEpoch: 1,
+      rootSessionKey: "agent:main:main",
+      scope: { kind: "agent", agentId: "main" },
+      mode: "supervision",
+      policyPackId: "policy.1",
+      policyPackDigest: "a".repeat(64),
+      expiresAt: "2026-08-02T00:05:00.000Z",
+    }],
+    activeLease: {
+      leaseId: "lease.1",
+      leaseEpoch: 1,
+      rootSessionKey: "agent:guard:run.1",
+      scope: { kind: "session", sessionKey: "agent:guard:run.1" },
+      mode: "supervision",
+      policyPackId: "policy.1",
+      policyPackDigest: "a".repeat(64),
+      expiresAt: "2026-08-02T00:05:00.000Z",
+    },
+  });
+  assert.doesNotMatch(
+    response.rawBody,
+    /credential|private key|decisionPublicKey|backendUrl|childSessionKeys|policies/i,
+  );
+});
+
+test("unexpected route failures use a fixed credential-free error", async () => {
+  const store = new MemoryMarkerStore();
+  store.write = async () => {
+    throw new Error("write exposed credential-secret and -----BEGIN PRIVATE KEY-----");
+  };
+  const runtime = new AgentGuardRuntime({ markerStore: store, now: () => new Date(NOW) });
+  await runtime.start();
+  const host = createHost();
+  registerControlRoutes(host.api, runtime);
+
+  const response = await invoke(
+    host.routes.find((route) => route.path.endsWith("/activate"))!,
+    { body: activation() },
+  );
+
+  assert.equal(response.statusCode, 500);
+  assert.deepEqual(response.body, {
+    error: {
+      code: "NATIVE_GUARD_INTERNAL",
+      message: "Native guard control operation failed.",
+    },
+  });
+  assert.doesNotMatch(response.rawBody, /credential-secret|private key/i);
+});
+
+test("revoke rejects schema mismatches and invalid lease identities", async (t) => {
+  for (const body of [
+    {},
+    { leaseId: "lease.1", credential: "must-not-echo" },
+    { leaseId: "" },
+    { leaseId: 1 },
+  ]) {
+    await t.test(JSON.stringify(body), async () => {
+      const { route } = await routeFixture("/agent-guard/native-guard/v1/leases/revoke");
+      const response = await invoke(route, { body });
+      assert.equal(response.statusCode, 400);
+      assert.equal((response.body as { error: { code: string } }).error.code, "INVALID_REQUEST");
+      assert.equal(response.rawBody.includes("must-not-echo"), false);
+    });
+  }
+});
+
+test("mutations require a strict base64url idempotency key before registry work", async (t) => {
+  for (const key of [null, "", "short", "+".repeat(43), "A".repeat(44)]) {
+    await t.test(String(key), async () => {
+      const { route, store } = await routeFixture(
+        "/agent-guard/native-guard/v1/leases/activate",
+      );
+      const response = await invoke(route, { body: activation(), idempotencyKey: key });
+      assert.equal(response.statusCode, 400);
+      assert.deepEqual(response.body, {
+        error: {
+          code: "INVALID_IDEMPOTENCY_KEY",
+          message: "Native guard idempotency key is invalid.",
+        },
+      });
+      assert.equal(store.writes.length, 0);
+    });
+  }
+});
+
+test("successful mutation replay returns the first projected response without executing again", async () => {
+  const { route, runtime, store } = await routeFixture(
+    "/agent-guard/native-guard/v1/leases/activate",
+  );
+  const key = "R".repeat(43);
+  const first = await invoke(route, { body: activation(), idempotencyKey: key });
+  await runtime.revoke("lease.1");
+
+  const replay = await invoke(route, { body: activation(), idempotencyKey: key });
+
+  assert.equal(first.statusCode, 200);
+  assert.deepEqual(replay, first);
+  assert.equal(store.writes.length, 1);
+  assert.deepEqual(await runtime.lookup("agent:guard:run.1"), { state: "off" });
+});
+
+test("one idempotency key cannot cross request digests or route operations", async () => {
+  const store = new MemoryMarkerStore();
+  const runtime = new AgentGuardRuntime({ markerStore: store, now: () => new Date(NOW) });
+  await runtime.start();
+  const host = createHost();
+  registerControlRoutes(host.api, runtime);
+  const routes = new Map(host.routes.map((route) => [route.path, route]));
+  const key = "C".repeat(43);
+  await invoke(routes.get("/agent-guard/native-guard/v1/leases/activate")!, {
+    body: activation(),
+    idempotencyKey: key,
+  });
+
+  for (const [route, body] of [
+    [
+      routes.get("/agent-guard/native-guard/v1/leases/activate")!,
+      activation({ leaseId: "lease.2", rootSessionKey: "agent:guard:run.2" }),
+    ],
+    [
+      routes.get("/agent-guard/native-guard/v1/leases/renew")!,
+      activation({ leaseEpoch: 2, credential: "rotated.2" }),
+    ],
+  ] as const) {
+    const response = await invoke(route, { body, idempotencyKey: key });
+    assert.equal(response.statusCode, 409);
+    assert.equal(
+      (response.body as { error: { code: string } }).error.code,
+      "IDEMPOTENCY_CONFLICT",
+    );
+  }
+  assert.equal(store.writes.length, 1);
+});
+
+test("concurrent identical mutation requests singleflight one marker transaction", async () => {
+  const store = new BlockingMarkerStore();
+  const runtime = new AgentGuardRuntime({ markerStore: store, now: () => new Date(NOW) });
+  await runtime.start();
+  const host = createHost();
+  registerControlRoutes(host.api, runtime);
+  const route = host.routes.find((candidate) => candidate.path.endsWith("/activate"))!;
+  const key = "S".repeat(43);
+  store.blockWrites();
+
+  const requests = [
+    invoke(route, { body: activation(), idempotencyKey: key }),
+    invoke(route, { body: activation(), idempotencyKey: key }),
+  ];
+  await store.writeStarted;
+  store.releaseWrites();
+  const responses = await Promise.all(requests);
+
+  assert.deepEqual(responses[1].body, responses[0].body);
+  assert.deepEqual(store.writes.map((entry) => entry.leaseId), ["lease.1"]);
+});
+
+test("concurrent 5xx shares one failed transaction then permits a safe retry", async () => {
+  const store = new MemoryMarkerStore();
+  const write = store.write.bind(store);
+  let writeCalls = 0;
+  store.write = async (value) => {
+    writeCalls += 1;
+    if (writeCalls === 1) throw new Error("transient marker failure");
+    await write(value);
+  };
+  const runtime = new AgentGuardRuntime({ markerStore: store, now: () => new Date(NOW) });
+  await runtime.start();
+  const host = createHost();
+  registerControlRoutes(host.api, runtime);
+  const route = host.routes.find((candidate) => candidate.path.endsWith("/activate"))!;
+  const key = "F".repeat(43);
+
+  const failed = await Promise.all([
+    invoke(route, { body: activation(), idempotencyKey: key }),
+    invoke(route, { body: activation(), idempotencyKey: key }),
+  ]);
+
+  assert.deepEqual(failed.map((response) => response.statusCode), [500, 500]);
+  assert.equal(writeCalls, 1);
+  const retry = await invoke(route, { body: activation(), idempotencyKey: key });
+  assert.equal(retry.statusCode, 200);
+  assert.equal(writeCalls, 2);
+});
+
+test("idempotency cache evicts the oldest settled entry at its configured bound", async () => {
+  const runtime = new AgentGuardRuntime({
+    markerStore: new MemoryMarkerStore(),
+    now: () => new Date(NOW),
+  });
+  let calls = 0;
+  Object.defineProperty(runtime, "activate", {
+    value: async () => {
+      calls += 1;
+      return {
+        coverage: "off",
+        finalizerAssurance: "unverified",
+        activeLeaseCount: 0,
+      };
+    },
+  });
+  const host = createHost();
+  registerControlRoutes(host.api, runtime, { idempotencyCapacity: 2 });
+  const route = host.routes.find((candidate) => candidate.path.endsWith("/activate"))!;
+  const bodies = ["lease.1", "lease.2", "lease.3"].map((leaseId, index) => activation({
+    leaseId,
+    rootSessionKey: `agent:guard:run.${String(index + 1)}`,
+  }));
+  const keys = ["1".repeat(43), "2".repeat(43), "3".repeat(43)];
+  for (let index = 0; index < bodies.length; index += 1) {
+    await invoke(route, { body: bodies[index], idempotencyKey: keys[index] });
+  }
+  assert.equal(calls, 3);
+
+  await invoke(route, { body: bodies[1], idempotencyKey: keys[1] });
+  assert.equal(calls, 3);
+  await invoke(route, { body: bodies[0], idempotencyKey: keys[0] });
+  assert.equal(calls, 4);
+});
+
+test("plugin entry wires controls and lifecycle, and root script runs all plugin suites in order", async () => {
+  const indexSource = await readFile(new URL("./index.ts", import.meta.url), "utf8");
+  assert.match(indexSource, /register:\s*\(api\)\s*=>\s*registerAgentGuardPlugin\(api\)/);
+  assert.doesNotMatch(indexSource, /register:\s*\(\)\s*=>\s*undefined/);
+  assert.doesNotMatch(indexSource, /export const runtime|new AgentGuardRuntime/);
+
+  const rootPackage = JSON.parse(
+    await readFile(new URL("../../../package.json", import.meta.url), "utf8"),
+  ) as { scripts?: Record<string, string> };
+  const command = rootPackage.scripts?.["test:native-guard:plugin"] ?? "";
+  const registryIndex = command.indexOf("leaseRegistry.test.ts");
+  const routesIndex = command.indexOf("controlRoutes.test.ts");
+  const runtimeIndex = command.indexOf("runtime.test.ts");
+  const spoolIndex = command.indexOf("eventSpool.test.ts");
+  assert.ok(registryIndex >= 0);
+  assert.ok(routesIndex > registryIndex);
+  assert.ok(runtimeIndex > routesIndex);
+  assert.ok(spoolIndex > runtimeIndex);
+
+  const manifest = JSON.parse(
+    await readFile(new URL("../openclaw.plugin.json", import.meta.url), "utf8"),
+  ) as { hookNames?: string[] };
+  assert.deepEqual(manifest.hookNames, ["before_tool_call", "after_tool_call"]);
+});
+
+test("pinned void registrars install handlers but quarantine every guarded mutation", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "agent-guard-pinned-registration-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const markerDir = join(parent, "markers");
+  const markerPath = join(markerDir, "lease.1.json");
+  await new FileMarkerStore(markerDir).write(marker({ expiresAt: "2099-01-01T00:00:00.000Z" }));
+  const originalMarker = await readFile(markerPath, "utf8");
+  const host = createHost({ pluginConfig: { markerDir } });
+
+  const runtime = registerAgentGuardPlugin(host.api);
+
+  assert.deepEqual(host.registrations, EXPECTED_REGISTRATIONS);
+  assert.equal(host.hooks.filter((entry) => entry.name === "before_tool_call").length, 1);
+  assert.equal(host.hooks.filter((entry) => entry.name === "after_tool_call").length, 1);
+  assert.deepEqual(
+    host.hooks.find((entry) => entry.name === "before_tool_call")?.options,
+    { priority: -1_000_000, timeoutMs: 5_000 },
+  );
+  assert.deepEqual(
+    host.hooks.find((entry) => entry.name === "after_tool_call")?.options,
+    { priority: -1_000_000, timeoutMs: 1_000 },
+  );
+  assert.equal(host.policies.length, 1);
+  assert.equal(host.services.length, 1);
+  assert.equal(host.routes.length, 4);
+  await host.services[0].start({});
+  assert.equal((await runtime.lookup("agent:guard:run.1")).state, "recovery");
+  assert.deepEqual(await runtime.status(), {
+    coverage: "unsupported",
+    finalizerAssurance: "unverified",
+    activeLeaseCount: 0,
+    reasonCode: "TRUSTED_POLICY_UNATTESTED",
+  });
+  assert.deepEqual(
+    await hook(host, "before_tool_call")(
+      { toolName: "exec", params: { command: "echo guarded" }, toolCallId: "call.1" },
+      { agentId: "main", sessionKey: "agent:guard:run.1", toolName: "exec", toolCallId: "call.1" },
+    ),
+    {
+      block: true,
+      blockReason: "[Agent Guard:NATIVE_GUARD_RECOVERY] Native guard recovery blocks this tool.",
+    },
+  );
+  const routes = new Map(host.routes.map((route) => [route.path, route]));
+  for (const [path, body] of [
+    ["/agent-guard/native-guard/v1/leases/activate", liveActivation()],
+    ["/agent-guard/native-guard/v1/leases/renew", liveActivation({
+      leaseEpoch: 2,
+      credential: "rotated-credential",
+    })],
+  ] as const) {
+    const response = await invoke(routes.get(path)!, { body });
+    assert.equal(response.statusCode, 503);
+    assert.deepEqual(response.body, {
+      error: {
+        code: "TRUSTED_POLICY_UNATTESTED",
+        message: "Native guard trusted contributions are unattested.",
+      },
+    });
+    assert.equal(await readFile(markerPath, "utf8"), originalMarker);
+  }
+  const status = await invoke(routes.get("/agent-guard/native-guard/v1/status")!, { method: "GET" });
+  assert.deepEqual(status.body, await runtime.status());
+
+  const revoked = await invoke(routes.get("/agent-guard/native-guard/v1/leases/revoke")!, {
+    body: { leaseId: "lease.1" },
+  });
+  assert.equal(revoked.statusCode, 200);
+  assert.equal((revoked.body as { coverage: string }).coverage, "unsupported");
+  await assert.rejects(readFile(markerPath, "utf8"), { code: "ENOENT" });
+});
+
+test("future true registrars remain conditional without trusted approval recheck attestation", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "agent-guard-future-registration-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const host = createHost({
+    pluginConfig: { markerDir: join(parent, "markers") },
+    registrationResult: () => true,
+  });
+
+  const runtime = registerAgentGuardPlugin(host.api);
+  await host.services[0].start({});
+  const activate = host.routes.find((route) => route.path.endsWith("/activate"));
+  assert.ok(activate);
+
+  const response = await invoke(activate, { body: liveActivation() });
+
+  assert.deepEqual(host.registrations, EXPECTED_REGISTRATIONS);
+  assert.equal(response.statusCode, 200);
+  assert.equal((response.body as { coverage: string }).coverage, "conditional");
+  assert.equal(
+    (response.body as { reasonCode?: string }).reasonCode,
+    "NATIVE_APPROVAL_UNATTESTED",
+  );
+  assert.equal((await runtime.lookup("agent:guard:run.1")).state, "active");
+});
+
+test("future true registrars remain conditional with false approval recheck attestation", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "agent-guard-false-attestation-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const host = createHost({
+    pluginConfig: { markerDir: join(parent, "markers") },
+    registrationResult: () => true,
+    nativeGuard: {
+      postApprovalLeaseRecheck: false,
+      paramsProvenance: "json-only",
+    },
+  });
+
+  const runtime = registerAgentGuardPlugin(host.api);
+  await host.services[0].start({});
+  const activate = host.routes.find((route) => route.path.endsWith("/activate"));
+  assert.ok(activate);
+
+  const response = await invoke(activate, { body: liveActivation() });
+
+  assert.deepEqual(host.registrations, EXPECTED_REGISTRATIONS);
+  assert.equal(response.statusCode, 200);
+  assert.equal((response.body as { coverage: string }).coverage, "conditional");
+  assert.equal(
+    (response.body as { reasonCode?: string }).reasonCode,
+    "NATIVE_APPROVAL_UNATTESTED",
+  );
+  assert.equal((await runtime.lookup("agent:guard:run.1")).state, "active");
+});
+
+test("future true registrars become active with trusted approval recheck attestation", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "agent-guard-attested-registration-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const host = createHost({
+    pluginConfig: { markerDir: join(parent, "markers") },
+    registrationResult: () => true,
+    nativeGuard: {
+      postApprovalLeaseRecheck: true,
+      paramsProvenance: "json-only",
+    },
+  });
+
+  const runtime = registerAgentGuardPlugin(host.api);
+  await host.services[0].start({});
+  const activate = host.routes.find((route) => route.path.endsWith("/activate"));
+  assert.ok(activate);
+
+  const response = await invoke(activate, { body: liveActivation() });
+
+  assert.deepEqual(host.registrations, EXPECTED_REGISTRATIONS);
+  assert.equal(response.statusCode, 200);
+  assert.equal((response.body as { coverage: string }).coverage, "active");
+  assert.equal((response.body as { reasonCode?: string }).reasonCode, undefined);
+  assert.equal((await runtime.lookup("agent:guard:run.1")).state, "active");
+});
+
+test("every critical registration requires an explicit true live attestation", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "agent-guard-partial-registration-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  for (const [index, missing] of EXPECTED_REGISTRATIONS.entries()) {
+    await t.test(missing, async () => {
+      const markerDir = join(parent, `missing-${String(index)}`);
+      const host = createHost({
+        pluginConfig: { markerDir },
+        registrationResult: (contribution) => contribution === missing ? undefined : true,
+      });
+      const runtime = registerAgentGuardPlugin(host.api);
+      await host.services[0].start({});
+      const activate = host.routes.find((route) => route.path.endsWith("/activate"));
+      assert.ok(activate);
+
+      const response = await invoke(activate, { body: liveActivation() });
+
+      assert.equal(response.statusCode, 503);
+      assert.deepEqual(await new FileMarkerStore(markerDir).load(), []);
+      assert.deepEqual(await runtime.lookup("agent:guard:run.1"), { state: "off" });
+    });
+  }
+
+  const falseHost = createHost({
+    pluginConfig: { markerDir: join(parent, "false-policy") },
+    registrationResult: (contribution) =>
+      contribution === "policy:agent-guard-admission" ? false : true,
+  });
+  registerAgentGuardPlugin(falseHost.api);
+  await falseHost.services[0].start({});
+  const activate = falseHost.routes.find((route) => route.path.endsWith("/activate"));
+  assert.ok(activate);
+  assert.equal((await invoke(activate, { body: liveActivation() })).statusCode, 503);
+});
+
+test("plugin registration consumes markerDir and creates a fresh runtime per host", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "agent-guard-control-registration-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const markerDir = join(parent, "custom-markers");
+  await new FileMarkerStore(markerDir).write(marker({ expiresAt: "2099-01-01T00:00:00.000Z" }));
+  const customHost = createHost({ pluginConfig: { markerDir } });
+
+  const customRuntime = registerAgentGuardPlugin(customHost.api);
+  await customHost.services[0].start({});
+
+  assert.equal((await customRuntime.lookup("agent:guard:run.1")).state, "recovery");
+  const otherHost = createHost();
+  const otherRuntime = registerAgentGuardPlugin(otherHost.api);
+  assert.notEqual(otherRuntime, customRuntime);
+  assert.equal(otherHost.services.length, 1);
+  assert.equal(otherHost.policies.length, 1);
+});
+
+test("invalid markerDir fails registration before any host capability is installed", () => {
+  for (const markerDir of ["", "   ", "x".repeat(4_097), 42, "bad\0path"]) {
+    const host = createHost({ pluginConfig: { markerDir } });
+    assert.throws(() => registerAgentGuardPlugin(host.api), /markerDir/);
+    assert.equal(host.routes.length, 0);
+    assert.equal(host.services.length, 0);
+    assert.equal(host.hooks.length, 0);
+    assert.equal(host.policies.length, 0);
+  }
+});
+
+test("trusted policy registration failures propagate instead of silently degrading", () => {
+  const host = createHost();
+  host.api.registerTrustedToolPolicy = () => {
+    throw new Error("duplicate trusted policy");
+  };
+
+  assert.throws(() => registerAgentGuardPlugin(host.api), /duplicate trusted policy/);
+});
+
+test("after hook registration failure aborts registration before lifecycle and routes", async () => {
+  const host = createHost();
+  const registeredBeforeThrow: string[] = [];
+  host.api.on = ((
+    name: string,
+    handler: HookHandler,
+    options?: { priority?: number; timeoutMs?: number },
+  ) => {
+    registeredBeforeThrow.push(`hook:${name}`);
+    host.hooks.push({ name, handler, options });
+    if (name === "after_tool_call") throw new Error("after registrar failed");
+    return true;
+  }) as typeof host.api.on;
+
+  assert.throws(() => registerAgentGuardPlugin(host.api), /after registrar failed/);
+  assert.deepEqual(registeredBeforeThrow, ["hook:before_tool_call", "hook:after_tool_call"]);
+  assert.equal(host.services.length, 0);
+  assert.equal(host.policies.length, 0);
+  assert.equal(host.routes.length, 0);
+  assert.deepEqual(
+    await hook(host, "before_tool_call")(
+      { toolName: "read", params: {}, toolCallId: "call-after-failed" },
+      { toolName: "read", sessionKey: "ordinary", toolCallId: "call-after-failed" },
+    ),
+    {
+      block: true,
+      blockReason: "[Agent Guard:NATIVE_GUARD_STOPPED] Native guard runtime stopped during decision.",
+    },
+  );
+});
+
+test("real spawn hook binds backend before a child can receive a signed allow", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "agent-guard-real-spawn-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  let childBound = false;
+  let bindCalls = 0;
+  const server = createServer(async (request, response) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
+    if (request.url === "/api/v1/openclaw/native-guard/lifecycle/bind-child") {
+      bindCalls += 1;
+      childBound = request.headers.authorization === "Bearer evidence-credential" &&
+        body.parentSessionKey === "agent:guard:run.1" &&
+        body.childSessionKey === "agent:guard:child.1";
+      const proof = JSON.parse(Buffer.from(
+        String(request.headers["x-agent-guard-evidence-proof"] ?? ""),
+        "base64url",
+      ).toString("utf8")) as NativeGuardEvidenceProof;
+      const unsignedAck = {
+        schemaVersion: "native-guard-1" as const,
+        signatureContext: "native_guard.evidence_ack.v1" as const,
+        ackId: "ack.real-spawn-bind",
+        ackType: "child_bound" as const,
+        proofId: proof.proofId,
+        leaseId: proof.leaseId,
+        leaseEpoch: proof.leaseEpoch,
+        bodyDigest: digestJson(body),
+        acknowledgedAt: new Date().toISOString(),
+      };
+      return sendJson(response, childBound ? 200 : 401, childBound
+        ? {
+            ok: true,
+            data: {
+              ...unsignedAck,
+              signature: signNativeGuardPayload(unsignedAck, privateKey),
+            },
+            requestId: "bind-request",
+          }
+        : { ok: false, error: { code: "UNAUTHORIZED", message: "denied" }, requestId: "bind-request" });
+    }
+    if (request.url === "/api/v1/openclaw/native-guard/decision") {
+      const decisionRequest = body as NativeToolDecisionRequest;
+      if (!childBound || decisionRequest.sessionKey !== "agent:guard:child.1") {
+        return sendJson(response, 401, {
+          ok: false,
+          error: { code: "UNBOUND", message: "child is not bound" },
+          requestId: "decision-request",
+        });
+      }
+      const unsigned = {
+        schemaVersion: "native-guard-1" as const,
+        decisionId: "decision-child-1",
+        requestId: decisionRequest.requestId,
+        leaseId: decisionRequest.leaseId,
+        leaseEpoch: decisionRequest.leaseEpoch,
+        policyPackId: "policy.1",
+        policyPackDigest: "a".repeat(64),
+        action: "allow" as const,
+        reasonCode: "policy_allow",
+        reason: "Allowed by policy.",
+        evaluatedParamsDigest: decisionRequest.paramsDigest,
+        decidedAt: new Date().toISOString(),
+      };
+      return sendJson(response, 200, {
+        ok: true,
+        data: { ...unsigned, signature: signNativeGuardPayload(unsigned, privateKey) },
+        requestId: "decision-request",
+      });
+    }
+    return sendJson(response, 404, { ok: false, requestId: "not-found" });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise<void>((resolve, reject) =>
+    server.close((error) => error ? reject(error) : resolve())));
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  const host = createHost({
+    pluginConfig: {
+      markerDir: join(parent, "markers"),
+      spoolDir: join(parent, "spool"),
+    },
+    registrationResult: () => true,
+  });
+  const runtime = registerAgentGuardPlugin(host.api);
+  await host.services[0].start({});
+  const lease = liveActivation({
+    decisionPublicKey: publicKey.export({ type: "spki", format: "pem" }).toString(),
+    backendUrl: `http://127.0.0.1:${address.port}/api/v1/openclaw/native-guard/decision`,
+    credential: "decision-credential",
+    evidenceCredential: "evidence-credential",
+  } as Partial<NativeGuardLeaseActivation>);
+  await runtime.activate(lease);
+
+  await hook(host, "subagent_spawned")({
+    childSessionKey: "agent:guard:child.1",
+    agentId: "child",
+    mode: "run",
+    threadRequested: false,
+    runId: "run-child",
+  }, {
+    requesterSessionKey: "agent:guard:run.1",
+    childSessionKey: "agent:guard:child.1",
+  });
+  const result = await hook(host, "before_tool_call")({
+    toolName: "exec",
+    params: { command: "echo child" },
+    toolCallId: "call-child",
+  }, {
+    toolName: "exec",
+    sessionKey: "agent:guard:child.1",
+    toolCallId: "call-child",
+  });
+
+  assert.equal(bindCalls, 1);
+  assert.equal(result, undefined);
+  await runtime.stop();
+});
+
+class BlockingMarkerStore extends MemoryMarkerStore {
+  writeStarted: Promise<void> = Promise.resolve();
+  #announceWrite: (() => void) | undefined;
+  #releaseWrite: (() => void) | undefined;
+  #writeGate: Promise<void> | undefined;
+
+  blockWrites(): void {
+    this.writeStarted = new Promise<void>((resolve) => {
+      this.#announceWrite = resolve;
+    });
+    this.#writeGate = new Promise<void>((resolve) => {
+      this.#releaseWrite = resolve;
+    });
+  }
+
+  releaseWrites(): void {
+    this.#releaseWrite?.();
+  }
+
+  override async write(value: GuardedMarker): Promise<void> {
+    this.#announceWrite?.();
+    await this.#writeGate;
+    await super.write(value);
+  }
+}
+
+class BlockingLoadMarkerStore extends MemoryMarkerStore {
+  readonly loadStarted: Promise<void>;
+  loadInvocations = 0;
+  #announceLoad!: () => void;
+  #releaseLoad!: () => void;
+  readonly #loadGate: Promise<void>;
+
+  constructor() {
+    super();
+    this.loadStarted = new Promise<void>((resolve) => {
+      this.#announceLoad = resolve;
+    });
+    this.#loadGate = new Promise<void>((resolve) => {
+      this.#releaseLoad = resolve;
+    });
+  }
+
+  releaseLoad(): void {
+    this.#releaseLoad();
+  }
+
+  override async load(): Promise<unknown[]> {
+    this.loadInvocations += 1;
+    this.#announceLoad();
+    await this.#loadGate;
+    return super.load();
+  }
+}
+
+function marker(overrides: Partial<GuardedMarker> = {}): GuardedMarker {
+  const rootSessionKey = overrides.rootSessionKey ?? "agent:guard:run.1";
+  return {
+    leaseId: "lease.1",
+    rootSessionKey,
+    childSessionKeys: [],
+    mode: "supervision",
+    scope: { kind: "session", sessionKey: rootSessionKey },
+    policyPackId: "policy.1",
+    policyPackDigest: "a".repeat(64),
+    expiresAt: "2026-08-02T00:05:00.000Z",
+    ...overrides,
+  };
+}
+
+function spawnedEvent(childSessionKey: string): Record<string, unknown> {
+  return {
+    childSessionKey,
+    agentId: "main",
+    mode: "run",
+    threadRequested: false,
+    runId: `run:${childSessionKey}`,
+  };
+}
+
+function hook(host: ReturnType<typeof createHost>, name: string): HookHandler {
+  const registration = host.hooks.find((candidate) => candidate.name === name);
+  assert.ok(registration);
+  return registration.handler;
+}
+
+function sendJson(response: ServerResponse, statusCode: number, value: unknown): void {
+  const body = JSON.stringify(value);
+  response.writeHead(statusCode, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Content-Length": Buffer.byteLength(body),
+  });
+  response.end(body);
+}
+
+async function evaluatePolicy(
+  host: ReturnType<typeof createHost>,
+  sessionKey?: string,
+): Promise<unknown> {
+  assert.equal(host.policies.length, 1);
+  return host.policies[0].evaluate(
+    { toolName: "exec", params: { command: "echo guarded" }, toolCallId: "call.policy" },
+    { agentId: "main", sessionKey, toolName: "exec", toolCallId: "call.policy" },
+  );
+}
+
+function assertReaderClean(request: IncomingMessage, signal: AbortSignal): void {
+  for (const event of ["data", "end", "close", "aborted", "error"]) {
+    assert.equal(getEventListeners(request, event).length, 0, event);
+  }
+  assert.equal(getEventListeners(signal, "abort").length, 0, "abort signal");
+}
+
+function fakeTimers(): {
+  schedule: (callback: () => void, delay: number) => object;
+  cancel: (handle: unknown) => void;
+  delays: () => number[];
+  activeCount: () => number;
+  fireAll: () => void;
+  fireDelay: (delay: number) => void;
+} {
+  const entries = new Map<object, { callback: () => void; delay: number }>();
+  const seenDelays: number[] = [];
+  return {
+    schedule(callback, delay) {
+      const handle = {};
+      entries.set(handle, { callback, delay });
+      seenDelays.push(delay);
+      return handle;
+    },
+    cancel(handle) {
+      if (typeof handle === "object" && handle !== null) entries.delete(handle);
+    },
+    delays: () => [...seenDelays],
+    activeCount: () => entries.size,
+    fireAll() {
+      for (const [handle, entry] of [...entries]) {
+        entries.delete(handle);
+        entry.callback();
+      }
+    },
+    fireDelay(delay) {
+      for (const [handle, entry] of [...entries]) {
+        if (entry.delay !== delay) continue;
+        entries.delete(handle);
+        entry.callback();
+      }
+    },
+  };
+}

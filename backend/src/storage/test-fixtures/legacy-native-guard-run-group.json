@@ -1,0 +1,25 @@
+{
+  "runGroupId": "run_group.legacy.native-guard",
+  "agentId": "agent.legacy.native-guard",
+  "agentName": "Native guard test",
+  "adapterKind": "openclaw",
+  "status": "failed",
+  "phase": "failed",
+  "startedAt": "2026-08-07T02:11:52.248Z",
+  "updatedAt": "2026-08-07T02:11:52.304Z",
+  "caseIds": ["case.resource_injection"],
+  "caseCount": 1,
+  "testRunIds": [],
+  "traceIds": [],
+  "riskReportIds": [],
+  "runtimeSessionIds": [],
+  "artifactIds": [],
+  "nativeGuardCoverage": {
+    "coverage": "misconfigured",
+    "eventsTotal": 0,
+    "reconciled": false,
+    "coverageBreachCount": 0
+  },
+  "error": "Detection model configuration is not valid JSON5.",
+  "endedAt": "2026-08-07T02:11:52.304Z"
+}

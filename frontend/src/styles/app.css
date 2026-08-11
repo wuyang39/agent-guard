@@ -1178,6 +1178,33 @@ pre {
   align-items: center;
 }
 
+.event-session-filter {
+  width: min(360px, 100%);
+}
+
+.event-session-filter select {
+  max-width: 100%;
+  text-overflow: ellipsis;
+}
+
+.native-supervision-status {
+  display: grid;
+  gap: 16px;
+}
+
+.native-supervision-fault {
+  display: grid;
+  gap: 4px;
+  padding-left: 10px;
+  border-left: 3px solid #b45309;
+  color: #7c2d12;
+}
+
+.native-supervision-fault p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 .segmented-control {
   display: inline-grid;
   grid-auto-flow: column;

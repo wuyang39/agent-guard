@@ -7,14 +7,20 @@ import type {
   SupervisionRuntimeAction,
 } from "./supervisorTypes";
 
+export type SupervisionRecorderOptions = {
+  createId?: (prefix: string) => string;
+  now?: () => string;
+};
+
 export function recordSupervisionDecision(
   policyPackId: string,
   policy: SupervisionPolicy,
   action: SupervisionRuntimeAction,
+  options: SupervisionRecorderOptions = {},
 ): RuntimeSupervisionRecord {
   return {
     schemaVersion: SCHEMA_VERSION,
-    recordId: createId("supervision_record"),
+    recordId: (options.createId ?? createId)("supervision_record"),
     runtimeSessionId: action.runtimeSessionId,
     agentId: action.agentId,
     policyPackId,
@@ -25,6 +31,6 @@ export function recordSupervisionDecision(
     targetId: action.targetId,
     inputEventId: action.inputEventId,
     gateway: action.gateway,
-    createdAt: nowIso(),
+    createdAt: (options.now ?? nowIso)(),
   };
 }

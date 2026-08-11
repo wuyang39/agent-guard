@@ -1,0 +1,2905 @@
+import { createHash, createPublicKey, randomBytes, type KeyObject } from "node:crypto";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { constants as fsConstants, type BigIntStats, type Dirent } from "node:fs";
+import type { Readable } from "node:stream";
+import fs from "node:fs/promises";
+import path from "node:path";
+import os from "node:os";
+import net from "node:net";
+import type { NativeGuardStatus } from "@agent-guard/contracts";
+import {
+  resolveOpenClawCliInvocation,
+  resolveOpenClawCliPath,
+} from "../agent/openclawAdapter";
+import { generateDetectionOpenClawConfig, detectionConfigDigest, type DetectionOpenClawConfig } from "./detectionOpenClawConfig";
+import { createOpenClawControlClient, type NativeGuardCapability } from "./openclawControlClient";
+import {
+  isCompatibleNativeGuardVersion,
+  parseNativeGuardGatewayAttestation,
+} from "./nativeGuardLiveCapability";
+import {
+  sameDetectionProfileSeedFileIdentity,
+  type DetectionProfileSeed,
+  type DetectionProfileSeedDirectoryIdentity,
+} from "./detectionProfileSeed";
+
+const RUN_LABEL_KEY = "agent-guard.run-group";
+const RUN_ROLE_LABEL_KEY = "agent-guard.role";
+const MODEL_STATE_ALLOWLIST = new Set([
+  "models.json",
+  "openclaw-agent.sqlite",
+  "openclaw-agent.sqlite-wal",
+]);
+const MAX_MODEL_STATE_FILES = MODEL_STATE_ALLOWLIST.size;
+const MAX_MODEL_STATE_FILE_BYTES = 32 * 1024 * 1024;
+const MAX_MODEL_STATE_TOTAL_BYTES = 64 * 1024 * 1024;
+const MODEL_STATE_READ_CHUNK_BYTES = 1024 * 1024;
+const PLUGIN_MODEL_CATALOG_GENERATED_BY = "openclaw-plugin-model-catalog-v1";
+const PLUGIN_MODEL_CATALOG_FILE = "catalog.json";
+export const DETECTION_SANDBOX_COMMAND_TIMEOUT_MS = 30_000;
+export const DETECTION_SANDBOX_CAPABILITY_TIMEOUT_MS = 90_000;
+const MAX_COMMAND_OUTPUT_BYTES = 256 * 1024;
+const MAX_GATEWAY_BOOTSTRAP_BYTES = 8 * 1024;
+const GATEWAY_BOOTSTRAP_TIMEOUT_MS = 60_000;
+const MAX_GATEWAY_READINESS_BYTES = 64 * 1024;
+const GATEWAY_READINESS_MAX_ATTEMPTS = 2_400;
+const GATEWAY_READINESS_TIMEOUT_MS = 120_000;
+const RESPONSE_CANCEL_TIMEOUT_MS = 25;
+
+export type DetectionCommandInput = {
+  command: string;
+  args: string[];
+  env?: NodeJS.ProcessEnv;
+  cwd?: string;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+};
+
+export type DetectionCommandResult = {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+};
+
+export type DetectionCommandRunner = (input: DetectionCommandInput) => Promise<DetectionCommandResult>;
+
+export type DetectionGatewayProcess = {
+  url: string;
+  token: string;
+  attestationPublicKey: KeyObject;
+  process: {
+    kill(signal?: NodeJS.Signals): void;
+    forceKill?: () => void;
+    waitForExit(): Promise<void>;
+  };
+};
+
+export type DetectionGatewayLauncher = (input: {
+  cliPath: string;
+  profileRoot: string;
+  configPath: string;
+  stateDir: string;
+  workspaceDir: string;
+  token: string;
+  gatewayUrl: string;
+  signal: AbortSignal;
+  env: NodeJS.ProcessEnv;
+}) => Promise<DetectionGatewayProcess>;
+
+export type DetectionSandboxManagerOptions = {
+  runGroupId: string;
+  image: string;
+  cliPath?: string;
+  pluginRoot?: string;
+  userConfig?: unknown;
+  profileSeed?: DetectionProfileSeed;
+  outputRoot?: string;
+  commandRunner?: DetectionCommandRunner;
+  gatewayLauncher?: DetectionGatewayLauncher;
+  signal?: AbortSignal;
+  onCleanup?: () => void;
+  networkCase?: boolean;
+  capabilityProbe?: (input: {
+    cliPath?: string;
+    env: Record<string, string>;
+    isolatedProfile: true;
+  }) => Promise<NativeGuardCapability>;
+  runtimeStatusProbe?: (input: {
+    gatewayUrl: string;
+    gatewayToken: string;
+  }) => Promise<NativeGuardStatus>;
+  gatewayAttestationProbe?: (input: {
+    gatewayUrl: string;
+    gatewayToken: string;
+    challenge: string;
+  }) => Promise<unknown>;
+  gatewayShutdownTimeoutMs?: {
+    graceful: number;
+    forced: number;
+  };
+};
+
+export type DetectionSandboxEvidence = {
+  runGroupId: string;
+  image: string;
+  imageId: string;
+  openclawVersion: string;
+  profileRoot: string;
+  configPath: string;
+  configDigest: string;
+  gatewayUrl?: string;
+  networkMode: "none" | "internal";
+  containerId?: string;
+  sinkLogs?: string;
+  status: "preflight_passed" | "attested" | "cleaned";
+};
+
+export type DetectionSessionContainerFinalization =
+  | {
+      outcome: "cleaned";
+      evidence: DetectionSandboxEvidence;
+      sessionKey: string;
+    }
+  | {
+      outcome: "not_created";
+      evidence: DetectionSandboxEvidence;
+      sessionKey: string;
+    };
+
+type SessionContainerCleanupState = {
+  evidence: DetectionSandboxEvidence;
+  containerId: string;
+};
+
+type SessionContainerVerification =
+  | { status: "absent" }
+  | { status: "present" }
+  | { status: "failed"; error: Error };
+
+type SessionContainerInventory =
+  | { status: "exact"; containerId: string }
+  | { status: "absent" };
+
+export class DetectionSandboxError extends Error {
+  constructor(public readonly code: string, message: string) {
+    super(message);
+    this.name = "DetectionSandboxError";
+  }
+}
+
+export class SandboxPreflightError extends DetectionSandboxError {
+  constructor(code: string, message: string) {
+    super(code, message);
+    this.name = "SandboxPreflightError";
+  }
+}
+
+export class SandboxAttestationError extends DetectionSandboxError {
+  constructor(code: string, message: string) {
+    super(code, message);
+    this.name = "SandboxAttestationError";
+  }
+}
+
+export class DetectionSandboxManager {
+  private readonly options: DetectionSandboxManagerOptions;
+  private readonly pluginRoot: string;
+  private readonly run: DetectionCommandRunner;
+  private readonly abortController = new AbortController();
+  private profileRoot?: string;
+  private configPath?: string;
+  private evidenceRoot?: string;
+  private imageId?: string;
+  private config?: DetectionOpenClawConfig;
+  private gateway?: DetectionGatewayProcess;
+  private gatewayGeneration = 0;
+  private activeGatewayGeneration?: number;
+  private expectedGatewayShutdownGeneration?: number;
+  private gatewayLifetimeFailure?: Promise<SandboxPreflightError>;
+  private resolveGatewayLifetimeFailure?: (error: SandboxPreflightError) => void;
+  private gatewayFailure?: SandboxPreflightError;
+  private startPromise?: Promise<DetectionSandboxEvidence>;
+  private liveValidated = false;
+  private cleaned = false;
+  private cleanupNotified = false;
+  private cleanupPromise?: Promise<void>;
+  private resolvedOpenClawVersion?: string;
+  private staticCapability?: NativeGuardCapability;
+  private providerPluginIds: string[] = [];
+  private networkName?: string;
+  private sinkContainerId?: string;
+  private sinkLogs?: string;
+  private readonly sessionCleanupEvidence = new Map<string, DetectionSandboxEvidence>();
+  private readonly sessionCleanupState = new Map<string, SessionContainerCleanupState>();
+  private readonly sessionCleanupPromises = new Map<
+    string,
+    Promise<DetectionSessionContainerFinalization>
+  >();
+  private cleanupErrors: { operation: string; error: unknown }[] = [];
+  private externalAbortListener?: () => void;
+
+  constructor(options: DetectionSandboxManagerOptions) {
+    if (!options.runGroupId.trim() || !/^[A-Za-z0-9._-]{1,120}$/.test(options.runGroupId)) {
+      throw new TypeError("runGroupId is invalid");
+    }
+    if (!options.image.trim()) throw new TypeError("image is required");
+    if (options.pluginRoot !== undefined && !options.pluginRoot.trim()) {
+      throw new TypeError("pluginRoot is invalid");
+    }
+    if (
+      options.gatewayShutdownTimeoutMs !== undefined &&
+      (!Number.isSafeInteger(options.gatewayShutdownTimeoutMs.graceful) ||
+        options.gatewayShutdownTimeoutMs.graceful < 1 ||
+        !Number.isSafeInteger(options.gatewayShutdownTimeoutMs.forced) ||
+        options.gatewayShutdownTimeoutMs.forced < 1)
+    ) {
+      throw new TypeError("gatewayShutdownTimeoutMs is invalid");
+    }
+    this.options = { ...options, runGroupId: options.runGroupId, image: options.image };
+    this.pluginRoot = path.resolve(
+      options.pluginRoot ?? path.resolve(process.cwd(), "plugins", "agent-guard-supervision"),
+    );
+    this.run = options.commandRunner ?? runCommand;
+    if (options.signal) {
+      const abort = (): void => this.requestCancellation();
+      this.externalAbortListener = abort;
+      options.signal.addEventListener("abort", abort, { once: true });
+      if (options.signal.aborted) this.requestCancellation();
+    }
+  }
+
+  get signal(): AbortSignal { return this.abortController.signal; }
+
+  getCapturedSinkLogs(): string | undefined { return this.sinkLogs; }
+
+  getGatewayCredentials(): { gatewayUrl: string; gatewayToken: string } | undefined {
+    return this.liveValidated && this.gateway && !this.gatewayFailure
+      ? { gatewayUrl: this.gateway.url, gatewayToken: this.gateway.token }
+      : undefined;
+  }
+
+  getAttestedCapabilitySnapshot(): NativeGuardCapability | undefined {
+    return this.liveValidated && this.staticCapability && !this.gatewayFailure
+      ? cloneNativeGuardCapability(this.staticCapability)
+      : undefined;
+  }
+
+  waitForGatewayFailure(): Promise<SandboxPreflightError> {
+    return this.gatewayLifetimeFailure ?? new Promise<SandboxPreflightError>(() => undefined);
+  }
+
+  runWhileGatewayAlive<T>(
+    operation: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
+    return this.raceGatewayLifetime(operation, true);
+  }
+
+  cancel(): void { this.requestCancellation(); }
+
+  getCleanupErrors(): readonly { operation: string; error: unknown }[] {
+    return this.cleanupErrors;
+  }
+
+  async preflight(): Promise<DetectionSandboxEvidence> {
+    if (this.cleaned) throw new SandboxPreflightError("CLEANED", "Detection sandbox has already been cleaned.");
+    if (this.profileRoot && this.imageId && this.staticCapability) return this.currentEvidence();
+    this.throwIfAborted();
+    let dockerVersion: DetectionCommandResult;
+    try {
+      dockerVersion = await this.command("docker", ["version", "--format", "{{.Server.Version}}"]);
+    } catch (error) {
+      if (error instanceof DetectionSandboxError) throw error;
+      if (this.signal.aborted) throw new SandboxPreflightError("CANCELLED", "Detection sandbox operation was cancelled.");
+      throw new SandboxPreflightError("DOCKER_UNAVAILABLE", "Docker daemon is unavailable.");
+    }
+    if (dockerVersion.exitCode !== 0) {
+      throw new SandboxPreflightError("DOCKER_UNAVAILABLE", "Docker daemon is unavailable.");
+    }
+
+    const pinnedImage = this.options.image.match(/@sha256:([0-9a-f]{64})$/i);
+    if (!pinnedImage) {
+      throw new SandboxPreflightError("IMAGE_NOT_IMMUTABLE", "Detection image reference must be pinned by digest.");
+    }
+    let imageResult: DetectionCommandResult;
+    try {
+      imageResult = await this.command("docker", ["image", "inspect", this.options.image, "--format", "{{json .}}"]);
+    } catch (error) {
+      if (error instanceof DetectionSandboxError) throw error;
+      if (this.signal.aborted) throw new SandboxPreflightError("CANCELLED", "Detection sandbox operation was cancelled.");
+      throw new SandboxPreflightError("IMAGE_UNAVAILABLE", "Detection image is unavailable.");
+    }
+    if (imageResult.exitCode !== 0) {
+      throw new SandboxPreflightError("IMAGE_UNAVAILABLE", "Detection image is unavailable.");
+    }
+    let imageRecord: unknown;
+    try { imageRecord = JSON.parse(imageResult.stdout); } catch { imageRecord = undefined; }
+    if (Array.isArray(imageRecord)) imageRecord = imageRecord[0];
+    const imageId = isRecord(imageRecord) && typeof imageRecord.Id === "string" ? imageRecord.Id : "";
+    const repoDigests = isRecord(imageRecord) && Array.isArray(imageRecord.RepoDigests) ? imageRecord.RepoDigests : [];
+    if (!/^sha256:[0-9a-f]{64}$/i.test(imageId)) {
+      throw new SandboxPreflightError("IMAGE_NOT_IMMUTABLE", "Detection image did not resolve to an immutable image id.");
+    }
+    if (!repoDigests.some((digest) => typeof digest === "string" && digest.toLowerCase() === this.options.image.toLowerCase())) {
+      throw new SandboxPreflightError("IMAGE_DIGEST_MISMATCH", "Detection image id did not match the pinned digest.");
+    }
+    this.imageId = imageId;
+
+    try {
+      await this.createProfile();
+      const version = await this.probeOpenClawVersion();
+      this.resolvedOpenClawVersion = version;
+      const capability = await this.probeOpenClawCapability();
+      if (
+        capability.openclawVersion !== version ||
+        !capability.supportsNativeGuard ||
+        capability.finalizerAssurance !== "isolated_profile"
+      ) {
+        throw new SandboxPreflightError(
+          "OPENCLAW_CAPABILITY_UNAVAILABLE",
+          "OpenClaw static capability inventory does not support isolated native guard activation.",
+        );
+      }
+      this.staticCapability = capability;
+      if (this.options.networkCase) await this.createNetworkSink();
+      return {
+        runGroupId: this.options.runGroupId,
+        image: this.options.image,
+        imageId,
+        openclawVersion: version,
+        profileRoot: this.profileRoot!,
+        configPath: this.configPath!,
+        configDigest: detectionConfigDigest(this.config!),
+        networkMode: this.options.networkCase ? "internal" : "none",
+        status: "preflight_passed",
+      };
+    } catch (error) {
+      await this.cleanup().catch(() => undefined);
+      if (error instanceof SandboxPreflightError) throw error;
+      throw new SandboxPreflightError("OPENCLAW_CAPABILITY_UNAVAILABLE", "OpenClaw capability preflight failed.");
+    }
+  }
+
+  start(): Promise<DetectionSandboxEvidence> {
+    if (this.gatewayFailure) return Promise.reject(this.gatewayFailure);
+    if (this.liveValidated && this.gateway) {
+      this.assertGatewayAlive(this.gateway, this.activeGatewayGeneration, true);
+      return this.currentEvidence().then((evidence) => ({
+        ...evidence,
+        gatewayUrl: this.gateway!.url,
+      }));
+    }
+    if (this.startPromise) return this.startPromise;
+    const started = this.startOnce();
+    this.startPromise = started;
+    const clear = (): void => {
+      if (this.startPromise === started) this.startPromise = undefined;
+    };
+    void started.then(clear, clear);
+    return started;
+  }
+
+  private async startOnce(): Promise<DetectionSandboxEvidence> {
+    const evidence =
+      this.profileRoot && this.staticCapability
+        ? await this.currentEvidence()
+        : await this.preflight();
+    this.throwIfAborted();
+    const token = randomBytes(32).toString("base64url");
+    const port = await ephemeralPort();
+    const gatewayUrl = `http://127.0.0.1:${port}`;
+    const cliPath = resolveOpenClawCliPath(this.options.cliPath);
+    const env: NodeJS.ProcessEnv = {
+      ...strictBaseEnv(),
+      OPENCLAW_CONFIG_PATH: this.configPath,
+      OPENCLAW_STATE_DIR: path.join(this.profileRoot!, "state"),
+      OPENCLAW_WORKSPACE_DIR: path.join(this.profileRoot!, "workspace"),
+      OPENCLAW_WORKSPACE: path.join(this.profileRoot!, "workspace"),
+      OPENCLAW_HOME: this.profileRoot,
+      OPENCLAW_CONFIG_DIR: this.profileRoot,
+      OPENCLAW_PLUGIN_DIRS: "",
+      OPENCLAW_GATEWAY_TOKEN: token,
+      OPENCLAW_GATEWAY_URL: gatewayUrl,
+      HTTP_PROXY: "", HTTPS_PROXY: "", ALL_PROXY: "", NO_PROXY: "*",
+    };
+    try {
+      const launchedGateway = this.options.gatewayLauncher
+        ? await this.options.gatewayLauncher({
+            cliPath, profileRoot: this.profileRoot!, configPath: this.configPath!,
+            stateDir: path.join(this.profileRoot!, "state"), workspaceDir: path.join(this.profileRoot!, "workspace"),
+            token, gatewayUrl, signal: this.signal, env,
+          })
+        : await launchGateway({
+            cliPath, profileRoot: this.profileRoot!, configPath: this.configPath!,
+            stateDir: path.join(this.profileRoot!, "state"), workspaceDir: path.join(this.profileRoot!, "workspace"),
+            token, gatewayUrl, signal: this.signal, env,
+          });
+      this.gateway = launchedGateway;
+      const generation = this.armGatewayLifetime(launchedGateway);
+      await this.raceGatewayLifetime(async () => {
+        const capability = this.staticCapability;
+        const runtimeStatus = await this.probeRuntimeStatus();
+        if (
+          (runtimeStatus.coverage !== "off" && runtimeStatus.coverage !== "ready") ||
+          runtimeStatus.activeLeaseCount !== 0
+        ) {
+          throw new SandboxPreflightError(
+            "OPENCLAW_CAPABILITY_UNAVAILABLE",
+            "The started OpenClaw Gateway runtime is not ready for isolated native guard activation.",
+          );
+        }
+        const gatewayAttestation = await this.probeGatewayAttestation(
+          randomBytes(24).toString("base64url"),
+        );
+        if (
+          !capability ||
+          gatewayAttestation.openclawVersion !== this.resolvedOpenClawVersion ||
+          capability.openclawVersion !== this.resolvedOpenClawVersion ||
+          !capability.supportsNativeGuard ||
+          capability.finalizerAssurance !== "isolated_profile"
+        ) {
+          throw new SandboxPreflightError(
+            "OPENCLAW_CAPABILITY_UNAVAILABLE",
+            "The started OpenClaw Gateway did not provide the required live native guard capability.",
+          );
+        }
+        this.staticCapability = {
+          ...capability,
+          gatewayInstanceId: gatewayAttestation.gatewayInstanceId,
+        };
+        this.assertGatewayAlive(launchedGateway, generation, false);
+        this.liveValidated = true;
+      }, false);
+      return { ...evidence, gatewayUrl: this.gateway.url };
+    } catch (error) {
+      const gatewayStarted = this.gateway !== undefined;
+      await this.cleanup();
+      if (!gatewayStarted) throw error;
+      if (error instanceof DetectionSandboxError) throw error;
+      throw new SandboxPreflightError(
+        "OPENCLAW_CAPABILITY_UNAVAILABLE",
+        "OpenClaw live capability inspection failed after Gateway startup.",
+      );
+    }
+  }
+
+  async attestSession(sessionKey: string, phase: "before" | "after" = "after"): Promise<DetectionSandboxEvidence> {
+    return this.runWhileGatewayAlive(
+      async () => this.attestSessionWhileAlive(sessionKey, phase),
+    );
+  }
+
+  async attestAndCleanupSession(sessionKey: string): Promise<DetectionSandboxEvidence> {
+    const result = await this.finalizeSessionContainer(
+      sessionKey,
+      { allowNotCreated: false },
+    );
+    if (result.outcome !== "cleaned") {
+      throw new SandboxAttestationError(
+        "CONTAINER_ATTESTATION_MISMATCH",
+        "Labeled detection container did not match the requested session.",
+      );
+    }
+    return cloneDetectionSandboxEvidence(result.evidence);
+  }
+
+  async finalizeSessionContainer(
+    sessionKey: string,
+    options: { allowNotCreated: boolean },
+  ): Promise<DetectionSessionContainerFinalization> {
+    return this.runWhileGatewayAlive(async () => {
+      const sessionIdentity = canonicalSessionIdentity(sessionKey);
+      if (!sessionIdentity) {
+        throw new SandboxAttestationError("INVALID_SESSION_KEY", "Session key is required.");
+      }
+      const existing = this.sessionCleanupEvidence.get(sessionIdentity);
+      if (existing) {
+        return {
+          outcome: "cleaned",
+          evidence: cloneDetectionSandboxEvidence(existing),
+          sessionKey: sessionIdentity,
+        };
+      }
+
+      let cleanup = this.sessionCleanupPromises.get(sessionIdentity);
+      if (!cleanup) {
+        cleanup = this.finalizeSessionContainerWhileAlive(
+          sessionKey,
+          sessionIdentity,
+        );
+        this.sessionCleanupPromises.set(sessionIdentity, cleanup);
+      }
+      try {
+        const result = await cleanup;
+        if (result.outcome === "not_created" && !options.allowNotCreated) {
+          throw new SandboxAttestationError(
+            "CONTAINER_ATTESTATION_MISMATCH",
+            "Labeled detection container did not match the requested session.",
+          );
+        }
+        return cloneSessionContainerFinalization(result);
+      } finally {
+        if (this.sessionCleanupPromises.get(sessionIdentity) === cleanup) {
+          this.sessionCleanupPromises.delete(sessionIdentity);
+        }
+      }
+    });
+  }
+
+  private async finalizeSessionContainerWhileAlive(
+    sessionKey: string,
+    sessionIdentity: string,
+  ): Promise<DetectionSessionContainerFinalization> {
+    let state = this.sessionCleanupState.get(sessionIdentity);
+    if (state) {
+      const retainedVerification = await this.verifySessionContainer(state.containerId);
+      if (retainedVerification.status === "absent") {
+        return {
+          outcome: "cleaned",
+          evidence: this.promoteSessionCleanupState(sessionIdentity, state),
+          sessionKey: sessionIdentity,
+        };
+      }
+      if (retainedVerification.status === "failed") {
+        this.recordSessionCleanupError("session-container-verify", retainedVerification.error);
+        throw this.sessionContainerCleanupFailed();
+      }
+    }
+
+    if (!state) {
+      const target = await this.resolveSessionAttestationTarget(sessionKey);
+      const inventory = await this.inspectSessionContainerInventory(
+        target.sessionIdentity,
+        target.workspaceRoot,
+      );
+      if (inventory.status === "absent") {
+        return {
+          outcome: "not_created",
+          evidence: await this.buildSessionEvidence(undefined),
+          sessionKey: target.sessionIdentity,
+        };
+      }
+      const containerId = inventory.containerId;
+      state = {
+        evidence: await this.buildSessionEvidence(containerId),
+        containerId,
+      };
+      this.sessionCleanupState.set(sessionIdentity, state);
+    }
+
+    const removeError = await this.removeSessionContainer(state.containerId);
+    const verification = await this.verifySessionContainer(state.containerId);
+    if (removeError) {
+      this.recordSessionCleanupError("session-container-remove", removeError);
+    }
+    if (verification.status === "failed") {
+      this.recordSessionCleanupError("session-container-verify", verification.error);
+    } else if (verification.status === "present") {
+      this.recordSessionCleanupError(
+        "session-container-verify",
+        new Error("Session container verification found the exact container still present."),
+      );
+    }
+    if (removeError || verification.status !== "absent") {
+      throw this.sessionContainerCleanupFailed();
+    }
+    return {
+      outcome: "cleaned",
+      evidence: this.promoteSessionCleanupState(sessionIdentity, state),
+      sessionKey: sessionIdentity,
+    };
+  }
+
+  private async removeSessionContainer(containerId: string): Promise<Error | undefined> {
+    let removed: DetectionCommandResult;
+    try {
+      removed = await this.command("docker", ["rm", "-f", containerId]);
+    } catch {
+      return new Error("Session container remove command failed.");
+    }
+    return removed.exitCode === 0
+      ? undefined
+      : new Error("Session container remove command returned a nonzero exit code.");
+  }
+
+  private async verifySessionContainer(containerId: string): Promise<SessionContainerVerification> {
+    let remaining: DetectionCommandResult;
+    try {
+      remaining = await this.command(
+        "docker",
+        ["ps", "-aq", "--no-trunc", "--filter", `id=${containerId}`],
+      );
+    } catch {
+      return {
+        status: "failed",
+        error: new Error("Session container verification command failed."),
+      };
+    }
+    if (remaining.exitCode !== 0) {
+      return {
+        status: "failed",
+        error: new Error("Session container verification command returned a nonzero exit code."),
+      };
+    }
+    let remainingIds: string[];
+    try {
+      remainingIds = parseDockerIds(remaining.stdout, "container");
+    } catch {
+      return {
+        status: "failed",
+        error: new Error("Session container verification returned malformed container identity output."),
+      };
+    }
+    return remainingIds.includes(containerId) ? { status: "present" } : { status: "absent" };
+  }
+
+  private promoteSessionCleanupState(
+    sessionIdentity: string,
+    state: SessionContainerCleanupState,
+  ): DetectionSandboxEvidence {
+    const tombstone = cloneDetectionSandboxEvidence({ ...state.evidence, status: "cleaned" });
+    this.sessionCleanupState.delete(sessionIdentity);
+    this.sessionCleanupEvidence.set(sessionIdentity, tombstone);
+    return cloneDetectionSandboxEvidence(tombstone);
+  }
+
+  private recordSessionCleanupError(operation: string, error: Error): void {
+    this.cleanupErrors.push({ operation, error });
+  }
+
+  private sessionContainerCleanupFailed(): SandboxAttestationError {
+    return new SandboxAttestationError(
+      "SESSION_CONTAINER_CLEANUP_FAILED",
+      "Attested session container cleanup could not be verified.",
+    );
+  }
+
+  private async resolveSessionAttestationTarget(sessionKey: string): Promise<{
+    sessionIdentity: string;
+    workspaceRoot: string;
+  }> {
+    if (!sessionKey.trim()) {
+      throw new SandboxAttestationError("INVALID_SESSION_KEY", "Session key is required.");
+    }
+    if (!this.profileRoot || !this.config || !this.imageId) {
+      throw new SandboxAttestationError("NOT_STARTED", "Detection sandbox has not passed preflight.");
+    }
+    const env = this.profileEnv();
+    const cli = resolveOpenClawCliInvocation(this.options.cliPath);
+    const explain = await this.command(
+      cli.command,
+      [...cli.argsPrefix, "sandbox", "explain", "--session", sessionKey, "--json"],
+      { ...cli.env, ...env },
+    );
+    const sandboxExplain = explain.exitCode === 0
+      ? parseSandboxExplainAttestation(explain.stdout)
+      : undefined;
+    const requestedSessionIdentity = canonicalSessionIdentity(sessionKey);
+    if (
+      !sandboxExplain ||
+      !requestedSessionIdentity ||
+      (sandboxExplain.sessionIdentity !== undefined &&
+        sandboxExplain.sessionIdentity !== requestedSessionIdentity)
+    ) {
+      throw new SandboxAttestationError(
+        "SANDBOX_EXPLAIN_MISMATCH",
+        "OpenClaw sandbox explain did not match the detection profile.",
+      );
+    }
+    return {
+      sessionIdentity: sandboxExplain.sessionIdentity ?? requestedSessionIdentity,
+      workspaceRoot: sandboxExplain.workspaceRoot,
+    };
+  }
+
+  private async buildSessionEvidence(
+    containerId: string | undefined,
+  ): Promise<DetectionSandboxEvidence> {
+    const evidence = await this.currentEvidence();
+    let sinkLogs: string | undefined;
+    if (this.sinkContainerId) {
+      const logs = await this.command(
+        "docker",
+        ["logs", "--tail", "8192", this.sinkContainerId],
+      );
+      sinkLogs = `${logs.stdout}${logs.stderr}`.slice(0, 65_536);
+      this.sinkLogs = sinkLogs;
+    }
+    return {
+      ...evidence,
+      ...(containerId !== undefined ? { containerId } : {}),
+      ...(sinkLogs !== undefined ? { sinkLogs } : {}),
+      status: "attested",
+    };
+  }
+
+  private async attestSessionWhileAlive(
+    sessionKey: string,
+    phase: "before" | "after",
+  ): Promise<DetectionSandboxEvidence> {
+    const target = await this.resolveSessionAttestationTarget(sessionKey);
+    let containerId: string | undefined;
+    if (phase === "after") {
+      const inspected = await this.inspectLabeledContainer(
+        target.sessionIdentity,
+        target.workspaceRoot,
+      );
+      containerId = inspected.containerId;
+      if (!inspected.matches) {
+        throw new SandboxAttestationError("CONTAINER_ATTESTATION_MISMATCH", "Labeled detection container did not match the requested limits.");
+      }
+    }
+    if (phase === "after") return this.buildSessionEvidence(containerId);
+    return { ...(await this.currentEvidence()), status: "attested" };
+  }
+
+  async runSession<T>(sessionKey: string, operation: () => Promise<T>): Promise<T> {
+    try {
+      await this.start();
+      return await this.runWhileGatewayAlive(async () => {
+        await this.attestSessionWhileAlive(sessionKey, "before");
+        const value = await operation();
+        await this.attestSessionWhileAlive(sessionKey, "after");
+        return value;
+      });
+    } finally {
+      await this.cleanup();
+    }
+  }
+
+  async cleanup(): Promise<void> {
+    if (this.cleaned) return;
+    if (this.cleanupPromise) return this.cleanupPromise;
+    this.liveValidated = false;
+    this.staticCapability = undefined;
+    this.clearSessionCleanupMaps();
+    this.expectedGatewayShutdownGeneration = this.activeGatewayGeneration;
+    this.cleanupPromise = this.performCleanupWithRetry();
+    try {
+      await this.cleanupPromise;
+      this.cleaned = true;
+      this.profileRoot = undefined;
+      this.configPath = undefined;
+      this.config = undefined;
+      this.imageId = undefined;
+      this.networkName = undefined;
+      this.sinkContainerId = undefined;
+      this.gateway = undefined;
+      this.activeGatewayGeneration = undefined;
+      if (this.options.signal && this.externalAbortListener) {
+        this.options.signal.removeEventListener("abort", this.externalAbortListener);
+        this.externalAbortListener = undefined;
+      }
+    } finally {
+      this.clearSessionCleanupMaps();
+      this.cleanupPromise = undefined;
+    }
+  }
+
+  private clearSessionCleanupMaps(): void {
+    this.sessionCleanupEvidence.clear();
+    this.sessionCleanupState.clear();
+    this.sessionCleanupPromises.clear();
+  }
+
+  private async performCleanupWithRetry(): Promise<void> {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await this.performCleanupOnce();
+        return;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error("Detection cleanup failed.");
+  }
+
+  private async performCleanupOnce(): Promise<void> {
+    const failureEntries: { operation: string; error: unknown }[] = [];
+    const attempt = async (operation: string, fn: () => Promise<void>): Promise<void> => {
+      try { await fn(); } catch (error) { failureEntries.push({ operation, error }); }
+    };
+    await attempt("sink-log-capture", async () => {
+      if (!this.sinkContainerId) return;
+      const logs = await this.cleanupCommand("docker", ["logs", "--tail", "8192", this.sinkContainerId]);
+      this.sinkLogs = `${logs.stdout}${logs.stderr}`.slice(0, 65_536);
+    });
+    await attempt("gateway-terminate", async () => {
+      const gatewayProcess = this.gateway?.process;
+      if (!gatewayProcess) return;
+      gatewayProcess.kill("SIGTERM");
+      if (typeof gatewayProcess.waitForExit !== "function") return;
+      const shutdownTimeouts = this.options.gatewayShutdownTimeoutMs ?? {
+        graceful: 2_000,
+        forced: 1_000,
+      };
+      if (!await waitForExitBounded(
+        gatewayProcess.waitForExit,
+        shutdownTimeouts.graceful,
+      )) {
+        gatewayProcess.forceKill?.();
+        if (!await waitForExitBounded(gatewayProcess.waitForExit, shutdownTimeouts.forced)) {
+          throw new Error("Detection Gateway did not exit after force termination.");
+        }
+      }
+    });
+    await attempt("container-cleanup", async () => {
+      const containers = await this.cleanupCommand("docker", ["ps", "-aq", "--filter", `label=${RUN_LABEL_KEY}=${this.options.runGroupId}`]);
+      if (containers.exitCode !== 0) throw new Error("Detection container inventory cleanup failed.");
+      const ids = new Set(parseDockerIds(containers.stdout, "container"));
+      if (!ids.size) return;
+      const removed = await this.cleanupCommand("docker", ["rm", "-f", ...ids]);
+      if (removed.exitCode !== 0) throw new Error("Detection container cleanup failed.");
+    });
+    await attempt("network-cleanup", async () => {
+      const networks = await this.cleanupCommand("docker", ["network", "ls", "-q", "--filter", `label=${RUN_LABEL_KEY}=${this.options.runGroupId}`]);
+      if (networks.exitCode !== 0) throw new Error("Detection network inventory cleanup failed.");
+      const networkIds = parseDockerIds(networks.stdout, "network");
+      if (!networkIds.length) return;
+      const removed = await this.cleanupCommand("docker", ["network", "rm", ...networkIds]);
+      if (removed.exitCode !== 0) throw new Error("Detection network cleanup failed.");
+    });
+    await attempt("profile-remove", async () => {
+      if (!this.profileRoot || !isSafeTempRoot(this.profileRoot)) return;
+      const stat = await fs.lstat(this.profileRoot).catch(() => undefined);
+      if (stat?.isDirectory() && !stat.isSymbolicLink()) await fs.rm(this.profileRoot, { recursive: true, force: true });
+    });
+    if (failureEntries.length) {
+      this.cleanupErrors = [...this.cleanupErrors, ...failureEntries];
+      const names = failureEntries.map((f) => f.operation).join(", ");
+      throw new Error(`Detection cleanup failed: ${names}`);
+    }
+    if (!this.cleanupNotified) {
+      this.cleanupNotified = true;
+      this.options.onCleanup?.();
+    }
+  }
+
+  private async createProfile(): Promise<void> {
+    await this.assertPluginPackageAvailable();
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), `agent-guard-${this.options.runGroupId}-`));
+    await fs.chmod(root, 0o700);
+    this.profileRoot = root;
+    const markerDir = path.join(root, "agent-guard", "markers");
+    const spoolDir = path.join(root, "agent-guard", "spool");
+    await Promise.all([
+      fs.mkdir(path.join(root, "state"), { mode: 0o700 }),
+      fs.mkdir(path.join(root, "workspace"), { mode: 0o700 }),
+      fs.mkdir(markerDir, { recursive: true, mode: 0o700 }),
+      fs.mkdir(spoolDir, { recursive: true, mode: 0o700 }),
+    ]);
+    if (this.options.profileSeed) {
+      this.providerPluginIds = await this.snapshotAgentModelState(root, this.options.profileSeed);
+    }
+    this.config = generateDetectionOpenClawConfig({
+      userConfig: this.options.profileSeed?.userConfig ?? this.options.userConfig,
+      pluginRoot: this.pluginRoot,
+      markerDir,
+      spoolDir,
+      providerPluginIds: this.providerPluginIds,
+    });
+    this.config.agents.defaults.sandbox.docker.image = this.imageId;
+    this.config.agents.defaults.sandbox.docker.labels = {
+      [RUN_LABEL_KEY]: this.options.runGroupId,
+      [RUN_ROLE_LABEL_KEY]: "agent",
+    };
+    if (this.options.networkCase) {
+      this.config.agents.defaults.sandbox.docker.network = "internal";
+    }
+    this.configPath = path.join(root, "openclaw.json");
+    await fs.writeFile(this.configPath, `${JSON.stringify(this.config, null, 2)}\n`, { mode: 0o600 });
+    const outputBase = path.resolve(this.options.outputRoot ?? path.join(process.cwd(), "outputs", "openclaw-detection"));
+    await assertNoSymlinkAncestors(outputBase);
+    const baseStat = await fs.lstat(outputBase).catch(() => undefined);
+    if (baseStat?.isSymbolicLink() || (baseStat && !baseStat.isDirectory())) {
+      throw new SandboxPreflightError("INVALID_OUTPUT_ROOT", "Detection evidence root must be a real directory.");
+    }
+    await fs.mkdir(outputBase, { recursive: true, mode: 0o700 });
+    this.evidenceRoot = path.resolve(outputBase, this.options.runGroupId);
+    if (!this.evidenceRoot.startsWith(`${outputBase}${path.sep}`)) {
+      throw new SandboxPreflightError("INVALID_OUTPUT_ROOT", "Detection evidence path escaped its output root.");
+    }
+    const existingEvidence = await fs.lstat(this.evidenceRoot).catch(() => undefined);
+    if (existingEvidence?.isSymbolicLink() || (existingEvidence && !existingEvidence.isDirectory())) {
+      throw new SandboxPreflightError("INVALID_OUTPUT_ROOT", "Detection evidence directory must not be a symlink.");
+    }
+    await fs.mkdir(this.evidenceRoot, { recursive: true, mode: 0o700 });
+    await assertNoSymlinkAncestors(this.evidenceRoot);
+    await this.writeEvidence("config.json", this.config);
+    await this.writeEvidence("hashes.json", {
+      configSha256: createHash("sha256").update(JSON.stringify(this.config), "utf8").digest("hex"),
+      imageId: this.imageId,
+    });
+  }
+
+  private async snapshotAgentModelState(
+    profileRoot: string,
+    profileSeed: DetectionProfileSeed,
+  ): Promise<string[]> {
+    this.throwIfAborted();
+    const sourceAgentDir = profileSeed.agentStateDir;
+    const stateRootDirectory = await snapshotApprovedSeedDirectory(
+      profileSeed.stateRootIdentity?.resolvedPath ?? "",
+      profileSeed.stateRootIdentity,
+      "state root",
+    );
+    const sourceDirectory = await snapshotApprovedSeedDirectory(
+      sourceAgentDir,
+      profileSeed.agentStateIdentity,
+      "main-agent state directory",
+    );
+    if (!sameHostPath(sourceDirectory.path, path.join(stateRootDirectory.path, "agents", "main", "agent"))) {
+      throw new SandboxPreflightError(
+        "MODEL_PROFILE_SEED_INVALID",
+        "Detection main-agent state directory no longer matches the resolver-approved state root.",
+      );
+    }
+    let entries: Dirent[];
+    try {
+      entries = await fs.readdir(sourceDirectory.path, { withFileTypes: true });
+    } catch {
+      throw new SandboxPreflightError(
+        "MODEL_PROFILE_SEED_INVALID",
+        `Detection model state directory changed before snapshot: ${sourceAgentDir}.`,
+      );
+    }
+    const allowed = entries
+      .filter((entry) => MODEL_STATE_ALLOWLIST.has(entry.name))
+      .sort((left, right) => left.name.localeCompare(right.name));
+    if (allowed.length > MAX_MODEL_STATE_FILES) {
+      throw new SandboxPreflightError(
+        "MODEL_PROFILE_SEED_INVALID",
+        `Detection model state exceeds the allowlisted file count under ${sourceAgentDir}.`,
+      );
+    }
+    for (const required of ["openclaw-agent.sqlite"]) {
+      if (!allowed.some((entry) => entry.name === required && entry.isFile() && !entry.isSymbolicLink())) {
+        throw new SandboxPreflightError(
+          "MODEL_PROFILE_SEED_INVALID",
+          `Detection model state is incomplete: required ${required} is unavailable in ${sourceAgentDir}.`,
+        );
+      }
+    }
+    if (allowed.some((entry) => !entry.isFile() || entry.isSymbolicLink())) {
+      throw new SandboxPreflightError(
+        "MODEL_PROFILE_SEED_INVALID",
+        `Detection model state contains an invalid allowlisted entry under ${sourceAgentDir}.`,
+      );
+    }
+
+    const openFiles: OpenSeedFileSnapshot[] = [];
+    let pluginCatalog: SelectedPluginModelCatalogSnapshot | undefined;
+    try {
+      let totalBytes = 0n;
+      for (const entry of allowed) {
+        this.throwIfAborted();
+        const opened = await openSeedFileSnapshot(
+          path.join(sourceDirectory.path, entry.name),
+          sourceDirectory,
+        );
+        if (opened.stat.size > BigInt(MAX_MODEL_STATE_FILE_BYTES)) {
+          await opened.handle.close();
+          throw new SandboxPreflightError(
+            "MODEL_PROFILE_SEED_INVALID",
+            `Detection model state entry exceeds the per-file size limit: ${entry.name}.`,
+          );
+        }
+        totalBytes += opened.stat.size;
+        if (totalBytes > BigInt(MAX_MODEL_STATE_TOTAL_BYTES)) {
+          await opened.handle.close();
+          throw new SandboxPreflightError(
+            "MODEL_PROFILE_SEED_INVALID",
+            "Detection model state exceeds the total snapshot size limit.",
+          );
+        }
+        openFiles.push(opened);
+      }
+      for (const opened of openFiles) {
+        opened.content = await readBoundedSeedFile(opened, () => this.throwIfAborted());
+      }
+      await assertSeedSnapshotUnchanged(sourceDirectory, openFiles);
+
+      const snapshots = new Map(openFiles.map((entry) => [entry.name, entry.content!]));
+      const modelRef = parseSeedModelRef(this.options.profileSeed?.userConfig.model);
+      if (!modelRef) {
+        throw new SandboxPreflightError(
+          "MODEL_PROFILE_SEED_INVALID",
+          "Detection model profile does not contain a valid provider/model primary reference.",
+        );
+      }
+      const modelCatalogSnapshot = snapshots.get("models.json");
+      let rootCatalogHasProvider = false;
+      let rootCatalogHasModel = false;
+      if (modelCatalogSnapshot) {
+        let modelCatalog: unknown;
+        try {
+          modelCatalog = JSON.parse(modelCatalogSnapshot.toString("utf8")) as unknown;
+        } catch {
+          throw new SandboxPreflightError(
+            "MODEL_PROFILE_SEED_INVALID",
+            `Detection model state models.json is not valid JSON under ${sourceAgentDir}.`,
+          );
+        }
+        if (
+          !isRecord(modelCatalog) ||
+          !isRecord(modelCatalog.providers) ||
+          Object.keys(modelCatalog.providers).length === 0
+        ) {
+          throw new SandboxPreflightError(
+            "MODEL_PROFILE_SEED_INVALID",
+            `Detection model state models.json does not contain a provider catalog under ${sourceAgentDir}.`,
+          );
+        }
+        const providerEntry = Object.entries(modelCatalog.providers).find(
+          ([provider]) => provider.trim().toLowerCase() === modelRef.provider,
+        )?.[1];
+        if (isRecord(providerEntry)) {
+          rootCatalogHasProvider = true;
+          const providerModels = Array.isArray(providerEntry.models) ? providerEntry.models : [];
+          rootCatalogHasModel = providerModels.some(
+            (entry) => isRecord(entry) && typeof entry.id === "string" && entry.id === modelRef.model,
+          );
+        }
+      }
+      if (!rootCatalogHasModel) {
+        pluginCatalog = await openSelectedPluginModelCatalogSnapshot(
+          sourceDirectory,
+          modelRef,
+          () => this.throwIfAborted(),
+        );
+        if (!pluginCatalog && modelCatalogSnapshot) {
+          throw new SandboxPreflightError(
+            "MODEL_PROFILE_SEED_INVALID",
+            rootCatalogHasProvider
+              ? `Detection model ${modelRef.model} is absent from provider ${modelRef.provider} in models.json and generated plugin catalogs.`
+              : `Detection model provider ${modelRef.provider} is absent from models.json and generated plugin catalogs.`,
+          );
+        }
+        if (pluginCatalog) {
+          totalBytes += pluginCatalog.file.stat.size;
+          if (totalBytes > BigInt(MAX_MODEL_STATE_TOTAL_BYTES)) {
+            throw new SandboxPreflightError(
+              "MODEL_PROFILE_SEED_INVALID",
+              "Detection model state exceeds the total snapshot size limit.",
+            );
+          }
+        }
+      }
+      const expectedHeader = Buffer.from("SQLite format 3\0", "utf8");
+      const sqlite = snapshots.get("openclaw-agent.sqlite")!;
+      if (sqlite.length < expectedHeader.length || !sqlite.subarray(0, expectedHeader.length).equals(expectedHeader)) {
+        throw new SandboxPreflightError(
+          "MODEL_PROFILE_SEED_INVALID",
+          `Detection model state openclaw-agent.sqlite is not a valid SQLite database under ${sourceAgentDir}.`,
+        );
+      }
+
+      const destination = path.join(profileRoot, "state", "agents", "main", "agent");
+      await fs.mkdir(destination, { recursive: true, mode: 0o700 });
+      for (const opened of openFiles) {
+        this.throwIfAborted();
+        const target = path.join(destination, opened.name);
+        const handle = await fs.open(target, "wx", 0o600);
+        try {
+          await writeSeedSnapshotInChunks(handle, opened.content!, () => this.throwIfAborted());
+        } finally {
+          await handle.close();
+        }
+      }
+      if (pluginCatalog) {
+        this.throwIfAborted();
+        const targetDirectory = path.join(destination, "plugins", pluginCatalog.encodedPluginId);
+        await fs.mkdir(targetDirectory, { recursive: true, mode: 0o700 });
+        const target = path.join(targetDirectory, PLUGIN_MODEL_CATALOG_FILE);
+        const handle = await fs.open(target, "wx", 0o600);
+        try {
+          await writeSeedSnapshotInChunks(handle, pluginCatalog.file.content!, () => this.throwIfAborted());
+        } finally {
+          await handle.close();
+        }
+        await assertSelectedPluginModelCatalogUnchanged(pluginCatalog);
+      }
+      await assertSeedSnapshotUnchanged(sourceDirectory, openFiles);
+      await Promise.all([
+        snapshotApprovedSeedDirectory(
+          profileSeed.stateRootIdentity?.resolvedPath ?? "",
+          profileSeed.stateRootIdentity,
+          "state root",
+        ),
+        snapshotApprovedSeedDirectory(
+          sourceAgentDir,
+          profileSeed.agentStateIdentity,
+          "main-agent state directory",
+        ),
+      ]);
+      return pluginCatalog ? [pluginCatalog.pluginId] : [];
+    } finally {
+      await Promise.all([
+        ...openFiles.map((entry) => entry.handle.close().catch(() => undefined)),
+        pluginCatalog ? pluginCatalog.file.handle.close().catch(() => undefined) : Promise.resolve(),
+      ]);
+    }
+  }
+
+  private async assertPluginPackageAvailable(): Promise<void> {
+    for (const relativePath of ["openclaw.plugin.json", path.join("dist", "index.js")]) {
+      const packagePath = path.join(this.pluginRoot, relativePath);
+      const stat = await fs.stat(packagePath).catch(() => undefined);
+      if (!stat?.isFile()) {
+        throw new SandboxPreflightError(
+          "OPENCLAW_PLUGIN_UNAVAILABLE",
+          `Agent Guard OpenClaw plugin package is incomplete: missing ${relativePath} under ${this.pluginRoot}. Build it with npm run build:openclaw-plugin.`,
+        );
+      }
+    }
+  }
+
+  private async createNetworkSink(): Promise<void> {
+    this.networkName = `agent-guard-${this.options.runGroupId}`;
+    const network = await this.command("docker", ["network", "create", "--internal", "--label", `${RUN_LABEL_KEY}=${this.options.runGroupId}`, this.networkName]);
+    if (network.exitCode !== 0) throw new SandboxPreflightError("NETWORK_SINK_UNAVAILABLE", "Could not create the controlled detection network.");
+    const sink = await this.command("docker", [
+      "run", "-d", "--user", "65532:65532", "--read-only",
+      "--tmpfs", "/tmp", "--tmpfs", "/var/tmp", "--tmpfs", "/run",
+      "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
+      "--pids-limit", "128", "--memory", "512m", "--memory-swap", "512m", "--cpus", "1", "--ulimit", "nofile=1024:1024",
+      "--label", `${RUN_LABEL_KEY}=${this.options.runGroupId}`,
+      "--label", `${RUN_ROLE_LABEL_KEY}=sink`,
+      "--network", this.networkName, "--network-alias", "sink", this.imageId!,
+      "python3", "-u", "-m", "http.server", "8080",
+    ]);
+    if (sink.exitCode !== 0 || !firstLine(sink.stdout)) {
+      throw new SandboxPreflightError("NETWORK_SINK_UNAVAILABLE", "Could not start the controlled detection sink.");
+    }
+    this.sinkContainerId = firstLine(sink.stdout);
+    this.config!.agents.defaults.sandbox.docker.network = this.networkName;
+    await fs.writeFile(this.configPath!, `${JSON.stringify(this.config, null, 2)}\n`, { mode: 0o600 });
+    await this.writeEvidence("config.json", this.config);
+    await this.writeEvidence("hashes.json", {
+      configSha256: createHash("sha256").update(JSON.stringify(this.config), "utf8").digest("hex"),
+      imageId: this.imageId,
+    });
+  }
+
+  private async probeOpenClawCapability(): Promise<NativeGuardCapability> {
+    const env = stringEnv(this.profileEnv());
+    delete env.OPENCLAW_GATEWAY_TOKEN;
+    delete env.OPENCLAW_GATEWAY_URL;
+    if (this.options.capabilityProbe) {
+      return this.options.capabilityProbe({
+        cliPath: this.options.cliPath,
+        env,
+        isolatedProfile: true,
+      });
+    }
+    const client = createOpenClawControlClient({
+      gatewayToken: "detection-capability-probe",
+      capabilityTimeoutMs: DETECTION_SANDBOX_CAPABILITY_TIMEOUT_MS,
+      commandRunner: async (input) => this.run({
+        command: input.command,
+        args: input.args,
+        env: input.env,
+        timeoutMs: input.timeoutMs,
+        signal: this.signal,
+      }),
+    });
+    try {
+      return await client.inspectCapabilities({
+        cliPath: this.options.cliPath,
+        env,
+        isolatedProfile: true,
+        inheritProcessEnv: false,
+        signal: this.signal,
+      });
+    } catch {
+      if (this.signal.aborted) throw new SandboxPreflightError("CANCELLED", "Detection sandbox operation was cancelled.");
+      throw new SandboxPreflightError("OPENCLAW_CAPABILITY_UNAVAILABLE", "OpenClaw capability inventory is unavailable.");
+    }
+  }
+
+  private async probeGatewayAttestation(challenge: string) {
+    const gateway = this.gateway;
+    if (!gateway) {
+      throw new SandboxPreflightError(
+        "OPENCLAW_CAPABILITY_UNAVAILABLE",
+        "OpenClaw Gateway credentials are unavailable for runtime attestation.",
+      );
+    }
+    const client = createOpenClawControlClient({ gatewayToken: gateway.token });
+    try {
+      if (this.options.gatewayAttestationProbe) {
+        const value = await this.options.gatewayAttestationProbe({
+          gatewayUrl: gateway.url,
+          gatewayToken: gateway.token,
+          challenge,
+        });
+        const attestation = parseNativeGuardGatewayAttestation(value, {
+          gatewayUrl: gateway.url,
+          challenge,
+          attestationPublicKey: gateway.attestationPublicKey,
+        });
+        if (!attestation) throw new Error("Invalid injected Gateway attestation.");
+        return attestation;
+      }
+      return await client.attestGateway({
+        signal: this.signal,
+        gatewayUrl: gateway.url,
+        challenge,
+        attestationPublicKey: gateway.attestationPublicKey,
+      });
+    } catch {
+      if (this.signal.aborted) {
+        throw new SandboxPreflightError("CANCELLED", "Detection sandbox operation was cancelled.");
+      }
+      throw new SandboxPreflightError(
+        "OPENCLAW_CAPABILITY_UNAVAILABLE",
+        "OpenClaw Gateway runtime attestation is unavailable.",
+      );
+    }
+  }
+
+  private async probeRuntimeStatus(): Promise<NativeGuardStatus> {
+    const gateway = this.gateway;
+    if (!gateway) {
+      throw new SandboxPreflightError(
+        "OPENCLAW_CAPABILITY_UNAVAILABLE",
+        "OpenClaw Gateway credentials are unavailable for runtime inspection.",
+      );
+    }
+    if (this.options.runtimeStatusProbe) {
+      return this.options.runtimeStatusProbe({
+        gatewayUrl: gateway.url,
+        gatewayToken: gateway.token,
+      });
+    }
+    const client = createOpenClawControlClient({ gatewayToken: gateway.token });
+    try {
+      return await client.status(gateway.url);
+    } catch {
+      throw new SandboxPreflightError(
+        "OPENCLAW_CAPABILITY_UNAVAILABLE",
+        "OpenClaw Gateway runtime status is unavailable.",
+      );
+    }
+  }
+
+  private async probeOpenClawVersion(): Promise<string> {
+    const cli = resolveOpenClawCliInvocation(this.options.cliPath);
+    const result = await this.command(
+      cli.command,
+      [...cli.argsPrefix, "--version"],
+      { ...cli.env, ...this.profileEnv() },
+    );
+    if (result.exitCode !== 0) {
+      throw new SandboxPreflightError(
+        "OPENCLAW_UNSUPPORTED",
+        "OpenClaw detection runtime version is unavailable.",
+      );
+    }
+    const version = result.stdout.match(
+      /(?:^|\D)(\d{4}\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)(?:\s|$)/,
+    )?.[1];
+    if (!version || !isCompatibleNativeGuardVersion(version)) {
+      throw new SandboxPreflightError(
+        "OPENCLAW_UNSUPPORTED",
+        "OpenClaw detection runtime is unsupported.",
+      );
+    }
+    return version;
+  }
+
+  private profileEnv(): NodeJS.ProcessEnv {
+    return {
+      ...strictBaseEnv(),
+      OPENCLAW_CONFIG_PATH: this.configPath,
+      OPENCLAW_STATE_DIR: path.join(this.profileRoot!, "state"),
+      OPENCLAW_WORKSPACE_DIR: path.join(this.profileRoot!, "workspace"),
+      OPENCLAW_WORKSPACE: path.join(this.profileRoot!, "workspace"),
+      OPENCLAW_HOME: this.profileRoot,
+      OPENCLAW_CONFIG_DIR: this.profileRoot,
+      OPENCLAW_PLUGIN_DIRS: "",
+      OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
+      OPENCLAW_DISABLE_PERSISTED_PLUGIN_REGISTRY: "1",
+      ...(this.gateway?.token ? { OPENCLAW_GATEWAY_TOKEN: this.gateway.token } : {}),
+      ...(this.gateway?.url ? { OPENCLAW_GATEWAY_URL: this.gateway.url } : {}),
+    };
+  }
+
+  private async currentEvidence(): Promise<DetectionSandboxEvidence> {
+    if (!this.profileRoot || !this.configPath || !this.config || !this.imageId) throw new SandboxPreflightError("NOT_READY", "Detection sandbox is not ready.");
+    return {
+      runGroupId: this.options.runGroupId, image: this.options.image, imageId: this.imageId,
+      openclawVersion: this.resolvedOpenClawVersion ?? "unknown", profileRoot: this.profileRoot,
+      configPath: this.configPath, configDigest: detectionConfigDigest(this.config),
+      networkMode: this.options.networkCase ? "internal" : "none", status: "preflight_passed",
+    };
+  }
+
+  private async inspectLabeledContainer(
+    sessionIdentity: string,
+    expectedWorkspaceRoot: string,
+  ): Promise<{ containerId?: string; matches: boolean }> {
+    const inventory = await this.inspectSessionContainerInventory(
+      sessionIdentity,
+      expectedWorkspaceRoot,
+    );
+    return inventory.status === "exact"
+      ? { containerId: inventory.containerId, matches: true }
+      : { matches: false };
+  }
+
+  private async inspectSessionContainerInventory(
+    sessionIdentity: string,
+    expectedWorkspaceRoot: string,
+  ): Promise<SessionContainerInventory> {
+    const listed = await this.command(
+      "docker",
+      ["ps", "-aq", "--no-trunc", "--filter", `label=${RUN_LABEL_KEY}=${this.options.runGroupId}`],
+    );
+    if (listed.exitCode !== 0) throw this.containerInventoryMismatch();
+    let ids: string[];
+    try {
+      ids = parseDockerIds(listed.stdout, "container");
+    } catch {
+      throw this.containerInventoryMismatch();
+    }
+    if (!ids.length) {
+      if (this.options.networkCase) throw this.containerInventoryMismatch();
+      return { status: "absent" };
+    }
+    const result = await this.command("docker", ["inspect", "--format", "{{json .}}", ...ids]);
+    if (result.exitCode !== 0) throw this.containerInventoryMismatch();
+    const records = parseInspectRecords(result.stdout);
+    if (records.length !== ids.length || records.some((record) => {
+      const config = isRecord(record.Config) ? record.Config : {};
+      const labels = isRecord(config.Labels) ? config.Labels : {};
+      return labels[RUN_LABEL_KEY] !== this.options.runGroupId;
+    })) throw this.containerInventoryMismatch();
+    const roleOf = (record: Record<string, unknown>): unknown => {
+      const config = isRecord(record.Config) ? record.Config : {};
+      const labels = isRecord(config.Labels) ? config.Labels : {};
+      return labels[RUN_ROLE_LABEL_KEY];
+    };
+    const agentRecords = records.filter((record) => roleOf(record) === "agent");
+    const sinkRecords = records.filter((record) => roleOf(record) === "sink");
+    if (
+      records.length !== agentRecords.length + sinkRecords.length ||
+      (this.options.networkCase
+        ? sinkRecords.length !== 1 || sinkRecords[0].Id !== this.sinkContainerId
+        : sinkRecords.length !== 0)
+    ) throw this.containerInventoryMismatch();
+    if (this.options.networkCase && !this.sinkMatches(sinkRecords[0])) {
+      throw this.containerInventoryMismatch();
+    }
+    if (!agentRecords.every((record) => this.containerMatches(record))) {
+      throw this.containerInventoryMismatch();
+    }
+    const workspaceRecords = agentRecords.filter(
+      (record) => sameHostPath(containerWorkspaceSource(record), expectedWorkspaceRoot),
+    );
+    const sessionRecords = agentRecords.filter(
+      (record) => canonicalSessionIdentity(containerSessionKey(record)) === sessionIdentity,
+    );
+    if (workspaceRecords.length === 0 && sessionRecords.length === 0) {
+      return { status: "absent" };
+    }
+    if (
+      workspaceRecords.length !== 1 ||
+      sessionRecords.length !== 1 ||
+      workspaceRecords[0] !== sessionRecords[0]
+    ) {
+      throw this.containerInventoryMismatch();
+    }
+    const containerId = workspaceRecords[0].Id;
+    if (typeof containerId !== "string" || !ids.includes(containerId)) {
+      throw this.containerInventoryMismatch();
+    }
+    return { status: "exact", containerId };
+  }
+
+  private containerInventoryMismatch(): SandboxAttestationError {
+    return new SandboxAttestationError(
+      "CONTAINER_ATTESTATION_MISMATCH",
+      "Labeled detection container inventory did not prove the requested session state.",
+    );
+  }
+
+  private containerMatches(record: Record<string, unknown>): boolean {
+    const host = isRecord(record.HostConfig) ? record.HostConfig : {};
+    const config = isRecord(record.Config) ? record.Config : {};
+    const labels = isRecord(config.Labels) ? config.Labels : {};
+    const expectedNetwork = this.options.networkCase ? this.networkName : "none";
+    const mountsSafe = this.agentMountsMatch(host, record);
+    const securityOpt = Array.isArray(host.SecurityOpt) ? host.SecurityOpt.map(String) : [];
+    const tmpfs = isRecord(host.Tmpfs) ? host.Tmpfs : {};
+    const ulimits = Array.isArray(host.Ulimits) ? host.Ulimits : [];
+    const nofile = ulimits.find((entry) => isRecord(entry) && entry.Name === "nofile");
+    return labels[RUN_LABEL_KEY] === this.options.runGroupId &&
+      labels[RUN_ROLE_LABEL_KEY] === "agent" &&
+      record.Image === this.imageId && config.User === "65532:65532" &&
+      host.NetworkMode === expectedNetwork && host.ReadonlyRootfs === true && host.Privileged === false &&
+      securityOpt.some((value) => /no-new-privileges(?::true)?/i.test(value)) &&
+      Array.isArray(host.CapDrop) && host.CapDrop.length === 1 && host.CapDrop[0] === "ALL" &&
+      (host.CapAdd === undefined || host.CapAdd === null || (Array.isArray(host.CapAdd) && host.CapAdd.length === 0)) &&
+      Number(host.PidsLimit) === 128 && Number(host.Memory) === 536870912 &&
+      Number(host.MemorySwap) === 536870912 && Number(host.NanoCpus) === 1_000_000_000 &&
+      mountsSafe &&
+      ["/tmp", "/var/tmp", "/run"].every((mount) => Object.prototype.hasOwnProperty.call(tmpfs, mount)) &&
+      isRecord(nofile) && Number(nofile.Soft) === 1024 && Number(nofile.Hard) === 1024;
+  }
+
+  private agentMountsMatch(
+    host: Record<string, unknown>,
+    record: Record<string, unknown>,
+  ): boolean {
+    if (!this.profileRoot || !Array.isArray(record.Mounts) || record.Mounts.length !== 2) {
+      return false;
+    }
+    const mounts = record.Mounts;
+    if (mounts.some((mount) => !isRecord(mount) || mount.Type !== "bind" || mount.RW !== false)) {
+      return false;
+    }
+    const workspaceMount = mounts.find(
+      (mount) => isRecord(mount) && mount.Destination === "/workspace",
+    );
+    const agentMount = mounts.find(
+      (mount) => isRecord(mount) && mount.Destination === "/agent",
+    );
+    if (
+      !isRecord(workspaceMount) ||
+      !isRecord(agentMount) ||
+      typeof workspaceMount.Source !== "string" ||
+      typeof agentMount.Source !== "string"
+    ) {
+      return false;
+    }
+    const sandboxParent = path.resolve(this.profileRoot, "state", "sandboxes");
+    if (
+      !isDirectChildPath(workspaceMount.Source, sandboxParent) ||
+      !sameHostPath(agentMount.Source, path.resolve(this.profileRoot, "workspace"))
+    ) {
+      return false;
+    }
+    if (!Array.isArray(host.Binds) || host.Binds.length !== mounts.length) return false;
+    const structuredSources = new Map([
+      ["/workspace", workspaceMount.Source],
+      ["/agent", agentMount.Source],
+    ]);
+    const bindDestinations = new Set<string>();
+    for (const bind of host.Binds) {
+      const parsed = parseReadOnlyDockerBind(bind);
+      const structuredSource = parsed && structuredSources.get(parsed.destination);
+      if (
+        !parsed ||
+        !structuredSource ||
+        bindDestinations.has(parsed.destination) ||
+        !sameHostPath(parsed.source, structuredSource)
+      ) {
+        return false;
+      }
+      bindDestinations.add(parsed.destination);
+    }
+    return bindDestinations.size === structuredSources.size;
+  }
+
+  private sinkMatches(record: Record<string, unknown>): boolean {
+    const host = isRecord(record.HostConfig) ? record.HostConfig : {};
+    const config = isRecord(record.Config) ? record.Config : {};
+    const labels = isRecord(config.Labels) ? config.Labels : {};
+    const securityOpt = Array.isArray(host.SecurityOpt) ? host.SecurityOpt.map(String) : [];
+    const tmpfs = isRecord(host.Tmpfs) ? host.Tmpfs : {};
+    const ulimits = Array.isArray(host.Ulimits) ? host.Ulimits : [];
+    const nofile = ulimits.find((entry) => isRecord(entry) && entry.Name === "nofile");
+    const mounts = Array.isArray(record.Mounts) ? record.Mounts : [];
+    const allowedTmpfsMounts = new Set(["/tmp", "/var/tmp", "/run"]);
+    const mountsSafe = mounts.every((mount) => isRecord(mount) && mount.Type === "tmpfs" && typeof mount.Destination === "string" && allowedTmpfsMounts.has(mount.Destination));
+    const command = Array.isArray(config.Cmd) ? config.Cmd.map(String) : [];
+    const entrypoint = config.Entrypoint;
+    const networks = isRecord(record.NetworkSettings) && isRecord(record.NetworkSettings.Networks) ? record.NetworkSettings.Networks : {};
+    const aliases = Object.values(networks).flatMap((network) => isRecord(network) && Array.isArray(network.Aliases) ? network.Aliases.map(String) : []);
+    return record.Image === this.imageId && config.User === "65532:65532" && host.NetworkMode === this.networkName &&
+      labels[RUN_LABEL_KEY] === this.options.runGroupId && labels[RUN_ROLE_LABEL_KEY] === "sink" &&
+      command.length === 5 && command.join("\u0000") === ["python3", "-u", "-m", "http.server", "8080"].join("\u0000") &&
+      (entrypoint === undefined || entrypoint === null || (Array.isArray(entrypoint) && entrypoint.length === 0)) &&
+      aliases.includes("sink") &&
+      host.ReadonlyRootfs === true && host.Privileged === false && securityOpt.some((value) => /no-new-privileges(?::true)?/i.test(value)) &&
+      Array.isArray(host.CapDrop) && host.CapDrop.length === 1 && host.CapDrop[0] === "ALL" &&
+      (host.CapAdd === undefined || host.CapAdd === null || (Array.isArray(host.CapAdd) && host.CapAdd.length === 0)) &&
+      Number(host.PidsLimit) === 128 && Number(host.Memory) === 536870912 && Number(host.MemorySwap) === 536870912 && Number(host.NanoCpus) === 1_000_000_000 &&
+      (host.Binds === undefined || host.Binds === null || (Array.isArray(host.Binds) && host.Binds.length === 0)) && mountsSafe &&
+      (host.Devices === undefined || host.Devices === null || (Array.isArray(host.Devices) && host.Devices.length === 0)) &&
+      (host.DeviceRequests === undefined || host.DeviceRequests === null || (Array.isArray(host.DeviceRequests) && host.DeviceRequests.length === 0)) &&
+      (config.Volumes === undefined || config.Volumes === null || (isRecord(config.Volumes) && Object.keys(config.Volumes).length === 0)) &&
+      ["/tmp", "/var/tmp", "/run"].every((mount) => Object.prototype.hasOwnProperty.call(tmpfs, mount)) &&
+      isRecord(nofile) && Number(nofile.Soft) === 1024 && Number(nofile.Hard) === 1024;
+  }
+
+  private async writeEvidence(name: string, value: unknown): Promise<void> {
+    if (!this.evidenceRoot) return;
+    const destination = path.join(this.evidenceRoot, name);
+    const resolved = path.resolve(destination);
+    if (!resolved.startsWith(`${this.evidenceRoot}${path.sep}`)) throw new Error("Invalid evidence path");
+    await assertNoSymlinkAncestors(this.evidenceRoot);
+    const existing = await fs.lstat(destination).catch(() => undefined);
+    if (existing?.isSymbolicLink() || (existing && !existing.isFile())) throw new Error("Evidence destination has an invalid file type.");
+    const temporary = `${destination}.tmp-${randomBytes(8).toString("hex")}`;
+    try {
+      const handle = await fs.open(temporary, "wx", 0o600);
+      try {
+        await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`, "utf8");
+      } finally {
+        await handle.close();
+      }
+      await assertNoSymlinkAncestors(this.evidenceRoot);
+      const beforeRename = await fs.lstat(destination).catch(() => undefined);
+      if (beforeRename?.isSymbolicLink()) throw new Error("Evidence destination became a symlink.");
+      await fs.rename(temporary, destination);
+      await assertNoSymlinkAncestors(this.evidenceRoot);
+    } catch (error) {
+      await fs.rm(temporary, { force: true }).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  private async command(command: string, args: string[], env?: NodeJS.ProcessEnv): Promise<DetectionCommandResult> {
+    this.throwIfAborted();
+    const result = await this.run({
+      command,
+      args,
+      env,
+      signal: this.signal,
+      timeoutMs: DETECTION_SANDBOX_COMMAND_TIMEOUT_MS,
+    });
+    this.throwIfAborted();
+    if (Buffer.byteLength(result.stdout, "utf8") > MAX_COMMAND_OUTPUT_BYTES || Buffer.byteLength(result.stderr, "utf8") > MAX_COMMAND_OUTPUT_BYTES) {
+      throw new SandboxPreflightError("COMMAND_OUTPUT_TOO_LARGE", "Detection command output exceeded the size limit.");
+    }
+    return result;
+  }
+
+  private async cleanupCommand(command: string, args: string[]): Promise<DetectionCommandResult> {
+    const result = await this.run({
+      command,
+      args,
+      signal: undefined,
+      timeoutMs: DETECTION_SANDBOX_COMMAND_TIMEOUT_MS,
+    });
+    if (Buffer.byteLength(result.stdout, "utf8") > MAX_COMMAND_OUTPUT_BYTES || Buffer.byteLength(result.stderr, "utf8") > MAX_COMMAND_OUTPUT_BYTES) {
+      throw new Error("Detection cleanup command output exceeded the size limit.");
+    }
+    return result;
+  }
+
+  private throwIfAborted(): void {
+    if (this.gatewayFailure) throw this.gatewayFailure;
+    if (this.signal.aborted) throw new SandboxPreflightError("CANCELLED", "Detection sandbox operation was cancelled.");
+  }
+
+  private requestCancellation(): void {
+    if (this.activeGatewayGeneration !== undefined) {
+      this.expectedGatewayShutdownGeneration = this.activeGatewayGeneration;
+    }
+    this.abortController.abort();
+  }
+
+  private armGatewayLifetime(gateway: DetectionGatewayProcess): number {
+    const processHandle = gateway.process;
+    if (
+      !processHandle ||
+      typeof processHandle.kill !== "function" ||
+      typeof processHandle.waitForExit !== "function"
+    ) {
+      throw new SandboxPreflightError(
+        "GATEWAY_LIFETIME_UNAVAILABLE",
+        "Detection Gateway process lifetime is unavailable.",
+      );
+    }
+    let exit: Promise<void>;
+    try {
+      exit = processHandle.waitForExit();
+      if (!exit || typeof exit.then !== "function") throw new Error("Invalid exit promise.");
+    } catch {
+      throw new SandboxPreflightError(
+        "GATEWAY_LIFETIME_UNAVAILABLE",
+        "Detection Gateway process lifetime is unavailable.",
+      );
+    }
+
+    const generation = ++this.gatewayGeneration;
+    this.activeGatewayGeneration = generation;
+    this.expectedGatewayShutdownGeneration = undefined;
+    this.gatewayFailure = undefined;
+    this.gatewayLifetimeFailure = new Promise<SandboxPreflightError>((resolve) => {
+      this.resolveGatewayLifetimeFailure = resolve;
+    });
+    void exit.then(
+      () => this.handleGatewayExit(gateway, generation),
+      () => this.handleGatewayExit(gateway, generation),
+    );
+    return generation;
+  }
+
+  private handleGatewayExit(
+    gateway: DetectionGatewayProcess,
+    generation: number,
+  ): void {
+    if (
+      this.gateway !== gateway ||
+      this.activeGatewayGeneration !== generation ||
+      this.expectedGatewayShutdownGeneration === generation
+    ) {
+      return;
+    }
+    const error = new SandboxPreflightError(
+      "GATEWAY_EXITED",
+      "Detection Gateway exited unexpectedly.",
+    );
+    this.gatewayFailure = error;
+    this.liveValidated = false;
+    this.gateway = undefined;
+    this.resolveGatewayLifetimeFailure?.(error);
+    this.resolveGatewayLifetimeFailure = undefined;
+    this.abortController.abort();
+  }
+
+  private assertGatewayAlive(
+    gateway: DetectionGatewayProcess | undefined,
+    generation: number | undefined,
+    requireValidated: boolean,
+  ): void {
+    if (this.gatewayFailure) throw this.gatewayFailure;
+    if (
+      !gateway ||
+      this.gateway !== gateway ||
+      generation === undefined ||
+      this.activeGatewayGeneration !== generation ||
+      (requireValidated && !this.liveValidated)
+    ) {
+      throw new SandboxPreflightError(
+        "GATEWAY_LIFETIME_UNAVAILABLE",
+        "Detection Gateway process lifetime is unavailable.",
+      );
+    }
+  }
+
+  private async raceGatewayLifetime<T>(
+    operation: (signal: AbortSignal) => Promise<T>,
+    requireValidated: boolean,
+  ): Promise<T> {
+    const gateway = this.gateway;
+    const generation = this.activeGatewayGeneration;
+    const failure = this.gatewayLifetimeFailure;
+    this.assertGatewayAlive(gateway, generation, requireValidated);
+    if (!failure) {
+      throw new SandboxPreflightError(
+        "GATEWAY_LIFETIME_UNAVAILABLE",
+        "Detection Gateway process lifetime is unavailable.",
+      );
+    }
+    const operationPromise = Promise.resolve().then(() => operation(this.signal));
+    const operationOutcome = operationPromise.then(
+      (value) => ({ kind: "value" as const, value }),
+      (error: unknown) => ({ kind: "operation_error" as const, error }),
+    );
+    const outcome = await Promise.race([
+      operationOutcome,
+      failure.then((error) => ({ kind: "gateway_error" as const, error })),
+    ]);
+    if (outcome.kind === "gateway_error") {
+      await operationOutcome;
+      throw outcome.error;
+    }
+    if (outcome.kind === "operation_error") {
+      if (this.gatewayFailure) throw this.gatewayFailure;
+      if (this.signal.aborted) {
+        throw new SandboxPreflightError(
+          "CANCELLED",
+          "Detection sandbox operation was cancelled.",
+        );
+      }
+      throw outcome.error;
+    }
+    this.throwIfAborted();
+    this.assertGatewayAlive(gateway, generation, requireValidated);
+    return outcome.value;
+  }
+}
+
+export function createDetectionSandboxManager(options: DetectionSandboxManagerOptions): DetectionSandboxManager {
+  return new DetectionSandboxManager(options);
+}
+
+function firstLine(value: string): string { return value.trim().split(/\r?\n/, 1)[0] ?? ""; }
+
+function cloneDetectionSandboxEvidence(evidence: DetectionSandboxEvidence): DetectionSandboxEvidence {
+  return { ...evidence };
+}
+
+function cloneSessionContainerFinalization(
+  result: DetectionSessionContainerFinalization,
+): DetectionSessionContainerFinalization {
+  return {
+    ...result,
+    evidence: cloneDetectionSandboxEvidence(result.evidence),
+  };
+}
+
+function parseDockerIds(raw: string, kind: "container" | "network"): string[] {
+  if (!raw.trim()) return [];
+  const ids = raw.split(/\r?\n/).map((id) => id.trim()).filter(Boolean);
+  if (ids.some((id) => !/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(id))) {
+    throw new Error(`Invalid labeled Docker ${kind} id output.`);
+  }
+  return ids;
+}
+
+function parseInspectRecords(raw: string): Record<string, unknown>[] {
+  if (!raw.trim()) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    const values = Array.isArray(parsed) ? parsed : [parsed];
+    return values.every(isRecord) ? values : [];
+  } catch {
+    const values: unknown[] = [];
+    for (const line of raw.split(/\r?\n/).filter((entry) => entry.trim())) {
+      try { values.push(JSON.parse(line) as unknown); } catch { return []; }
+    }
+    return values.every(isRecord) ? values : [];
+  }
+}
+
+function parseReadOnlyDockerBind(value: unknown): {
+  source: string;
+  destination: "/workspace" | "/agent";
+} | undefined {
+  if (typeof value !== "string") return undefined;
+  const match = /^(.+):(\/(?:workspace|agent)):([^:]+)$/.exec(value);
+  if (!match) return undefined;
+  const options = match[3].split(",");
+  if (!options.includes("ro") || options.includes("rw")) return undefined;
+  return {
+    source: match[1],
+    destination: match[2] as "/workspace" | "/agent",
+  };
+}
+
+function sameHostPath(left: string, right: string): boolean {
+  const normalize = (value: string): string => {
+    const resolved = path.normalize(path.resolve(value));
+    return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  };
+  return left.length > 0 && right.length > 0 && normalize(left) === normalize(right);
+}
+
+function isDirectChildPath(candidate: string, parent: string): boolean {
+  if (!candidate.length) return false;
+  const relative = path.relative(path.resolve(parent), path.resolve(candidate));
+  return relative.length > 0 &&
+    !path.isAbsolute(relative) &&
+    relative !== ".." &&
+    !relative.startsWith(`..${path.sep}`) &&
+    path.dirname(relative) === ".";
+}
+
+function parseSandboxExplainAttestation(raw: string): {
+  workspaceRoot: string;
+  sessionIdentity?: string;
+} | undefined {
+  let value: unknown;
+  try { value = JSON.parse(raw); } catch { return undefined; }
+  const sandbox = isRecord(value) && isRecord(value.sandbox)
+    ? value.sandbox
+    : isRecord(value) && isRecord(value.agents) && isRecord(value.agents.defaults) && isRecord(value.agents.defaults.sandbox)
+      ? value.agents.defaults.sandbox
+      : value;
+  if (!isRecord(sandbox) || !Array.isArray(sandbox.workspaceMounts)) return undefined;
+  const mounts = sandbox.workspaceMounts;
+  const mountsAreReadOnly = mounts.every(
+    (mount) => isRecord(mount) && mount.writable === false,
+  );
+  const hasReadOnlyMount = (source: string, containerRoot: string): boolean =>
+    mounts.some(
+      (mount) =>
+        isRecord(mount) &&
+        mount.source === source &&
+        mount.containerRoot === containerRoot &&
+        mount.writable === false,
+    );
+  const valid = sandbox.mode === "all" && sandbox.scope === "session" && sandbox.backend === "docker" &&
+    sandbox.workspaceAccess === "ro" && sandbox.sessionIsSandboxed === true &&
+    sandbox.runtimeWorkdir === "/workspace" && mountsAreReadOnly &&
+    hasReadOnlyMount("workspace", "/workspace") && hasReadOnlyMount("agent", "/agent");
+  if (!valid || typeof sandbox.effectiveHostWorkspaceRoot !== "string") return undefined;
+  const workspaceMount = mounts.find(
+    (mount) => isRecord(mount) && mount.source === "workspace" && mount.containerRoot === "/workspace",
+  );
+  if (
+    !isRecord(workspaceMount) ||
+    typeof workspaceMount.hostRoot !== "string" ||
+    !sameHostPath(workspaceMount.hostRoot, sandbox.effectiveHostWorkspaceRoot)
+  ) {
+    return undefined;
+  }
+  let sessionIdentity: string | undefined;
+  if (isRecord(value) && Object.prototype.hasOwnProperty.call(value, "sessionKey")) {
+    if (typeof value.sessionKey !== "string") return undefined;
+    sessionIdentity = canonicalSessionIdentity(value.sessionKey);
+    if (!sessionIdentity) return undefined;
+  }
+  return {
+    workspaceRoot: path.resolve(sandbox.effectiveHostWorkspaceRoot),
+    ...(sessionIdentity ? { sessionIdentity } : {}),
+  };
+}
+
+function canonicalSessionIdentity(value: string): string | undefined {
+  const normalized = value.trim();
+  if (!normalized) return undefined;
+  if (/^agent:/i.test(normalized)) {
+    const agentScoped = /^agent:([^:]+):(.+)$/i.exec(normalized);
+    const agentId = agentScoped?.[1].trim().toLowerCase();
+    const tail = agentScoped?.[2].trim();
+    return agentId && tail ? `agent:${agentId}:${tail}` : undefined;
+  }
+  return `agent:main:${normalized}`;
+}
+
+function containerWorkspaceSource(record: Record<string, unknown>): string {
+  if (!Array.isArray(record.Mounts)) return "";
+  const workspaceMount = record.Mounts.find(
+    (mount) => isRecord(mount) && mount.Type === "bind" && mount.Destination === "/workspace",
+  );
+  return isRecord(workspaceMount) && typeof workspaceMount.Source === "string"
+    ? workspaceMount.Source
+    : "";
+}
+
+function containerSessionKey(record: Record<string, unknown>): string {
+  const config = isRecord(record.Config) ? record.Config : {};
+  const labels = isRecord(config.Labels) ? config.Labels : {};
+  return typeof labels["openclaw.sessionKey"] === "string"
+    ? labels["openclaw.sessionKey"]
+    : "";
+}
+
+function isSafeTempRoot(root: string): boolean {
+  const resolved = path.resolve(root);
+  const temp = path.resolve(os.tmpdir());
+  return resolved.startsWith(`${temp}${path.sep}`) && path.basename(resolved).startsWith("agent-guard-");
+}
+
+async function assertNoSymlinkAncestors(target: string): Promise<void> {
+  let current = path.resolve(target);
+  const root = path.parse(current).root;
+  while (current.length >= root.length) {
+    const stat = await fs.lstat(current).catch(() => undefined);
+    if (stat?.isSymbolicLink()) throw new SandboxPreflightError("INVALID_OUTPUT_ROOT", "Detection evidence path contains a symlink.");
+    if (current === root) break;
+    current = path.dirname(current);
+  }
+}
+
+type TrustedSeedDirectorySnapshot = {
+  path: string;
+  stat: BigIntStats;
+};
+
+type OpenSeedFileSnapshot = {
+  name: string;
+  path: string;
+  canonicalPath: string;
+  handle: Awaited<ReturnType<typeof fs.open>>;
+  stat: BigIntStats;
+  content?: Buffer;
+};
+
+type SelectedPluginModelCatalogSnapshot = {
+  pluginId: string;
+  encodedPluginId: string;
+  pluginsDirectory: TrustedSeedDirectorySnapshot;
+  pluginDirectory: TrustedSeedDirectorySnapshot;
+  file: OpenSeedFileSnapshot;
+};
+
+async function openSelectedPluginModelCatalogSnapshot(
+  agentDirectory: TrustedSeedDirectorySnapshot,
+  modelRef: { provider: string; model: string },
+  assertActive: () => void,
+): Promise<SelectedPluginModelCatalogSnapshot | undefined> {
+  const pluginsPath = path.join(agentDirectory.path, "plugins");
+  const pluginsStat = await fs.lstat(pluginsPath).catch(() => undefined);
+  if (!pluginsStat) return undefined;
+  if (!pluginsStat.isDirectory() || pluginsStat.isSymbolicLink()) {
+    throw new SandboxPreflightError(
+      "MODEL_PROFILE_SEED_INVALID",
+      `Detection plugin model catalog root is invalid: ${pluginsPath}.`,
+    );
+  }
+  const pluginsDirectory = await snapshotTrustedSeedDirectory(pluginsPath);
+  if (!isPathInsideDirectory(pluginsDirectory.path, agentDirectory.path)) {
+    throw new SandboxPreflightError(
+      "MODEL_PROFILE_SEED_INVALID",
+      `Detection plugin model catalog root escaped the trusted main-agent directory: ${pluginsPath}.`,
+    );
+  }
+
+  const matches: SelectedPluginModelCatalogSnapshot[] = [];
+  try {
+    const entries = (await fs.readdir(pluginsDirectory.path, { withFileTypes: true }))
+      .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink())
+      .sort((left, right) => left.name.localeCompare(right.name));
+    for (const entry of entries) {
+      assertActive();
+      let pluginId: string;
+      try {
+        pluginId = decodeURIComponent(entry.name).trim();
+      } catch {
+        continue;
+      }
+      if (!pluginId || pluginId === "." || pluginId === "..") continue;
+      const pluginDirectory = await snapshotTrustedSeedDirectory(path.join(pluginsDirectory.path, entry.name));
+      if (!isPathInsideDirectory(pluginDirectory.path, pluginsDirectory.path)) {
+        throw new SandboxPreflightError(
+          "MODEL_PROFILE_SEED_INVALID",
+          `Detection plugin model catalog escaped its trusted root: ${pluginDirectory.path}.`,
+        );
+      }
+      const catalogPath = path.join(pluginDirectory.path, PLUGIN_MODEL_CATALOG_FILE);
+      const catalogStat = await fs.lstat(catalogPath).catch(() => undefined);
+      if (!catalogStat) continue;
+      const file = await openSeedFileSnapshot(catalogPath, pluginDirectory);
+      try {
+        if (file.stat.size > BigInt(MAX_MODEL_STATE_FILE_BYTES)) {
+          throw new SandboxPreflightError(
+            "MODEL_PROFILE_SEED_INVALID",
+            `Detection plugin model catalog exceeds the size limit: ${catalogPath}.`,
+          );
+        }
+        file.content = await readBoundedSeedFile(file, assertActive);
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(file.content.toString("utf8")) as unknown;
+        } catch {
+          throw new SandboxPreflightError(
+            "MODEL_PROFILE_SEED_INVALID",
+            `Detection plugin model catalog is not valid JSON: ${catalogPath}.`,
+          );
+        }
+        if (!isRecord(parsed) || parsed.generatedBy !== PLUGIN_MODEL_CATALOG_GENERATED_BY) continue;
+        const providers = isRecord(parsed.providers) ? parsed.providers : undefined;
+        const providerEntry = providers
+          ? Object.entries(providers).find(([provider]) => provider.trim().toLowerCase() === modelRef.provider)?.[1]
+          : undefined;
+        if (!isRecord(providerEntry)) continue;
+        const providerModels = Array.isArray(providerEntry.models) ? providerEntry.models : [];
+        if (!providerModels.some(
+          (model) => isRecord(model) && typeof model.id === "string" && model.id === modelRef.model,
+        )) continue;
+        matches.push({
+          pluginId,
+          encodedPluginId: entry.name,
+          pluginsDirectory,
+          pluginDirectory,
+          file,
+        });
+        continue;
+      } finally {
+        if (!matches.some((match) => match.file === file)) {
+          await file.handle.close().catch(() => undefined);
+        }
+      }
+    }
+    if (matches.length > 1) {
+      throw new SandboxPreflightError(
+        "MODEL_PROFILE_SEED_INVALID",
+        `Detection model provider ${modelRef.provider} has multiple generated plugin catalog owners.`,
+      );
+    }
+    return matches[0];
+  } catch (error) {
+    await Promise.all(matches.map((match) => match.file.handle.close().catch(() => undefined)));
+    throw error;
+  }
+}
+
+async function assertSelectedPluginModelCatalogUnchanged(
+  snapshot: SelectedPluginModelCatalogSnapshot,
+): Promise<void> {
+  try {
+    for (const directory of [snapshot.pluginsDirectory, snapshot.pluginDirectory]) {
+      const current = await snapshotTrustedSeedDirectory(directory.path);
+      if (
+        !sameHostPath(current.path, directory.path) ||
+        !sameSeedFileSnapshot(current.stat, directory.stat)
+      ) {
+        throw new SandboxPreflightError(
+          "MODEL_PROFILE_SEED_INVALID",
+          `Detection plugin model catalog directory changed during snapshot: ${directory.path}.`,
+        );
+      }
+    }
+    const handleStat = await snapshot.file.handle.stat({ bigint: true });
+    const pathStat = await fs.lstat(snapshot.file.path, { bigint: true });
+    const canonicalPath = await fs.realpath(snapshot.file.path);
+    if (
+      pathStat.isSymbolicLink() ||
+      !sameSeedFileSnapshot(snapshot.file.stat, handleStat) ||
+      !sameSeedFileSnapshot(handleStat, pathStat) ||
+      !sameHostPath(canonicalPath, snapshot.file.canonicalPath) ||
+      !isPathInsideDirectory(canonicalPath, snapshot.pluginDirectory.path)
+    ) {
+      throw new SandboxPreflightError(
+        "MODEL_PROFILE_SEED_INVALID",
+        `Detection plugin model catalog changed during snapshot: ${snapshot.file.path}.`,
+      );
+    }
+  } catch (error) {
+    if (error instanceof SandboxPreflightError) throw error;
+    throw new SandboxPreflightError(
+      "MODEL_PROFILE_SEED_INVALID",
+      `Detection plugin model catalog changed during snapshot: ${snapshot.file.path}.`,
+    );
+  }
+}
+
+async function snapshotTrustedSeedDirectory(target: string): Promise<TrustedSeedDirectorySnapshot> {
+  const resolved = path.resolve(target);
+  try {
+    await assertNoSymlinkSeedPath(resolved);
+    const stat = await fs.lstat(resolved, { bigint: true });
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+      throw new SandboxPreflightError(
+        "MODEL_PROFILE_SEED_INVALID",
+        `Detection model state directory is not a regular directory: ${resolved}.`,
+      );
+    }
+    return { path: await fs.realpath(resolved), stat };
+  } catch (error) {
+    if (error instanceof SandboxPreflightError) throw error;
+    throw new SandboxPreflightError(
+      "MODEL_PROFILE_SEED_INVALID",
+      `Detection model state directory is unavailable or invalid: ${resolved}.`,
+    );
+  }
+}
+
+async function snapshotApprovedSeedDirectory(
+  target: string,
+  expected: DetectionProfileSeedDirectoryIdentity | undefined,
+  label: string,
+): Promise<TrustedSeedDirectorySnapshot> {
+  if (!isDetectionProfileSeedDirectoryIdentity(expected)) {
+    throw new SandboxPreflightError(
+      "MODEL_PROFILE_SEED_INVALID",
+      `Detection ${label} is missing its resolver-approved identity.`,
+    );
+  }
+  const resolved = path.resolve(target);
+  if (!sameHostPath(resolved, expected.resolvedPath)) {
+    throw new SandboxPreflightError(
+      "MODEL_PROFILE_SEED_INVALID",
+      `Detection ${label} changed since profile resolution: ${resolved}.`,
+    );
+  }
+  const current = await snapshotTrustedSeedDirectory(resolved);
+  if (
+    !sameHostPath(current.path, expected.canonicalPath) ||
+    !sameSerializedSeedDirectoryIdentity(current.stat, expected)
+  ) {
+    throw new SandboxPreflightError(
+      "MODEL_PROFILE_SEED_INVALID",
+      `Detection ${label} changed since profile resolution: ${resolved}.`,
+    );
+  }
+  return current;
+}
+
+async function openSeedFileSnapshot(
+  filePath: string,
+  trustedDirectory: TrustedSeedDirectorySnapshot,
+): Promise<OpenSeedFileSnapshot> {
+  const resolved = path.resolve(filePath);
+  try {
+    await assertNoSymlinkSeedPath(resolved);
+    const canonical = await fs.realpath(resolved);
+    if (!isPathInsideDirectory(canonical, trustedDirectory.path)) {
+      throw new SandboxPreflightError(
+        "MODEL_PROFILE_SEED_INVALID",
+        `Detection model state file escaped the trusted main-agent directory: ${resolved}.`,
+      );
+    }
+    const preOpenStat = await fs.lstat(resolved, { bigint: true });
+    if (!preOpenStat.isFile() || preOpenStat.isSymbolicLink()) {
+      throw new SandboxPreflightError(
+        "MODEL_PROFILE_SEED_INVALID",
+        `Detection model state entry is not a regular file: ${resolved}.`,
+      );
+    }
+    const handle = await fs.open(resolved, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+    try {
+      const openedStat = await handle.stat({ bigint: true });
+      const postOpenStat = await fs.lstat(resolved, { bigint: true });
+      if (
+        !openedStat.isFile() ||
+        postOpenStat.isSymbolicLink() ||
+        !sameSeedFileSnapshot(preOpenStat, openedStat) ||
+        !sameSeedFileSnapshot(openedStat, postOpenStat)
+      ) {
+        throw new SandboxPreflightError(
+          "MODEL_PROFILE_SEED_INVALID",
+          `Detection model state entry changed during validation: ${resolved}.`,
+        );
+      }
+      return {
+        name: path.basename(resolved),
+        path: resolved,
+        canonicalPath: canonical,
+        handle,
+        stat: openedStat,
+      };
+    } catch (error) {
+      await handle.close().catch(() => undefined);
+      throw error;
+    }
+  } catch (error) {
+    if (error instanceof SandboxPreflightError) throw error;
+    throw new SandboxPreflightError(
+      "MODEL_PROFILE_SEED_INVALID",
+      `Detection model state entry is unavailable or invalid: ${resolved}.`,
+    );
+  }
+}
+
+async function readBoundedSeedFile(
+  snapshot: OpenSeedFileSnapshot,
+  assertActive: () => void,
+): Promise<Buffer> {
+  try {
+    const content = Buffer.alloc(Number(snapshot.stat.size));
+    let offset = 0;
+    while (offset < content.length) {
+      assertActive();
+      const length = Math.min(MODEL_STATE_READ_CHUNK_BYTES, content.length - offset);
+      const { bytesRead } = await snapshot.handle.read(content, offset, length, offset);
+      if (bytesRead <= 0) {
+        throw new SandboxPreflightError(
+          "MODEL_PROFILE_SEED_INVALID",
+          `Detection model state entry ended during snapshot: ${snapshot.name}.`,
+        );
+      }
+      offset += bytesRead;
+    }
+    return content;
+  } catch (error) {
+    if (error instanceof SandboxPreflightError) throw error;
+    throw new SandboxPreflightError(
+      "MODEL_PROFILE_SEED_INVALID",
+      `Detection model state entry could not be read consistently: ${snapshot.name}.`,
+    );
+  }
+}
+
+export async function writeSeedSnapshotInChunks(
+  writer: {
+    write(buffer: Buffer, offset: number, length: number, position: number): Promise<{ bytesWritten: number }>;
+  },
+  content: Buffer,
+  assertActive: () => void,
+): Promise<void> {
+  let offset = 0;
+  while (offset < content.length) {
+    const chunkEnd = Math.min(offset + MODEL_STATE_READ_CHUNK_BYTES, content.length);
+    while (offset < chunkEnd) {
+      assertActive();
+      const length = chunkEnd - offset;
+      const { bytesWritten } = await writer.write(content, offset, length, offset);
+      assertActive();
+      if (!Number.isInteger(bytesWritten) || bytesWritten <= 0 || bytesWritten > length) {
+        throw new SandboxPreflightError(
+          "MODEL_PROFILE_SEED_INVALID",
+          "Detection model state destination write did not advance within the requested chunk.",
+        );
+      }
+      offset += bytesWritten;
+    }
+  }
+  assertActive();
+}
+
+async function assertSeedSnapshotUnchanged(
+  directory: TrustedSeedDirectorySnapshot,
+  files: OpenSeedFileSnapshot[],
+): Promise<void> {
+  try {
+    const currentDirectory = await snapshotTrustedSeedDirectory(directory.path);
+    if (
+      !sameHostPath(currentDirectory.path, directory.path) ||
+      !sameSeedFileIdentity(currentDirectory.stat, directory.stat)
+    ) {
+      throw new SandboxPreflightError(
+        "MODEL_PROFILE_SEED_INVALID",
+        `Detection model state directory changed during snapshot: ${directory.path}.`,
+      );
+    }
+    const currentEntries = await fs.readdir(directory.path, { withFileTypes: true });
+    const currentNames = currentEntries
+      .filter((entry) => MODEL_STATE_ALLOWLIST.has(entry.name))
+      .map((entry) => entry.name)
+      .sort();
+    const expectedNames = files.map((entry) => entry.name).sort();
+    if (
+      currentNames.length !== expectedNames.length ||
+      currentNames.some((name, index) => name !== expectedNames[index])
+    ) {
+      throw new SandboxPreflightError(
+        "MODEL_PROFILE_SEED_INVALID",
+        `Detection model state allowlist changed during snapshot: ${directory.path}.`,
+      );
+    }
+    for (const file of files) {
+      const handleStat = await file.handle.stat({ bigint: true });
+      const pathStat = await fs.lstat(file.path, { bigint: true });
+      const canonicalPath = await fs.realpath(file.path);
+      if (
+        pathStat.isSymbolicLink() ||
+        !sameSeedFileSnapshot(file.stat, handleStat) ||
+        !sameSeedFileSnapshot(handleStat, pathStat) ||
+        !sameHostPath(canonicalPath, file.canonicalPath) ||
+        !isPathInsideDirectory(canonicalPath, directory.path)
+      ) {
+        throw new SandboxPreflightError(
+          "MODEL_PROFILE_SEED_INVALID",
+          `Detection model state entry changed during snapshot: ${file.name}.`,
+        );
+      }
+    }
+  } catch (error) {
+    if (error instanceof SandboxPreflightError) throw error;
+    throw new SandboxPreflightError(
+      "MODEL_PROFILE_SEED_INVALID",
+      `Detection model state changed during snapshot: ${directory.path}.`,
+    );
+  }
+}
+
+async function assertNoSymlinkSeedPath(target: string): Promise<void> {
+  const resolved = path.resolve(target);
+  const root = path.parse(resolved).root;
+  let current = root;
+  for (const segment of resolved.slice(root.length).split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment);
+    const stat = await fs.lstat(current);
+    if (stat.isSymbolicLink()) {
+      throw new SandboxPreflightError(
+        "MODEL_PROFILE_SEED_INVALID",
+        `Detection model state path contains a symbolic link or junction: ${current}.`,
+      );
+    }
+  }
+}
+
+function sameSeedFileSnapshot(left: BigIntStats, right: BigIntStats): boolean {
+  return sameSeedFileIdentity(left, right) && left.size === right.size &&
+    left.mtimeNs === right.mtimeNs && left.ctimeNs === right.ctimeNs;
+}
+
+function sameSeedFileIdentity(left: BigIntStats, right: BigIntStats): boolean {
+  return sameDetectionProfileSeedFileIdentity(left, right);
+}
+
+function isDetectionProfileSeedDirectoryIdentity(
+  value: unknown,
+): value is DetectionProfileSeedDirectoryIdentity {
+  return isRecord(value) &&
+    typeof value.resolvedPath === "string" && value.resolvedPath.length > 0 &&
+    typeof value.canonicalPath === "string" && value.canonicalPath.length > 0 &&
+    typeof value.dev === "bigint" &&
+    typeof value.ino === "bigint" &&
+    typeof value.birthtimeNs === "bigint";
+}
+
+function sameSerializedSeedDirectoryIdentity(
+  current: BigIntStats,
+  expected: DetectionProfileSeedDirectoryIdentity,
+): boolean {
+  return sameDetectionProfileSeedFileIdentity(current, expected);
+}
+
+function isPathInsideDirectory(candidate: string, root: string): boolean {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  return relative.length > 0 && relative !== ".." && !path.isAbsolute(relative) && !relative.startsWith(`..${path.sep}`);
+}
+
+function cloneNativeGuardCapability(
+  capability: NativeGuardCapability,
+): NativeGuardCapability {
+  return {
+    ...capability,
+    conflictingPluginIds: [...capability.conflictingPluginIds],
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseSeedModelRef(value: unknown): { provider: string; model: string } | undefined {
+  const primary = typeof value === "string"
+    ? value
+    : isRecord(value) && typeof value.primary === "string"
+      ? value.primary
+      : undefined;
+  if (!primary) return undefined;
+  const slashIndex = primary.indexOf("/");
+  if (slashIndex <= 0 || slashIndex >= primary.length - 1) return undefined;
+  const provider = primary.slice(0, slashIndex).trim().toLowerCase();
+  const model = primary.slice(slashIndex + 1).trim();
+  return provider && model ? { provider, model } : undefined;
+}
+
+function strictBaseEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const key of ["PATH", "PATHEXT", "SystemRoot", "WINDIR", "ComSpec", "TEMP", "TMP", "LANG", "LC_ALL", "TZ"] as const) {
+    const value = process.env[key];
+    if (value !== undefined) env[key] = value;
+  }
+  return env;
+}
+
+function stringEnv(env: NodeJS.ProcessEnv): Record<string, string> {
+  return Object.fromEntries(Object.entries(env).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+}
+
+export async function readGatewayBootstrap(
+  stream: Readable,
+  options: {
+    signal: AbortSignal;
+    childExit: Promise<void>;
+    timeoutMs?: number;
+  },
+): Promise<KeyObject> {
+  const timeoutMs = options.timeoutMs ?? GATEWAY_BOOTSTRAP_TIMEOUT_MS;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > GATEWAY_BOOTSTRAP_TIMEOUT_MS) {
+    throw new TypeError("Gateway bootstrap timeout is invalid.");
+  }
+
+  return new Promise<KeyObject>((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    let settled = false;
+    let ended = false;
+    const timer = setTimeout(
+      () => fail("Gateway bootstrap timed out."),
+      timeoutMs,
+    );
+    const cleanup = (): void => {
+      clearTimeout(timer);
+      options.signal.removeEventListener("abort", onAbort);
+      stream.removeListener("data", onData);
+      stream.removeListener("end", onEnd);
+      stream.removeListener("error", onError);
+      stream.removeListener("close", onClose);
+    };
+    const fail = (message: string): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      stream.destroy();
+      reject(new SandboxPreflightError("GATEWAY_BOOTSTRAP_INVALID", message));
+    };
+    const succeed = (key: KeyObject): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(key);
+    };
+    const onAbort = (): void => fail("Gateway bootstrap was cancelled.");
+    const onError = (): void => fail("Gateway bootstrap pipe failed.");
+    const onClose = (): void => {
+      if (!ended) fail("Gateway bootstrap pipe closed before EOF.");
+    };
+    const onData = (chunk: Buffer | string): void => {
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      if (bytes.length > MAX_GATEWAY_BOOTSTRAP_BYTES - size) {
+        fail("Gateway bootstrap exceeded the size limit.");
+        return;
+      }
+      size += bytes.length;
+      chunks.push(bytes);
+    };
+    const onEnd = (): void => {
+      ended = true;
+      try {
+        succeed(parseGatewayBootstrap(Buffer.concat(chunks, size)));
+      } catch {
+        fail("Gateway bootstrap was invalid.");
+      }
+    };
+
+    options.signal.addEventListener("abort", onAbort, { once: true });
+    stream.on("data", onData);
+    stream.once("end", onEnd);
+    stream.once("error", onError);
+    stream.once("close", onClose);
+    void options.childExit.then(
+      () => fail("Gateway exited before bootstrap completed."),
+      (error: unknown) => {
+        if (error instanceof DetectionSandboxError) {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          stream.destroy();
+          reject(error);
+          return;
+        }
+        fail("Gateway exited before bootstrap completed.");
+      },
+    );
+    if (options.signal.aborted) onAbort();
+  });
+}
+
+function parseGatewayBootstrap(bytes: Buffer): KeyObject {
+  if (
+    bytes.length === 0 ||
+    bytes[bytes.length - 1] !== 0x0a ||
+    bytes.subarray(0, bytes.length - 1).includes(0x0a) ||
+    bytes.subarray(0, bytes.length - 1).includes(0x0d)
+  ) {
+    throw new Error("Invalid bootstrap framing.");
+  }
+  const raw = new TextDecoder("utf-8", { fatal: true }).decode(
+    bytes.subarray(0, bytes.length - 1),
+  );
+  const value = JSON.parse(raw) as unknown;
+  if (
+    !isRecord(value) ||
+    Object.keys(value).length !== 2 ||
+    !Object.hasOwn(value, "contractVersion") ||
+    !Object.hasOwn(value, "attestationPublicKey") ||
+    value.contractVersion !== "native-guard-bootstrap-1" ||
+    typeof value.attestationPublicKey !== "string"
+  ) {
+    throw new Error("Invalid bootstrap schema.");
+  }
+  const encoded = value.attestationPublicKey;
+  const der = Buffer.from(encoded, "base64");
+  if (der.length === 0 || der.toString("base64") !== encoded) {
+    throw new Error("Invalid bootstrap public key encoding.");
+  }
+  const key = createPublicKey({ key: der, format: "der", type: "spki" });
+  if (
+    key.type !== "public" ||
+    key.asymmetricKeyType !== "ed25519" ||
+    key.export({ format: "der", type: "spki" }).toString("base64") !== encoded
+  ) {
+    throw new Error("Invalid bootstrap public key.");
+  }
+  return key;
+}
+
+async function launchGateway(input: Parameters<DetectionGatewayLauncher>[0]): Promise<DetectionGatewayProcess> {
+  const gatewayUrl = new URL(input.gatewayUrl);
+  const port = Number(gatewayUrl.port);
+  const cli = resolveOpenClawCliInvocation(input.cliPath);
+  let child: ChildProcess;
+  try {
+    child = spawn(cli.command, [...cli.argsPrefix, "gateway", "run", "--bind", "loopback", "--port", String(port), "--token", input.token], {
+      cwd: input.profileRoot,
+      env: {
+        ...cli.env,
+        ...input.env,
+        NODE_DISABLE_COMPILE_CACHE: "1",
+        OPENCLAW_NATIVE_GUARD_BOOTSTRAP_FD: "3",
+        OPENCLAW_NATIVE_GUARD_BOOTSTRAP_CONTRACT: "native-guard-bootstrap-1",
+      },
+      windowsHide: true,
+      shell: false,
+      detached: process.platform !== "win32",
+      stdio: ["ignore", "ignore", "ignore", "pipe"],
+    });
+  } catch {
+    throw gatewayStartFailed();
+  }
+  type ChildCompletion = { kind: "close" } | { kind: "error" };
+  const completion = new Promise<ChildCompletion>((resolve) => {
+    let settled = false;
+    const finish = (result: ChildCompletion): void => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+    child.once("error", () => finish({ kind: "error" }));
+    child.once("close", () => finish({ kind: "close" }));
+  });
+  const onAbort = (): void => { child.kill(); };
+  input.signal.addEventListener("abort", onAbort, { once: true });
+  const exited = completion.then(() => undefined);
+  const startupExit = completion.then((result) => {
+    if (result.kind === "error") throw gatewayStartFailed();
+  });
+  void completion.then(() => input.signal.removeEventListener("abort", onAbort));
+  try {
+    const bootstrapStream = child.stdio[3] as Readable | null;
+    if (!bootstrapStream) {
+      throw new SandboxPreflightError(
+        "GATEWAY_BOOTSTRAP_INVALID",
+        "Gateway bootstrap pipe was unavailable.",
+      );
+    }
+    const attestationPublicKey = await readGatewayBootstrap(bootstrapStream, {
+      signal: input.signal,
+      childExit: startupExit,
+    });
+    const readinessExit = completion.then((result) => {
+      if (input.signal.aborted) {
+        throw new SandboxPreflightError(
+          "CANCELLED",
+          "Detection sandbox operation was cancelled.",
+        );
+      }
+      if (result.kind === "error") throw gatewayStartFailed();
+      throw new SandboxPreflightError(
+        "GATEWAY_START_FAILED",
+        "Detection Gateway exited before readiness.",
+      );
+    });
+    await Promise.race([
+      waitForGateway(
+        input.gatewayUrl,
+        input.token,
+        child,
+        input.signal,
+        GATEWAY_READINESS_MAX_ATTEMPTS,
+        50,
+        GATEWAY_READINESS_TIMEOUT_MS,
+        startupExit,
+      ),
+      readinessExit,
+    ]);
+    return {
+      url: input.gatewayUrl,
+      token: input.token,
+      attestationPublicKey,
+      process: {
+        kill: (signal) => { child.kill(signal); },
+        forceKill: () => { terminateGatewayProcessTree(child); },
+        waitForExit: () => exited,
+      },
+    };
+  } catch (error) {
+    child.kill("SIGTERM");
+    const graceful = await waitForExitBounded(() => exited, 2_000);
+    if (!graceful) {
+      terminateGatewayProcessTree(child);
+      await waitForExitBounded(() => exited, 1_000);
+    }
+    throw error;
+  }
+}
+
+function gatewayStartFailed(): SandboxPreflightError {
+  return new SandboxPreflightError(
+    "GATEWAY_START_FAILED",
+    "Detection Gateway could not be started.",
+  );
+}
+
+function terminateGatewayProcessTree(child: ChildProcess): void {
+  if (process.platform === "win32" && child.pid) {
+    const systemRoot = process.env.SystemRoot;
+    const taskkillPath = systemRoot && path.win32.isAbsolute(systemRoot)
+      ? path.win32.join(systemRoot, "System32", "taskkill.exe")
+      : "C:\\Windows\\System32\\taskkill.exe";
+    try { spawnSync(taskkillPath, ["/pid", String(child.pid), "/t", "/f"], { windowsHide: true, shell: false, stdio: "ignore", timeout: 2_000 }); } catch { /* fallback below */ }
+  } else if (child.pid) {
+    try { process.kill(-child.pid, "SIGKILL"); } catch { /* process group may be gone */ }
+  }
+  try { child.kill("SIGKILL"); } catch { /* already exited */ }
+}
+
+async function waitForExitBounded(waitForExit: () => Promise<void>, timeoutMs: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let exited = false;
+  try {
+    await Promise.race([
+      waitForExit().then(() => { exited = true; }),
+      new Promise<void>((resolve) => { timer = setTimeout(resolve, timeoutMs); }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+  return exited;
+}
+
+export async function waitForGateway(
+  url: string,
+  token: string,
+  child: { exitCode: number | null; kill(): void },
+  signal: AbortSignal,
+  maxAttempts = GATEWAY_READINESS_MAX_ATTEMPTS,
+  delayMs = 50,
+  timeoutMs = GATEWAY_READINESS_TIMEOUT_MS,
+  childExit?: Promise<unknown>,
+): Promise<void> {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > GATEWAY_READINESS_TIMEOUT_MS) {
+    throw new TypeError("Gateway readiness timeout is invalid.");
+  }
+  const lifetimeController = new AbortController();
+  const abortLifetime = (): void => lifetimeController.abort();
+  if (signal.aborted) {
+    abortLifetime();
+  } else {
+    signal.addEventListener("abort", abortLifetime, { once: true });
+  }
+  if (childExit) {
+    void childExit.then(abortLifetime, abortLifetime);
+  }
+  const deadline = Date.now() + timeoutMs;
+  try {
+    for (let attempt = 0; attempt < maxAttempts && Date.now() < deadline; attempt += 1) {
+      if (lifetimeController.signal.aborted || child.exitCode !== null) break;
+      const attemptController = new AbortController();
+      const abortAttempt = (): void => attemptController.abort();
+      lifetimeController.signal.addEventListener("abort", abortAttempt, { once: true });
+      const attemptTimer = setTimeout(
+        abortAttempt,
+        Math.min(500, Math.max(0, deadline - Date.now())),
+      );
+      try {
+        const statusUrl = new URL("/agent-guard/native-guard/v1/status", url).toString();
+        // Step 1: The protected status route must reject an unauthenticated probe.
+        const unauthed = await fetch(statusUrl, {
+          method: "GET",
+          redirect: "error",
+          signal: attemptController.signal,
+        });
+        const enforcesAuth = unauthed.status === 401 || unauthed.status === 403;
+        await cancelResponseBodyBounded(unauthed, attemptController.signal);
+        if (!enforcesAuth) {
+          await waitForGatewayPollDelay(delayMs, deadline, lifetimeController.signal);
+          continue;
+        }
+        // Step 2: Authenticate to the same route with a random nonce challenge.
+        const nonce = randomBytes(24).toString("base64url");
+        const statusResponse = await fetch(statusUrl, {
+          method: "GET",
+          headers: {
+            authorization: `Bearer ${token}`,
+            "x-agent-guard-ready-nonce": nonce,
+          },
+          redirect: "error",
+          signal: attemptController.signal,
+        });
+        let statusBody: unknown;
+        try {
+          statusBody = await readBoundedJsonResponse(
+            statusResponse,
+            attemptController.signal,
+          );
+        } catch {
+          await cancelResponseBodyBounded(statusResponse, attemptController.signal);
+          await waitForGatewayPollDelay(delayMs, deadline, lifetimeController.signal);
+          continue;
+        }
+        if (
+          statusResponse.status === 200 &&
+          isRecord(statusBody) &&
+          typeof statusBody._readyNonce === "string" &&
+          statusBody._readyNonce === nonce &&
+          (statusBody.coverage === "off" || statusBody.coverage === "ready") &&
+          statusBody.activeLeaseCount === 0 &&
+          Date.now() <= deadline
+        ) {
+          return;
+        }
+      } catch {
+        // Retry until the bounded deadline unless the run lifetime ended.
+      } finally {
+        clearTimeout(attemptTimer);
+        lifetimeController.signal.removeEventListener("abort", abortAttempt);
+      }
+      await waitForGatewayPollDelay(delayMs, deadline, lifetimeController.signal);
+    }
+  } finally {
+    signal.removeEventListener("abort", abortLifetime);
+  }
+  child.kill();
+  if (signal.aborted) {
+    throw new SandboxPreflightError(
+      "CANCELLED",
+      "Detection sandbox operation was cancelled.",
+    );
+  }
+  throw new SandboxPreflightError("GATEWAY_START_FAILED", "Isolated OpenClaw Gateway did not become ready on loopback.");
+}
+
+async function waitForGatewayPollDelay(
+  delayMs: number,
+  deadline: number,
+  signal?: AbortSignal,
+): Promise<void> {
+  const remainingMs = deadline - Date.now();
+  if (remainingMs <= 0 || signal?.aborted) return;
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(finish, Math.min(delayMs, remainingMs));
+    const onAbort = (): void => finish();
+    function finish(): void {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+/**
+ * Cancel a response body with a bounded deadline — body cancellation must never
+ * hang the readiness poll, even when a malicious server never closes the stream.
+ */
+export async function cancelResponseBodyBounded(
+  response: Response,
+  signal?: AbortSignal,
+): Promise<void> {
+  const body = response.body;
+  if (!body) return;
+  await cancelOperationBounded(() => body.cancel(), signal);
+}
+
+export async function readBoundedJsonResponse(
+  response: Response,
+  signal: AbortSignal,
+  maxBytes = MAX_GATEWAY_READINESS_BYTES,
+): Promise<unknown> {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) {
+    throw new TypeError("JSON response size limit is invalid.");
+  }
+  if (response.headers.get("content-encoding") !== null) {
+    await cancelResponseBodyBounded(response, signal);
+    throw new Error("Encoded Gateway readiness responses are not accepted.");
+  }
+  const contentType = response.headers.get("content-type") ?? "";
+  if (contentType.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
+    await cancelResponseBodyBounded(response, signal);
+    throw new Error("Gateway readiness response was not JSON.");
+  }
+  const contentLength = response.headers.get("content-length");
+  if (contentLength !== null) {
+    const length = Number(contentLength);
+    if (
+      !Number.isSafeInteger(length) ||
+      length < 0 ||
+      length > maxBytes
+    ) {
+      await cancelResponseBodyBounded(response, signal);
+      throw new Error("Gateway readiness response exceeded the size limit.");
+    }
+  }
+
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  const reader = response.body?.getReader();
+  if (reader) {
+    while (true) {
+      const { done, value } = await readBoundedResponseChunk(reader, signal);
+      if (done) break;
+      if (value.byteLength > maxBytes - size) {
+        await cancelOperationBounded(() => reader.cancel(), signal);
+        throw new Error("Gateway readiness response exceeded the size limit.");
+      }
+      size += value.byteLength;
+      chunks.push(value);
+    }
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
+}
+
+async function readBoundedResponseChunk(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  signal: AbortSignal,
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  if (signal.aborted) throw new Error("Gateway readiness attempt was cancelled.");
+  return new Promise((resolve, reject) => {
+    const onAbort = (): void => {
+      void cancelOperationBounded(() => reader.cancel(), signal);
+      reject(new Error("Gateway readiness attempt was cancelled."));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    reader.read().then(
+      (result) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(result);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
+async function cancelOperationBounded(
+  operation: () => Promise<unknown>,
+  signal?: AbortSignal,
+): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+  const aborted = signal
+    ? new Promise<void>((resolve) => {
+        if (signal.aborted) {
+          resolve();
+          return;
+        }
+        onAbort = resolve;
+        signal.addEventListener("abort", onAbort, { once: true });
+      })
+    : new Promise<void>(() => undefined);
+  try {
+    await Promise.race([
+      Promise.resolve().then(operation).catch(() => undefined),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, RESPONSE_CANCEL_TIMEOUT_MS);
+      }),
+      aborted,
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (onAbort) signal?.removeEventListener("abort", onAbort);
+  }
+}
+
+async function ephemeralPort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      server.close((error) => error ? reject(error) : resolve(port));
+    });
+  });
+}
+
+async function runCommand(input: DetectionCommandInput): Promise<DetectionCommandResult> {
+  return new Promise((resolve, reject) => {
+    const child: ChildProcess = spawn(input.command, input.args, {
+      cwd: input.cwd, env: input.env ?? process.env, shell: false, windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const finish = (result: DetectionCommandResult): void => { if (!settled) { settled = true; cleanup(); resolve(result); } };
+    const fail = (error: Error): void => { if (!settled) { settled = true; cleanup(); reject(error); } };
+    const timer = setTimeout(
+      () => { child.kill(); fail(new Error("Detection command timed out.")); },
+      input.timeoutMs ?? DETECTION_SANDBOX_COMMAND_TIMEOUT_MS,
+    );
+    const abort = (): void => { child.kill(); fail(new Error("Detection command aborted.")); };
+    const cleanup = (): void => { clearTimeout(timer); input.signal?.removeEventListener("abort", abort); };
+    input.signal?.addEventListener("abort", abort, { once: true });
+    child.stdout?.setEncoding("utf8"); child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => {
+      stdout += chunk;
+      if (Buffer.byteLength(stdout, "utf8") > MAX_COMMAND_OUTPUT_BYTES) {
+        child.kill();
+        fail(new Error("Detection command output exceeded the size limit."));
+      }
+    });
+    child.stderr?.on("data", (chunk: string) => {
+      stderr += chunk;
+      if (Buffer.byteLength(stderr, "utf8") > MAX_COMMAND_OUTPUT_BYTES) {
+        child.kill();
+        fail(new Error("Detection command error output exceeded the size limit."));
+      }
+    });
+    child.on("error", fail);
+    child.on("close", (code) => finish({ exitCode: code ?? 1, stdout, stderr }));
+  });
+}

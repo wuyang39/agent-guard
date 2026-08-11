@@ -15,6 +15,12 @@ import {
   setRealtimeActivePolicy,
   subscribeRealtimeEvents,
 } from "../../../modules/openclaw/realtimeMcpServer";
+import type { NativeSupervisionAccessService } from "../../../modules/openclaw/nativeSupervisionAccessService";
+import {
+  isAllowedNativeSupervisionOrigin,
+  NATIVE_SUPERVISION_EVENTS_COOKIE,
+  readNativeSupervisionCookie,
+} from "./native-supervision-handlers";
 
 type RealtimeMcpQuery = {
   sessionId?: string;
@@ -25,13 +31,30 @@ const MCP_PATH = "/api/v1/openclaw/realtime/mcp";
 const ACTIVE_POLICY_PATH = "/api/v1/openclaw/realtime/active-policy";
 const SESSION_PREPARE_PATH = "/api/v1/openclaw/realtime/sessions";
 const SESSION_RESET_PATH = "/api/v1/openclaw/realtime/sessions/reset";
-const EVENTS_STREAM_PATH = "/api/v1/openclaw/realtime/events/stream";
+export const EVENTS_STREAM_PATH = "/api/v1/openclaw/realtime/events/stream";
 const DEFENSE_REPORT_PATH = "/api/v1/openclaw/realtime/reports/defense";
 const SUPERVISION_BATCHES_PATH = "/api/v1/openclaw/realtime/supervision-batches";
 
+export type OpenClawRealtimeMcpRouteOptions = {
+  accessService: NativeSupervisionAccessService;
+  allowedOrigins: readonly string[];
+  publicMcpUrl: string;
+  subscribeEvents?: typeof subscribeRealtimeEvents;
+};
+
+export function isOpenClawRealtimeEventsStreamRequest(url: string): boolean {
+  return url === EVENTS_STREAM_PATH || url.startsWith(`${EVENTS_STREAM_PATH}?`);
+}
+
 export async function openClawRealtimeMcpRoutes(
   app: FastifyInstance,
+  options: OpenClawRealtimeMcpRouteOptions,
 ): Promise<void> {
+  const activeEventStreams = new Set<() => void>();
+  app.addHook("preClose", async () => {
+    for (const closeStream of [...activeEventStreams]) closeStream();
+  });
+
   app.get(MCP_PATH, async (_request, _reply) => {
     await refreshRealtimeMcpTools();
     const activePolicy = await getRealtimeActivePolicyState();
@@ -46,7 +69,7 @@ export async function openClawRealtimeMcpRoutes(
           servers: {
             agent_guard: {
               transport: "streamable-http",
-              url: "http://127.0.0.1:3100/api/v1/openclaw/realtime/mcp",
+              url: options.publicMcpUrl,
               timeout: 20,
               connectTimeout: 5,
             },
@@ -202,6 +225,29 @@ export async function openClawRealtimeMcpRoutes(
   });
 
   app.get(EVENTS_STREAM_PATH, async (request, reply) => {
+    const origin = request.headers.origin;
+    if (!isAllowedNativeSupervisionOrigin(origin, options.allowedOrigins)) {
+      reply.removeHeader("access-control-allow-origin");
+      reply.removeHeader("access-control-allow-credentials");
+      return reply.code(403).send(failure(
+        "NATIVE_SUPERVISION_ORIGIN_FORBIDDEN",
+        "Native supervision request origin is not allowed.",
+      ));
+    }
+    const eventCapability = readNativeSupervisionCookie(
+      request.headers.cookie,
+      NATIVE_SUPERVISION_EVENTS_COOKIE,
+    );
+    if (
+      !eventCapability ||
+      !options.accessService.authenticateEvents(eventCapability)
+    ) {
+      return reply.code(401).send(failure(
+        "NATIVE_SUPERVISION_ACCESS_REQUIRED",
+        "Native supervision event access is required.",
+      ));
+    }
+
     const query = request.query as { replay?: string };
     reply.hijack();
     reply.raw.writeHead(200, {
@@ -209,7 +255,9 @@ export async function openClawRealtimeMcpRoutes(
       "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
       "X-Accel-Buffering": "no",
-      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Origin": origin,
+      "Access-Control-Allow-Credentials": "true",
+      Vary: "Origin",
     });
 
     const send = (eventName: string, data: unknown) => {
@@ -222,14 +270,21 @@ export async function openClawRealtimeMcpRoutes(
       replay: query.replay !== "0",
     });
 
-    const unsubscribe = subscribeRealtimeEvents(
+    const unsubscribe = (options.subscribeEvents ?? subscribeRealtimeEvents)(
       (event) => send(event.type, event),
       { replay: query.replay !== "0" },
     );
 
-    request.raw.on("close", () => {
+    let closed = false;
+    const closeStream = () => {
+      if (closed) return;
+      closed = true;
+      activeEventStreams.delete(closeStream);
       unsubscribe();
-    });
+      if (!reply.raw.destroyed && !reply.raw.writableEnded) reply.raw.end();
+    };
+    activeEventStreams.add(closeStream);
+    request.raw.once("close", closeStream);
   });
 }
 

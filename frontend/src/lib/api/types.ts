@@ -5,6 +5,7 @@ import type {
   DefenseClaim,
   EvidenceBundle,
   InteractionTrace,
+  NativeGuardCoverageStatus,
   ReportBundle,
   ReportFormat,
   ReportQualitySummary,
@@ -17,6 +18,20 @@ import type {
   TestContextView,
   TraceabilityGraph,
 } from "@agent-guard/contracts";
+
+export type MainAgentSupervisionStatus = {
+  coverage: NativeGuardCoverageStatus;
+  scope: { kind: "agent"; agentId: "main" };
+  policyPackId?: string;
+  leaseId?: string;
+  leaseEpoch?: number;
+  expiresAt?: string;
+  gatewayInstanceId?: string;
+  activeLeaseCount: number;
+  mainLeaseCount: 0 | 1;
+  reasonCode?: string;
+  detail?: string;
+};
 
 export type ApiResponse<T> =
   | {
@@ -32,6 +47,49 @@ export type ApiResponse<T> =
       };
       requestId?: string;
     };
+
+export type NativeGuardSessionCoverageView = {
+  sessionKey: string;
+  leaseId: string;
+  leaseEpoch: number;
+  testRunIds?: string[];
+  eventsTotal: number;
+  reconciled: boolean;
+  coverageBreachCount: number;
+  mismatchCount: number;
+  leaseIdentityConflict?: {
+    expected: { sessionKey: string; leaseId: string; leaseEpoch: number };
+    observed: Array<{ sessionKey?: string; leaseId?: string; leaseEpoch?: number }>;
+  };
+  revokeError?: string;
+  evidenceError?: string;
+};
+
+export type NativeGuardRuntimeFailureView = {
+  testRunId: string;
+  sessionKey?: string;
+  kind: "identity_missing";
+  identityMissing: true;
+  eventsTotal: number;
+  reconciled: false;
+  coverageBreachCount: number;
+  mismatchCount: number;
+  evidenceError: string;
+  revokeError?: string;
+};
+
+export type NativeGuardCoverageView = {
+  coverage: "active" | "conditional" | "unsupported" | "misconfigured" | "off" | "unavailable";
+  eventsTotal: number;
+  reconciled: boolean;
+  coverageBreachCount: number;
+  mismatchCount: number;
+  /** Authoritative session list; top-level lease mirrors the first entry. */
+  sessions: NativeGuardSessionCoverageView[];
+  runtimeFailures: NativeGuardRuntimeFailureView[];
+  leaseId?: string;
+  leaseEpoch?: number;
+};
 
 export type CLineRunGroup = {
   schemaVersion: "mvp-1";
@@ -62,6 +120,19 @@ export type CLineRunGroup = {
   runtimeSessionIds: string[];
   artifactIds: string[];
   error?: string;
+  /** Task 13: Native guard coverage and sandbox evidence. */
+  nativeGuardCoverage?: NativeGuardCoverageView;
+  sandboxEvidence?: {
+    preflightPassed: boolean;
+    attested: boolean;
+    imageId?: string;
+    imageDigest?: string;
+    openclawVersion?: string;
+    networkMode: "none" | "internal";
+    containerId?: string;
+    configDigest?: string;
+    failureCategory?: string;
+  };
   createdAt: string;
   updatedAt: string;
 };
@@ -76,7 +147,16 @@ export type RunCaseFailureView = {
     | "provider_rate_limit"
     | "transient_provider"
     | "agent_error"
-    | "fatal";
+    | "fatal"
+    | "sandbox_preflight_failed"
+    | "sandbox_profile_seed_failed"
+    | "sandbox_attestation_failed"
+    | "sandbox_cleanup_failed"
+    | "sandbox_runtime_failed"
+    | "native_guard_unavailable"
+    | "native_guard_evidence_unavailable"
+    | "native_guard_revoke_failed"
+    | "native_guard_coverage_breach";
   attempts: number;
   retryable: boolean;
   skipped: boolean;
@@ -221,6 +301,17 @@ export type SystemStatus = {
     outputStore: boolean;
     realtimeMcp: boolean;
     configuredAgents: number;
+    nativeGuard?: {
+      coverage: string;
+      finalizerAssurance: string;
+      activeLeaseCount: number;
+      pluginVersion?: string;
+      openclawVersion?: string;
+      conflictingPluginIds?: string[];
+      activeLease?: Record<string, unknown>;
+      reasonCode?: string;
+      detail?: string;
+    };
   };
   features?: Record<string, boolean>;
 };
@@ -249,6 +340,7 @@ export type LiveSupervisionEvent = {
     | "supervision_batch_started"
     | "supervision_batch_completed"
     | "defense_report_generated"
+    | "native_tool_hook"
     | "live_error";
   message?: string;
   runtimeSessionId?: string;

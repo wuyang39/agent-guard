@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReportBundle, TestSelectionPlan, TestSelectionRequest } from "@agent-guard/contracts";
 import { agentGuardApi } from "./lib/api/client";
+import { apiBaseUrl } from "./lib/api/core";
 import { mockDashboardSummary } from "./lib/api/mockData";
 import type {
   AgentConnectionConfig,
@@ -25,6 +26,12 @@ import { RuntimeConfigPage } from "./pages/RuntimeConfig/RuntimeConfigPage";
 import { RunWorkflowPage } from "./pages/RunWorkflow/RunWorkflowPage";
 import { ReportWorkspacePage } from "./pages/ReportWorkspace/ReportWorkspacePage";
 import { LiveSupervisionPage } from "./pages/Supervision/LiveSupervisionPage";
+import {
+  DEFAULT_SELECTION_CASE_COUNT,
+  MAX_SELECTION_CASE_COUNT,
+  MIN_SELECTION_CASE_COUNT,
+  normalizeSelectionCaseCount,
+} from "./selectionDefaults";
 
 type ViewKey =
   | "agent"
@@ -40,14 +47,11 @@ const AGENT_CONFIG_STORAGE_KEY = "agent-guard.agent-config";
 const SELECTION_CASE_COUNT_STORAGE_KEY = "agent-guard.selection-case-count";
 const REALTIME_TOAST_LIMIT = 3;
 const REALTIME_TOAST_TTL_MS = 7000;
-const DEFAULT_SELECTION_CASE_COUNT = 30;
-const MIN_SELECTION_CASE_COUNT = 3;
-const MAX_SELECTION_CASE_COUNT = 500;
 const DEFAULT_AGENT_TIMEOUT_MS = 120000;
-const DEFAULT_OPENCLAW_TIMEOUT_MS = 300000;
+const DEFAULT_OPENCLAW_TIMEOUT_MS = 90000;
 const PRODUCT_NAME = "AgentSleuth";
 
-const defaultOpenClawCliPath = import.meta.env.VITE_OPENCLAW_CLI_PATH ?? "";
+const defaultOpenClawCliPath = import.meta.env?.VITE_OPENCLAW_CLI_PATH ?? "";
 
 const defaultAgentConfig: AgentConnectionConfig = {
   adapterKind: "openclaw",
@@ -334,7 +338,7 @@ export function App() {
         acceptRunGroupProgress(started.runGroup);
         await waitForRunGroup(
           started.runGroup.runGroupId,
-          1_200_000,
+          undefined,
           acceptRunGroupProgress,
           () => cancelledRunIdsRef.current.has(started.runGroup.runGroupId),
         );
@@ -659,11 +663,11 @@ function desktopServiceStatus(state: LoadState<SystemStatus>): {
   label: string;
   tone: "is-ready" | "is-warn" | "is-loading";
 } {
-  const endpoint = "127.0.0.1:3100";
+  const { apiPort, endpoint } = resolveDesktopApiAddress(apiBaseUrl);
   if (state.status === "ready") {
     const openClawReady = state.data.health?.openclawCli === true;
     return {
-      apiPort: "3100",
+      apiPort,
       endpoint,
       label: openClawReady ? "服务在线，OpenClaw 可用" : "服务在线，OpenClaw 待配置",
       tone: openClawReady ? "is-ready" : "is-warn",
@@ -671,14 +675,14 @@ function desktopServiceStatus(state: LoadState<SystemStatus>): {
   }
   if (state.status === "error") {
     return {
-      apiPort: "3100",
+      apiPort,
       endpoint,
       label: "等待 API",
       tone: "is-warn",
     };
   }
   return {
-    apiPort: "3100",
+    apiPort,
     endpoint,
     label: "启动中",
     tone: "is-loading",
@@ -750,7 +754,7 @@ function eventActionLabel(action: NonNullable<LiveSupervisionEvent["action"]>): 
   return labels[action];
 }
 
-function buildLlmSelectionRequest(
+export function buildLlmSelectionRequest(
   config: AgentConnectionConfig,
   selectionCaseCount: number,
 ): TestSelectionRequest {
@@ -764,7 +768,13 @@ function buildLlmSelectionRequest(
     targetProfile: selectionTargetProfile(config, maxCaseCount),
     selectionMode: "llm_assisted",
     maxCaseCount,
-    minCaseCount: Math.max(3, Math.min(maxCaseCount, useLargeCorpus ? 120 : 48)),
+    minCaseCount: Math.max(
+      MIN_SELECTION_CASE_COUNT,
+      Math.min(
+        maxCaseCount,
+        useLargeCorpus ? MAX_SELECTION_CASE_COUNT : 48,
+      ),
+    ),
     requiredAttackFamilies,
     requiredTargetSurfaces,
     includeExternalTools: true,
@@ -772,7 +782,7 @@ function buildLlmSelectionRequest(
   };
 }
 
-function selectionTargetProfile(
+export function selectionTargetProfile(
   config: AgentConnectionConfig,
   maxCaseCount: number,
 ): TestSelectionRequest["targetProfile"] {
@@ -780,8 +790,16 @@ function selectionTargetProfile(
     return maxCaseCount <= 30 ? "smoke" : "regression";
   }
   if (maxCaseCount <= 80) return "openclaw";
-  if (maxCaseCount <= 160) return "regression";
-  return "full-corpus";
+  return "regression";
+}
+
+export function resolveDesktopApiAddress(baseUrl: string): {
+  apiPort: string;
+  endpoint: string;
+} {
+  const parsed = new URL(baseUrl);
+  const apiPort = parsed.port || (parsed.protocol === "https:" ? "443" : "80");
+  return { apiPort, endpoint: parsed.host };
 }
 
 function requiredAttackFamiliesForBudget(
@@ -877,37 +895,52 @@ function loadStoredSelectionCaseCount(): number {
   return normalizeSelectionCaseCount(stored || DEFAULT_SELECTION_CASE_COUNT);
 }
 
-function normalizeSelectionCaseCount(value: number): number {
-  if (!Number.isFinite(value) || value <= 0) return DEFAULT_SELECTION_CASE_COUNT;
-  return Math.max(
-    MIN_SELECTION_CASE_COUNT,
-    Math.min(MAX_SELECTION_CASE_COUNT, Math.floor(value)),
-  );
-}
+const MAX_TRANSIENT_RUN_GROUP_NOT_FOUND_RETRIES = 3;
 
-async function waitForRunGroup(
+export async function waitForRunGroup(
   runGroupId: string,
-  timeoutMs = 180000,
+  timeoutMs?: number,
   onProgress?: (runGroup: CLineRunGroup) => void,
   shouldStop?: () => boolean,
+  pollIntervalMs = 2000,
 ): Promise<CLineRunGroup | undefined> {
   const startedAt = Date.now();
-  while (Date.now() - startedAt < timeoutMs) {
+  let transientNotFoundCount = 0;
+  while (timeoutMs === undefined || Date.now() - startedAt < timeoutMs) {
     if (shouldStop?.()) {
       return undefined;
     }
-    const result = await agentGuardApi.runGroup(runGroupId);
+    let result: Awaited<ReturnType<typeof agentGuardApi.runGroup>>;
+    try {
+      result = await agentGuardApi.runGroup(runGroupId);
+      transientNotFoundCount = 0;
+    } catch (error) {
+      if (
+        hasApiErrorCode(error, "NOT_FOUND") &&
+        transientNotFoundCount < MAX_TRANSIENT_RUN_GROUP_NOT_FOUND_RETRIES
+      ) {
+        transientNotFoundCount += 1;
+        await sleep(Math.min(pollIntervalMs, 250));
+        continue;
+      }
+      throw error;
+    }
     onProgress?.(result.runGroup);
     if (result.runGroup.status !== "running") {
       return result.runGroup;
     }
-    await sleep(2000);
+    await sleep(pollIntervalMs);
   }
   return undefined;
 }
 
+function hasApiErrorCode(error: unknown, code: string): boolean {
+  return error instanceof Error &&
+    (error as Error & { code?: unknown }).code === code;
+}
+
 function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
+  return new Promise((resolve) => globalThis.setTimeout(resolve, ms));
 }
 
 function mergeRunGroupListState(

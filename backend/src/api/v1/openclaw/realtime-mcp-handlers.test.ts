@@ -1,0 +1,294 @@
+import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import http from "node:http";
+import os from "node:os";
+import path from "node:path";
+import test, { type TestContext } from "node:test";
+import type { NativeGuardEvent } from "@agent-guard/contracts";
+import Fastify, { type FastifyInstance } from "fastify";
+import type { NativeSupervisionAccessService } from "../../../modules/openclaw/nativeSupervisionAccessService";
+import { createNativeGuardRealtimeBridge } from "../../../modules/openclaw/nativeGuardRealtimeBridge";
+import {
+  emitNativeToolHookEvent,
+  subscribeRealtimeEvents,
+} from "../../../modules/openclaw/realtimeMcpServer";
+import { createNativeGuardEventStore } from "../../../storage/nativeGuardEventStore";
+import {
+  NATIVE_SUPERVISION_CONTROL_COOKIE,
+  NATIVE_SUPERVISION_EVENTS_COOKIE,
+} from "./native-supervision-handlers";
+import { openClawRealtimeMcpRoutes } from "./realtime-mcp-handlers";
+
+const ALLOWED_ORIGIN = "http://127.0.0.1:5173";
+const EVENT_TOKEN = "e".repeat(43);
+
+test("realtime MCP config example uses the configured public API URL", async (t) => {
+  const fixture = await startFixture(t);
+  const response = await fixture.app.inject({
+    method: "GET",
+    url: "/api/v1/openclaw/realtime/mcp",
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(
+    response.json().data.openclawConfigExample.mcp.servers.agent_guard.url,
+    "http://127.0.0.1:5199/api/v1/openclaw/realtime/mcp",
+  );
+});
+
+test("realtime events reject missing, null, and malicious origins before subscribing", async (t) => {
+  const fixture = await startFixture(t);
+
+  for (const origin of [undefined, "null", `${ALLOWED_ORIGIN}.evil`, "https://127.0.0.1:5173"]) {
+    const response = await requestUntil(fixture.url, {
+      headers: {
+        ...(origin === undefined ? {} : { origin }),
+        cookie: `${NATIVE_SUPERVISION_EVENTS_COOKIE}=${EVENT_TOKEN}`,
+      },
+      stopWhen: firstFrameOrEnd,
+    });
+    assert.equal(response.statusCode, 403, String(origin));
+    assert.equal(JSON.parse(response.body).error.code, "NATIVE_SUPERVISION_ORIGIN_FORBIDDEN");
+    assert.equal(response.headers["access-control-allow-origin"], undefined);
+  }
+  assert.equal(fixture.subscribeCalls(), 0);
+});
+
+test("realtime events require the read-only event cookie before subscribing", async (t) => {
+  const fixture = await startFixture(t);
+
+  for (const cookie of [
+    undefined,
+    `${NATIVE_SUPERVISION_EVENTS_COOKIE}=${"x".repeat(43)}`,
+    `${NATIVE_SUPERVISION_CONTROL_COOKIE}=${EVENT_TOKEN}`,
+  ]) {
+    const response = await requestUntil(fixture.url, {
+      headers: {
+        origin: ALLOWED_ORIGIN,
+        ...(cookie === undefined ? {} : { cookie }),
+      },
+      stopWhen: firstFrameOrEnd,
+    });
+    assert.equal(response.statusCode, 401, String(cookie));
+    assert.equal(JSON.parse(response.body).error.code, "NATIVE_SUPERVISION_ACCESS_REQUIRED");
+  }
+  assert.equal(fixture.subscribeCalls(), 0);
+});
+
+test("authorized realtime events echo the exact origin and stream native guard hooks", async (t) => {
+  const fixture = await startFixture(t);
+  let emitted = false;
+  const response = await requestUntil(fixture.url, {
+    headers: {
+      origin: ALLOWED_ORIGIN,
+      cookie: `${NATIVE_SUPERVISION_EVENTS_COOKIE}=${EVENT_TOKEN}`,
+    },
+    onBody(body) {
+      if (emitted || !body.includes("event: config")) return;
+      emitted = true;
+      emitNativeToolHookEvent({
+        runtimeSessionId: "agent:main:cli:sse-auth-test",
+        toolCallId: "call.sse-auth-test",
+        toolName: "read",
+        action: "deny",
+        coverage: "active",
+        detail: { source: "native_guard" },
+      });
+    },
+    stopWhen: (body) => (
+      body.includes("event: native_tool_hook") &&
+      body.includes('"toolId":"call.sse-auth-test"')
+    ),
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.headers["access-control-allow-origin"], ALLOWED_ORIGIN);
+  assert.equal(response.headers["access-control-allow-credentials"], "true");
+  assert.match(String(response.headers.vary), /(?:^|,\s*)Origin(?:,|$)/i);
+  assert.notEqual(response.headers["access-control-allow-origin"], "*");
+  assert.match(response.body, /event: native_tool_hook/);
+  assert.match(response.body, /"runtimeSessionId":"agent:main:cli:sse-auth-test"/);
+  assert.match(response.body, /"toolId":"call.sse-auth-test"/);
+  assert.match(response.body, /"source":"native_guard"/);
+  assert.equal(fixture.subscribeCalls(), 1);
+});
+
+test("authorized replay projects durable native guard events without raw secrets", async (t) => {
+  const fixture = await startFixture(t);
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "native-sse-replay-"));
+  t.after(() => fs.rm(rootDir, { recursive: true, force: true }));
+  const eventStore = createNativeGuardEventStore({ rootDir });
+  const bridge = createNativeGuardRealtimeBridge({
+    eventStore,
+    emit: emitNativeToolHookEvent,
+  });
+  t.after(() => bridge.close());
+  const durableEvent: NativeGuardEvent = {
+    schemaVersion: "native-guard-1",
+    eventId: "event.sse-replay",
+    type: "decision",
+    leaseId: "lease.sse-replay",
+    leaseEpoch: 3,
+    sessionKey: "agent:main:cli:sse-replay-test",
+    runId: "run.sse-replay",
+    toolCallId: "call.sse-replay",
+    decisionId: "decision.sse-replay",
+    timestamp: "2026-08-11T00:00:00.000Z",
+    detail: {
+      requestId: "request.sse-replay",
+      action: "deny",
+      reasonCode: "policy_deny",
+      targetType: "tool_call",
+      toolName: "exec",
+      paramsDigest: "a".repeat(64),
+      credential: "credential-must-not-replay",
+      token: "token-must-not-replay",
+      params: { command: "secret-command-must-not-replay" },
+    },
+  };
+  assert.equal(await eventStore.append(durableEvent), true);
+
+  const response = await requestUntil(fixture.url.replace("replay=0", "replay=1"), {
+    headers: {
+      origin: ALLOWED_ORIGIN,
+      cookie: `${NATIVE_SUPERVISION_EVENTS_COOKIE}=${EVENT_TOKEN}`,
+    },
+    stopWhen: (body) => body.includes('"toolId":"call.sse-replay"'),
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.match(response.body, /event: native_tool_hook/);
+  assert.match(response.body, /"runtimeSessionId":"agent:main:cli:sse-replay-test"/);
+  assert.match(response.body, /"toolId":"call.sse-replay"/);
+  assert.match(response.body, /"source":"native_guard"/);
+  assert.doesNotMatch(
+    response.body,
+    /credential-must-not-replay|token-must-not-replay|secret-command-must-not-replay|paramsDigest/,
+  );
+  assert.equal(fixture.subscribeCalls(), 1);
+});
+
+test("closing Fastify ends active event streams and releases subscriptions", async (t) => {
+  const fixture = await startFixture(t);
+  const controller = new AbortController();
+  const response = await fetch(fixture.url, {
+    headers: {
+      origin: ALLOWED_ORIGIN,
+      cookie: `${NATIVE_SUPERVISION_EVENTS_COOKIE}=${EVENT_TOKEN}`,
+    },
+    signal: controller.signal,
+  });
+  assert.equal(response.status, 200);
+  const firstFrame = await response.body?.getReader().read();
+  assert.equal(firstFrame?.done, false);
+  assert.equal(fixture.subscribeCalls(), 1);
+
+  const closePromise = fixture.app.close();
+  const closedPromptly = await Promise.race([
+    closePromise.then(() => true),
+    new Promise<false>((resolve) => setTimeout(() => resolve(false), 250)),
+  ]);
+  if (!closedPromptly) controller.abort();
+  await closePromise;
+
+  assert.equal(closedPromptly, true);
+  assert.equal(fixture.unsubscribeCalls(), 1);
+});
+
+async function startFixture(t: TestContext): Promise<{
+  app: FastifyInstance;
+  url: string;
+  subscribeCalls(): number;
+  unsubscribeCalls(): number;
+}> {
+  let calls = 0;
+  let releases = 0;
+  const app = Fastify({ logger: false });
+  await app.register(openClawRealtimeMcpRoutes, {
+    accessService: accessServiceFixture(),
+    allowedOrigins: [ALLOWED_ORIGIN],
+    publicMcpUrl: "http://127.0.0.1:5199/api/v1/openclaw/realtime/mcp",
+    subscribeEvents(listener, options) {
+      calls += 1;
+      const unsubscribe = subscribeRealtimeEvents(listener, options);
+      return () => {
+        releases += 1;
+        unsubscribe();
+      };
+    },
+  });
+  await app.listen({ host: "127.0.0.1", port: 0 });
+  t.after(() => app.close());
+  const address = app.server.address();
+  assert.ok(address && typeof address === "object");
+  return {
+    app,
+    url: `http://127.0.0.1:${String(address.port)}/api/v1/openclaw/realtime/events/stream?replay=0`,
+    subscribeCalls: () => calls,
+    unsubscribeCalls: () => releases,
+  };
+}
+
+function accessServiceFixture(): NativeSupervisionAccessService {
+  return {
+    exchangeBootstrap: () => undefined,
+    issueEventCapability: () => undefined,
+    authenticateControl: () => false,
+    authenticateEvents: (token) => token === EVENT_TOKEN,
+  };
+}
+
+function firstFrameOrEnd(body: string, ended: boolean): boolean {
+  return ended || body.includes("\n\n");
+}
+
+function requestUntil(
+  url: string,
+  options: {
+    headers: http.OutgoingHttpHeaders;
+    stopWhen(body: string, ended: boolean): boolean;
+    onBody?(body: string): void;
+  },
+): Promise<{
+  statusCode: number | undefined;
+  headers: http.IncomingHttpHeaders;
+  body: string;
+}> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let response: http.IncomingMessage | undefined;
+    const timeout = setTimeout(() => finish(new Error("Timed out waiting for SSE response")), 3_000);
+    const request = http.get(url, { headers: options.headers }, (incoming) => {
+      response = incoming;
+      incoming.setEncoding("utf8");
+      let body = "";
+      incoming.on("data", (chunk: string) => {
+        body += chunk;
+        options.onBody?.(body);
+        if (options.stopWhen(body, false)) finish(undefined, body);
+      });
+      incoming.on("end", () => {
+        if (options.stopWhen(body, true)) finish(undefined, body);
+      });
+      incoming.on("error", (error) => {
+        if (!settled) finish(error);
+      });
+    });
+    request.on("error", (error) => {
+      if (!settled) finish(error);
+    });
+
+    function finish(error?: Error, body = ""): void {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      const result = response
+        ? { statusCode: response.statusCode, headers: response.headers, body }
+        : undefined;
+      response?.destroy();
+      request.destroy();
+      if (error || !result) reject(error ?? new Error("SSE response did not start"));
+      else resolve(result);
+    }
+  });
+}

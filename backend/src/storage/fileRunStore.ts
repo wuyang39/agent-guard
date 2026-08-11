@@ -4,10 +4,16 @@
  * 存储位置: outputs/run-index/
  */
 
+import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createId, Mutex, nowIso } from "../shared";
-import type { RunE2ERequest, P2RunGroup, P2AdapterKind } from "../api/types";
+import type {
+  NativeGuardCoverageSummary,
+  RunE2ERequest,
+  P2RunGroup,
+  P2AdapterKind,
+} from "../api/types";
 import type { RunStatus, RuntimeSupervisionRecord } from "@agent-guard/contracts";
 import { resolveInsideDirectory } from "./pathSafety";
 
@@ -31,9 +37,27 @@ async function readJson<T>(filePath: string, fallback: T): Promise<T> {
   }
 }
 
-async function writeJson(filePath: string, data: unknown): Promise<void> {
+export async function writeJsonAtomically(
+  filePath: string,
+  data: unknown,
+  hooks: {
+    rename?: (source: string, destination: string) => Promise<void>;
+  } = {},
+): Promise<void> {
   await ensureDir(path.dirname(filePath));
-  await fs.writeFile(filePath, JSON.stringify(data, null, 2), "utf-8");
+  const temporary = path.join(
+    path.dirname(filePath),
+    `.${path.basename(filePath)}.tmp-${randomUUID()}`,
+  );
+  try {
+    await fs.writeFile(temporary, JSON.stringify(data, null, 2), {
+      encoding: "utf-8",
+      flag: "wx",
+    });
+    await (hooks.rename ?? fs.rename)(temporary, filePath);
+  } finally {
+    await fs.rm(temporary, { force: true }).catch(() => undefined);
+  }
 }
 
 export function createRunGroupId(): string {
@@ -70,22 +94,27 @@ export async function saveRunGroup(runGroup: P2RunGroup): Promise<void> {
   await runGroupsMutex.run(async () => {
     runGroup.updatedAt = nowIso();
     await ensureDir(ROOT);
-    const all = await readJson<P2RunGroup[]>(RUN_GROUPS_FILE, []);
+    const all = (await readJson<P2RunGroup[]>(RUN_GROUPS_FILE, []))
+      .map(normalizeStoredRunGroup);
     const idx = all.findIndex((r) => r.runGroupId === runGroup.runGroupId);
+    const normalized = normalizeStoredRunGroup(runGroup);
     if (idx >= 0) {
-      all[idx] = runGroup;
+      all[idx] = normalized;
     } else {
-      all.push(runGroup);
+      all.push(normalized);
     }
-    await writeJson(RUN_GROUPS_FILE, all);
+    await writeJsonAtomically(RUN_GROUPS_FILE, all);
   });
 }
 
 export async function getRunGroup(
   runGroupId: string,
 ): Promise<P2RunGroup | undefined> {
-  const all = await readJson<P2RunGroup[]>(RUN_GROUPS_FILE, []);
-  return all.find((r) => r.runGroupId === runGroupId);
+  return runGroupsMutex.run(async () => {
+    const all = (await readJson<P2RunGroup[]>(RUN_GROUPS_FILE, []))
+      .map(normalizeStoredRunGroup);
+    return all.find((r) => r.runGroupId === runGroupId);
+  });
 }
 
 export async function listRunGroups(opts?: {
@@ -93,26 +122,58 @@ export async function listRunGroups(opts?: {
   status?: RunStatus;
   adapterKind?: P2AdapterKind;
 }): Promise<P2RunGroup[]> {
-  let all = await readJson<P2RunGroup[]>(RUN_GROUPS_FILE, []);
+  return runGroupsMutex.run(async () => {
+    let all = (await readJson<P2RunGroup[]>(RUN_GROUPS_FILE, []))
+      .map(normalizeStoredRunGroup);
 
-  if (opts?.status) {
-    all = all.filter((r) => r.status === opts.status);
-  }
-  if (opts?.adapterKind) {
-    all = all.filter((r) => r.adapterKind === opts.adapterKind);
-  }
+    if (opts?.status) {
+      all = all.filter((r) => r.status === opts.status);
+    }
+    if (opts?.adapterKind) {
+      all = all.filter((r) => r.adapterKind === opts.adapterKind);
+    }
 
-  // 按 startedAt 倒序
-  all.sort(
-    (a, b) =>
-      new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime(),
-  );
+    // 按 startedAt 倒序
+    all.sort(
+      (a, b) =>
+        new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime(),
+    );
 
-  if (opts?.limit && opts.limit > 0) {
-    all = all.slice(0, opts.limit);
-  }
+    if (opts?.limit && opts.limit > 0) {
+      all = all.slice(0, opts.limit);
+    }
 
-  return all;
+    return all;
+  });
+}
+
+export function normalizeStoredRunGroup(runGroup: P2RunGroup): P2RunGroup {
+  if (!runGroup.nativeGuardCoverage) return runGroup;
+  const legacyCoverage = runGroup.nativeGuardCoverage as NativeGuardCoverageSummary & {
+    mismatchCount?: number;
+    sessions?: NativeGuardCoverageSummary["sessions"];
+    runtimeFailures?: NativeGuardCoverageSummary["runtimeFailures"];
+  };
+  const sessions = Array.isArray(legacyCoverage.sessions)
+    ? legacyCoverage.sessions
+    : [];
+  const runtimeFailures = Array.isArray(legacyCoverage.runtimeFailures)
+    ? legacyCoverage.runtimeFailures
+    : [];
+  const mismatchCount = Number.isSafeInteger(legacyCoverage.mismatchCount) &&
+    (legacyCoverage.mismatchCount as number) >= 0
+    ? legacyCoverage.mismatchCount as number
+    : [...sessions, ...runtimeFailures]
+        .reduce((total, summary) => total + summary.mismatchCount, 0);
+  return {
+    ...runGroup,
+    nativeGuardCoverage: {
+      ...legacyCoverage,
+      mismatchCount,
+      sessions,
+      runtimeFailures,
+    },
+  };
 }
 
 // ---- Supervision Session ----
@@ -142,7 +203,7 @@ export async function saveSessionRecords(
   records: RuntimeSupervisionRecord[],
 ): Promise<void> {
   await ensureDir(SESSIONS_DIR);
-  await writeJson(
+  await writeJsonAtomically(
     sessionFilePath(summary.runtimeSessionId),
     { ...summary, records } satisfies SupervisionSessionFull,
   );

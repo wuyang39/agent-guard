@@ -15,7 +15,7 @@ type RunE2EOptions = {
 };
 
 const DEFAULT_AGENT_TIMEOUT_MS = 120000;
-const DEFAULT_OPENCLAW_TIMEOUT_MS = 300000;
+const DEFAULT_OPENCLAW_TIMEOUT_MS = 90000;
 
 export const runsApi = {
   dashboardSummary() {
@@ -138,6 +138,15 @@ type P2RunGroupWire = {
   defenseReportId?: string;
   artifactIds: string[];
   error?: string;
+  nativeGuardCoverage?: Omit<
+    NonNullable<CLineRunGroup["nativeGuardCoverage"]>,
+    "mismatchCount" | "sessions" | "runtimeFailures"
+  > & {
+    mismatchCount?: number;
+    sessions?: NonNullable<CLineRunGroup["nativeGuardCoverage"]>["sessions"];
+    runtimeFailures?: NonNullable<CLineRunGroup["nativeGuardCoverage"]>["runtimeFailures"];
+  };
+  sandboxEvidence?: CLineRunGroup["sandboxEvidence"];
 };
 
 function toRunGroup(run: P2RunGroupWire): CLineRunGroup {
@@ -163,8 +172,28 @@ function toRunGroup(run: P2RunGroupWire): CLineRunGroup {
     runtimeSessionIds: run.runtimeSessionIds,
     artifactIds: run.artifactIds,
     error: run.error,
+    nativeGuardCoverage: normalizeNativeGuardCoverage(run.nativeGuardCoverage),
+    sandboxEvidence: run.sandboxEvidence,
     createdAt: run.startedAt,
     updatedAt: run.updatedAt ?? run.endedAt ?? run.startedAt,
+  };
+}
+
+function normalizeNativeGuardCoverage(
+  coverage: P2RunGroupWire["nativeGuardCoverage"],
+): CLineRunGroup["nativeGuardCoverage"] {
+  if (!coverage) return undefined;
+  return {
+    ...coverage,
+    mismatchCount:
+      Number.isSafeInteger(coverage.mismatchCount) &&
+      (coverage.mismatchCount as number) >= 0
+        ? coverage.mismatchCount as number
+        : 0,
+    sessions: Array.isArray(coverage.sessions) ? coverage.sessions : [],
+    runtimeFailures: Array.isArray(coverage.runtimeFailures)
+      ? coverage.runtimeFailures
+      : [],
   };
 }
 

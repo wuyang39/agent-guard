@@ -1,7 +1,11 @@
 import type { JsonObject, JsonValue } from "@agent-guard/contracts";
+import { RE2JS } from "re2js";
+import safeRegex from "safe-regex2";
 import type { FieldMatcher } from "../risk/riskTypes";
 import type { SupervisionPolicy, SupervisionPolicyPack } from "../policy/policyTypes";
 import type { SupervisionRuntimeAction } from "./supervisorTypes";
+
+const MAX_POLICY_REGEX_LENGTH = 256;
 
 export function findMatchingPolicies(
   policyPack: SupervisionPolicyPack,
@@ -50,7 +54,11 @@ function matchesField(
     case "in":
       return Array.isArray(expected) && expected.includes(actual ?? null);
     case "regex":
-      return matchesRegex(stringify(actual, matcher), stringify(expected, matcher));
+      return matchesRegex(
+        stringify(actual, matcher, false),
+        stringifyValue(expected),
+        matcher.caseSensitive,
+      );
   }
 }
 
@@ -75,17 +83,23 @@ function isJsonObject(value: JsonValue | undefined): value is JsonObject {
 function stringify(
   value: JsonValue | undefined,
   matcher: FieldMatcher,
+  applyCaseFolding = true,
 ): string {
-  const normalized = normalize(value, matcher);
-  if (normalized === undefined || normalized === null) {
+  const normalized = normalize(value, matcher, applyCaseFolding);
+  return stringifyValue(normalized);
+}
+
+function stringifyValue(value: JsonValue | undefined): string {
+  if (value === undefined || value === null) {
     return "";
   }
-  return typeof normalized === "string" ? normalized : JSON.stringify(normalized);
+  return typeof value === "string" ? value : JSON.stringify(value);
 }
 
 function normalize(
   value: JsonValue | undefined,
   matcher: FieldMatcher,
+  applyCaseFolding = true,
 ): JsonValue | undefined {
   if (typeof value !== "string") {
     return value;
@@ -106,7 +120,10 @@ function normalize(
       break;
   }
 
-  if (matcher.caseSensitive === false || matcher.caseSensitive === undefined) {
+  if (
+    applyCaseFolding &&
+    (matcher.caseSensitive === false || matcher.caseSensitive === undefined)
+  ) {
     normalized = normalized.toLowerCase();
   }
 
@@ -121,9 +138,21 @@ function safeDecodeURIComponent(value: string): string {
   }
 }
 
-function matchesRegex(actual: string, pattern: string): boolean {
+function matchesRegex(
+  actual: string,
+  pattern: string,
+  caseSensitive: boolean | undefined,
+): boolean {
+  if (!pattern || pattern.length > MAX_POLICY_REGEX_LENGTH) {
+    return false;
+  }
+
   try {
-    return new RegExp(pattern).test(actual);
+    if (!safeRegex(pattern)) {
+      return false;
+    }
+    const flags = caseSensitive === true ? 0 : RE2JS.CASE_INSENSITIVE;
+    return RE2JS.compile(pattern, flags).test(actual.slice(0, 65_536));
   } catch {
     return false;
   }

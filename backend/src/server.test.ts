@@ -1,0 +1,90 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+  captureBackendServerEnvironment,
+  createNativeSupervisionServerBootstrap,
+} from "./server";
+
+test("server fallback creates one local pairing fragment without a supplied bootstrap", () => {
+  const bootstrap = createNativeSupervisionServerBootstrap(
+    { FRONTEND_PORT: "5199" },
+    () => "b".repeat(43),
+  );
+
+  assert.deepEqual(bootstrap, {
+    bootstrapToken: "b".repeat(43),
+    pairingOrigin: "http://127.0.0.1:5199",
+    pairingUrl: `http://127.0.0.1:5199/#agent-guard-bootstrap=${"b".repeat(43)}`,
+  });
+  assert.doesNotMatch(bootstrap.pairingUrl!, /[?&]agent-guard-bootstrap=/);
+});
+
+test("server uses a launcher bootstrap without generating or formatting another secret URL", () => {
+  let generated = 0;
+  const bootstrap = createNativeSupervisionServerBootstrap(
+    {
+      AGENT_GUARD_UI_BOOTSTRAP_TOKEN: "l".repeat(43),
+      AGENT_GUARD_FRONTEND_ORIGIN: "http://127.0.0.1:5299",
+    },
+    () => {
+      generated += 1;
+      return "x".repeat(43);
+    },
+  );
+
+  assert.equal(bootstrap.bootstrapToken, "l".repeat(43));
+  assert.equal(bootstrap.pairingOrigin, "http://127.0.0.1:5299");
+  assert.equal(generated, 0);
+  assert.equal(bootstrap.pairingUrl, undefined);
+});
+
+test("server fallback rejects malformed generated tokens and frontend ports", () => {
+  assert.throws(
+    () => createNativeSupervisionServerBootstrap({}, () => "short"),
+    /bootstrap token/,
+  );
+  assert.throws(
+    () => createNativeSupervisionServerBootstrap(
+      { FRONTEND_PORT: "70000" },
+      () => "b".repeat(43),
+    ),
+    /FRONTEND_PORT/,
+  );
+  assert.throws(
+    () => createNativeSupervisionServerBootstrap({
+      AGENT_GUARD_UI_BOOTSTRAP_TOKEN: "l".repeat(43),
+      AGENT_GUARD_FRONTEND_ORIGIN: "http://127.0.0.1:5173/path",
+    }),
+    /AGENT_GUARD_FRONTEND_ORIGIN/,
+  );
+});
+
+test("server snapshots backend-only secrets and removes them from the process environment", () => {
+  const env = {
+    AGENT_GUARD_UI_BOOTSTRAP_TOKEN: "b".repeat(43),
+    AGENT_GUARD_CONTROL_TOKEN: "control-secret",
+    VITE_AGENT_GUARD_CONTROL_TOKEN: "dev-control-secret",
+    agent_guard_control_token: "lower-control-secret",
+    Agent_Guard_Ui_Bootstrap_Token: "mixed-bootstrap-secret",
+    AGENT_GUARD_FRONTEND_ORIGIN: "http://127.0.0.1:5173",
+    OPENCLAW_GATEWAY_TOKEN: "gateway-secret",
+    PATH: "runtime-path",
+  };
+
+  const captured = captureBackendServerEnvironment(env);
+
+  assert.equal(captured.bootstrap.bootstrapToken, "b".repeat(43));
+  assert.equal(captured.nativeGuardControlToken, "control-secret");
+  assert.equal(captured.nativeGuardEnv.OPENCLAW_GATEWAY_TOKEN, "gateway-secret");
+  assert.equal(captured.nativeGuardEnv.PATH, "runtime-path");
+  for (const name of [
+    "AGENT_GUARD_UI_BOOTSTRAP_TOKEN",
+    "AGENT_GUARD_CONTROL_TOKEN",
+    "VITE_AGENT_GUARD_CONTROL_TOKEN",
+    "agent_guard_control_token",
+    "Agent_Guard_Ui_Bootstrap_Token",
+  ] as const) {
+    assert.equal(env[name], undefined);
+    assert.equal(captured.nativeGuardEnv[name], undefined);
+  }
+});

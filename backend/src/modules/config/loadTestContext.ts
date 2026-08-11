@@ -208,10 +208,9 @@ async function appendGeneratedALineCorpus(
     repository.testOracles = mergeById(repository.testOracles, testOracles, "caseId");
     repository.redTeamScenarioSet = {
       ...repository.redTeamScenarioSet,
-      scenarios: mergeById(
+      scenarios: mergeScenarios(
         repository.redTeamScenarioSet.scenarios,
         redTeamScenarios.scenarios,
-        "scenarioId",
       ),
     };
   } catch (error) {
@@ -254,6 +253,36 @@ function mergeById<T extends Record<string, unknown>, K extends keyof T & string
   for (const item of base) merged.set(String(item[key]), item);
   for (const item of next) merged.set(String(item[key]), item);
   return [...merged.values()];
+}
+
+/** Merge red team scenarios: same scenarioId merges caseIds and
+ *  expectedWeaknessCategories, rather than replacing the base. */
+function mergeScenarios(
+  base: RedTeamScenarioSet["scenarios"],
+  next: RedTeamScenarioSet["scenarios"],
+): RedTeamScenarioSet["scenarios"] {
+  const byId = new Map<string, RedTeamScenarioSet["scenarios"][number]>();
+  for (const s of base) byId.set(s.scenarioId, s);
+  for (const s of next) {
+    const existing = byId.get(s.scenarioId);
+    if (existing) {
+      byId.set(s.scenarioId, {
+        ...existing,
+        ...s,
+        caseIds: [...new Set([...existing.caseIds, ...s.caseIds])],
+        sampleIds: [...new Set([...existing.sampleIds, ...s.sampleIds])],
+        expectedWeaknessCategories: [
+          ...new Set([...existing.expectedWeaknessCategories, ...s.expectedWeaknessCategories]),
+        ],
+        recommendedPolicyTemplateIds: [
+          ...new Set([...existing.recommendedPolicyTemplateIds, ...s.recommendedPolicyTemplateIds]),
+        ],
+      });
+    } else {
+      byId.set(s.scenarioId, s);
+    }
+  }
+  return [...byId.values()];
 }
 
 function isJsonObject(value: JsonValue): value is JsonObject {

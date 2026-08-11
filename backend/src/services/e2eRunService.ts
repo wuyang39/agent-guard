@@ -48,7 +48,11 @@ import { saveSessionRecords } from "../storage/fileRunStore";
 import { getReportEntry, indexReport, indexArtifact } from "../storage/fileReportStore";
 import type { AgentAdapter } from "../modules/agent/agentAdapter";
 import { HttpAgentAdapter } from "../modules/agent/httpAgentAdapter";
-import { OpenClawAdapter } from "../modules/agent/openclawAdapter";
+import {
+  OpenClawAdapter,
+  type OpenClawAdapterOptions,
+} from "../modules/agent/openclawAdapter";
+import { canonicalizeOpenClawSessionKey } from "../modules/agent/openclawSessionIdentity";
 import { buildRuleBasedToolCapabilityProfile } from "../modules/gateway/toolCapabilityProfiler";
 import {
   getRequiredSelectionPlan,
@@ -56,14 +60,262 @@ import {
 } from "../modules/runner/testSelectionService";
 import { updateSelectionPlanStatus } from "../modules/runner/selectionPlanStore";
 import { resolveInsideDirectory } from "../storage/pathSafety";
+import {
+  DetectionSandboxManager,
+  DetectionSandboxError,
+  SandboxPreflightError,
+  createDetectionSandboxManager,
+  type DetectionSandboxEvidence,
+  type DetectionSandboxManagerOptions,
+  type DetectionSessionContainerFinalization,
+} from "../modules/openclaw/detectionSandboxManager";
+import {
+  DetectionProfileSeedError,
+  resolveDetectionProfileSeed,
+  type ResolveDetectionProfileSeedOptions,
+} from "../modules/openclaw/detectionProfileSeed";
+import { createNativeGuardEventStore } from "../storage/nativeGuardEventStore";
+import type { NativeGuardEvent, RuntimeSupervisionRecord } from "@agent-guard/contracts";
+import type {
+  NativeGuardCoverageSummary,
+  NativeGuardSessionCoverageSummary,
+  SandboxEvidenceSummary,
+} from "../api/types";
+import type { TestRunResult } from "../modules/runner/runTypes";
+import { scrubSecrets } from "../shared/scrubSecrets";
+import type { NativeGuardCapability } from "../modules/openclaw/openclawControlClient";
+import {
+  createOpenClawDetectionRuntimeController,
+  OpenClawDetectionRuntimeCleanupError,
+  type OpenClawDetectionRuntimeController,
+  type StartOpenClawDetectionRuntime,
+} from "./openclawDetectionRuntime";
 
 const CONFIGS_DIR = path.resolve(process.cwd(), "configs");
 const P2_DEMO_CASES_FILE = path.join(CONFIGS_DIR, "p2_demo_cases.json");
 const OUTPUT_DIR = path.resolve(process.cwd(), "outputs", "reports");
 const TRACES_DIR = path.resolve(process.cwd(), "outputs", "traces");
 const MAX_PROGRESS_FAILURES = 24;
+const MAX_NATIVE_GUARD_DIAGNOSTIC_COUNT = 1_000_000;
+export const MAX_OPENCLAW_DETECTION_CASES = 120;
+const MISSING_NATIVE_GUARD_RECONCILIATION_FAILURE =
+  "NATIVE_GUARD_COVERAGE_BREACH: 1 reconciliation issue(s); native guard reconciliation is missing.";
+const GUARDED_FINALIZER_ERROR_CODES = new Set([
+  "SESSION_CONTAINER_CLEANUP_FAILED",
+  "CONTAINER_ATTESTATION_MISMATCH",
+  "SANDBOX_EXPLAIN_MISMATCH",
+]);
 const RUN_CANCELLED_MESSAGE = "Run cancelled by user.";
+const OPENCLAW_DETECTION_RUNTIME_FAILED_PREFIX =
+  "OPENCLAW_DETECTION_RUNTIME_FAILED:";
 const activeRunControllers = new Map<string, AbortController>();
+
+// ---- Task 14: detection run serialization ----
+// Only one OpenClaw sandbox detection run at a time. The app
+// coordinator supports a single active lease; concurrent runs
+// would fail with NATIVE_GUARD_ALREADY_ACTIVE.
+const detectionRunReservationBrand: unique symbol = Symbol("detectionRunReservation");
+
+export type DetectionRunReservation = Readonly<{
+  [detectionRunReservationBrand]: true;
+}>;
+
+let activeDetectionRunReservation: DetectionRunReservation | undefined;
+
+export class DetectionRunConflictError extends Error {
+  constructor() {
+    super(
+      "Another OpenClaw detection run is already in progress. " +
+      "Wait for it to complete or cancel it before starting a new run.",
+    );
+    this.name = "DetectionRunConflictError";
+  }
+}
+
+export function reserveDetectionRun(): DetectionRunReservation {
+  if (activeDetectionRunReservation) {
+    throw new DetectionRunConflictError();
+  }
+  const reservation = Object.freeze({
+    [detectionRunReservationBrand]: true as const,
+  });
+  activeDetectionRunReservation = reservation;
+  return reservation;
+}
+
+export function releaseDetectionRunReservation(
+  reservation: DetectionRunReservation | undefined,
+): boolean {
+  if (!reservation || activeDetectionRunReservation !== reservation) {
+    return false;
+  }
+  activeDetectionRunReservation = undefined;
+  return true;
+}
+
+export async function finalizeDetectionRunReservation(
+  reservation: DetectionRunReservation | undefined,
+  cleanup: () => Promise<void>,
+): Promise<void> {
+  try {
+    await cleanup();
+  } finally {
+    releaseDetectionRunReservation(reservation);
+  }
+}
+
+function claimDetectionRunReservation(
+  reservation: DetectionRunReservation | undefined,
+): DetectionRunReservation {
+  if (!reservation) {
+    return reserveDetectionRun();
+  }
+  if (activeDetectionRunReservation !== reservation) {
+    throw new DetectionRunConflictError();
+  }
+  return reservation;
+}
+
+// ---- Task 14: native-guard lease dependencies ----
+// Passed by the API handler when the coordinator is available.
+export type GuardLeaseDeps = {
+  activate: (input: {
+    rootSessionKey: string;
+    runGroupId: string;
+  }) => Promise<{ leaseId: string; leaseEpoch: number }>;
+  revoke: (leaseId: string) => Promise<void>;
+};
+
+export type GuardedSessionFinalizationResult = DetectionSessionContainerFinalization;
+
+export type GuardedSessionFinalizer = (input: {
+  caseId: string;
+  runId: string;
+  sessionKey: string;
+}) => Promise<GuardedSessionFinalizationResult>;
+
+/** Factory provided by app.ts. Shares the API's lease service and backend
+ *  PDP URL, creates a per-run coordinator targeting the sandbox Gateway. */
+export type SandboxCoordinatorFactory = (input: {
+  gatewayUrl: string;
+  gatewayToken: string;
+  cliPath?: string;
+  capabilitySnapshot: NativeGuardCapability;
+  /** Isolated profile env: OPENCLAW_CONFIG_PATH, OPENCLAW_STATE_DIR, etc. */
+  profileEnv: Record<string, string>;
+}) => {
+  activate(input: {
+    rootSessionKey: string;
+    runGroupId: string;
+  }): Promise<{ leaseId: string; leaseEpoch: number }>;
+  revoke(leaseId: string): Promise<void>;
+  /** The event store shared with the API's decision/event handlers. */
+  eventStore: ReturnType<typeof createNativeGuardEventStore>;
+};
+
+export type E2ERunDependencies = {
+  resolveDetectionProfileSeed?: (
+    options: ResolveDetectionProfileSeedOptions,
+  ) => ReturnType<typeof resolveDetectionProfileSeed>;
+  createDetectionSandboxManager?: (
+    options: DetectionSandboxManagerOptions,
+  ) => DetectionSandboxManager;
+  createOpenClawAdapter?: (options: OpenClawAdapterOptions) => AgentAdapter;
+  guardedSessionFinalizer?: GuardedSessionFinalizer;
+};
+
+function createOpenClawRuntimeGenerationFactory(input: {
+  request: RunE2ERequest;
+  runGroupId: string;
+  image: string;
+  signal: AbortSignal;
+  sandboxCoordinatorFactory?: SandboxCoordinatorFactory;
+  resolveProfileSeed: NonNullable<E2ERunDependencies["resolveDetectionProfileSeed"]>;
+  createManager: NonNullable<E2ERunDependencies["createDetectionSandboxManager"]>;
+  createAdapter: NonNullable<E2ERunDependencies["createOpenClawAdapter"]>;
+  onRuntimeStarted: (input: {
+    eventStore: ReturnType<typeof createNativeGuardEventStore>;
+    preflightEvidence: DetectionSandboxEvidence;
+  }) => void;
+}): StartOpenClawDetectionRuntime {
+  return async () => {
+    let manager: DetectionSandboxManager | undefined;
+    try {
+      throwIfRunCancelled(input.signal);
+      const profileSeed = await input.resolveProfileSeed({
+        cliPath: input.request.connection?.cliPath,
+      });
+      throwIfRunCancelled(input.signal);
+      manager = input.createManager({
+        runGroupId: input.runGroupId,
+        image: input.image,
+        cliPath: input.request.connection?.cliPath,
+        signal: input.signal,
+        commandRunner: undefined,
+        profileSeed,
+      });
+      const evidence = await manager.preflight();
+      await manager.start();
+      const sandboxCreds = manager.getGatewayCredentials();
+      const capabilitySnapshot = manager.getAttestedCapabilitySnapshot();
+      if (!sandboxCreds || !capabilitySnapshot) {
+        throw new Error("Sandbox started but no attested Gateway capability returned.");
+      }
+      if (!input.sandboxCoordinatorFactory) {
+        throw new Error(
+          "Sandbox detection requires sandboxCoordinatorFactory. " +
+          "Wire it from app.ts via runE2E().",
+        );
+      }
+      const profileEnv: Record<string, string> = {
+        OPENCLAW_CONFIG_PATH: evidence.configPath,
+        OPENCLAW_STATE_DIR: path.join(evidence.profileRoot, "state"),
+        OPENCLAW_WORKSPACE_DIR: path.join(evidence.profileRoot, "workspace"),
+        OPENCLAW_HOME: evidence.profileRoot,
+      };
+      const runGuard = input.sandboxCoordinatorFactory({
+        gatewayUrl: sandboxCreds.gatewayUrl,
+        gatewayToken: sandboxCreds.gatewayToken,
+        cliPath: input.request.connection?.cliPath,
+        profileEnv,
+        capabilitySnapshot,
+      });
+      const adapter = input.createAdapter({
+        gatewayUrl: sandboxCreds.gatewayUrl,
+        gatewayToken: sandboxCreds.gatewayToken,
+        cliPath: input.request.connection?.cliPath,
+        timeoutMs: getOpenClawDetectionTimeoutMs(input.request),
+        env: profileEnv,
+        signal: manager.signal,
+        nativeGuardRequired: true,
+        nativeGuardEventStore: runGuard.eventStore,
+        guardLease: { activate: runGuard.activate, revoke: runGuard.revoke },
+      });
+      input.onRuntimeStarted({
+        eventStore: runGuard.eventStore,
+        preflightEvidence: evidence,
+      });
+      return {
+        manager,
+        adapter,
+        nativeGuardEventStore: runGuard.eventStore,
+        preflightEvidence: evidence,
+      };
+    } catch (error) {
+      if (manager) {
+        try {
+          await manager.cleanup();
+        } catch (cleanupError) {
+          throw new OpenClawDetectionRuntimeCleanupError(
+            cleanupError,
+            manager,
+          );
+        }
+      }
+      throw error;
+    }
+  };
+}
 
 export class CaseIdValidationError extends Error {
   constructor(message: string) {
@@ -106,7 +358,7 @@ function mapAdapterKind(kind: string): AgentUnderTest["adapterType"] {
   }
 }
 
-function buildCustomAdapter(request: RunE2ERequest): AgentAdapter | undefined {
+export function buildCustomAdapter(request: RunE2ERequest): AgentAdapter | undefined {
   switch (request.adapterKind) {
     case "http_sample": {
       const endpointUrl =
@@ -116,16 +368,6 @@ function buildCustomAdapter(request: RunE2ERequest): AgentAdapter | undefined {
         endpointUrl,
         timeoutMs: request.connection?.timeoutMs ?? 15_000,
         mode: "vulnerable",
-      });
-    }
-    case "openclaw": {
-      return new OpenClawAdapter({
-        gatewayUrl:
-          request.connection?.endpointUrl ??
-          process.env.OPENCLAW_GATEWAY_URL ??
-          "http://localhost:18789",
-        cliPath: request.connection?.cliPath,
-        timeoutMs: request.connection?.timeoutMs ?? 300_000,
       });
     }
     default:
@@ -139,6 +381,42 @@ export type RunE2EResult = {
   runGroup: P2RunGroup;
   links: EntityLink[];
 };
+
+export type DetectionSandboxLifetime = Pick<
+  DetectionSandboxManager,
+  "signal" | "runWhileGatewayAlive"
+>;
+
+export function runDetectionWithSandboxLifetime<T>(
+  sandbox: DetectionSandboxLifetime,
+  operation: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  return sandbox.runWhileGatewayAlive(operation);
+}
+
+export function validateOpenClawDetectionCaseLimit(
+  adapterKind: RunE2ERequest["adapterKind"],
+  caseCount: number,
+): void {
+  if (
+    adapterKind === "openclaw" &&
+    caseCount > MAX_OPENCLAW_DETECTION_CASES
+  ) {
+    throw new CaseIdValidationError(
+      `OpenClaw detection supports at most ${MAX_OPENCLAW_DETECTION_CASES} cases; ` +
+      `received ${caseCount}.`,
+    );
+  }
+}
+
+export function resolveNativeGuardSessionKeys(
+  runGroup: Pick<P2RunGroup, "testRunIds" | "runGroupId">,
+): string[] {
+  const runIds = runGroup.testRunIds.length > 0
+    ? runGroup.testRunIds
+    : [runGroup.runGroupId];
+  return runIds.map(canonicalizeOpenClawSessionKey);
+}
 
 export function createInitialE2ERunGroup(request: RunE2ERequest): P2RunGroup {
   return buildInitialRunGroup(
@@ -182,6 +460,9 @@ export async function cancelRunGroup(runGroupId: string): Promise<P2RunGroup | u
 export async function runE2E(
   request: RunE2ERequest,
   existingRunGroup?: P2RunGroup,
+  sandboxCoordinatorFactory?: SandboxCoordinatorFactory,
+  reservedDetectionRun?: DetectionRunReservation,
+  dependencies: E2ERunDependencies = {},
 ): Promise<RunE2EResult> {
   // P2 adapterKind 映射到 contracts adapterType + 自定义 adapter。
   const adapterType = mapAdapterKind(request.adapterKind);
@@ -193,6 +474,10 @@ export async function runE2E(
   runGroup.selectionPlanId = request.selectionPlanId;
   const controller = new AbortController();
   activeRunControllers.set(runGroup.runGroupId, controller);
+  let openClawRuntimeController: OpenClawDetectionRuntimeController | undefined;
+  const runtimeEventStores: Array<ReturnType<typeof createNativeGuardEventStore>> = [];
+  let isOpenClaw = false;
+  let detectionRunReservation = reservedDetectionRun;
 
   try {
     throwIfRunCancelled(controller.signal);
@@ -295,9 +580,14 @@ export async function runE2E(
       }
     }
 
-    const targetCases = selectedCaseIds.length
+    const matchedCases = selectedCaseIds.length
       ? contexts.filter((ctx: (typeof contexts)[number]) => selectedCaseIds.includes(ctx.caseId))
       : contexts;
+    const targetCases = request.adapterKind === "openclaw"
+      ? orderDetectionCasesForExecution(matchedCases)
+      : matchedCases;
+
+    validateOpenClawDetectionCaseLimit(request.adapterKind, targetCases.length);
 
     if (targetCases.length === 0) {
       throw new CaseIdValidationError(
@@ -402,15 +692,143 @@ export async function runE2E(
     startRunProgress(runGroup, "detecting", targetCases.length, getDetectionConcurrency(request));
     await saveRunGroup(runGroup);
 
+    // ====== Task 12: OpenClaw sandbox lifecycle ======
+    isOpenClaw = request.adapterKind === "openclaw";
+    const detectionImage = process.env.AGENT_GUARD_DETECTION_IMAGE;
+
+    if (isOpenClaw) {
+      // OpenClaw detection requires Docker isolation. Only one detection
+      // run at a time — the app coordinator supports a single active lease.
+      detectionRunReservation = claimDetectionRunReservation(detectionRunReservation);
+
+      // OpenClaw detection requires Docker isolation. Without an immutable
+      // image the sandbox cannot be provisioned. Fail immediately —
+      // zero attack samples are executed.
+      if (!detectionImage) {
+        const message = "OpenClaw detection requires AGENT_GUARD_DETECTION_IMAGE env var set to an immutable image digest (registry/image@sha256:...).";
+        runGroup.status = "failed";
+        runGroup.phase = "failed";
+        runGroup.error = message;
+        runGroup.nativeGuardCoverage = {
+          coverage: "misconfigured",
+          eventsTotal: 0,
+          reconciled: false,
+          coverageBreachCount: 0,
+          mismatchCount: 0,
+          sessions: [],
+          runtimeFailures: [],
+        };
+        updateRunProgress(runGroup, { phase: "failed", runningCaseIds: [], retryingCaseIds: [] });
+        await saveRunGroup(runGroup);
+        throw new Error(message);
+      }
+
+      try {
+        openClawRuntimeController = createOpenClawDetectionRuntimeController({
+          start: createOpenClawRuntimeGenerationFactory({
+            request,
+            runGroupId: runGroup.runGroupId,
+            image: detectionImage,
+            signal: controller.signal,
+            sandboxCoordinatorFactory,
+            resolveProfileSeed:
+              dependencies.resolveDetectionProfileSeed ?? resolveDetectionProfileSeed,
+            createManager:
+              dependencies.createDetectionSandboxManager ?? createDetectionSandboxManager,
+            createAdapter: dependencies.createOpenClawAdapter ??
+              ((options) => new OpenClawAdapter(options)),
+            onRuntimeStarted: ({ eventStore, preflightEvidence }) => {
+              runtimeEventStores.push(eventStore);
+              runGroup.sandboxEvidence = buildSandboxEvidenceSummary(
+                preflightEvidence,
+                undefined,
+              );
+            },
+          }),
+        });
+        await openClawRuntimeController.ensure();
+        runGroup.nativeGuardCoverage = {
+          coverage: "conditional",
+          eventsTotal: 0,
+          reconciled: false,
+          coverageBreachCount: 0,
+          mismatchCount: 0,
+          sessions: [],
+          runtimeFailures: [],
+        };
+        // Sandbox coordinator allows only one active lease. Force
+        // sequential execution regardless of env var override.
+        if (runGroup.progress) runGroup.progress.concurrency = 1;
+        await saveRunGroup(runGroup);
+      } catch (error) {
+        // Docker / sandbox failure: zero attack samples executed.
+        const category = sandboxPreflightFailureCategory(error);
+        runGroup.sandboxEvidence = buildSandboxEvidenceSummary(undefined, category);
+        runGroup.nativeGuardCoverage = {
+          coverage: "misconfigured",
+          eventsTotal: 0,
+          reconciled: false,
+          coverageBreachCount: 0,
+          mismatchCount: 0,
+          sessions: [],
+          runtimeFailures: [],
+        };
+        runGroup.status = "failed";
+        runGroup.phase = "failed";
+        runGroup.error = error instanceof Error ? error.message : String(error);
+        updateRunProgress(runGroup, { phase: "failed", runningCaseIds: [], retryingCaseIds: [] });
+        appendDetectionFailure(runGroup, {
+          caseId: "sandbox_preflight",
+          phase: "detecting",
+          reason: runGroup.error!,
+          category,
+          attempts: 1,
+          retryable: false,
+          skipped: false,
+          occurredAt: nowIso(),
+        });
+        await saveRunGroup(runGroup);
+        throw error;
+      }
+    }
+
     const detectionResult = await runDetectionCasesConcurrently({
       targetCases,
       agent,
       adapterConfig,
-      customAdapter,
+      customAdapter: isOpenClaw ? undefined : customAdapter,
       runGroup,
       request,
       signal: controller.signal,
+      guardedSessionFinalizer: dependencies.guardedSessionFinalizer,
+      openClawRuntimeController,
     });
+
+    if (openClawRuntimeController && !controller.signal.aborted) {
+      const sessionKeys = resolveNativeGuardSessionKeys(runGroup);
+      // Verify guard produced real decisions and no coverage breaches.
+      // Per-session reconciliation against JSONL happens inside
+      // runOpenClawSession; breaches cause the session to fail.
+      if (runGroup.nativeGuardCoverage && runtimeEventStores.length > 0) {
+        let anyDecisions = false;
+        for (const sessionKey of sessionKeys) {
+          for (const eventStore of runtimeEventStores) {
+            try {
+              const events = await eventStore.listBySession(sessionKey);
+              if (events.some((e: NativeGuardEvent) => e.type === "decision")) {
+                anyDecisions = true;
+                break;
+              }
+            } catch { /* store unavailable — leave coverage as-is */ }
+          }
+        }
+        const reconciled = runGroup.nativeGuardCoverage.sessions.length > 0 &&
+          runGroup.nativeGuardCoverage.sessions.every((session) => session.reconciled);
+        runGroup.nativeGuardCoverage.reconciled = reconciled;
+        runGroup.nativeGuardCoverage.coverage = (anyDecisions && reconciled)
+          ? "active" : "conditional";
+      }
+    }
     const riskReports = detectionResult.riskReports;
 
     // ====== 阶段 2: 检测报告 → 画像 → 策略包 ======
@@ -467,8 +885,6 @@ export async function runE2E(
     const allSupervisionRecords: Awaited<
       ReturnType<typeof runTestCase>
     >["supervisionRecords"] = [];
-
-    const isOpenClaw = request.adapterKind === "openclaw";
 
     if (!isOpenClaw) {
       allSupervisionRecords.push(
@@ -573,8 +989,39 @@ export async function runE2E(
     }
     throw err;
   } finally {
-    if (activeRunControllers.get(runGroup.runGroupId) === controller) {
-      activeRunControllers.delete(runGroup.runGroupId);
+    try {
+      await finalizeDetectionRunReservation(detectionRunReservation, async () => {
+        if (openClawRuntimeController) {
+          try {
+            await openClawRuntimeController.dispose();
+          } catch (cleanupError) {
+            const message = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+            appendDetectionFailure(runGroup, {
+              caseId: "sandbox_cleanup",
+              phase: "detecting",
+              reason: `Sandbox cleanup failed: ${message}`,
+              category: "sandbox_cleanup_failed",
+              attempts: 1, retryable: true, skipped: false,
+              occurredAt: nowIso(),
+            });
+            if (runGroup.nativeGuardCoverage) {
+              runGroup.nativeGuardCoverage.reconciled = false;
+            }
+            // Persist cleanup failure with consistent phase and status.
+            runGroup.status = "failed";
+            runGroup.phase = "failed";
+            if (!runGroup.error) {
+              runGroup.error = `Sandbox cleanup failed: ${message}`;
+            }
+            runGroup.endedAt = nowIso();
+            await saveRunGroup(runGroup);
+          }
+        }
+      });
+    } finally {
+      if (activeRunControllers.get(runGroup.runGroupId) === controller) {
+        activeRunControllers.delete(runGroup.runGroupId);
+      }
     }
   }
 }
@@ -588,6 +1035,8 @@ type DetectionBatchResult = {
   skippedCases: number;
   retriedCases: number;
 };
+
+type DetectionAttemptEvidencePersister = typeof persistDetectionAttemptEvidence;
 
 class DetectionCaseError extends Error {
   readonly category: P2RunCaseFailure["category"];
@@ -611,7 +1060,7 @@ class DetectionCaseError extends Error {
   }
 }
 
-async function runDetectionCasesConcurrently(input: {
+export async function runDetectionCasesConcurrently(input: {
   targetCases: TestContext[];
   agent: AgentUnderTest;
   adapterConfig: AgentAdapterConfig;
@@ -619,6 +1068,9 @@ async function runDetectionCasesConcurrently(input: {
   runGroup: P2RunGroup;
   request: RunE2ERequest;
   signal: AbortSignal;
+  guardedSessionFinalizer?: GuardedSessionFinalizer;
+  detectionAttemptEvidencePersister?: DetectionAttemptEvidencePersister;
+  openClawRuntimeController?: OpenClawDetectionRuntimeController;
 }): Promise<DetectionBatchResult> {
   const {
     targetCases,
@@ -628,6 +1080,9 @@ async function runDetectionCasesConcurrently(input: {
     runGroup,
     request,
     signal,
+    guardedSessionFinalizer,
+    detectionAttemptEvidencePersister,
+    openClawRuntimeController,
   } = input;
   const concurrency = runGroup.progress?.concurrency ?? getDetectionConcurrency(request);
   const runningCaseIds = new Set<string>();
@@ -664,11 +1119,15 @@ async function runDetectionCasesConcurrently(input: {
           runGroup,
           request,
           signal,
+          guardedSessionFinalizer,
+          detectionAttemptEvidencePersister,
+          openClawRuntimeController,
           getCounters: () => ({ completedCases, failedCases, skippedCases, retriedCases }),
           setRetried: () => {
             retriedCases++;
           },
         });
+        throwIfRunCancelled(signal);
 
         riskReportsByIndex[index] = result.riskReport;
 
@@ -784,6 +1243,9 @@ async function runDetectionCaseWithRetry(input: {
   runGroup: P2RunGroup;
   request: RunE2ERequest;
   signal: AbortSignal;
+  guardedSessionFinalizer?: GuardedSessionFinalizer;
+  detectionAttemptEvidencePersister?: DetectionAttemptEvidencePersister;
+  openClawRuntimeController?: OpenClawDetectionRuntimeController;
   getCounters: () => {
     completedCases: number;
     failedCases: number;
@@ -800,16 +1262,21 @@ async function runDetectionCaseWithRetry(input: {
     runGroup,
     request,
     signal,
+    guardedSessionFinalizer,
+    detectionAttemptEvidencePersister,
+    openClawRuntimeController,
     getCounters,
     setRetried,
   } = input;
   const maxAttempts = getDetectionMaxAttempts(request);
   let attempt = 0;
+  let providerAttempts = 0;
   let countedRetry = false;
   let lastClassification: ReturnType<typeof classifyDetectionError> | undefined;
   let lastMessage = "unknown error";
+  let restartedRuntime = false;
 
-  while (attempt < maxAttempts) {
+  while (true) {
     throwIfRunCancelled(signal);
     attempt++;
     const spacingMs = getOpenClawCaseSpacingMs(request, attempt);
@@ -818,24 +1285,74 @@ async function runDetectionCaseWithRetry(input: {
     }
 
     try {
-      return {
-        riskReport: await runSingleDetectionAttempt({
-          agent,
-          adapterConfig,
-          context,
-          customAdapter,
-          runGroup,
-          signal,
-        }),
-      };
+      const runAttempt = (attemptInput: {
+        customAdapter?: AgentAdapter;
+        signal: AbortSignal;
+        guardedSessionFinalizer?: GuardedSessionFinalizer;
+      }) => runSingleDetectionAttempt({
+        agent,
+        adapterConfig,
+        context,
+        customAdapter: attemptInput.customAdapter,
+        runGroup,
+        signal: attemptInput.signal,
+        guardedSessionFinalizer: attemptInput.guardedSessionFinalizer,
+        detectionAttemptEvidencePersister,
+      });
+      const riskReport = openClawRuntimeController
+        ? await runOpenClawDetectionAttempt(
+            openClawRuntimeController,
+            runAttempt,
+          )
+        : await runAttempt({ customAdapter, signal, guardedSessionFinalizer });
+      return { riskReport };
     } catch (error) {
-      lastMessage = error instanceof Error ? error.message : String(error);
-      lastClassification = classifyDetectionError(lastMessage, request);
-      const shouldRetry =
-        lastClassification.retryable && attempt < maxAttempts;
+      lastMessage = scrubDetectionMessage(
+        error instanceof Error ? error.message : String(error),
+      );
+      lastClassification = classifyDetectionErrorWithProvenance(
+        error,
+        lastMessage,
+        request,
+      );
+      if (!lastClassification.restartRuntime) {
+        providerAttempts += 1;
+      }
+      const shouldRestartRuntime =
+        lastClassification.restartRuntime &&
+        !restartedRuntime &&
+        Boolean(openClawRuntimeController) &&
+        !signal.aborted;
+      const shouldRetry = lastClassification.restartRuntime
+        ? shouldRestartRuntime
+        : lastClassification.retryable && providerAttempts < maxAttempts;
 
       if (!shouldRetry) {
         break;
+      }
+
+      if (shouldRestartRuntime) {
+        restartedRuntime = true;
+        throwIfRunCancelled(signal);
+        try {
+          await openClawRuntimeController!.restart();
+        } catch (restartError) {
+          const normalizedError = normalizeOpenClawRuntimeError(restartError);
+          const message = scrubDetectionMessage(normalizedError.message);
+          const classified = classifyDetectionErrorWithProvenance(
+            normalizedError,
+            message,
+            request,
+          );
+          throw new DetectionCaseError({
+            message,
+            category: classified.category,
+            attempts: attempt,
+            retryable: classified.retryable,
+            skipAllowed: false,
+          });
+        }
+        throwIfRunCancelled(signal);
       }
 
       if (!countedRetry) {
@@ -884,6 +1401,111 @@ async function runDetectionCaseWithRetry(input: {
   });
 }
 
+class OpenClawDetectionRuntimeFailure extends Error {
+  constructor(message: string) {
+    super(`${OPENCLAW_DETECTION_RUNTIME_FAILED_PREFIX} ${message}`);
+    this.name = "OpenClawDetectionRuntimeFailure";
+  }
+}
+
+async function runOpenClawDetectionAttempt<T>(
+  runtimeController: OpenClawDetectionRuntimeController,
+  operation: (input: {
+    customAdapter: AgentAdapter;
+    signal: AbortSignal;
+    guardedSessionFinalizer: GuardedSessionFinalizer;
+  }) => Promise<T>,
+): Promise<T> {
+  try {
+    return await runtimeController.run(async (runtime, signal) => operation({
+      customAdapter: runtime.adapter,
+      signal,
+      guardedSessionFinalizer: ({ sessionKey }) =>
+        runtime.manager.finalizeSessionContainer(sessionKey, {
+          allowNotCreated: true,
+        }),
+    }));
+  } catch (error) {
+    throw normalizeOpenClawRuntimeError(error);
+  }
+}
+
+function normalizeOpenClawRuntimeError(error: unknown): Error {
+  if (
+    error instanceof SandboxPreflightError &&
+    (error.code === "GATEWAY_EXITED" || error.code === "GATEWAY_LIFETIME_UNAVAILABLE")
+  ) {
+    return new OpenClawDetectionRuntimeFailure(
+      scrubDetectionMessage(error.message),
+    );
+  }
+  return error instanceof Error ? error : new Error(String(error));
+}
+
+function classifyDetectionErrorWithProvenance(
+  error: unknown,
+  message: string,
+  request: RunE2ERequest,
+): ReturnType<typeof classifyDetectionError> {
+  if (error instanceof OpenClawDetectionRuntimeFailure) {
+    return classifyDetectionError(message, request);
+  }
+  if (error instanceof OpenClawDetectionRuntimeCleanupError) {
+    return nonRestartingDetectionClassification("sandbox_cleanup_failed");
+  }
+  if (error instanceof DetectionProfileSeedError) {
+    return nonRestartingDetectionClassification("sandbox_profile_seed_failed");
+  }
+  if (error instanceof DetectionSandboxError) {
+    if (error.code === "MODEL_PROFILE_SEED_INVALID") {
+      return nonRestartingDetectionClassification("sandbox_profile_seed_failed");
+    }
+    if (error.code === "SESSION_CONTAINER_CLEANUP_FAILED") {
+      return nonRestartingDetectionClassification("sandbox_cleanup_failed");
+    }
+    if (
+      error.code === "CONTAINER_ATTESTATION_MISMATCH" ||
+      error.code === "SANDBOX_EXPLAIN_MISMATCH"
+    ) {
+      return nonRestartingDetectionClassification("sandbox_attestation_failed");
+    }
+    if (
+      error.code === "OPENCLAW_CAPABILITY_UNAVAILABLE" ||
+      error.code === "OPENCLAW_UNSUPPORTED"
+    ) {
+      return nonRestartingDetectionClassification("native_guard_unavailable");
+    }
+    if (error instanceof SandboxPreflightError) {
+      return nonRestartingDetectionClassification("sandbox_preflight_failed");
+    }
+  }
+  if (
+    message.toLowerCase().startsWith(
+      OPENCLAW_DETECTION_RUNTIME_FAILED_PREFIX.toLowerCase(),
+    )
+  ) {
+    const untrustedMessage = message
+      .slice(OPENCLAW_DETECTION_RUNTIME_FAILED_PREFIX.length)
+      .trim();
+    const classified = classifyDetectionError(untrustedMessage, request);
+    return classified.restartRuntime
+      ? nonRestartingDetectionClassification("agent_error")
+      : { ...classified, restartRuntime: false };
+  }
+  return classifyDetectionError(message, request);
+}
+
+function nonRestartingDetectionClassification(
+  category: P2RunCaseFailure["category"],
+): ReturnType<typeof classifyDetectionError> {
+  return {
+    category,
+    retryable: false,
+    skipAllowed: false,
+    restartRuntime: false,
+  };
+}
+
 async function runSingleDetectionAttempt(input: {
   agent: AgentUnderTest;
   adapterConfig: AgentAdapterConfig;
@@ -891,26 +1513,767 @@ async function runSingleDetectionAttempt(input: {
   customAdapter?: AgentAdapter;
   runGroup: P2RunGroup;
   signal: AbortSignal;
+  guardedSessionFinalizer?: GuardedSessionFinalizer;
+  detectionAttemptEvidencePersister?: DetectionAttemptEvidencePersister;
 }): Promise<ReturnType<typeof buildRiskReport>> {
-  const { agent, adapterConfig, context, customAdapter, runGroup, signal } = input;
+  const {
+    agent,
+    adapterConfig,
+    context,
+    customAdapter,
+    runGroup,
+    signal,
+    guardedSessionFinalizer,
+    detectionAttemptEvidencePersister = persistDetectionAttemptEvidence,
+  } = input;
   throwIfRunCancelled(signal);
-  const { testRun, trace } = await runTestCase(agent, adapterConfig, context, {
+  const result = await runTestCase(agent, adapterConfig, context, {
     customAdapter,
     selectionPlanId: runGroup.selectionPlanId,
     signal,
+    requireNativeGuardRuntimeEvidence: Boolean(runGroup.nativeGuardCoverage),
   });
+  const { testRun, trace } = result;
+  let coverageFailure: string | undefined;
+  let persistenceError: unknown;
+  try {
+    coverageFailure = await detectionAttemptEvidencePersister({
+      runGroup,
+      result,
+      signal,
+    });
+  } catch (error) {
+    persistenceError = new Error(
+      `DETECTION_EVIDENCE_PERSISTENCE_FAILED: ${scrubDetectionMessage(
+        error instanceof Error ? error.message : String(error),
+      )}`,
+    );
+    coverageFailure = runGroup.nativeGuardCoverage
+      ? recoverNativeGuardCoverageFailure(
+          runGroup.nativeGuardCoverage,
+          testRun.runId,
+        )
+      : undefined;
+  }
+  if (runGroup.nativeGuardCoverage) {
+    const sandboxEvidence = await finalizeGuardedDetectionSession({
+      caseId: context.caseId,
+      result,
+      guardedSessionFinalizer,
+      expectedRunGroupId: runGroup.runGroupId,
+      expectedSandboxEvidence: runGroup.sandboxEvidence,
+    });
+    if (sandboxEvidence) {
+      runGroup.sandboxEvidence = buildSandboxEvidenceSummary(sandboxEvidence);
+    } else if (normalizeProvenAbsentNativeGuardCoverage({
+      coverage: runGroup.nativeGuardCoverage,
+      runtime: result.nativeGuardRuntime!,
+      testRunId: testRun.runId,
+      testRunStatus: testRun.status,
+      coverageFailure,
+      persistenceError,
+    })) {
+      coverageFailure = undefined;
+    }
+  }
   throwIfRunCancelled(signal);
 
-  runGroup.testRunIds.push(testRun.runId);
-  runGroup.traceIds.push(trace.traceId);
-  await writeTraceFile(trace);
-
-  if (testRun.status === "failed") {
-    throw new Error(testRun.error ?? "Detection test run failed");
-  }
+  const attemptFailure = resolveDetectionAttemptFailure(testRun, coverageFailure);
+  if (coverageFailure && attemptFailure) throw new Error(attemptFailure);
+  if (persistenceError) throw persistenceError;
+  if (attemptFailure) throw new Error(attemptFailure);
 
   const evaluation = await evaluateRiskWithSemanticScoring(context, trace);
+  throwIfRunCancelled(signal);
   return buildRiskReport(context, evaluation, trace);
+}
+
+export async function persistDetectionAttemptEvidence(input: {
+  runGroup: P2RunGroup;
+  result: Pick<TestRunResult, "testRun" | "trace" | "nativeGuardRuntime">;
+  signal: AbortSignal;
+  traceWriter?: (trace: TestRunResult["trace"]) => Promise<void>;
+}): Promise<string | undefined> {
+  const {
+    runGroup,
+    result: { testRun, trace, nativeGuardRuntime },
+    signal,
+    traceWriter = writeTraceFile,
+  } = input;
+  const alreadyAssociated = runGroup.testRunIds.includes(testRun.runId);
+  let coverageFailure: string | undefined;
+
+  if (!alreadyAssociated) {
+    runGroup.testRunIds.push(testRun.runId);
+    coverageFailure = nativeGuardRuntime
+      ? recordNativeGuardSessionCoverage(
+          runGroup,
+          nativeGuardRuntime,
+          testRun.runId,
+        )
+      : undefined;
+  } else if (runGroup.nativeGuardCoverage) {
+    coverageFailure = recoverNativeGuardCoverageFailure(
+      runGroup.nativeGuardCoverage,
+      testRun.runId,
+    );
+  }
+
+  throwIfRunCancelled(signal);
+  await traceWriter(trace);
+  if (!runGroup.traceIds.includes(trace.traceId)) {
+    runGroup.traceIds.push(trace.traceId);
+  }
+  return coverageFailure;
+}
+
+export function resolveDetectionAttemptFailure(
+  testRun: Pick<TestRunResult["testRun"], "status" | "error">,
+  coverageFailure?: string,
+): string | undefined {
+  if (coverageFailure) return scrubDetectionMessage(coverageFailure);
+  if (testRun.status === "failed") {
+    return scrubDetectionMessage(testRun.error ?? "Detection test run failed");
+  }
+  return undefined;
+}
+
+function scrubbedDetectionError(error: unknown): Error {
+  return new Error(scrubDetectionMessage(error instanceof Error ? error.message : String(error)));
+}
+
+function scrubDetectionMessage(message: string): string {
+  return scrubSecrets(message).replace(/\[REDACTED\]\]+/g, "[REDACTED]");
+}
+
+export async function finalizeGuardedDetectionSession(input: {
+  caseId: string;
+  result: Pick<TestRunResult, "testRun" | "nativeGuardRuntime">;
+  guardedSessionFinalizer?: GuardedSessionFinalizer;
+  expectedRunGroupId?: string;
+  expectedSandboxEvidence?: SandboxEvidenceSummary;
+}): Promise<DetectionSandboxEvidence | undefined> {
+  const { guardedSessionFinalizer } = input;
+  if (!guardedSessionFinalizer) {
+    throw new Error(
+      "NATIVE_GUARD_EVIDENCE_UNAVAILABLE: Guarded session finalizer is unavailable.",
+    );
+  }
+
+  const runtime = input.result.nativeGuardRuntime;
+  if (!runtime) {
+    throw new Error(
+      "NATIVE_GUARD_EVIDENCE_UNAVAILABLE: Native guard runtime evidence is missing.",
+    );
+  }
+  const sessionKey = runtime.sessionKey?.trim();
+  if (!sessionKey) {
+    throw new Error(
+      "NATIVE_GUARD_EVIDENCE_UNAVAILABLE: Native guard session key is missing.",
+    );
+  }
+  let finalizationResult: GuardedSessionFinalizationResult;
+  try {
+    finalizationResult = await guardedSessionFinalizer({
+      caseId: input.caseId,
+      runId: input.result.testRun.runId,
+      sessionKey,
+    });
+  } catch (error) {
+    if (isRunCancelledError(error)) throw scrubbedDetectionError(error);
+    const rawMessage = error instanceof Error ? error.message : String(error);
+    const candidateCode = typeof error === "object" && error !== null && "code" in error
+      ? (error as { code?: unknown }).code
+      : undefined;
+    const stableCode = typeof candidateCode === "string" &&
+        GUARDED_FINALIZER_ERROR_CODES.has(candidateCode)
+      ? candidateCode
+      : undefined;
+    const message = scrubDetectionMessage(
+      stableCode && !rawMessage.startsWith(`${stableCode}:`)
+        ? `${stableCode}: ${rawMessage}`
+        : rawMessage,
+    );
+    if (
+      /NATIVE_GUARD_(?:EVIDENCE_UNAVAILABLE|REVOKE_FAILED|COVERAGE_BREACH):/i.test(message) ||
+      /^(?:SESSION_CONTAINER_CLEANUP_FAILED|CONTAINER_ATTESTATION_MISMATCH|SANDBOX_EXPLAIN_MISMATCH):/i.test(message)
+    ) {
+      throw new Error(message);
+    }
+    throw new Error(
+      `NATIVE_GUARD_EVIDENCE_UNAVAILABLE: Guarded session finalization failed: ${message}`,
+    );
+  }
+
+  if (!finalizationResult || typeof finalizationResult !== "object") {
+    throw new Error(
+      "SESSION_CONTAINER_CLEANUP_FAILED: Guarded session finalizer returned an invalid outcome.",
+    );
+  }
+  if (finalizationResult.outcome !== "cleaned" && finalizationResult.outcome !== "not_created") {
+    throw new Error(
+      "SESSION_CONTAINER_CLEANUP_FAILED: Guarded session finalizer returned an ambiguous outcome.",
+    );
+  }
+  if (finalizationResult.sessionKey !== sessionKey) {
+    throw new Error(
+      finalizationResult.outcome === "not_created"
+        ? "CONTAINER_ATTESTATION_MISMATCH: Not-created proof does not match the guarded session."
+        : "CONTAINER_ATTESTATION_MISMATCH: Cleaned proof does not match the guarded session.",
+    );
+  }
+  if (finalizationResult.outcome === "not_created") {
+    const finalizationFailure = validateFinalizedSandboxEvidence(
+      finalizationResult.evidence,
+      "not_created",
+      input.expectedRunGroupId,
+      input.expectedSandboxEvidence,
+    );
+    if (finalizationFailure) throw new Error(finalizationFailure);
+    const integrityFailure = resolveNativeGuardRuntimeDiagnosticFailure(runtime);
+    if (integrityFailure) throw new Error(integrityFailure);
+    if (!Array.isArray(runtime.events) || runtime.events.length !== 0) {
+      const eventCount = Array.isArray(runtime.events)
+        ? Math.min(runtime.events.length, MAX_NATIVE_GUARD_DIAGNOSTIC_COUNT)
+        : 1;
+      throw new Error(
+        `NATIVE_GUARD_COVERAGE_BREACH: ${String(Math.max(1, eventCount))} reconciliation issue(s); not-created proof contains runtime events.`,
+      );
+    }
+    if (input.result.testRun.status !== "failed") {
+      throw new Error(
+        "SESSION_CONTAINER_CLEANUP_FAILED: Successful guarded attempt cannot use a not-created outcome.",
+      );
+    }
+    if (runtime.reconciliation) {
+      const reconciliationFailure = assessNativeGuardReconciliation(
+        runtime.reconciliation,
+      ).failure;
+      if (reconciliationFailure) throw new Error(reconciliationFailure);
+    }
+    return undefined;
+  }
+  const sandboxEvidence = finalizationResult.evidence;
+  const finalizationFailure = validateFinalizedSandboxEvidence(
+    sandboxEvidence,
+    "cleaned",
+    input.expectedRunGroupId,
+    input.expectedSandboxEvidence,
+  );
+  if (finalizationFailure) throw new Error(finalizationFailure);
+  const integrityFailure = resolveNativeGuardRuntimeIntegrityFailure(runtime);
+  if (integrityFailure) throw new Error(integrityFailure);
+  return sandboxEvidence;
+}
+
+function validateFinalizedSandboxEvidence(
+  evidence: DetectionSandboxEvidence | undefined,
+  outcome: DetectionSessionContainerFinalization["outcome"],
+  expectedRunGroupId?: string,
+  expected?: SandboxEvidenceSummary,
+): string | undefined {
+  const label = outcome === "cleaned" ? "Cleaned" : "Not-created";
+  if (!evidence || typeof evidence !== "object") {
+    return `CONTAINER_ATTESTATION_MISMATCH: ${label} evidence identity is incomplete.`;
+  }
+  if (
+    !nonEmptyEvidenceString(evidence.runGroupId) ||
+    !nonEmptyEvidenceString(evidence.image) ||
+    !nonEmptyEvidenceString(evidence.imageId) ||
+    !nonEmptyEvidenceString(evidence.openclawVersion) ||
+    !nonEmptyEvidenceString(evidence.profileRoot) ||
+    !nonEmptyEvidenceString(evidence.configPath) ||
+    !nonEmptyEvidenceString(evidence.configDigest) ||
+    (evidence.networkMode !== "none" && evidence.networkMode !== "internal")
+  ) {
+    return `CONTAINER_ATTESTATION_MISMATCH: ${label} evidence identity is incomplete.`;
+  }
+  if (outcome === "cleaned") {
+    if (evidence.status !== "cleaned") {
+      return "SESSION_CONTAINER_CLEANUP_FAILED: Guarded session finalizer did not return cleaned evidence.";
+    }
+    if (
+      typeof evidence.containerId !== "string" ||
+      !/^[a-f0-9]{64}$/.test(evidence.containerId)
+    ) {
+      return "SESSION_CONTAINER_CLEANUP_FAILED: Cleaned evidence does not contain an exact container identity.";
+    }
+  } else if (evidence.status !== "attested" || evidence.containerId !== undefined) {
+    return "CONTAINER_ATTESTATION_MISMATCH: Not-created evidence does not prove container absence.";
+  }
+  if (expectedRunGroupId && evidence.runGroupId !== expectedRunGroupId) {
+    return `CONTAINER_ATTESTATION_MISMATCH: ${label} evidence belongs to a different run group.`;
+  }
+  if (
+    expected &&
+    (
+      (expected.imageId !== undefined && evidence.imageId !== expected.imageId) ||
+      (expected.imageDigest !== undefined && evidence.image !== expected.imageDigest) ||
+      (expected.openclawVersion !== undefined && evidence.openclawVersion !== expected.openclawVersion) ||
+      evidence.networkMode !== expected.networkMode ||
+      (expected.configDigest !== undefined && evidence.configDigest !== expected.configDigest)
+    )
+  ) {
+    return `CONTAINER_ATTESTATION_MISMATCH: ${label} evidence does not match sandbox preflight identity.`;
+  }
+  return undefined;
+}
+
+function nonEmptyEvidenceString(value: string): boolean {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function resolveNativeGuardRuntimeIntegrityFailure(
+  runtime: NonNullable<TestRunResult["nativeGuardRuntime"]>,
+): string | undefined {
+  return resolveNativeGuardRuntimeDiagnosticFailure(runtime) ??
+    assessNativeGuardReconciliation(runtime.reconciliation).failure;
+}
+
+function resolveNativeGuardRuntimeDiagnosticFailure(
+  runtime: NonNullable<TestRunResult["nativeGuardRuntime"]>,
+): string | undefined {
+  if (runtime.evidenceError) {
+    return `NATIVE_GUARD_EVIDENCE_UNAVAILABLE: ${scrubDetectionMessage(runtime.evidenceError)}`;
+  }
+  if (runtime.revokeError) {
+    return `NATIVE_GUARD_REVOKE_FAILED: ${scrubDetectionMessage(runtime.revokeError)}`;
+  }
+  return undefined;
+}
+
+function cappedNativeGuardDiagnosticCount(value: number): number | undefined {
+  if (!Number.isSafeInteger(value) || value < 0) return undefined;
+  return Math.min(value, MAX_NATIVE_GUARD_DIAGNOSTIC_COUNT);
+}
+
+function addNativeGuardDiagnosticCounts(...values: number[]): number {
+  let total = 0;
+  for (const value of values) {
+    const capped = cappedNativeGuardDiagnosticCount(value);
+    if (capped === undefined) return MAX_NATIVE_GUARD_DIAGNOSTIC_COUNT;
+    total = Math.min(MAX_NATIVE_GUARD_DIAGNOSTIC_COUNT, total + capped);
+  }
+  return total;
+}
+
+function assessNativeGuardReconciliation(
+  reconciliation: NonNullable<TestRunResult["nativeGuardRuntime"]>["reconciliation"],
+): {
+  reconciled: boolean;
+  coverageBreachCount: number;
+  mismatchCount: number;
+  failure?: string;
+} {
+  if (!reconciliation) {
+    return {
+      reconciled: false,
+      coverageBreachCount: 0,
+      mismatchCount: 0,
+      failure: MISSING_NATIVE_GUARD_RECONCILIATION_FAILURE,
+    };
+  }
+  const coverageBreachCount = cappedNativeGuardDiagnosticCount(
+    reconciliation.coverageBreachCount,
+  );
+  const mismatchCount = cappedNativeGuardDiagnosticCount(
+    reconciliation.mismatchCount,
+  );
+  if (coverageBreachCount === undefined || mismatchCount === undefined) {
+    return {
+      reconciled: false,
+      coverageBreachCount: 0,
+      mismatchCount: 0,
+      failure: "NATIVE_GUARD_COVERAGE_BREACH: 1 reconciliation issue(s); native guard reconciliation counts are invalid.",
+    };
+  }
+  const issueCount = addNativeGuardDiagnosticCounts(
+    coverageBreachCount,
+    mismatchCount,
+  );
+  const reconciled = reconciliation.reconciled === true && issueCount === 0;
+  return {
+    reconciled,
+    coverageBreachCount,
+    mismatchCount,
+    ...(!reconciled
+      ? {
+          failure: `NATIVE_GUARD_COVERAGE_BREACH: ${String(Math.max(1, issueCount))} reconciliation issue(s); native guard reconciliation is incomplete.`,
+        }
+      : {}),
+  };
+}
+
+export function recordNativeGuardSessionCoverage(
+  runGroup: P2RunGroup,
+  runtime: NonNullable<TestRunResult["nativeGuardRuntime"]>,
+  testRunId: string,
+): string | undefined {
+  const coverage = runGroup.nativeGuardCoverage;
+  if (!coverage) return undefined;
+
+  const { sessionKey, leaseId, leaseEpoch } = runtime;
+  const runtimeIdentity = compactLeaseIdentity({ sessionKey, leaseId, leaseEpoch });
+  const identityMissing = !hasCompleteLeaseIdentity(runtimeIdentity);
+  const conflictingEvents = runtime.events.filter((event) =>
+    event.sessionKey !== sessionKey ||
+    event.leaseId !== leaseId ||
+    event.leaseEpoch !== leaseEpoch
+  );
+  const identityError = conflictingEvents.length > 0
+    ? `Native guard event lease identity conflict for session (${String(conflictingEvents.length)} event(s)).`
+    : undefined;
+  const missingIdentityError = identityMissing
+    ? "Native guard session lease identity is missing."
+    : undefined;
+  const evidenceError = joinNativeGuardDiagnostics(
+    runtime.evidenceError,
+    identityError,
+    missingIdentityError,
+  );
+  const revokeError = runtime.revokeError
+    ? scrubSecrets(runtime.revokeError)
+    : undefined;
+  const reconciliation = assessNativeGuardReconciliation(runtime.reconciliation);
+  if (identityMissing) {
+    const failure = {
+      testRunId,
+      ...(runtimeIdentity.sessionKey
+        ? { sessionKey: runtimeIdentity.sessionKey }
+        : {}),
+      kind: "identity_missing" as const,
+      identityMissing: true as const,
+      eventsTotal: runtime.events.length,
+      reconciled: false as const,
+      coverageBreachCount: reconciliation.coverageBreachCount,
+      mismatchCount: addNativeGuardDiagnosticCounts(
+        reconciliation.mismatchCount,
+        1,
+      ),
+      evidenceError: evidenceError!,
+      ...(revokeError ? { revokeError } : {}),
+    };
+    const existingFailureIndex = coverage.runtimeFailures.findIndex(
+      (item) => item.testRunId === testRunId,
+    );
+    if (existingFailureIndex >= 0) {
+      coverage.runtimeFailures[existingFailureIndex] = failure;
+    } else {
+      coverage.runtimeFailures.push(failure);
+    }
+    aggregateNativeGuardCoverage(coverage);
+    return `NATIVE_GUARD_EVIDENCE_UNAVAILABLE: ${failure.evidenceError}`;
+  }
+
+  const summary: NativeGuardSessionCoverageSummary = {
+    sessionKey: runtimeIdentity.sessionKey,
+    leaseId: runtimeIdentity.leaseId,
+    leaseEpoch: runtimeIdentity.leaseEpoch,
+    testRunIds: [testRunId],
+    eventsTotal: runtime.events.length,
+    reconciled: Boolean(reconciliation.reconciled && !evidenceError && !revokeError),
+    coverageBreachCount: reconciliation.coverageBreachCount,
+    mismatchCount: addNativeGuardDiagnosticCounts(
+      reconciliation.mismatchCount,
+      conflictingEvents.length,
+    ),
+    ...(conflictingEvents.length > 0
+      ? {
+          leaseIdentityConflict: {
+            expected: runtimeIdentity,
+            observed: uniqueLeaseIdentities(
+              conflictingEvents.map((event) => compactLeaseIdentity(event)),
+            ),
+          },
+        }
+      : {}),
+    ...(revokeError ? { revokeError } : {}),
+    ...(evidenceError ? { evidenceError } : {}),
+  };
+
+  const existingIndex = sessionKey
+    ? coverage.sessions.findIndex((session) => session.sessionKey === sessionKey)
+    : -1;
+  let persistedSummary = summary;
+  if (existingIndex >= 0) {
+    const existing = coverage.sessions[existingIndex]!;
+    const runtimeIdentityConflict =
+      hasCompleteLeaseIdentity(existing) &&
+      hasCompleteLeaseIdentity(summary) &&
+      (existing.leaseId !== summary.leaseId || existing.leaseEpoch !== summary.leaseEpoch);
+    const conflictError = runtimeIdentityConflict
+      ? "Native guard runtime lease identity conflict for session."
+      : undefined;
+    const mergedConflict = mergeLeaseIdentityConflicts(
+      existing,
+      summary,
+      runtimeIdentityConflict,
+    );
+    const mergedEvidenceError = joinNativeGuardDiagnostics(
+      existing.evidenceError,
+      summary.evidenceError,
+      conflictError,
+    );
+    const mergedRevokeError = joinNativeGuardDiagnostics(
+      existing.revokeError,
+      summary.revokeError,
+    );
+    persistedSummary = {
+      sessionKey: existing.sessionKey,
+      leaseId: existing.leaseId,
+      leaseEpoch: existing.leaseEpoch,
+      testRunIds: uniqueStrings([
+        ...(existing.testRunIds ?? []),
+        ...(summary.testRunIds ?? []),
+      ]),
+      eventsTotal: existing.eventsTotal + summary.eventsTotal,
+      reconciled: Boolean(
+        existing.reconciled &&
+        summary.reconciled &&
+        !runtimeIdentityConflict &&
+        !mergedEvidenceError &&
+        !mergedRevokeError
+      ),
+      coverageBreachCount: addNativeGuardDiagnosticCounts(
+        existing.coverageBreachCount,
+        summary.coverageBreachCount,
+      ),
+      mismatchCount: addNativeGuardDiagnosticCounts(
+        existing.mismatchCount,
+        summary.mismatchCount,
+        runtimeIdentityConflict ? 1 : 0,
+      ),
+      ...(mergedConflict ? { leaseIdentityConflict: mergedConflict } : {}),
+      ...(mergedRevokeError ? { revokeError: mergedRevokeError } : {}),
+      ...(mergedEvidenceError ? { evidenceError: mergedEvidenceError } : {}),
+    };
+    coverage.sessions[existingIndex] = persistedSummary;
+  } else {
+    coverage.sessions.push(summary);
+  }
+
+  aggregateNativeGuardCoverage(coverage);
+
+  if (persistedSummary.evidenceError) {
+    return `NATIVE_GUARD_EVIDENCE_UNAVAILABLE: ${persistedSummary.evidenceError}`;
+  }
+  if (persistedSummary.revokeError) {
+    return `NATIVE_GUARD_REVOKE_FAILED: ${persistedSummary.revokeError}`;
+  }
+  if (runtime.reconciliation === undefined) {
+    return MISSING_NATIVE_GUARD_RECONCILIATION_FAILURE;
+  }
+  return assessNativeGuardReconciliation(persistedSummary).failure;
+}
+
+function recoverNativeGuardCoverageFailure(
+  coverage: NativeGuardCoverageSummary,
+  testRunId: string,
+): string | undefined {
+  const runtimeFailure = coverage.runtimeFailures.find(
+    (failure) => failure.testRunId === testRunId,
+  );
+  if (runtimeFailure?.evidenceError) {
+    return `NATIVE_GUARD_EVIDENCE_UNAVAILABLE: ${runtimeFailure.evidenceError}`;
+  }
+  if (runtimeFailure?.revokeError) {
+    return `NATIVE_GUARD_REVOKE_FAILED: ${runtimeFailure.revokeError}`;
+  }
+  if (runtimeFailure) {
+    return assessNativeGuardReconciliation(runtimeFailure).failure;
+  }
+
+  const session = coverage.sessions.find(
+    (summary) => summary.testRunIds?.includes(testRunId),
+  );
+  if (session?.evidenceError) {
+    return `NATIVE_GUARD_EVIDENCE_UNAVAILABLE: ${session.evidenceError}`;
+  }
+  if (session?.revokeError) {
+    return `NATIVE_GUARD_REVOKE_FAILED: ${session.revokeError}`;
+  }
+  return session
+    ? assessNativeGuardReconciliation(session).failure
+    : undefined;
+}
+
+function aggregateNativeGuardCoverage(
+  coverage: NativeGuardCoverageSummary,
+): void {
+  const summaries = [...coverage.sessions, ...coverage.runtimeFailures];
+  coverage.eventsTotal = summaries.reduce(
+    (total, summary) => total + summary.eventsTotal,
+    0,
+  );
+  coverage.coverageBreachCount = addNativeGuardDiagnosticCounts(
+    ...summaries.map((summary) => summary.coverageBreachCount),
+  );
+  coverage.mismatchCount = addNativeGuardDiagnosticCounts(
+    ...summaries.map((summary) => summary.mismatchCount),
+  );
+  coverage.reconciled = summaries.length > 0 &&
+    summaries.every((summary) => summary.reconciled);
+
+  const primary = coverage.sessions[0];
+  coverage.leaseId = primary?.leaseId;
+  coverage.leaseEpoch = primary?.leaseEpoch;
+}
+
+function normalizeProvenAbsentNativeGuardCoverage(input: {
+  coverage: NativeGuardCoverageSummary;
+  runtime: NonNullable<TestRunResult["nativeGuardRuntime"]>;
+  testRunId: string;
+  testRunStatus: TestRunResult["testRun"]["status"];
+  coverageFailure?: string;
+  persistenceError?: unknown;
+}): boolean {
+  const {
+    coverage,
+    runtime,
+    testRunId,
+    testRunStatus,
+    coverageFailure,
+    persistenceError,
+  } = input;
+  const identity = compactLeaseIdentity(runtime);
+  let canonicalSessionKey = false;
+  if (identity.sessionKey) {
+    try {
+      canonicalSessionKey = canonicalizeOpenClawSessionKey(identity.sessionKey) === identity.sessionKey;
+    } catch {
+      canonicalSessionKey = false;
+    }
+  }
+  if (
+    testRunStatus !== "failed" ||
+    persistenceError !== undefined ||
+    (coverageFailure !== undefined &&
+      coverageFailure !== MISSING_NATIVE_GUARD_RECONCILIATION_FAILURE) ||
+    !canonicalSessionKey ||
+    !hasCompleteLeaseIdentity(identity) ||
+    runtime.events.length !== 0 ||
+    runtime.reconciliation !== undefined ||
+    Boolean(runtime.evidenceError) ||
+    Boolean(runtime.revokeError) ||
+    coverage.runtimeFailures.length !== 0
+  ) {
+    return false;
+  }
+
+  const matchingIndexes = coverage.sessions
+    .map((session, index) => session.testRunIds?.includes(testRunId) ? index : -1)
+    .filter((index) => index >= 0);
+  if (matchingIndexes.length !== 1) return false;
+  const matchingIndex = matchingIndexes[0]!;
+  const session = coverage.sessions[matchingIndex]!;
+  if (
+    session.sessionKey !== identity.sessionKey ||
+    session.leaseId !== identity.leaseId ||
+    session.leaseEpoch !== identity.leaseEpoch ||
+    session.eventsTotal !== 0 ||
+    session.coverageBreachCount !== 0 ||
+    session.mismatchCount !== 0 ||
+    Boolean(session.evidenceError) ||
+    Boolean(session.revokeError) ||
+    session.leaseIdentityConflict !== undefined ||
+    coverage.sessions.some((candidate, index) =>
+      index !== matchingIndex &&
+      (
+        !candidate.reconciled ||
+        candidate.coverageBreachCount !== 0 ||
+        candidate.mismatchCount !== 0 ||
+        Boolean(candidate.evidenceError) ||
+        Boolean(candidate.revokeError) ||
+        candidate.leaseIdentityConflict !== undefined
+      )
+    )
+  ) {
+    return false;
+  }
+
+  coverage.sessions[matchingIndex] = { ...session, reconciled: true };
+  aggregateNativeGuardCoverage(coverage);
+  return true;
+}
+
+type NativeGuardLeaseIdentitySummary = {
+  sessionKey?: string;
+  leaseId?: string;
+  leaseEpoch?: number;
+};
+
+function compactLeaseIdentity(
+  value: NativeGuardLeaseIdentitySummary,
+): NativeGuardLeaseIdentitySummary {
+  return {
+    ...(typeof value.sessionKey === "string" && value.sessionKey
+      ? { sessionKey: value.sessionKey }
+      : {}),
+    ...(typeof value.leaseId === "string" && value.leaseId
+      ? { leaseId: value.leaseId }
+      : {}),
+    ...(Number.isSafeInteger(value.leaseEpoch) && (value.leaseEpoch as number) > 0
+      ? { leaseEpoch: value.leaseEpoch }
+      : {}),
+  };
+}
+
+function hasCompleteLeaseIdentity(
+  value: NativeGuardLeaseIdentitySummary,
+): value is Required<NativeGuardLeaseIdentitySummary> {
+  return Boolean(
+    value.sessionKey &&
+    value.leaseId &&
+    Number.isSafeInteger(value.leaseEpoch) &&
+    (value.leaseEpoch as number) > 0,
+  );
+}
+
+function uniqueLeaseIdentities(
+  identities: NativeGuardLeaseIdentitySummary[],
+): NativeGuardLeaseIdentitySummary[] {
+  const byIdentity = new Map<string, NativeGuardLeaseIdentitySummary>();
+  for (const identity of identities) {
+    const key = JSON.stringify([
+      identity.sessionKey ?? null,
+      identity.leaseId ?? null,
+      identity.leaseEpoch ?? null,
+    ]);
+    if (!byIdentity.has(key)) byIdentity.set(key, identity);
+  }
+  return [...byIdentity.values()];
+}
+
+function mergeLeaseIdentityConflicts(
+  existing: NativeGuardSessionCoverageSummary,
+  incoming: NativeGuardSessionCoverageSummary,
+  runtimeIdentityConflict: boolean,
+): NativeGuardSessionCoverageSummary["leaseIdentityConflict"] {
+  const observed = [
+    ...(existing.leaseIdentityConflict?.observed ?? []),
+    ...(incoming.leaseIdentityConflict?.observed ?? []),
+    ...(runtimeIdentityConflict ? [compactLeaseIdentity(incoming)] : []),
+  ];
+  if (observed.length === 0) return existing.leaseIdentityConflict;
+  return {
+    expected: {
+      sessionKey: existing.sessionKey,
+      leaseId: existing.leaseId,
+      leaseEpoch: existing.leaseEpoch,
+    },
+    observed: uniqueLeaseIdentities(observed),
+  };
+}
+
+function joinNativeGuardDiagnostics(
+  ...messages: Array<string | undefined>
+): string | undefined {
+  const unique = new Set(
+    messages
+      .filter((message): message is string => Boolean(message))
+      .map(scrubSecrets),
+  );
+  return unique.size > 0 ? [...unique].join("; ") : undefined;
 }
 
 function normalizeDetectionCaseError(error: unknown): DetectionCaseError {
@@ -1127,21 +2490,63 @@ function getDetectionConcurrency(request: RunE2ERequest): number {
   return 6;
 }
 
-function getDetectionMaxAttempts(request: RunE2ERequest): number {
+export function getOpenClawDetectionTimeoutMs(request: RunE2ERequest): number {
+  return request.connection?.timeoutMs ?? 90_000;
+}
+
+type DetectionCaseOrderInput = {
+  caseId: string;
+  caseName?: string;
+  testCase: {
+    description?: string;
+    task: {
+      instruction?: string;
+      metadata?: unknown;
+    };
+  };
+};
+
+const DEFERRED_DETECTION_CASE_PATTERN =
+  /(?:encoding|obfuscat|smuggl|base(?:32|64|85|2048)|braille|unicode|morse|rot\d*|caesar|vigenere|binary|bin_ascii|hex|octal|a1z26|atbash|ecoji|zero_width|character_(?:space|split)|ascii_art|leetspeak|superscript|variation_selector|sneaky_bits|percent_double_encode|python_chr|powershell_join)/i;
+
+export function orderDetectionCasesForExecution<T extends DetectionCaseOrderInput>(
+  cases: readonly T[],
+): T[] {
+  return cases
+    .map((item, index) => ({ item, index, deferred: isDeferredDetectionCase(item) }))
+    .sort((left, right) => Number(left.deferred) - Number(right.deferred) || left.index - right.index)
+    .map(({ item }) => item);
+}
+
+function isDeferredDetectionCase(testContext: DetectionCaseOrderInput): boolean {
+  const metadata = testContext.testCase.task.metadata;
+  const operatorId =
+    typeof metadata === "object" && metadata !== null && !Array.isArray(metadata) &&
+    typeof (metadata as Record<string, unknown>).operatorId === "string"
+      ? (metadata as Record<string, string>).operatorId
+      : "";
+  return DEFERRED_DETECTION_CASE_PATTERN.test([
+    operatorId,
+    testContext.caseName,
+    testContext.testCase.description,
+  ].filter((value): value is string => typeof value === "string").join(" "));
+}
+
+export function getDetectionMaxAttempts(request: RunE2ERequest): number {
   if (request.adapterKind !== "openclaw") return 1;
   const configured = Number(process.env.AGENT_GUARD_OPENCLAW_CASE_MAX_ATTEMPTS);
   if (Number.isFinite(configured) && configured > 0) {
     return Math.max(1, Math.min(Math.floor(configured), 5));
   }
-  return 3;
+  return 2;
 }
 
-function getDetectionRetryDelayMs(attempt: number): number {
+export function getDetectionRetryDelayMs(attempt: number): number {
   const configured = Number(process.env.AGENT_GUARD_OPENCLAW_RETRY_BASE_MS);
   const baseMs =
     Number.isFinite(configured) && configured >= 0
       ? configured
-      : 15_000;
+      : 3_000;
   const cappedAttempt = Math.max(1, Math.min(attempt, 4));
   return Math.min(120_000, baseMs * 2 ** (cappedAttempt - 1));
 }
@@ -1178,23 +2583,93 @@ function getMinimumSuccessfulDetectionCases(
   return Math.min(totalCases, Math.max(absolute, Math.ceil(totalCases * ratio)));
 }
 
-function classifyDetectionError(
+export function classifyDetectionError(
   message: string,
   request: RunE2ERequest,
 ): {
   category: P2RunCaseFailure["category"];
   retryable: boolean;
   skipAllowed: boolean;
+  restartRuntime: boolean;
 } {
   if (request.adapterKind !== "openclaw") {
     return {
       category: "fatal",
       retryable: false,
       skipAllowed: false,
+      restartRuntime: false,
     };
   }
 
   const normalized = message.toLowerCase();
+  if (
+    normalized.startsWith(
+      OPENCLAW_DETECTION_RUNTIME_FAILED_PREFIX.toLowerCase(),
+    )
+  ) {
+    return {
+      category: "sandbox_runtime_failed",
+      retryable: true,
+      skipAllowed: false,
+      restartRuntime: true,
+    };
+  }
+  if (normalized.startsWith("detection_evidence_persistence_failed:")) {
+    return {
+      category: "fatal",
+      retryable: false,
+      skipAllowed: false,
+      restartRuntime: false,
+    };
+  }
+  if (normalized.includes("session_container_cleanup_failed")) {
+    return {
+      category: "sandbox_cleanup_failed",
+      retryable: false,
+      skipAllowed: false,
+      restartRuntime: false,
+    };
+  }
+  if (
+    normalized.includes("container_attestation_mismatch") ||
+    normalized.includes("sandbox_explain_mismatch")
+  ) {
+    return {
+      category: "sandbox_attestation_failed",
+      retryable: false,
+      skipAllowed: false,
+      restartRuntime: false,
+    };
+  }
+  if (normalized.includes("native_guard_evidence_unavailable")) {
+    return {
+      category: "native_guard_evidence_unavailable",
+      retryable: false,
+      skipAllowed: false,
+      restartRuntime: false,
+    };
+  }
+  if (normalized.includes("native_guard_revoke_failed")) {
+    return {
+      category: "native_guard_revoke_failed",
+      retryable: false,
+      skipAllowed: false,
+      restartRuntime: false,
+    };
+  }
+  // Coverage breach: Hook missed tool calls. Fatal per spec —
+  // coverage breach must cause the run to fail.
+  if (
+    normalized.includes("native_guard_coverage_breach") ||
+    normalized.includes("coverage breach")
+  ) {
+    return {
+      category: "native_guard_coverage_breach",
+      retryable: false,
+      skipAllowed: false,
+      restartRuntime: false,
+    };
+  }
   if (
     normalized.includes("cooldown") ||
     normalized.includes("suspending lanes")
@@ -1203,6 +2678,7 @@ function classifyDetectionError(
       category: "provider_cooldown",
       retryable: true,
       skipAllowed: true,
+      restartRuntime: false,
     };
   }
   if (
@@ -1214,6 +2690,7 @@ function classifyDetectionError(
       category: "provider_timeout",
       retryable: true,
       skipAllowed: true,
+      restartRuntime: false,
     };
   }
   if (
@@ -1225,6 +2702,7 @@ function classifyDetectionError(
       category: "provider_rate_limit",
       retryable: true,
       skipAllowed: true,
+      restartRuntime: false,
     };
   }
   if (
@@ -1237,6 +2715,7 @@ function classifyDetectionError(
       category: "transient_provider",
       retryable: true,
       skipAllowed: true,
+      restartRuntime: false,
     };
   }
   if (
@@ -1249,12 +2728,14 @@ function classifyDetectionError(
       category: "fatal",
       retryable: false,
       skipAllowed: false,
+      restartRuntime: false,
     };
   }
   return {
     category: "agent_error",
     retryable: false,
     skipAllowed: false,
+    restartRuntime: false,
   };
 }
 
@@ -1425,6 +2906,9 @@ function appendDetectionFailure(
   runGroup: P2RunGroup,
   failure: P2RunCaseFailure,
 ): void {
+  if (failure.category === "native_guard_coverage_breach" && runGroup.nativeGuardCoverage) {
+    runGroup.nativeGuardCoverage.reconciled = false;
+  }
   const previous = runGroup.progress?.caseFailures ?? [];
   const next = [...previous, failure].slice(-MAX_PROGRESS_FAILURES);
   updateRunProgress(runGroup, { caseFailures: next });
@@ -1602,4 +3086,51 @@ async function readP2DemoCasesConfig(): Promise<P2DemoCasesConfig> {
   } catch {
     return {};
   }
+}
+
+// ---- Task 12: sandbox evidence helpers ----
+
+function sandboxPreflightFailureCategory(
+  error: unknown,
+): P2RunCaseFailure["category"] {
+  if (error instanceof OpenClawDetectionRuntimeCleanupError) {
+    return "sandbox_cleanup_failed";
+  }
+  if (
+    error instanceof DetectionProfileSeedError ||
+    (error instanceof SandboxPreflightError && error.code === "MODEL_PROFILE_SEED_INVALID")
+  ) {
+    return "sandbox_profile_seed_failed";
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  const normalized = message.toLowerCase();
+  if (normalized.includes("docker") || normalized.includes("unavailable")) return "sandbox_preflight_failed";
+  if (normalized.includes("attestation")) return "sandbox_attestation_failed";
+  if (normalized.includes("cleanup")) return "sandbox_cleanup_failed";
+  if (normalized.includes("openclaw") || normalized.includes("capability")) return "native_guard_unavailable";
+  return "sandbox_preflight_failed";
+}
+
+function buildSandboxEvidenceSummary(
+  evidence?: DetectionSandboxEvidence,
+  failureCategory?: string,
+): SandboxEvidenceSummary {
+  if (evidence) {
+    return {
+      preflightPassed: true,
+      attested: evidence.status === "attested" || evidence.status === "cleaned",
+      imageId: evidence.imageId,
+      imageDigest: evidence.image,
+      openclawVersion: evidence.openclawVersion,
+      networkMode: evidence.networkMode,
+      containerId: evidence.containerId,
+      configDigest: evidence.configDigest,
+    };
+  }
+  return {
+    preflightPassed: false,
+    attested: false,
+    networkMode: "none",
+    failureCategory,
+  };
 }

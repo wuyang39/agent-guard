@@ -267,11 +267,15 @@ function composeUserPromptMaterial(
 }
 
 function resourceFromSeed(seed: ResourceSeed, index: number): ResourceDefinition {
+  // Secret resources use /secret/* paths so that rule.read_secret_file can fire.
+  const resourcePath = seed.sensitivity === "secret"
+    ? `/secret/${seed.domain}/${seed.seedId}.fixture`
+    : `/generated/${seed.domain}/${seed.seedId}.fixture`;
   return {
     resourceId: `resource.generated.${String(index + 1).padStart(4, "0")}`,
     name: seed.name,
     type: resourceTypeForRuntime(seed.resourceType),
-    path: `/generated/${seed.domain}/${seed.seedId}.fixture`,
+    path: resourcePath,
     description: `${seed.name}. Seed=${seed.seedId}. Source=${seed.source.origin}.`,
     sensitivity: seed.sensitivity,
     containsInjection: seed.containsInjection,

@@ -451,6 +451,131 @@ P0 采用离线判定:
 
 P0 不要求实时阻断、流式风险判定或数据库事务。完整系统可以在不破坏 `InteractionTrace -> RiskEvaluationResult -> RiskReport` 主链路的前提下扩展实时提示、流式评估、持久化和历史回放。
 
+### 7.1 OpenClaw Native Guard 启动边界
+
+OpenClaw Native Guard 使用后端 lease/coordinator 作为控制面、OpenClaw 插件作为执行前 PEP，并用不含秘密的 guarded marker 保留异常重启后的保护意图。检测沙箱使用 CLI `plugins list --enabled --json` 获取 manifest/snapshot preflight；宿主普通监督使用 `plugins list --json --live` 验证真实注册贡献。Agent Guard plugin error 状态，或顶层及 `registry.diagnostics` 中涉及 Agent Guard plugin、route、service、Trusted Policy、final Hook 的 error，必须将能力降为 `unsupported/unverified`；畸形和超限 diagnostics fail closed，无关 warning 不影响能力。静态快照不能证明 runtime contribution 已 live。
+
+所有 OpenClaw 原生工具调用仍统一进入插件的 final `before_tool_call`。没有可用 lease 时 lookup 返回 OFF，插件不请求 Agent Guard PDP、不写监督证据，也不改变 OpenClaw 原有工具行为。Detection 是另一条固定边界：OpenClaw case 必须在 Docker 工具 sandbox 中运行，并为每个 canonical session 建立 `{ kind: "session", sessionKey }` 的 exact-session lease；不能用宿主 main agent lease 代替 detection lease。
+
+宿主 capability probe 有独立的 60 秒冷启动预算和 512 KiB inventory 上限，HTTP 控制响应仍保持 64 KiB 上限。API 组合完成后在后台执行只读 `status()` 预热，不创建 lease、marker 或 spool，也不阻塞服务启动。进程内 cache 使用五分钟 TTL 和 singleflight；key 绑定 active agent、CLI、Gateway URL、backend URL、profile 隔离标志、`OPENCLAW_HOME`、`OPENCLAW_CONFIG_PATH`、`OPENCLAW_STATE_DIR` 以及 live/static registry 模式。每次返回 capability 克隆，身份变化、进程重启或任一 Gateway 控制请求失败都会失效对应 cache。宿主 launcher 通过 fd3 bootstrap 交付当前 Gateway 的 Ed25519 attestation public key；coordinator 使用随机 challenge 验证签名，并把 `gatewayUrl`、`gatewayInstanceId`、OpenClaw 版本和 Native Guard capability 绑定到该实例。bootstrap 缺失、陈旧、畸形，或签名/实例身份不一致时 scoped activation 失败。检测 RunGroup 的 sandbox control client 和 run-scoped attested capability snapshot 不经过宿主 cache。
+
+Evidence 面使用双因子：独立 evidence bearer 加每 epoch Ed25519 proof-of-possession。proof 通过 `X-Agent-Guard-Evidence-Proof` 绑定 method、exact path、lease/epoch、canonical body digest、key ID、proof ID 和 issued time；backend 只保存 evidence public key，插件内存保存 private key。验证先 reserve exact proof，coordinator/mutation/append/sign 失败 release 匹配 reservation，成功 decision-key signed ACK commit；event ACK 还绑定 accepted count 和有序 event-ID digest。completed child bind/end ACK 只允许当前 evidence bearer 加 exact proof/path/body 重放；唯一 bearer-less 例外是 root end 已完成后的 exact ACK 重放。cache 受每 lease 4,096 项和 lease lifetime 限制，不同请求保持 401 和零 mutation。Event retry 使用 fresh proof 与 event-ID 幂等，不复用 lifecycle cache。
+
+插件的 lifecycle marker 保存有界 FIFO 和非秘密 exact proof，联网成功并完成本地事务后才弹出队首。marker 新写入携带 top-level `leaseEpoch`；legacy 无 epoch marker 不能推断 epoch，root end 继续 RECOVERY。128 项或 64 KiB 溢出会持久 fail closed 到 revoke；root end 写 `root_ended` tombstone，阻断 root/children 且不可续租，同时允许 lease 到期前排空晚到 evidence。event spool 默认从 profile marker 目录派生，并在 activation 前通过 exclusive-create、mode `0600`、PID/token owner record 获取单进程所有权；逐级拒绝 symlink ancestor，释放失败只重试私有 owner quarantine，完整坏 data 原子 quarantine 后重建空 spool，OFF 不创建 spool 或 owner。runtime stop 在保留内部 deadline 的同时传播 spool release failure，并允许后续 stop/restart 重试。outcome projection 在 canonicalization 前按 bounded normalized/scrubbed keys、JSON punctuation 和 values 统一计入 256 KiB 预算，再计算稳定 digest。
+
+官方对照基线 OpenClaw `2026.7.2` / `3edbe19fbd84ba58fdbf8e83042da9efd1d06f81` 的 registrar 返回 `void`，不能创建新的 guarded activation，只能通过 revoke 清理 recovery marker。公开受控 fork `https://github.com/wuyang39/openclaw-agentguard` 的 `agentguard-2026.7.1` 分支固定在 `0cd158ce32d5c53daee74235cf0557fc4d414b17`，提供受信 live attestation、fd3 bootstrap 和 Gateway core 签名证明；其正式构建使用 `node scripts/build-all.mjs gatewayWatch`，并以 `dist/.buildstamp` 绑定该提交。`session_end(reason="compaction")`、Gateway shutdown 和 restart 均保留 marker，避免生命周期切换把保护意图错误降为 OFF。
+
+进程外 launcher 是最终启动边界：若 guarded marker 存在，而 live registry query 不能同时证明 Agent Guard plugin、final `before_tool_call`、recovery service、可信的 post-approval lease recheck capability，以及 trusted JSON-only params provenance 或原子 approved-snapshot execution 参数契约，launcher 必须拒绝正常 Gateway 启动，并且只开放不调度工具的 maintenance cleanup。参数契约是审批后租约复查之外的附加门禁；固定 `3edbe19f` 宿主仍处于 unsupported/quarantined。该门禁已经实现并通过真实受控 fork 验收，插件 quarantine 仍只是纵深防御，不能替代外部门禁。
+
+Launcher 实现在 `scripts/openclaw-guard-launcher.ts`。在 OpenClaw Gateway 启动前执行：
+```bash
+OPENCLAW_GATEWAY_TOKEN=<token> node --import tsx scripts/openclaw-guard-launcher.ts -- gateway run --bind loopback --port <port>
+```
+launcher 完成 marker 和 live registry 检查后原子 spawn `--` 后的 Gateway child，并将 child 退出状态传回调用方；检测全程绑定该真实 child。Gateway token 只通过子进程环境传递，不进入命令行。`--maintenance` 必须单独使用，不接受 child 参数，也不会 spawn OpenClaw。Gateway fd3 bootstrap 使用 60 秒绝对截止时间，随后 readiness 使用独立的 120 秒绝对截止时间；慢启动不能通过逐次探测重置任一预算。
+
+portable 启动器为四类长期进程建立最小权限环境：Gateway 只获得 Gateway token 和 host attestation bootstrap 路径；backend 获得 Gateway token、Agent Guard control token、一次性 UI bootstrap token 和精确 frontend Origin；sample 与 frontend 不获得上述凭据。`Start-Process` 前临时覆盖或删除变量，并在成功和异常路径的 `finally` 中恢复 launcher 父环境。backend 启动时先快照自身所需 capability，再从真实 `process.env` 删除 browser/control secret；OpenClaw CLI 与 PyRIT 子进程还会按大小写不敏感的变量名二次清洗。plan、PID registry 和服务日志不保存一次性 UI token 或完整配对 URL。
+
+#### 7.1.1 兼容 OpenClaw Fork 需要提供的能力
+
+官方对照基线 `2026.7.2/3edbe19f` 不提供以下能力。受控 fork `0cd158ce32d5c53daee74235cf0557fc4d414b17` 已提供：
+
+1. **Registrar live contribution 结果** — `plugins list --json --live` 的 `registry.liveAttestation` 字段为 `true`，证明插件 hook/service/route 已 live registered。
+2. **final `before_tool_call` 顺序证明** — 插件注册的 `before_tool_call` hook 具有最高优先级且不能被其他插件覆盖。
+3. **Trusted Policy 证明** — `agent-guard-admission` 作为唯一的 Trusted Tool Policy 注册。
+4. **Recovery service 证明** — `agent-guard-runtime` service 已注册并可用于 session recovery。
+5. **Post-approval lease recheck** — 审批后、执行前再次验证 lease 仍然 active/未过期。
+6. **JSON-only params provenance** — 工具参数溯源为JSON-only，无二进制/流式/外部引用注入路径。或：原子 approved-snapshot execution — 执行参数必须等于签名批准的参数快照。
+7. **Gateway live registry query** — `openclaw plugins list --json --live` 稳定输出上述字段。
+
+上述能力均通过时，launcher 允许完整 guarded Gateway 启动；任何必要证明缺失时仍只允许 maintenance cleanup。
+
+#### 7.1.2 main Agent 全会话监督
+
+`MainAgentSupervisionService` 只管理 main agent 的全会话 lease。固定 anchor/root 是 `agent:main:main`，scope 是 `{ kind: "agent", agentId: "main" }`；active 后覆盖当前和未来所有 canonical `agent:main:*` 会话。非 main agent 保持 Guard OFF，除非该会话另有独立 exact-session lease。
+
+插件按 `exact-session > main-agent fallback > OFF` 解析会话。某个 session 已有 exact active、recovery 或 `root_ended` 状态时，该状态 shadow agent fallback，不能借 main lease 绕过 exact lease 的恢复或终止状态。agent scope 下的 `session_end` 只清理该会话的绑定，不结束 agent lease；停止全局监督必须显式 revoke。声称属于 main、但不符合 canonical session key 的身份在 main agent coverage 存在时 fail closed。
+
+后端公开 `GET /api/v1/openclaw/native-supervision`、`POST /api/v1/openclaw/native-supervision/start` 和 `POST /api/v1/openclaw/native-supervision/stop`。三条控制接口都要求精确允许的 browser Origin 和 HttpOnly control cookie。start 只接受存储中真实且 digest 匹配的 `SupervisionPolicyPack`，激活成功并确认 `coverage=active`、`mainLeaseCount=1` 后才返回 active；在线租约不支持替换，必须先显式 stop。默认 TTL 是五分钟，在到期前约一个 TTL 的三分之一，也就是已使用约三分之二 TTL 时自动 renew。stop 显式 revoke；激活回滚、续租、状态确认或撤销失败时保留 `recovery`/`conditional` 和稳定 `reasonCode`，不能把未确认状态显示成 OFF。
+
+浏览器能力由 backend 进程内服务管理。launcher 每次启动生成一个 32-byte base64url bootstrap token，只注入 backend，并打开 `http://127.0.0.1:<frontend-port>/#agent-guard-bootstrap=<token>`；`-NoBrowser` 只在控制终端打印一次。frontend 先用 `history.replaceState` 清除 fragment，再单次交换 `agent_guard_supervision_session`，属性为 `HttpOnly; SameSite=Strict; Path=/api/v1/openclaw/native-supervision`，默认有效期八小时。bootstrap 默认十分钟失效且只能成功使用一次；backend 重启会使全部浏览器能力失效。显式 launcher Origin 会替换默认 allow-list，动态端口下不会继续信任旧的 5173 Origin。直接运行 `npm run api:start` 时，backend 自行生成并在控制终端打印一次 pairing URL。
+
+Frontend 对 refresh/start/stop 共用 latest-wins operation gate，旧请求不能覆盖较新的状态。点击开始监督时先确保 control capability，再签发十分钟、只读的 `agent_guard_native_events` cookie，属性为 `HttpOnly; SameSite=Strict; Path=/api/v1/openclaw/realtime/events/stream`，之后才激活 lease 并以 credentialed EventSource 打开 SSE。手动开始监听和切换历史模式每次都先重新签发 event capability，并使用独立 generation gate；停止监听或卸载会使未完成的旧签发失效。SSE 打开失败不回滚已激活 lease。点击停止监督只调用 stop/revoke，不主动关闭 SSE，操作员仍可观察和筛选已有事件。
+
+同一个 coordinator 可以同时持有 host main lease 和 sandbox detection lease。冲突判定由 `gatewayInstanceId + overlapping scope` 共同决定，因此不同 Gateway 上的 overlapping scope 可以共存。每条 managed lease 保存自己的 `controlClient`、Gateway URL、`capabilityInput` 和 `gatewayInstanceId`；activate、renew、status、revoke 及失败 rollback 都回到该 lease 原来的 Gateway。sandbox factory 以 `activateWithIdentity()` 返回的 `leaseId` 与 `leaseEpoch` 为权威身份，不从 aggregate status 猜测。
+
+Host capability warmup 只缓存已经证明 `supportsNativeGuard=true`、finalizer 已验证且无冲突插件的正结果。Gateway 端口先监听、live registry 后完成注册时产生的 unsupported/unverified 瞬态结果不会进入五分钟缓存，后续 start/status 会重新探测。原生决策把 OpenClaw 工具名规范化为策略使用的 canonical `targetId`（例如 `exec -> tool.execute_code`）；随机调用身份只保留在独立 `toolCallId` 字段，避免生成策略因匹配随机 ID 而落到默认 allow。
+
+### 7.2 Detection Sandbox 生命周期 (Task 11-12)
+
+`DetectionSandboxManager` (`backend/src/modules/openclaw/detectionSandboxManager.ts`) 管理 OpenClaw 检测的 Docker 隔离运行时。生命周期在 `e2eRunService` 中编排：
+
+```
+preflight → start → [run cases] → attest → revoke → cleanup
+```
+
+**Preflight**：验证 Docker daemon 可用 → 解析纯工具 sandbox 镜像的不可变 digest → 创建宿主隔离 profile → 通过宿主 fork 的 production inspector 探测 OpenClaw 能力 → 可选创建受控 sink 网络。跨设备发布镜像固定为 `ghcr.io/wuyang39/openclaw-sandbox@sha256:01630cbb3486af7c0908b326d956d20722fde3ceada2775b53e547370a4e0e38`；`scripts/build-openclaw-sandbox.ps1` 从固定 Python base 提供本地可重建入口。镜像只包含 non-root、`python3`、`sh`、`timeout` 等工具运行依赖，不包含 OpenClaw 或 Agent Guard 插件。
+
+**Start**：生成随机 Bearer token → 分配临时 loopback 端口 → 由 launcher 在宿主隔离 profile 原子启动 OpenClaw Gateway 与插件 → 在 fd3 bootstrap 完成后，于 120 秒 readiness 绝对截止时间内完成未认证 401/403、已认证 root 200、status nonce challenge 和 core 签名证明。随后 sandbox factory 使用 run-scoped control context 调用共享 coordinator 的 `activateWithIdentity()`，为 detection session 建立 exact-session lease，并直接采用返回的 `leaseId`/`leaseEpoch`。
+
+**Run**：Gateway、插件和 Agent Guard 后端留在宿主信任边界；agent 的原生工具在 Docker sandbox 内执行。Gateway URL/token 注入隔离会话，不把整个 OpenClaw 容器化。
+
+**Attest**：`sandbox explain` 验证 → Docker inspect 验证容器（user, readonly root, capDrop ALL, pids/memory/cpu limits, no-new-privileges, tmpfs mounts）。
+
+**Cleanup**：捕获 sink 日志 → 移除 labeled 容器 → 移除 labeled 网络 → SIGTERM 后 force-kill Gateway 进程树 → 移除 profile 目录。每步错误记录到 `getCleanupErrors()`，失败不阻止其他步骤。
+
+正式选择使用 `OPENCLAW_CLI=<fork-root>/openclaw.mjs` 启动 Gateway，使用 `TEST_OPENCLAW_AGENTGUARD_CLI=<fork-root>/dist/cli/native-guard-inspector.js` 执行真实 registry gate。fresh real gate 以及 `--required` Docker default/controlled 两种网络验收均已通过；controlled sink 可达、Internet 不可达、宿主 canary 读写均被阻断，cleanup 后残留容器和网络为 0。
+
+离线 verifier 全绿只证明仓库内可自动复验的契约。真实对话黑盒仍是 external/manual release gate，按 [Detection live runbook](C/openclaw-detection-live-runbook.md) 和 [main 全会话监督黑盒 runbook](C/openclaw-main-global-supervision-blackbox.md) 留证。发布证据必须包含现场 provider/model 可用性、plugin live inventory、已有和新建 main 会话 deny 且零副作用、真实 worker allow、main active 时的 Docker detection 共存，以及 stop 后原 main 会话恢复 allow；自动测试不能替代这些结果。
+
+任何 Docker/沙箱失败 → `runGroup.phase = "failed"`，**零 attack sample 执行**。失败类别：`sandbox_preflight_failed`、`sandbox_attestation_failed`、`sandbox_cleanup_failed`、`native_guard_unavailable`。
+
+### 7.3 Native Guard Trace Projection (Task 12)
+
+`nativeGuardTraceProjector` (`backend/src/modules/openclaw/nativeGuardTraceProjector.ts`) 从真实 Hook 事件投影正式 `InteractionTrace` 的 `tool_call`/`tool_result`/`system_error` 事件。JSONL 仅保留为交叉校验 artifact，**不做事后 replay**。
+
+**投影规则**：
+- `decision` Hook 事件 (type=decision) → `tool_call` TraceEvent
+- `tool_outcome` Hook 事件 → `tool_result` TraceEvent
+- Error outcome 无对应 decision → `system_error` TraceEvent (code=TOOL_OUTCOME_ERROR)
+
+**调和 (Reconciliation)**：
+- Hook 有 + JSONL 有 → complete evidence
+- Hook deny + JSONL 无 result → as expected
+- JSONL 有 + Hook 无 before → **coverage breach**，run 失败
+- 同一 callId 多个 outcome → duplicate outcome，标记 mismatch
+
+调和结果写入 `P2RunGroup.nativeGuardCoverage`（`NativeGuardCoverageSummary`），包括顶层聚合的 `coverage`、`eventsTotal`、`reconciled`、`coverageBreachCount`、`mismatchCount`，以及权威的 `sessions` 列表。`sessions` 中每项都强制持久化完整 `sessionKey`、`leaseId`/`leaseEpoch`、事件与调和计数，绝不包含匿名项；新摘要同时保存可选 `testRunIds`，使 trace 写入重试能恢复同一稳定 guard failure 而不重复累计。identity 缺失改写入独立 `runtimeFailures`，以必填 `testRunId` 关联 TestRun，并用 `identityMissing`、稳定 kind 及已脱敏的 revoke/evidence error 保存根因。同一 session 后续出现不同 lease 时保留 first identity、用结构化 `leaseIdentityConflict` 记录 observed identity、累加计数并 fail closed，绝不以新 identity 覆盖。顶层 `leaseId`/`leaseEpoch` 仅为首个 session 的兼容镜像，多 session 调用方必须以 `sessions` 为准；历史 coverage 在存储和 frontend wire 层补齐空 `sessions`、空 `runtimeFailures` 与零 `mismatchCount`。
+
+### 7.4 Realtime Hook Events & Coverage UI (Task 13)
+
+durable `NativeGuardEventStore` 在 append 落盘后通知 `nativeGuardRealtimeBridge`，再由 `emitNativeToolHookEvent()` 发布 sanitized `native_tool_hook` 到 SSE。`GET /api/v1/openclaw/realtime/events/stream` 在 hijack、replay 和 subscribe 前同时验证精确 Origin 与独立 event cookie；control cookie 不能读取 SSE，event cookie 也不能启停监督。bridge 只投影 `decision`、`approval_requested`、`approval_resolved`、`tool_outcome` 四种事件，detail 只包含 `leaseId`、`leaseEpoch`、`phase`、`decisionId`、`reasonCode`、`outcome` 和固定 `source` 白名单；`runtimeSessionId` 使用事件中的真实 OpenClaw `sessionKey`。同步抛错和 rejected listener promise 都被隔离，已经持久化的判定不受 realtime listener 失败影响；Fastify 关闭时主动结束连接并释放订阅。
+
+Frontend 只把 canonical `agent:main:*` 的 `native_tool_hook` 加入 main 观察会话列表；会话筛选只匹配所选的精确 session key。其他 realtime 事件仍沿用当前 session/含历史规则，非 main 或 malformed claimed-main 事件不会混入 main 原生会话视图。
+
+**前端覆盖状态显示** (Task 13)：
+
+System 页面渲染 6 种覆盖状态及降级说明：
+
+| coverage | 显示 |
+|---|---|
+| `active` | ✓ 完整监督 — 原生工具受控 |
+| `conditional` | ⚠ 有条件 — 存在配置冲突或依赖缺失 |
+| `unsupported` | ✗ 不支持 — OpenClaw 版本过低 |
+| `misconfigured` | ✗ 配置错误 — 插件/认证/策略/Docker 异常 |
+| `off` | ○ 关闭 — 未启用 |
+| `recovery` | ⟳ 恢复中 — 功能受限 |
+
+TestRuns 页面新增"沙箱与原生监护"诊断区，显示 Docker Preflight/Attestation 状态、镜像 digest、网络模式、容器 ID、失败类别。
+
+### 7.5 沙箱证据与覆盖摘要类型 (P2RunGroup 扩展)
+
+`P2RunGroup` 新增两个字段：
+
+- `nativeGuardCoverage?: NativeGuardCoverageSummary` — coverage 状态、事件/调和/缺口/mismatch 聚合、权威 per-session lease/runtime 摘要，以及首 session 的顶层 lease 兼容镜像
+- `sandboxEvidence?: SandboxEvidenceSummary` — Docker preflight/attest 通过状态、镜像 ID/digest、OpenClaw 版本、网络模式、容器 ID、失败类别
+
+`RunCaseFailure.category` 新增 5 种稳定失败类别：`sandbox_preflight_failed`、`sandbox_attestation_failed`、`sandbox_cleanup_failed`、`native_guard_unavailable`、`native_guard_coverage_breach`。
+
 ## 8. 输出文件约束
 
 每次测试运行至少生成:

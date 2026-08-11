@@ -197,6 +197,49 @@ function RunGroupDiagnostics({ runGroup }: { runGroup: CLineRunGroup }) {
         <DiagnosticJson value={runGroup.progress} emptyLabel="暂无 progress payload" />
       </DiagnosticSection>
 
+      <DiagnosticSection title="沙箱与原生监护">
+        <DiagnosticKeyValueGrid
+          items={[
+            ...(runGroup.nativeGuardCoverage
+              ? [
+                  { label: "原生监护覆盖", value: renderCoverageLabel(runGroup.nativeGuardCoverage.coverage) },
+                  { label: "Hook 事件总数", value: String(runGroup.nativeGuardCoverage.eventsTotal) },
+                  { label: "证据调和", value: runGroup.nativeGuardCoverage.reconciled ? "✓ 已调和" : "✗ 未调和" },
+                  ...(runGroup.nativeGuardCoverage.coverageBreachCount > 0
+                    ? [{ label: "覆盖缺口", value: `${String(runGroup.nativeGuardCoverage.coverageBreachCount)} 个 JSONL 调用缺 before 事件` }]
+                    : [{ label: "覆盖缺口", value: "无" }]),
+                  { label: "调和不一致", value: String(runGroup.nativeGuardCoverage.mismatchCount) },
+                  { label: "监护会话", value: String(runGroup.nativeGuardCoverage.sessions?.length ?? 0) },
+                  { label: "Runtime failures", value: String(runGroup.nativeGuardCoverage.runtimeFailures?.length ?? 0) },
+                  { label: "Primary lease", value: runGroup.nativeGuardCoverage.leaseId ? `${runGroup.nativeGuardCoverage.leaseId} @ epoch ${String(runGroup.nativeGuardCoverage.leaseEpoch ?? 0)}` : "-" },
+                ]
+              : [{ label: "原生监护覆盖", value: "不可用 — 非 OpenClaw 或未启用原生监护" }]),
+            ...(runGroup.sandboxEvidence
+              ? [
+                  { label: "Docker Preflight", value: runGroup.sandboxEvidence.preflightPassed ? "✓ 通过" : "✗ 失败" },
+                  { label: "沙箱 Attestation", value: runGroup.sandboxEvidence.attested ? "✓ 已验证" : "✗ 未验证" },
+                  { label: "OpenClaw 版本", value: runGroup.sandboxEvidence.openclawVersion ?? "-" },
+                  { label: "网络模式", value: runGroup.sandboxEvidence.networkMode === "none" ? "无网络 (none)" : "内部网络 (internal)" },
+                  { label: "镜像", value: runGroup.sandboxEvidence.imageDigest ? `${runGroup.sandboxEvidence.imageDigest.slice(0, 24)}…` : "-" },
+                  ...(runGroup.sandboxEvidence.containerId
+                    ? [{ label: "容器 ID", value: runGroup.sandboxEvidence.containerId.slice(0, 12) }]
+                    : []),
+                  ...(runGroup.sandboxEvidence.failureCategory
+                    ? [{ label: "失败类别", value: runGroup.sandboxEvidence.failureCategory }]
+                    : []),
+                ]
+              : [{ label: "沙箱证据", value: "不可用 — 需 AGENT_GUARD_DETECTION_IMAGE 环境变量" }]),
+          ]}
+        />
+        <DiagnosticJson
+          value={{
+            sessions: runGroup.nativeGuardCoverage?.sessions ?? [],
+            runtimeFailures: runGroup.nativeGuardCoverage?.runtimeFailures ?? [],
+          }}
+          emptyLabel="暂无 per-session 原生监护证据"
+        />
+      </DiagnosticSection>
+
       <DiagnosticSection title="证据对象">
         <DiagnosticKeyValueGrid
           items={[
@@ -226,6 +269,18 @@ function DiagnosticIdGroup({ label, values }: { label: string; values: string[] 
       <CodeList values={values} />
     </div>
   );
+}
+
+function renderCoverageLabel(coverage: string): string {
+  switch (coverage) {
+    case "active": return "✓ 完整监督 — 所有原生工具受控";
+    case "conditional": return "⚠ 有条件 — 部分原生工具受控，降级说明：存在冲突或依赖缺失";
+    case "unsupported": return "✗ 不支持 — OpenClaw 版本不支持原生工具监督";
+    case "misconfigured": return "✗ 配置错误 — 插件、认证、策略或 Docker 配置异常";
+    case "off": return "○ 关闭 — 未启用原生工具监督";
+    case "recovery": return "⟳ 恢复中 — 从故障恢复，会话受限于恢复策略";
+    default: return `未知 (${coverage})`;
+  }
 }
 
 function CodeList({ values }: { values: string[] }) {

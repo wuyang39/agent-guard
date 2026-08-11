@@ -49,11 +49,86 @@ export type P2RunCaseFailure = {
     | "provider_rate_limit"
     | "transient_provider"
     | "agent_error"
-    | "fatal";
+    | "fatal"
+    | "sandbox_preflight_failed"
+    | "sandbox_profile_seed_failed"
+    | "sandbox_attestation_failed"
+    | "sandbox_cleanup_failed"
+    | "sandbox_runtime_failed"
+    | "native_guard_unavailable"
+    | "native_guard_evidence_unavailable"
+    | "native_guard_revoke_failed"
+    | "native_guard_coverage_breach";
   attempts: number;
   retryable: boolean;
   skipped: boolean;
   occurredAt: string;
+};
+
+export type NativeGuardSessionCoverageSummary = {
+  sessionKey: string;
+  leaseId: string;
+  leaseEpoch: number;
+  /** Attempt identities used to recover a stable failure after trace retry. */
+  testRunIds?: string[];
+  eventsTotal: number;
+  reconciled: boolean;
+  coverageBreachCount: number;
+  mismatchCount: number;
+  leaseIdentityConflict?: {
+    expected: {
+      sessionKey: string;
+      leaseId: string;
+      leaseEpoch: number;
+    };
+    observed: Array<{
+      sessionKey?: string;
+      leaseId?: string;
+      leaseEpoch?: number;
+    }>;
+  };
+  revokeError?: string;
+  evidenceError?: string;
+};
+
+export type NativeGuardRuntimeFailureSummary = {
+  testRunId: string;
+  sessionKey?: string;
+  kind: "identity_missing";
+  identityMissing: true;
+  eventsTotal: number;
+  reconciled: false;
+  coverageBreachCount: number;
+  mismatchCount: number;
+  evidenceError: string;
+  revokeError?: string;
+};
+
+export type NativeGuardCoverageSummary = {
+  coverage: "active" | "conditional" | "unsupported" | "misconfigured" | "off" | "unavailable";
+  eventsTotal: number;
+  reconciled: boolean;
+  coverageBreachCount: number;
+  mismatchCount: number;
+  /** Authoritative per-session evidence. Top-level lease identity mirrors
+   *  the first session for backwards compatibility. */
+  sessions: NativeGuardSessionCoverageSummary[];
+  /** Runtime failures without a complete lease identity never enter sessions. */
+  runtimeFailures: NativeGuardRuntimeFailureSummary[];
+  leaseId?: string;
+  leaseEpoch?: number;
+};
+
+export type SandboxEvidenceSummary = {
+  preflightPassed: boolean;
+  attested: boolean;
+  imageId?: string;
+  imageDigest?: string;
+  openclawVersion?: string;
+  networkMode: "none" | "internal";
+  containerId?: string;
+  configDigest?: string;
+  failureCategory?: string;
 };
 
 export type EntityLink = {
@@ -98,6 +173,9 @@ export type P2RunGroup = {
   defenseReportId?: string;
   artifactIds: string[];
   error?: string;
+  /** Task 12: Native guard evidence and sandbox attestation for OpenClaw runs. */
+  nativeGuardCoverage?: NativeGuardCoverageSummary;
+  sandboxEvidence?: SandboxEvidenceSummary;
 };
 
 export type P2ArtifactView = {

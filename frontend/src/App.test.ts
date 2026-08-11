@@ -15,6 +15,7 @@ import {
   MainSupervisionStatusPanel,
   REALTIME_EVENT_TYPES,
   nativeStatusFromError,
+  openNativeSupervisionStream,
   reconcileNativeStatusAfterStartFailure,
   startMainSupervision,
   stopMainSupervision,
@@ -80,6 +81,12 @@ test("starting main supervision opens the stream only after active coverage reso
   const order: string[] = [];
   let resolveStart: ((status: MainAgentSupervisionStatus) => void) | undefined;
   const startPromise = startMainSupervision("policy.frontend.main", {
+    async ensureAccess() {
+      order.push("ensure");
+    },
+    async mintEventCapability() {
+      order.push("mint");
+    },
     start(policyPackId) {
       order.push(`start:${policyPackId}`);
       return new Promise((resolve) => {
@@ -92,12 +99,99 @@ test("starting main supervision opens the stream only after active coverage reso
   });
 
   await Promise.resolve();
-  assert.deepEqual(order, ["start:policy.frontend.main"]);
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.deepEqual(order, ["ensure", "mint", "start:policy.frontend.main"]);
   resolveStart?.(mainSupervisionStatus());
   const status = await startPromise;
 
   assert.equal(status.coverage, "active");
-  assert.deepEqual(order, ["start:policy.frontend.main", "open"]);
+  assert.deepEqual(order, ["ensure", "mint", "start:policy.frontend.main", "open"]);
+});
+
+test("event capability mint failure prevents activation and stream opening", async () => {
+  const order: string[] = [];
+
+  await assert.rejects(
+    () => startMainSupervision("policy.frontend.main", {
+      async ensureAccess() {
+        order.push("ensure");
+      },
+      async mintEventCapability() {
+        order.push("mint");
+        throw new Error("event capability unavailable");
+      },
+      async start() {
+        order.push("start");
+        return mainSupervisionStatus();
+      },
+      openStream() {
+        order.push("open");
+      },
+    }),
+    /event capability unavailable/,
+  );
+
+  assert.deepEqual(order, ["ensure", "mint"]);
+});
+
+test("bootstrap access failure prevents event minting and activation", async () => {
+  const order: string[] = [];
+
+  await assert.rejects(
+    () => startMainSupervision("policy.frontend.main", {
+      async ensureAccess() {
+        order.push("ensure");
+        throw new Error("browser pairing required");
+      },
+      async mintEventCapability() {
+        order.push("mint");
+      },
+      async start() {
+        order.push("start");
+        return mainSupervisionStatus();
+      },
+      openStream() {
+        order.push("open");
+      },
+    }),
+    /browser pairing required/,
+  );
+
+  assert.deepEqual(order, ["ensure"]);
+});
+
+test("manual stream opening mints event access before constructing EventSource", async () => {
+  const order: string[] = [];
+
+  await openNativeSupervisionStream({
+    async mintEventCapability() {
+      order.push("mint");
+    },
+    openStream() {
+      order.push("open");
+    },
+  });
+
+  assert.deepEqual(order, ["mint", "open"]);
+});
+
+test("manual event mint failure never reports an opened stream", async () => {
+  let openCount = 0;
+
+  await assert.rejects(
+    () => openNativeSupervisionStream({
+      async mintEventCapability() {
+        throw new Error("event mint failed");
+      },
+      openStream() {
+        openCount += 1;
+      },
+    }),
+    /event mint failed/,
+  );
+
+  assert.equal(openCount, 0);
 });
 
 test("starting main supervision does not open the stream when activation fails", async () => {
@@ -105,6 +199,7 @@ test("starting main supervision does not open the stream when activation fails",
 
   await assert.rejects(
     () => startMainSupervision("policy.frontend.main", {
+      ...accessCommands(),
       async start() {
         throw new Error("gateway unavailable");
       },
@@ -127,6 +222,7 @@ test("an HTTP 503 error cannot be mistaken for a native supervision status", asy
   let thrown: unknown;
   try {
     await startMainSupervision("policy.frontend.main", {
+      ...accessCommands(),
       async start() {
         return {
           ...mainSupervisionStatus(),
@@ -154,6 +250,7 @@ test("a deferred start cannot open SSE after its lifecycle is invalidated", asyn
   let openCount = 0;
 
   const startPromise = startMainSupervision("policy.frontend.main", {
+    ...accessCommands(),
     start() {
       return new Promise((resolve) => {
         resolveStart = resolve;
@@ -166,13 +263,14 @@ test("a deferred start cannot open SSE after its lifecycle is invalidated", asyn
 
   gate.dispose();
   resolveStart?.(mainSupervisionStatus());
-  await startPromise;
+  await assert.rejects(startPromise, /no longer current/);
   assert.equal(openCount, 0);
 });
 
 test("stream construction failure preserves active supervision and reports listening separately", async () => {
   let listeningError: unknown;
   const status = await startMainSupervision("policy.frontend.main", {
+    ...accessCommands(),
     async start() {
       return mainSupervisionStatus();
     },
@@ -274,6 +372,7 @@ test("starting main supervision rejects non-active responses without opening the
 
   await assert.rejects(
     () => startMainSupervision("policy.frontend.main", {
+      ...accessCommands(),
       async start() {
         return {
           ...mainSupervisionStatus(),
@@ -421,6 +520,13 @@ test("pending native commands disable start, stop, and native status refresh", (
   assert.match(markup, /<button[^>]*disabled=""[^>]*>停止监督<\/button>/);
   assert.match(markup, /<button[^>]*disabled=""[^>]*>刷新监督<\/button>/);
 });
+
+function accessCommands() {
+  return {
+    async ensureAccess() {},
+    async mintEventCapability() {},
+  };
+}
 
 function mainSupervisionStatus(): MainAgentSupervisionStatus {
   return {

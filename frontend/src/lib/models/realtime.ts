@@ -98,7 +98,10 @@ export type RealtimeStreamController = {
 
 export function createRealtimeStreamController(options: {
   eventTypes: readonly LiveSupervisionEvent["type"][];
-  createEventSource(url: string): RealtimeEventSource;
+  createEventSource(
+    url: string,
+    init?: { withCredentials?: boolean },
+  ): RealtimeEventSource;
   onEvent(
     event: LiveSupervisionEvent,
     context: Pick<RealtimeStreamOpenOptions, "runtimeSessionId" | "includeHistory">,
@@ -146,7 +149,9 @@ export function createRealtimeStreamController(options: {
       let main: RealtimeEventSource | undefined;
       let ask: RealtimeEventSource | undefined;
       try {
-        main = options.createEventSource(openOptions.mainUrl);
+        main = options.createEventSource(openOptions.mainUrl, {
+          withCredentials: true,
+        });
         ask = options.createEventSource(openOptions.askUrl);
         current = { generation: openGeneration, main, ask };
 

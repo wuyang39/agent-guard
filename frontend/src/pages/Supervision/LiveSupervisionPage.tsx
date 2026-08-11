@@ -58,12 +58,22 @@ const REALTIME_MCP_URL = "http://127.0.0.1:3100/api/v1/openclaw/realtime/mcp";
 export async function startMainSupervision(
   policyPackId: string,
   commands: {
+    ensureAccess: () => Promise<void>;
+    mintEventCapability: () => Promise<void>;
     start: (policyPackId: string) => Promise<MainAgentSupervisionStatus>;
     openStream: () => void;
     onListeningError?: (error: unknown) => void;
   },
   operation: LatestOperationToken = { isCurrent: () => true },
 ): Promise<MainAgentSupervisionStatus> {
+  await commands.ensureAccess();
+  if (!operation.isCurrent()) {
+    throw new Error("Native supervision operation is no longer current.");
+  }
+  await commands.mintEventCapability();
+  if (!operation.isCurrent()) {
+    throw new Error("Native supervision operation is no longer current.");
+  }
   const status = await commands.start(policyPackId);
   if (!operation.isCurrent()) return status;
   if (status.coverage !== "active" || status.mainLeaseCount !== 1) {
@@ -87,6 +97,17 @@ export async function stopMainSupervision(
   stop: () => Promise<MainAgentSupervisionStatus>,
 ): Promise<MainAgentSupervisionStatus> {
   return stop();
+}
+
+export async function openNativeSupervisionStream(
+  commands: {
+    mintEventCapability: () => Promise<void>;
+    openStream: () => void;
+  },
+  operation: LatestOperationToken = { isCurrent: () => true },
+): Promise<void> {
+  await commands.mintEventCapability();
+  if (operation.isCurrent()) commands.openStream();
 }
 
 export function nativeStatusFromError(error: unknown): MainAgentSupervisionStatus | undefined {
@@ -187,8 +208,11 @@ export function LiveSupervisionPage({
   if (!streamControllerRef.current) {
     streamControllerRef.current = createRealtimeStreamController({
       eventTypes: REALTIME_EVENT_TYPES,
-      createEventSource(url) {
-        return new EventSource(url) as unknown as RealtimeEventSource;
+      createEventSource(url, init) {
+        const source = init?.withCredentials
+          ? new EventSource(url, { withCredentials: true })
+          : new EventSource(url);
+        return source as unknown as RealtimeEventSource;
       },
       onEvent: acceptStreamEvent,
       onAskConfig: setAskConfig,
@@ -304,11 +328,15 @@ export function LiveSupervisionPage({
     }
   }
 
-  function startStream() {
+  async function startStream() {
     setListeningError(undefined);
     try {
-      openStream(includeHistory);
+      await openNativeSupervisionStream({
+        mintEventCapability: agentGuardApi.issueNativeSupervisionEventCapability,
+        openStream: () => openStream(includeHistory),
+      }, { isCurrent: () => mountedRef.current });
     } catch (error) {
+      if (!mountedRef.current) return;
       setListeningError(error instanceof Error ? error.message : String(error));
     }
   }
@@ -321,6 +349,8 @@ export function LiveSupervisionPage({
     setListeningError(undefined);
     try {
       const status = await startMainSupervision(activePolicy.resolvedPolicyPackId, {
+        ensureAccess: agentGuardApi.ensureNativeSupervisionAccess,
+        mintEventCapability: agentGuardApi.issueNativeSupervisionEventCapability,
         start: agentGuardApi.startNativeSupervision,
         openStream: () => openStream(includeHistory),
         onListeningError(error) {
@@ -400,12 +430,16 @@ export function LiveSupervisionPage({
     onRealtimeEventRef.current?.(errorEvent);
   }
 
-  function changeStreamMode(nextIncludeHistory: boolean) {
+  async function changeStreamMode(nextIncludeHistory: boolean) {
     setIncludeHistory(nextIncludeHistory);
     if (streaming) {
       try {
-        openStream(nextIncludeHistory);
+        await openNativeSupervisionStream({
+          mintEventCapability: agentGuardApi.issueNativeSupervisionEventCapability,
+          openStream: () => openStream(nextIncludeHistory),
+        }, { isCurrent: () => mountedRef.current });
       } catch (error) {
+        if (!mountedRef.current) return;
         setListeningError(error instanceof Error ? error.message : String(error));
       }
     }

@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { apiBaseUrl } from "./core";
-import { realtimeApi } from "./realtime";
+import {
+  createNativeSupervisionBrowserAccessClient,
+  createRealtimeApi,
+  exchangeNativeSupervisionBootstrap,
+  realtimeApi,
+} from "./realtime";
 import type { MainAgentSupervisionStatus, RunCaseFailureView } from "./types";
 
 const activeMainSupervision = {
@@ -87,7 +92,7 @@ test("native supervision API reads status with GET", async (t) => {
   const status = await realtimeApi.nativeSupervisionStatus();
 
   assert.equal(requestUrl, `${apiBaseUrl}/api/v1/openclaw/native-supervision`);
-  assert.equal(requestInit, undefined);
+  assert.equal(requestInit?.credentials, "include");
   assert.deepEqual(status, activeMainSupervision);
 });
 
@@ -112,6 +117,7 @@ test("native supervision API starts main coverage with the selected policy pack"
 
   assert.equal(requestUrl, `${apiBaseUrl}/api/v1/openclaw/native-supervision/start`);
   assert.equal(requestInit?.method, "POST");
+  assert.equal(requestInit?.credentials, "include");
   assert.deepEqual(JSON.parse(String(requestInit?.body)), {
     policyPackId: "policy.frontend.main",
   });
@@ -141,5 +147,151 @@ test("native supervision API stops main coverage without a request body", async 
 
   assert.equal(requestUrl, `${apiBaseUrl}/api/v1/openclaw/native-supervision/stop`);
   assert.equal(requestInit?.method, "POST");
+  assert.equal(requestInit?.credentials, "include");
   assert.equal(requestInit?.body, undefined);
+});
+
+test("browser access removes the bootstrap fragment before one singleflight exchange", async () => {
+  const order: string[] = [];
+  const environment = {
+    location: {
+      hash: `#agent-guard-bootstrap=${"b".repeat(43)}`,
+      pathname: "/supervision",
+      search: "?view=live",
+    },
+    history: {
+      state: { navigation: 1 },
+      replaceState(state: unknown, _unused: string, url?: string | URL | null) {
+        assert.deepEqual(state, { navigation: 1 });
+        order.push(`replace:${String(url)}`);
+        environment.location.hash = "";
+      },
+    },
+  };
+  let releaseExchange: (() => void) | undefined;
+  const access = createNativeSupervisionBrowserAccessClient({
+    getEnvironment: () => environment,
+    exchangeBootstrap(token) {
+      order.push(`exchange:${token.length}`);
+      return new Promise<void>((resolve) => {
+        releaseExchange = resolve;
+      });
+    },
+    async mintEventCapability() {},
+  });
+
+  const first = access.ensureAccess();
+  const second = access.ensureAccess();
+
+  assert.equal(first, second);
+  assert.deepEqual(order, ["replace:/supervision?view=live"]);
+  await Promise.resolve();
+  assert.deepEqual(order, ["replace:/supervision?view=live", "exchange:43"]);
+  releaseExchange?.();
+  await first;
+});
+
+test("browser access without the named fragment relies on the existing cookie", async () => {
+  let exchangeCount = 0;
+  const access = createNativeSupervisionBrowserAccessClient({
+    getEnvironment: () => ({
+      location: { hash: "#unrelated=value", pathname: "/", search: "" },
+      history: { state: null, replaceState() { throw new Error("must not rewrite unrelated hash"); } },
+    }),
+    async exchangeBootstrap() {
+      exchangeCount += 1;
+    },
+    async mintEventCapability() {},
+  });
+
+  await access.ensureAccess();
+
+  assert.equal(exchangeCount, 0);
+});
+
+test("bootstrap exchange posts the fragment token with browser credentials", async (t) => {
+  const previousFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = previousFetch;
+  });
+  let requestUrl: string | undefined;
+  let requestInit: RequestInit | undefined;
+  globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    requestUrl = String(url);
+    requestInit = init;
+    return { status: 204 };
+  }) as unknown as typeof fetch;
+
+  await exchangeNativeSupervisionBootstrap("b".repeat(43));
+
+  assert.equal(
+    requestUrl,
+    `${apiBaseUrl}/api/v1/openclaw/native-supervision/access/bootstrap`,
+  );
+  assert.equal(requestInit?.method, "POST");
+  assert.equal(requestInit?.credentials, "include");
+  assert.deepEqual(JSON.parse(String(requestInit?.body)), {
+    token: "b".repeat(43),
+  });
+});
+
+test("native supervision controls ensure browser access and event minting is separate", async () => {
+  const order: string[] = [];
+  const api = createRealtimeApi({
+    access: {
+      async ensureAccess() {
+        order.push("ensure");
+      },
+      async issueEventCapability() {
+        order.push("mint");
+      },
+    },
+    async request<T>(path: string) {
+      order.push(path);
+      return activeMainSupervision as T;
+    },
+  });
+
+  await api.nativeSupervisionStatus();
+  await api.startNativeSupervision("policy.frontend.main");
+  await api.stopNativeSupervision();
+  await api.issueNativeSupervisionEventCapability();
+
+  assert.deepEqual(order, [
+    "ensure",
+    "/api/v1/openclaw/native-supervision",
+    "ensure",
+    "/api/v1/openclaw/native-supervision/start",
+    "ensure",
+    "/api/v1/openclaw/native-supervision/stop",
+    "mint",
+  ]);
+});
+
+test("event capability mint accepts a credentialed 204 response without parsing JSON", async (t) => {
+  const previousFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = previousFetch;
+  });
+  let requestUrl: string | undefined;
+  let requestInit: RequestInit | undefined;
+  globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    requestUrl = String(url);
+    requestInit = init;
+    return {
+      status: 204,
+      async json() {
+        throw new Error("204 response must not be parsed");
+      },
+    };
+  }) as unknown as typeof fetch;
+
+  await realtimeApi.issueNativeSupervisionEventCapability();
+
+  assert.equal(
+    requestUrl,
+    `${apiBaseUrl}/api/v1/openclaw/native-supervision/access/events`,
+  );
+  assert.equal(requestInit?.method, "POST");
+  assert.equal(requestInit?.credentials, "include");
 });

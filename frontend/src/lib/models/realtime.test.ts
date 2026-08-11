@@ -232,6 +232,31 @@ test("stream controller closes the main source when ask construction fails", asy
   assert.equal(controller.isOpen(), false);
 });
 
+test("stream controller credentials only the main native supervision source", async () => {
+  const calls: Array<{ url: string; init?: { withCredentials?: boolean } }> = [];
+  const controller = createRealtimeStreamController({
+    eventTypes: [],
+    createEventSource(url, init) {
+      calls.push({ url, init });
+      return new FakeEventSource();
+    },
+    onEvent() {},
+    onAskConfig() {},
+    onAskDecision() {},
+    onAskResolved() {},
+    onError() {},
+    onStreamingChange() {},
+  });
+
+  controller.open(streamOpenOptions());
+
+  assert.deepEqual(calls, [
+    { url: "http://main.test/events", init: { withCredentials: true } },
+    { url: "http://main.test/asks", init: undefined },
+  ]);
+  controller.close();
+});
+
 test("stream controller closes both sources on main and ask errors", async () => {
   for (const failingSourceIndex of [0, 1]) {
     const errors: string[] = [];

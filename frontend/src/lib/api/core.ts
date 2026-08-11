@@ -19,7 +19,11 @@ export class ApiRequestError extends Error {
 }
 
 export async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${apiBaseUrl}${path}`, init);
+  const response = await fetch(`${apiBaseUrl}${path}`, {
+    ...init,
+    credentials: "include",
+  });
+  if (response.status === 204) return undefined as T;
   const payload = (await response.json()) as ApiResponse<T>;
 
   if (!payload.ok) {

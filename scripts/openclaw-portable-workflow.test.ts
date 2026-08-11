@@ -264,7 +264,10 @@ function Invoke-Probe([string]$Name, [hashtable]$Overrides) {
     $stderr = Get-Content -Raw -LiteralPath $started.stderr
     throw "$Name probe did not write its result (exit=$($started.process.ExitCode)): $stderr"
   }
-  return Get-Content -Raw -LiteralPath $outputPath | ConvertFrom-Json
+  return [ordered]@{
+    serviceName = $started.name
+    environment = Get-Content -Raw -LiteralPath $outputPath | ConvertFrom-Json
+  }
 }
 
 $gateway = Invoke-Probe "gateway" @{
@@ -356,15 +359,22 @@ $logs = [string]((Get-ChildItem -LiteralPath $logDir -File | ForEach-Object {
     AGENT_GUARD_UI_BOOTSTRAP_TOKEN: null,
     AGENT_GUARD_FRONTEND_ORIGIN: null,
   };
-  assert.deepEqual(probe.gateway, { ...empty, OPENCLAW_GATEWAY_TOKEN: "gateway-child" });
-  assert.deepEqual(probe.sample, empty);
-  assert.deepEqual(probe.backend, {
+  assert.equal((probe.gateway as Record<string, unknown>).serviceName, "gateway");
+  assert.equal((probe.sample as Record<string, unknown>).serviceName, "sample");
+  assert.equal((probe.backend as Record<string, unknown>).serviceName, "backend");
+  assert.equal((probe.frontend as Record<string, unknown>).serviceName, "frontend");
+  assert.deepEqual((probe.gateway as Record<string, unknown>).environment, {
+    ...empty,
+    OPENCLAW_GATEWAY_TOKEN: "gateway-child",
+  });
+  assert.deepEqual((probe.sample as Record<string, unknown>).environment, empty);
+  assert.deepEqual((probe.backend as Record<string, unknown>).environment, {
     OPENCLAW_GATEWAY_TOKEN: "backend-gateway-child",
     AGENT_GUARD_CONTROL_TOKEN: "backend-control-child",
     AGENT_GUARD_UI_BOOTSTRAP_TOKEN: "backend-bootstrap-child",
     AGENT_GUARD_FRONTEND_ORIGIN: "http://127.0.0.1:5888",
   });
-  assert.deepEqual(probe.frontend, empty);
+  assert.deepEqual((probe.frontend as Record<string, unknown>).environment, empty);
   assert.deepEqual(probe.restored, Object.fromEntries(
     Object.keys(empty).map((name) => [name, `parent-${name}`]),
   ));

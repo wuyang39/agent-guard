@@ -92,14 +92,14 @@ function Start-NodeService(
   $environmentSnapshot = @{}
   try {
     foreach ($entry in $EnvironmentOverrides.GetEnumerator()) {
-      $name = [string]$entry.Key
-      $environmentSnapshot[$name] = [Environment]::GetEnvironmentVariable(
-        $name,
+      $variableName = [string]$entry.Key
+      $environmentSnapshot[$variableName] = [Environment]::GetEnvironmentVariable(
+        $variableName,
         [EnvironmentVariableTarget]::Process
       )
       $value = if ($null -eq $entry.Value) { $null } else { [string]$entry.Value }
       [Environment]::SetEnvironmentVariable(
-        $name,
+        $variableName,
         $value,
         [EnvironmentVariableTarget]::Process
       )

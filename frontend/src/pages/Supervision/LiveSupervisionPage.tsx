@@ -110,6 +110,14 @@ export async function openNativeSupervisionStream(
   if (operation.isCurrent()) commands.openStream();
 }
 
+export function stopNativeSupervisionStream(
+  closeStream: () => void,
+  invalidatePendingOpen: () => void,
+): void {
+  invalidatePendingOpen();
+  closeStream();
+}
+
 export function nativeStatusFromError(error: unknown): MainAgentSupervisionStatus | undefined {
   if (!error || typeof error !== "object" || !("nativeStatus" in error)) return undefined;
   const status = (error as { nativeStatus?: unknown }).nativeStatus;
@@ -201,6 +209,7 @@ export function LiveSupervisionPage({
   const [respondingAskIds, setRespondingAskIds] = useState<Set<string>>(() => new Set());
   const mountedRef = useRef(false);
   const nativeStatusGateRef = useRef(createLatestOperationGate());
+  const streamOpenGateRef = useRef(createLatestOperationGate());
   const onRealtimeEventRef = useRef(onRealtimeEvent);
   const streamControllerRef = useRef<RealtimeStreamController | undefined>(undefined);
   onRealtimeEventRef.current = onRealtimeEvent;
@@ -241,11 +250,13 @@ export function LiveSupervisionPage({
   useEffect(() => {
     mountedRef.current = true;
     nativeStatusGateRef.current.mount();
+    streamOpenGateRef.current.mount();
     void refreshSupervisionStatus();
     void prepareSession();
     return () => {
       mountedRef.current = false;
       nativeStatusGateRef.current.dispose();
+      streamOpenGateRef.current.dispose();
       streamControllerRef.current?.close();
     };
   }, []);
@@ -329,14 +340,15 @@ export function LiveSupervisionPage({
   }
 
   async function startStream() {
+    const operation = streamOpenGateRef.current.begin();
     setListeningError(undefined);
     try {
       await openNativeSupervisionStream({
         mintEventCapability: agentGuardApi.issueNativeSupervisionEventCapability,
         openStream: () => openStream(includeHistory),
-      }, { isCurrent: () => mountedRef.current });
+      }, operation);
     } catch (error) {
-      if (!mountedRef.current) return;
+      if (!operation.isCurrent()) return;
       setListeningError(error instanceof Error ? error.message : String(error));
     }
   }
@@ -344,6 +356,7 @@ export function LiveSupervisionPage({
   async function startSupervision() {
     if (!activePolicy) return;
     const operation = nativeStatusGateRef.current.begin();
+    const streamOperation = streamOpenGateRef.current.begin();
     setNativeCommandPending(true);
     setStatusError(undefined);
     setListeningError(undefined);
@@ -352,7 +365,9 @@ export function LiveSupervisionPage({
         ensureAccess: agentGuardApi.ensureNativeSupervisionAccess,
         mintEventCapability: agentGuardApi.issueNativeSupervisionEventCapability,
         start: agentGuardApi.startNativeSupervision,
-        openStream: () => openStream(includeHistory),
+        openStream: () => {
+          if (streamOperation.isCurrent()) openStream(includeHistory);
+        },
         onListeningError(error) {
           if (!operation.isCurrent()) return;
           setListeningError(error instanceof Error ? error.message : String(error));
@@ -433,20 +448,24 @@ export function LiveSupervisionPage({
   async function changeStreamMode(nextIncludeHistory: boolean) {
     setIncludeHistory(nextIncludeHistory);
     if (streaming) {
+      const operation = streamOpenGateRef.current.begin();
       try {
         await openNativeSupervisionStream({
           mintEventCapability: agentGuardApi.issueNativeSupervisionEventCapability,
           openStream: () => openStream(nextIncludeHistory),
-        }, { isCurrent: () => mountedRef.current });
+        }, operation);
       } catch (error) {
-        if (!mountedRef.current) return;
+        if (!operation.isCurrent()) return;
         setListeningError(error instanceof Error ? error.message : String(error));
       }
     }
   }
 
   function stopStream() {
-    streamControllerRef.current?.close();
+    stopNativeSupervisionStream(
+      () => streamControllerRef.current?.close(),
+      () => streamOpenGateRef.current.invalidate(),
+    );
   }
 
   async function respondAsk(askId: string, decision: "approve" | "reject") {

@@ -18,6 +18,7 @@ import {
   openNativeSupervisionStream,
   reconcileNativeStatusAfterStartFailure,
   startMainSupervision,
+  stopNativeSupervisionStream,
   stopMainSupervision,
 } from "./pages/Supervision/LiveSupervisionPage";
 import {
@@ -192,6 +193,66 @@ test("manual event mint failure never reports an opened stream", async () => {
   );
 
   assert.equal(openCount, 0);
+});
+
+test("stopping while event capability minting is pending prevents a stale stream open", async () => {
+  const gate = createLatestOperationGate();
+  gate.mount();
+  let resolveMint: (() => void) | undefined;
+  let openCount = 0;
+  let closeCount = 0;
+
+  const pendingOpen = openNativeSupervisionStream({
+    mintEventCapability() {
+      return new Promise<void>((resolve) => {
+        resolveMint = resolve;
+      });
+    },
+    openStream() {
+      openCount += 1;
+    },
+  }, gate.begin());
+
+  stopNativeSupervisionStream(
+    () => {
+      closeCount += 1;
+    },
+    () => gate.invalidate(),
+  );
+  resolveMint?.();
+  await pendingOpen;
+
+  assert.equal(closeCount, 1);
+  assert.equal(openCount, 0);
+});
+
+test("the latest stream reopen wins when event capability mints resolve out of order", async () => {
+  const gate = createLatestOperationGate();
+  gate.mount();
+  const resolvers: Array<() => void> = [];
+  const openedModes: string[] = [];
+
+  function reopen(mode: string): Promise<void> {
+    return openNativeSupervisionStream({
+      mintEventCapability() {
+        return new Promise<void>((resolve) => {
+          resolvers.push(resolve);
+        });
+      },
+      openStream() {
+        openedModes.push(mode);
+      },
+    }, gate.begin());
+  }
+
+  const first = reopen("live");
+  const second = reopen("history");
+  resolvers[1]?.();
+  await second;
+  resolvers[0]?.();
+  await first;
+
+  assert.deepEqual(openedModes, ["history"]);
 });
 
 test("starting main supervision does not open the stream when activation fails", async () => {

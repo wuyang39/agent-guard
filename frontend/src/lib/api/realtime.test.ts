@@ -5,6 +5,7 @@ import {
   createNativeSupervisionBrowserAccessClient,
   createRealtimeApi,
   exchangeNativeSupervisionBootstrap,
+  primeNativeSupervisionBrowserAccess,
   realtimeApi,
 } from "./realtime";
 import type { MainAgentSupervisionStatus, RunCaseFailureView } from "./types";
@@ -207,6 +208,37 @@ test("browser access without the named fragment relies on the existing cookie", 
   await access.ensureAccess();
 
   assert.equal(exchangeCount, 0);
+});
+
+test("application startup primes browser pairing before the supervision page mounts", async () => {
+  const order: string[] = [];
+  const environment = {
+    location: {
+      hash: `#agent-guard-bootstrap=${"p".repeat(43)}`,
+      pathname: "/",
+      search: "",
+    },
+    history: {
+      state: null,
+      replaceState() {
+        order.push("replace");
+        environment.location.hash = "";
+      },
+    },
+  };
+  const access = createNativeSupervisionBrowserAccessClient({
+    getEnvironment: () => environment,
+    async exchangeBootstrap() {
+      order.push("exchange");
+    },
+    async mintEventCapability() {},
+  });
+
+  primeNativeSupervisionBrowserAccess(access);
+
+  assert.deepEqual(order, ["replace"]);
+  await Promise.resolve();
+  assert.deepEqual(order, ["replace", "exchange"]);
 });
 
 test("bootstrap exchange posts the fragment token with browser credentials", async (t) => {

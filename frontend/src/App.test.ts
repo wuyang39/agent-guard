@@ -28,6 +28,14 @@ import {
   SELECTION_CASE_COUNT_PRESETS,
   normalizeSelectionCaseCount,
 } from "./selectionDefaults";
+import { resolveDesktopApiAddress } from "./App";
+
+test("desktop diagnostics derive their endpoint and port from the configured API base", () => {
+  assert.deepEqual(resolveDesktopApiAddress("http://127.0.0.1:5199"), {
+    apiPort: "5199",
+    endpoint: "127.0.0.1:5199",
+  });
+});
 
 test("competition workflow defaults to five selected cases", () => {
   assert.equal(DEFAULT_SELECTION_CASE_COUNT, 5);

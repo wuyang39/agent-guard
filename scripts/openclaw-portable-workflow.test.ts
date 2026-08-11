@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
+import { buildPyritChildProcessEnv } from "../backend/src/modules/corpus/pyritPythonBridge";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(import.meta.dirname, "..");
@@ -50,6 +51,20 @@ test("distribution manifest pins the public fork and immutable GHCR image", asyn
     manifest.sandboxImage,
     "ghcr.io/wuyang39/openclaw-sandbox@sha256:01630cbb3486af7c0908b326d956d20722fde3ceada2775b53e547370a4e0e38",
   );
+});
+
+test("PyRIT child environments strip backend-only browser and control secrets", () => {
+  const env = buildPyritChildProcessEnv({
+    AGENT_GUARD_UI_BOOTSTRAP_TOKEN: "bootstrap-secret",
+    AGENT_GUARD_CONTROL_TOKEN: "control-secret",
+    VITE_AGENT_GUARD_CONTROL_TOKEN: "dev-control-secret",
+    OPENAI_CHAT_MODEL: "test-model",
+  });
+
+  assert.equal(env.AGENT_GUARD_UI_BOOTSTRAP_TOKEN, undefined);
+  assert.equal(env.AGENT_GUARD_CONTROL_TOKEN, undefined);
+  assert.equal(env.VITE_AGENT_GUARD_CONTROL_TOKEN, undefined);
+  assert.equal(env.OPENAI_CHAT_MODEL, "test-model");
 });
 
 test("bootstrap print plan resolves a clone-safe runtime without changing disk", async () => {

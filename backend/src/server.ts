@@ -6,6 +6,14 @@
  */
 
 import { buildApp } from "./app";
+import {
+  createNativeGuardRouteDependencies,
+  resolveNativeGuardControlToken,
+} from "./api/v1/openclaw/native-guard-handlers";
+import {
+  clearBackendOnlySecrets,
+  stripBackendOnlySecrets,
+} from "./modules/runtime/childProcessEnv";
 import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -14,6 +22,12 @@ export type NativeSupervisionServerBootstrap = {
   bootstrapToken: string;
   pairingOrigin?: string;
   pairingUrl?: string;
+};
+
+export type BackendServerEnvironment = {
+  bootstrap: NativeSupervisionServerBootstrap;
+  nativeGuardControlToken?: string;
+  nativeGuardEnv: NodeJS.ProcessEnv;
 };
 
 export function createNativeSupervisionServerBootstrap(
@@ -59,11 +73,16 @@ function isLoopbackFrontendOrigin(value: string): boolean {
 export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> {
   const port = parsePort(env.API_PORT ?? "3100", "API_PORT");
   const host = env.API_HOST ?? "127.0.0.1";
-  const bootstrap = createNativeSupervisionServerBootstrap(env);
+  const captured = captureBackendServerEnvironment(env);
+  const nativeGuardDependencies = createNativeGuardRouteDependencies({
+    env: captured.nativeGuardEnv,
+    controlToken: captured.nativeGuardControlToken,
+  });
   const app = await buildApp({
-    nativeSupervisionBootstrapToken: bootstrap.bootstrapToken,
-    nativeSupervisionAllowedOrigins: bootstrap.pairingOrigin
-      ? [bootstrap.pairingOrigin]
+    nativeGuardDependencies,
+    nativeSupervisionBootstrapToken: captured.bootstrap.bootstrapToken,
+    nativeSupervisionAllowedOrigins: captured.bootstrap.pairingOrigin
+      ? [captured.bootstrap.pairingOrigin]
       : undefined,
   });
 
@@ -77,8 +96,8 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
   }
 
   await app.listen({ port, host });
-  if (bootstrap.pairingUrl) {
-    process.stdout.write(`Agent Guard pairing URL: ${bootstrap.pairingUrl}\n`);
+  if (captured.bootstrap.pairingUrl) {
+    process.stdout.write(`Agent Guard pairing URL: ${captured.bootstrap.pairingUrl}\n`);
   }
   app.log.info(`Agent Guard API running at http://localhost:${String(port)}`);
   app.log.info(`  GET  /api/v1/system/status`);
@@ -86,6 +105,20 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
   app.log.info(`  GET  /api/v1/test-runs`);
   app.log.info(`  GET  /api/v1/test-runs/:runGroupId`);
   app.log.info(`  GET  /api/v1/supervision/sessions/:runtimeSessionId`);
+}
+
+export function captureBackendServerEnvironment(
+  env: NodeJS.ProcessEnv,
+): BackendServerEnvironment {
+  const bootstrap = createNativeSupervisionServerBootstrap(env);
+  const nativeGuardControlToken = resolveNativeGuardControlToken(env);
+  const nativeGuardEnv = stripBackendOnlySecrets(env);
+  clearBackendOnlySecrets(env);
+  return {
+    bootstrap,
+    ...(nativeGuardControlToken ? { nativeGuardControlToken } : {}),
+    nativeGuardEnv,
+  };
 }
 
 function parsePort(value: string, name: string): number {

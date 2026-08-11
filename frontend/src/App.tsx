@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReportBundle, TestSelectionPlan, TestSelectionRequest } from "@agent-guard/contracts";
 import { agentGuardApi } from "./lib/api/client";
+import { apiBaseUrl } from "./lib/api/core";
 import { mockDashboardSummary } from "./lib/api/mockData";
 import type {
   AgentConnectionConfig,
@@ -662,11 +663,11 @@ function desktopServiceStatus(state: LoadState<SystemStatus>): {
   label: string;
   tone: "is-ready" | "is-warn" | "is-loading";
 } {
-  const endpoint = "127.0.0.1:3100";
+  const { apiPort, endpoint } = resolveDesktopApiAddress(apiBaseUrl);
   if (state.status === "ready") {
     const openClawReady = state.data.health?.openclawCli === true;
     return {
-      apiPort: "3100",
+      apiPort,
       endpoint,
       label: openClawReady ? "服务在线，OpenClaw 可用" : "服务在线，OpenClaw 待配置",
       tone: openClawReady ? "is-ready" : "is-warn",
@@ -674,14 +675,14 @@ function desktopServiceStatus(state: LoadState<SystemStatus>): {
   }
   if (state.status === "error") {
     return {
-      apiPort: "3100",
+      apiPort,
       endpoint,
       label: "等待 API",
       tone: "is-warn",
     };
   }
   return {
-    apiPort: "3100",
+    apiPort,
     endpoint,
     label: "启动中",
     tone: "is-loading",
@@ -790,6 +791,15 @@ export function selectionTargetProfile(
   }
   if (maxCaseCount <= 80) return "openclaw";
   return "regression";
+}
+
+export function resolveDesktopApiAddress(baseUrl: string): {
+  apiPort: string;
+  endpoint: string;
+} {
+  const parsed = new URL(baseUrl);
+  const apiPort = parsed.port || (parsed.protocol === "https:" ? "443" : "80");
+  return { apiPort, endpoint: parsed.host };
 }
 
 function requiredAttackFamiliesForBudget(

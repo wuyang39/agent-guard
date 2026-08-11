@@ -5,11 +5,26 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
+  buildOpenClawProcessEnv,
   checkOpenClawAvailable,
   drainOpenClawRuntimeEvidence,
   OpenClawAdapter,
   resolveOpenClawCliInvocation,
 } from "./openclawAdapter";
+
+test("OpenClaw child environments strip backend-only browser and control secrets", () => {
+  const env = buildOpenClawProcessEnv({
+    AGENT_GUARD_UI_BOOTSTRAP_TOKEN: "bootstrap-secret",
+    AGENT_GUARD_CONTROL_TOKEN: "control-secret",
+    VITE_AGENT_GUARD_CONTROL_TOKEN: "dev-control-secret",
+    OPENCLAW_GATEWAY_TOKEN: "gateway-secret",
+  });
+
+  assert.equal(env.AGENT_GUARD_UI_BOOTSTRAP_TOKEN, undefined);
+  assert.equal(env.AGENT_GUARD_CONTROL_TOKEN, undefined);
+  assert.equal(env.VITE_AGENT_GUARD_CONTROL_TOKEN, undefined);
+  assert.equal(env.OPENCLAW_GATEWAY_TOKEN, "gateway-secret");
+});
 
 test("guarded runtime evidence drain fails when the event store is unavailable", async () => {
   const store = {

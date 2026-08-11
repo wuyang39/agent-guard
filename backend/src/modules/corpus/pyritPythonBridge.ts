@@ -13,6 +13,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { getResolvedRuntimeLlmSettings } from "../runtime/runtimeSettings";
+import { stripBackendOnlySecrets } from "../runtime/childProcessEnv";
 
 const schemaVersion = "p3-a-1" as const;
 const bridgeVersion = "p3-a-pyrit-bridge-1" as const;
@@ -131,8 +132,7 @@ export async function runPyritPythonBridge(
     args.push("--allow-fallback");
   }
 
-  const childEnv = normalizePyritModelEnv({
-    ...process.env,
+  const childEnv = buildPyritChildProcessEnv(process.env, {
     PYTHONIOENCODING: "utf-8",
     PYTHONUTF8: "1",
     ...(options.env ?? {}),
@@ -146,6 +146,16 @@ export async function runPyritPythonBridge(
 
   const result = JSON.parse(await readFile(resultPath, "utf8")) as PyritBridgeResult;
   return result;
+}
+
+export function buildPyritChildProcessEnv(
+  inheritedEnv: NodeJS.ProcessEnv,
+  overrides: NodeJS.ProcessEnv = {},
+): NodeJS.ProcessEnv {
+  return normalizePyritModelEnv(stripBackendOnlySecrets({
+    ...inheritedEnv,
+    ...overrides,
+  }));
 }
 
 export function buildPyritRuntimeRequest(

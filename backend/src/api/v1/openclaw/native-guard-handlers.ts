@@ -90,6 +90,7 @@ export type NativeGuardRouteDependencies = {
 
 export type NativeGuardRuntimeOptions = {
   env?: NodeJS.ProcessEnv;
+  controlToken?: string;
   coordinator?: NativeGuardCoordinator;
   leaseService?: NativeGuardLeaseService;
   eventStore?: NativeGuardEventStore;
@@ -145,7 +146,7 @@ export function createNativeGuardRouteDependencies(
   });
 
   return {
-    controlToken: resolveNativeGuardControlToken(env),
+    controlToken: options.controlToken ?? resolveNativeGuardControlToken(env),
     allowedOrigins: resolveNativeGuardAllowedOrigins(env),
     coordinator,
     leaseService,

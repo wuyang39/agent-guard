@@ -9,6 +9,7 @@ import {
 import { DeveloperDetails } from "../../components/ui/DeveloperDetails";
 import { ErrorBlock, LoadingBlock } from "../../components/ui/StateBlock";
 import { agentGuardApi } from "../../lib/api/client";
+import { apiBaseUrl } from "../../lib/api/core";
 import type {
   AskTimeoutConfig,
   DefenseDetailView,
@@ -53,7 +54,7 @@ export const REALTIME_EVENT_TYPES = [
   "native_tool_hook",
 ] as const satisfies readonly LiveSupervisionEvent["type"][];
 
-const REALTIME_MCP_URL = "http://127.0.0.1:3100/api/v1/openclaw/realtime/mcp";
+const REALTIME_MCP_URL = `${apiBaseUrl}/api/v1/openclaw/realtime/mcp`;
 
 export async function startMainSupervision(
   policyPackId: string,

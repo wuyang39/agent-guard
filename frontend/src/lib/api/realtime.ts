@@ -70,6 +70,12 @@ export function createNativeSupervisionBrowserAccessClient(options: {
   };
 }
 
+export function primeNativeSupervisionBrowserAccess(
+  access: NativeSupervisionBrowserAccessClient,
+): void {
+  void access.ensureAccess().catch(() => undefined);
+}
+
 type RealtimeApiDependencies = {
   access: NativeSupervisionBrowserAccessClient;
   request: typeof request;
@@ -209,6 +215,7 @@ const browserAccess = createNativeSupervisionBrowserAccessClient({
     });
   },
 });
+primeNativeSupervisionBrowserAccess(browserAccess);
 
 export const realtimeApi = createRealtimeApi({ access: browserAccess, request });
 

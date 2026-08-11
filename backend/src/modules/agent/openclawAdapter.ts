@@ -8,6 +8,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { stripBackendOnlySecrets } from "../runtime/childProcessEnv";
 import { spawn } from "node:child_process";
 import { nowIso } from "../../shared";
 import type {
@@ -104,7 +105,7 @@ export function buildOpenClawProcessEnv(
   extraEnv?: Record<string, string | undefined>,
   inheritProcessEnv = true,
 ): NodeJS.ProcessEnv {
-  return {
+  return stripBackendOnlySecrets({
     ...(inheritProcessEnv ? process.env : minimalProcessEnv()),
     ...extraEnv,
     HTTP_PROXY: "",
@@ -115,7 +116,7 @@ export function buildOpenClawProcessEnv(
     all_proxy: "",
     NO_PROXY: "*",
     no_proxy: "*",
-  };
+  });
 }
 
 function minimalProcessEnv(): NodeJS.ProcessEnv {

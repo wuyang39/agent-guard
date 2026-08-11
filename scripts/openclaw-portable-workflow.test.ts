@@ -10,7 +10,11 @@ const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(import.meta.dirname, "..");
 const powershell = process.platform === "win32" ? "powershell.exe" : "pwsh";
 
-async function runPowerShell(script: string, args: string[]): Promise<unknown> {
+async function runPowerShell(
+  script: string,
+  args: string[],
+  env?: NodeJS.ProcessEnv,
+): Promise<unknown> {
   const result = await execFileAsync(
     powershell,
     [
@@ -21,7 +25,7 @@ async function runPowerShell(script: string, args: string[]): Promise<unknown> {
       path.join(repoRoot, "scripts", script),
       ...args,
     ],
-    { cwd: repoRoot, windowsHide: true },
+    { cwd: repoRoot, windowsHide: true, env: { ...process.env, ...env } },
   );
   return JSON.parse(result.stdout.trim());
 }
@@ -179,6 +183,203 @@ test("portable launcher keeps the one-time pairing URL out of persisted metadata
   assert.doesNotMatch(planBlock, /uiBootstrapToken|pairingUrl/i);
   assert.doesNotMatch(recordBlock, /uiBootstrapToken|pairingUrl/i);
   assert.match(source, /if \(\$NoBrowser\) \{[\s\S]*?Write-Host[^\r\n]*\$pairingUrl[\s\S]*?\} else \{[\s\S]*?Start-Process \$pairingUrl/);
+
+  const sentinels = {
+    OPENCLAW_GATEWAY_TOKEN: "plan-gateway-sentinel",
+    AGENT_GUARD_CONTROL_TOKEN: "plan-control-sentinel",
+    AGENT_GUARD_UI_BOOTSTRAP_TOKEN: "plan-bootstrap-sentinel",
+    AGENT_GUARD_FRONTEND_ORIGIN: "http://127.0.0.1:5999",
+  };
+  const plan = await runPowerShell("start-agent-guard-openclaw.ps1", ["-PrintPlan"], sentinels);
+  const serializedPlan = JSON.stringify(plan);
+  for (const sentinel of Object.values(sentinels)) {
+    assert.doesNotMatch(serializedPlan, new RegExp(sentinel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
+});
+
+test("Start-NodeService enforces the child environment matrix and restores its parent", async (t) => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "agent-guard-env-probe-"));
+  t.after(() => rm(tempRoot, { recursive: true, force: true }));
+  const probePath = path.join(tempRoot, "probe.mjs");
+  const harnessPath = path.join(tempRoot, "harness.ps1");
+  await writeFile(probePath, `
+import { writeFileSync } from "node:fs";
+const names = [
+  "OPENCLAW_GATEWAY_TOKEN",
+  "AGENT_GUARD_CONTROL_TOKEN",
+  "AGENT_GUARD_UI_BOOTSTRAP_TOKEN",
+  "AGENT_GUARD_FRONTEND_ORIGIN",
+];
+writeFileSync(
+  process.argv[2],
+  JSON.stringify(Object.fromEntries(names.map((name) => [name, process.env[name] ?? null]))),
+  "utf8",
+);
+process.stdout.write("probe-ready\\n");
+`, "utf8");
+  await writeFile(harnessPath, String.raw`
+param([string]$RepoRoot, [string]$TempRoot)
+$ErrorActionPreference = "Stop"
+$tokens = $null
+$parseErrors = $null
+$launcherPath = Join-Path $RepoRoot "scripts\start-agent-guard-openclaw.ps1"
+$ast = [System.Management.Automation.Language.Parser]::ParseFile(
+  $launcherPath,
+  [ref]$tokens,
+  [ref]$parseErrors
+)
+if ($parseErrors.Count -gt 0) { throw "Launcher parse failed" }
+$functionAst = $ast.Find({
+  param($node)
+  $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+    $node.Name -eq "Start-NodeService"
+}, $true)
+if ($null -eq $functionAst) { throw "Start-NodeService was not found" }
+. ([scriptblock]::Create($functionAst.Extent.Text))
+
+$names = @(
+  "OPENCLAW_GATEWAY_TOKEN",
+  "AGENT_GUARD_CONTROL_TOKEN",
+  "AGENT_GUARD_UI_BOOTSTRAP_TOKEN",
+  "AGENT_GUARD_FRONTEND_ORIGIN"
+)
+foreach ($name in $names) {
+  [Environment]::SetEnvironmentVariable(
+    $name,
+    "parent-$name",
+    [EnvironmentVariableTarget]::Process
+  )
+}
+$logDir = Join-Path $TempRoot "logs"
+New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+$probePath = Join-Path $TempRoot "probe.mjs"
+
+function Invoke-Probe([string]$Name, [hashtable]$Overrides) {
+  $outputPath = Join-Path $TempRoot "$Name.json"
+  $started = Start-NodeService $Name @($probePath, $outputPath) $TempRoot $logDir $Overrides
+  $started.process.WaitForExit()
+  $started.process.Refresh()
+  if (-not (Test-Path -LiteralPath $outputPath -PathType Leaf)) {
+    $stderr = Get-Content -Raw -LiteralPath $started.stderr
+    throw "$Name probe did not write its result (exit=$($started.process.ExitCode)): $stderr"
+  }
+  return Get-Content -Raw -LiteralPath $outputPath | ConvertFrom-Json
+}
+
+$gateway = Invoke-Probe "gateway" @{
+  "OPENCLAW_GATEWAY_TOKEN" = "gateway-child"
+  "AGENT_GUARD_CONTROL_TOKEN" = $null
+  "AGENT_GUARD_UI_BOOTSTRAP_TOKEN" = $null
+  "AGENT_GUARD_FRONTEND_ORIGIN" = $null
+}
+$sample = Invoke-Probe "sample" @{
+  "OPENCLAW_GATEWAY_TOKEN" = $null
+  "AGENT_GUARD_CONTROL_TOKEN" = $null
+  "AGENT_GUARD_UI_BOOTSTRAP_TOKEN" = $null
+  "AGENT_GUARD_FRONTEND_ORIGIN" = $null
+}
+$backend = Invoke-Probe "backend" @{
+  "OPENCLAW_GATEWAY_TOKEN" = "backend-gateway-child"
+  "AGENT_GUARD_CONTROL_TOKEN" = "backend-control-child"
+  "AGENT_GUARD_UI_BOOTSTRAP_TOKEN" = "backend-bootstrap-child"
+  "AGENT_GUARD_FRONTEND_ORIGIN" = "http://127.0.0.1:5888"
+}
+$frontend = Invoke-Probe "frontend" @{
+  "OPENCLAW_GATEWAY_TOKEN" = $null
+  "AGENT_GUARD_CONTROL_TOKEN" = $null
+  "AGENT_GUARD_UI_BOOTSTRAP_TOKEN" = $null
+  "AGENT_GUARD_FRONTEND_ORIGIN" = $null
+}
+
+$restored = [ordered]@{}
+foreach ($name in $names) {
+  $restored[$name] = [Environment]::GetEnvironmentVariable(
+    $name,
+    [EnvironmentVariableTarget]::Process
+  )
+}
+$failureThrew = $false
+try {
+  $failureArgs = @{
+    Name = "failure"
+    Arguments = @($probePath, (Join-Path $TempRoot "failure.json"))
+    WorkingDirectory = Join-Path $TempRoot "missing-working-directory"
+    LogDirectory = $logDir
+    EnvironmentOverrides = @{
+      "AGENT_GUARD_CONTROL_TOKEN" = "temporary-failure-value"
+    }
+  }
+  Start-NodeService @failureArgs | Out-Null
+} catch {
+  $failureThrew = $true
+}
+$afterFailure = [Environment]::GetEnvironmentVariable(
+  "AGENT_GUARD_CONTROL_TOKEN",
+  [EnvironmentVariableTarget]::Process
+)
+$logs = [string]((Get-ChildItem -LiteralPath $logDir -File | ForEach-Object {
+  Get-Content -Raw -LiteralPath $_.FullName
+}) -join [Environment]::NewLine)
+
+[ordered]@{
+  gateway = $gateway
+  sample = $sample
+  backend = $backend
+  frontend = $frontend
+  restored = $restored
+  failureThrew = $failureThrew
+  afterFailure = $afterFailure
+  logs = $logs
+} | ConvertTo-Json -Depth 5
+`, "utf8");
+
+  const result = await execFileAsync(
+    powershell,
+    [
+      "-NoProfile",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      harnessPath,
+      "-RepoRoot",
+      repoRoot,
+      "-TempRoot",
+      tempRoot,
+    ],
+    { cwd: repoRoot, windowsHide: true },
+  );
+  const probe = JSON.parse(result.stdout.trim()) as Record<string, Record<string, string | null> | string | boolean>;
+  const empty = {
+    OPENCLAW_GATEWAY_TOKEN: null,
+    AGENT_GUARD_CONTROL_TOKEN: null,
+    AGENT_GUARD_UI_BOOTSTRAP_TOKEN: null,
+    AGENT_GUARD_FRONTEND_ORIGIN: null,
+  };
+  assert.deepEqual(probe.gateway, { ...empty, OPENCLAW_GATEWAY_TOKEN: "gateway-child" });
+  assert.deepEqual(probe.sample, empty);
+  assert.deepEqual(probe.backend, {
+    OPENCLAW_GATEWAY_TOKEN: "backend-gateway-child",
+    AGENT_GUARD_CONTROL_TOKEN: "backend-control-child",
+    AGENT_GUARD_UI_BOOTSTRAP_TOKEN: "backend-bootstrap-child",
+    AGENT_GUARD_FRONTEND_ORIGIN: "http://127.0.0.1:5888",
+  });
+  assert.deepEqual(probe.frontend, empty);
+  assert.deepEqual(probe.restored, Object.fromEntries(
+    Object.keys(empty).map((name) => [name, `parent-${name}`]),
+  ));
+  assert.equal(probe.failureThrew, true);
+  assert.equal(probe.afterFailure, "parent-AGENT_GUARD_CONTROL_TOKEN");
+  const logs = String(probe.logs);
+  assert.match(logs, /probe-ready/);
+  for (const secret of [
+    "gateway-child",
+    "backend-gateway-child",
+    "backend-control-child",
+    "backend-bootstrap-child",
+    "#agent-guard-bootstrap=",
+  ]) {
+    assert.doesNotMatch(logs, new RegExp(secret));
+  }
 });
 
 test("host launcher creates an exclusive fd3 bootstrap file and preserves normal launches", async (t) => {

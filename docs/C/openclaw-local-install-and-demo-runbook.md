@@ -66,6 +66,16 @@ Start the supervised OpenClaw Gateway, sample agent, backend, and frontend:
 npm run openclaw:start
 ```
 
+The launcher opens a one-time browser pairing URL after all four services are ready. The fragment is removed from the address bar before the frontend exchanges it for an HttpOnly control cookie. A fresh pairing URL is generated on every launcher start and is never written to the service logs, PID registry, or runtime plan.
+
+For a terminal-only start, print the pairing URL once instead of opening the browser:
+
+```powershell
+npm run openclaw:start -- -NoBrowser
+```
+
+Open the printed URL in the browser that will control supervision. A plain `http://127.0.0.1:5173` tab can use an existing unexpired pairing cookie, but a new browser profile or a restarted backend must use the new pairing URL.
+
 URLs:
 
 ```txt
@@ -89,6 +99,8 @@ The local control token is generated once at `outputs/runtime/agent-guard-contro
 ```powershell
 $env:AGENT_GUARD_CONTROL_TOKEN = (Get-Content -Raw .\outputs\runtime\agent-guard-control-token.txt).Trim()
 ```
+
+The Gateway receives only its Gateway credential and host-attestation path. The sample agent and frontend receive no Gateway, control, bootstrap, or frontend-Origin secrets. The backend alone receives the control token, one-time UI bootstrap token, exact frontend Origin, and Gateway credential.
 
 ## Local Acceptance
 
@@ -123,6 +135,8 @@ The verifier uses a 180-second per-case OpenClaw timeout, polls until terminal s
 | GHCR pull fails | Confirm Docker Desktop is running and anonymous access to `ghcr.io/wuyang39/openclaw-sandbox` is allowed. |
 | `models status --check` fails | Rerun `node $env:OPENCLAW_CLI configure` in the generated isolated environment. |
 | Start reports a port in use | Stop the earlier Agent Guard instance; do not silently reuse an unknown process. |
+| Supervision controls return `401` | Restart with `npm run openclaw:start` and use the newly opened pairing tab; backend restarts invalidate old cookies. |
+| Supervision controls return `403` | Use the exact launcher URL on `127.0.0.1` and the configured frontend port; `localhost`, a different port, or a copied API URL is a different Origin. |
 | Detection fails before case 1 | Check the immutable image, fork buildstamp, plugin inventory, and model authentication. |
 | Detection times out | Inspect the RunGroup trace and provider response. Missing reconciliation remains a fatal coverage failure. |
 | Load verification reports residual Docker resources | Preserve the JSONL evidence and inspect resources carrying `agent-guard.run-group=<runGroupId>`. |

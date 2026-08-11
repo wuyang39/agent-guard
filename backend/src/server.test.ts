@@ -19,14 +19,18 @@ test("server fallback creates one local pairing fragment without a supplied boot
 test("server uses a launcher bootstrap without generating or formatting another secret URL", () => {
   let generated = 0;
   const bootstrap = createNativeSupervisionServerBootstrap(
-    { AGENT_GUARD_UI_BOOTSTRAP_TOKEN: "l".repeat(43) },
+    {
+      AGENT_GUARD_UI_BOOTSTRAP_TOKEN: "l".repeat(43),
+      AGENT_GUARD_FRONTEND_ORIGIN: "http://127.0.0.1:5299",
+    },
     () => {
       generated += 1;
       return "x".repeat(43);
     },
   );
 
-  assert.deepEqual(bootstrap, { bootstrapToken: "l".repeat(43) });
+  assert.equal(bootstrap.bootstrapToken, "l".repeat(43));
+  assert.equal(bootstrap.pairingOrigin, "http://127.0.0.1:5299");
   assert.equal(generated, 0);
   assert.equal(bootstrap.pairingUrl, undefined);
 });
@@ -42,5 +46,12 @@ test("server fallback rejects malformed generated tokens and frontend ports", ()
       () => "b".repeat(43),
     ),
     /FRONTEND_PORT/,
+  );
+  assert.throws(
+    () => createNativeSupervisionServerBootstrap({
+      AGENT_GUARD_UI_BOOTSTRAP_TOKEN: "l".repeat(43),
+      AGENT_GUARD_FRONTEND_ORIGIN: "http://127.0.0.1:5173/path",
+    }),
+    /AGENT_GUARD_FRONTEND_ORIGIN/,
   );
 });

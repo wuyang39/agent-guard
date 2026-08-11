@@ -21,10 +21,18 @@ export function createNativeSupervisionServerBootstrap(
   createToken: () => string = () => randomBytes(32).toString("base64url"),
 ): NativeSupervisionServerBootstrap {
   const suppliedBootstrap = env.AGENT_GUARD_UI_BOOTSTRAP_TOKEN;
-  if (suppliedBootstrap) return { bootstrapToken: suppliedBootstrap };
-  const bootstrapToken = createToken();
+  const bootstrapToken = suppliedBootstrap ?? createToken();
   if (!/^[A-Za-z0-9_-]{43}$/.test(bootstrapToken)) {
-    throw new TypeError("Generated UI bootstrap token must be a 32-byte base64url token");
+    throw new TypeError("UI bootstrap token must be a 32-byte base64url token");
+  }
+  const configuredOrigin = env.AGENT_GUARD_FRONTEND_ORIGIN;
+  if (configuredOrigin !== undefined && !isLoopbackFrontendOrigin(configuredOrigin)) {
+    throw new TypeError("AGENT_GUARD_FRONTEND_ORIGIN must be an exact HTTP 127.0.0.1 origin");
+  }
+  if (suppliedBootstrap) {
+    return configuredOrigin
+      ? { bootstrapToken, pairingOrigin: configuredOrigin }
+      : { bootstrapToken };
   }
   const frontendPort = parsePort(env.FRONTEND_PORT ?? "5173", "FRONTEND_PORT");
   const pairingOrigin = `http://127.0.0.1:${String(frontendPort)}`;
@@ -33,6 +41,19 @@ export function createNativeSupervisionServerBootstrap(
     pairingOrigin,
     pairingUrl: `${pairingOrigin}/#agent-guard-bootstrap=${bootstrapToken}`,
   };
+}
+
+function isLoopbackFrontendOrigin(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "http:" &&
+      parsed.hostname === "127.0.0.1" &&
+      parsed.username === "" &&
+      parsed.password === "" &&
+      parsed.origin === value;
+  } catch {
+    return false;
+  }
 }
 
 export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> {

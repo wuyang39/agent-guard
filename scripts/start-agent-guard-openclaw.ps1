@@ -60,10 +60,7 @@ function Get-OrCreateRuntimeToken([string]$Path) {
   $token = if (Test-Path -LiteralPath $Path -PathType Leaf) {
     [string](Get-Content -Raw -LiteralPath $Path).Trim()
   } else {
-    $bytes = New-Object byte[] 32
-    $random = [System.Security.Cryptography.RandomNumberGenerator]::Create()
-    try { $random.GetBytes($bytes) } finally { $random.Dispose() }
-    [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+    New-RuntimeToken
   }
   if ($token -notmatch '^[A-Za-z0-9_-]{43}$') {
     throw "Portable runtime token file is invalid: $Path"
@@ -75,22 +72,54 @@ function Get-OrCreateRuntimeToken([string]$Path) {
   return $token
 }
 
+function New-RuntimeToken() {
+  $bytes = New-Object byte[] 32
+  $random = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+  try { $random.GetBytes($bytes) } finally { $random.Dispose() }
+  return [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+}
+
 function Start-NodeService(
   [string]$Name,
   [string[]]$Arguments,
   [string]$WorkingDirectory,
-  [string]$LogDirectory
+  [string]$LogDirectory,
+  [hashtable]$EnvironmentOverrides = @{}
 ) {
   $node = Get-Command node -CommandType Application -ErrorAction Stop
   $stdout = Join-Path $LogDirectory "$Name.stdout.log"
   $stderr = Join-Path $LogDirectory "$Name.stderr.log"
-  $process = Start-Process -FilePath $node.Source `
-    -ArgumentList $Arguments `
-    -WorkingDirectory $WorkingDirectory `
-    -RedirectStandardOutput $stdout `
-    -RedirectStandardError $stderr `
-    -WindowStyle Hidden `
-    -PassThru
+  $environmentSnapshot = @{}
+  try {
+    foreach ($entry in $EnvironmentOverrides.GetEnumerator()) {
+      $name = [string]$entry.Key
+      $environmentSnapshot[$name] = [Environment]::GetEnvironmentVariable(
+        $name,
+        [EnvironmentVariableTarget]::Process
+      )
+      $value = if ($null -eq $entry.Value) { $null } else { [string]$entry.Value }
+      [Environment]::SetEnvironmentVariable(
+        $name,
+        $value,
+        [EnvironmentVariableTarget]::Process
+      )
+    }
+    $process = Start-Process -FilePath $node.Source `
+      -ArgumentList $Arguments `
+      -WorkingDirectory $WorkingDirectory `
+      -RedirectStandardOutput $stdout `
+      -RedirectStandardError $stderr `
+      -WindowStyle Hidden `
+      -PassThru
+  } finally {
+    foreach ($entry in $environmentSnapshot.GetEnumerator()) {
+      [Environment]::SetEnvironmentVariable(
+        [string]$entry.Key,
+        $entry.Value,
+        [EnvironmentVariableTarget]::Process
+      )
+    }
+  }
   return [pscustomobject]@{
     name = $Name
     process = $process
@@ -163,9 +192,11 @@ New-Item -ItemType Directory -Force -Path $runtimeStateDir, $logDir | Out-Null
 if (Test-Path -LiteralPath $hostAttestationBootstrapFile) {
   Remove-Item -LiteralPath $hostAttestationBootstrapFile -Force
 }
-$env:AGENT_GUARD_HOST_ATTESTATION_BOOTSTRAP_FILE = $hostAttestationBootstrapFile
-$env:AGENT_GUARD_CONTROL_TOKEN = Get-OrCreateRuntimeToken $controlTokenFile
-$env:OPENCLAW_GATEWAY_TOKEN = Get-OrCreateRuntimeToken $gatewayTokenFile
+$controlToken = Get-OrCreateRuntimeToken $controlTokenFile
+$gatewayToken = Get-OrCreateRuntimeToken $gatewayTokenFile
+$uiBootstrapToken = New-RuntimeToken
+$frontendOrigin = "http://127.0.0.1:$FrontendPort"
+$pairingUrl = "${frontendOrigin}/#agent-guard-bootstrap=$uiBootstrapToken"
 $env:OPENCLAW_GATEWAY_URL = "http://127.0.0.1:$GatewayPort"
 $started = @()
 try {
@@ -175,18 +206,36 @@ try {
   $gateway = Start-NodeService "gateway" @(
     "--import", "tsx", $guardLauncher, "--",
     "gateway", "run", "--bind", "loopback", "--port", [string]$GatewayPort,
-    "--token", $env:OPENCLAW_GATEWAY_TOKEN, "--allow-unconfigured"
-  ) $repoRoot $logDir
+    "--token", $gatewayToken, "--allow-unconfigured"
+  ) $repoRoot $logDir @{
+    "OPENCLAW_GATEWAY_TOKEN" = $gatewayToken
+    "AGENT_GUARD_CONTROL_TOKEN" = $null
+    "AGENT_GUARD_UI_BOOTSTRAP_TOKEN" = $null
+    "AGENT_GUARD_FRONTEND_ORIGIN" = $null
+    "AGENT_GUARD_HOST_ATTESTATION_BOOTSTRAP_FILE" = $hostAttestationBootstrapFile
+  }
   $started += $gateway
   Wait-PortReady "OpenClaw Gateway" $GatewayPort $gateway.process $gateway.stderr
 
   Write-Host "[2/4] Starting sample agent on 127.0.0.1:$SamplePort..."
-  $sample = Start-NodeService "sample" @("scripts/sample-agent-server.mjs") $repoRoot $logDir
+  $sample = Start-NodeService "sample" @("scripts/sample-agent-server.mjs") $repoRoot $logDir @{
+    "OPENCLAW_GATEWAY_TOKEN" = $null
+    "AGENT_GUARD_CONTROL_TOKEN" = $null
+    "AGENT_GUARD_UI_BOOTSTRAP_TOKEN" = $null
+    "AGENT_GUARD_FRONTEND_ORIGIN" = $null
+    "AGENT_GUARD_HOST_ATTESTATION_BOOTSTRAP_FILE" = $null
+  }
   $started += $sample
   Wait-HttpReady "Sample agent" "http://127.0.0.1:$SamplePort/health" $sample.process $sample.stderr
 
   Write-Host "[3/4] Starting Agent Guard API on 127.0.0.1:$ApiPort..."
-  $backend = Start-NodeService "backend" @("--import", "tsx", "backend/src/server.ts") $repoRoot $logDir
+  $backend = Start-NodeService "backend" @("--import", "tsx", "backend/src/server.ts") $repoRoot $logDir @{
+    "OPENCLAW_GATEWAY_TOKEN" = $gatewayToken
+    "AGENT_GUARD_CONTROL_TOKEN" = $controlToken
+    "AGENT_GUARD_UI_BOOTSTRAP_TOKEN" = $uiBootstrapToken
+    "AGENT_GUARD_FRONTEND_ORIGIN" = $frontendOrigin
+    "AGENT_GUARD_HOST_ATTESTATION_BOOTSTRAP_FILE" = $hostAttestationBootstrapFile
+  }
   $started += $backend
   Wait-HttpReady "Agent Guard API" "http://127.0.0.1:$ApiPort/api/v1/system/status" $backend.process $backend.stderr
 
@@ -198,7 +247,13 @@ try {
     "--host", "127.0.0.1",
     "--port", [string]$FrontendPort,
     "--strictPort"
-  ) $repoRoot $logDir
+  ) $repoRoot $logDir @{
+    "OPENCLAW_GATEWAY_TOKEN" = $null
+    "AGENT_GUARD_CONTROL_TOKEN" = $null
+    "AGENT_GUARD_UI_BOOTSTRAP_TOKEN" = $null
+    "AGENT_GUARD_FRONTEND_ORIGIN" = $null
+    "AGENT_GUARD_HOST_ATTESTATION_BOOTSTRAP_FILE" = $null
+  }
   $started += $frontend
   Wait-HttpReady "Frontend" "http://127.0.0.1:$FrontendPort" $frontend.process $frontend.stderr
 
@@ -227,4 +282,8 @@ Write-Host "API:      http://127.0.0.1:$ApiPort/api/v1/system/status"
 Write-Host "OpenClaw: http://127.0.0.1:$GatewayPort"
 Write-Host "Logs:     $logDir"
 Write-Host "Stop:     .\scripts\stop-agent-guard-openclaw.ps1 -RuntimeRoot '$RuntimeRoot'"
-if (-not $NoBrowser) { Start-Process "http://127.0.0.1:$FrontendPort" }
+if ($NoBrowser) {
+  Write-Host "Pairing:  $pairingUrl"
+} else {
+  Start-Process $pairingUrl
+}

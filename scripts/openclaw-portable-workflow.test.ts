@@ -128,6 +128,59 @@ test("start print plan uses the portable runtime and per-run gateway lifecycle",
   );
 });
 
+test("portable launcher isolates native supervision secrets per child process", async () => {
+  const source = await readFile(
+    path.join(repoRoot, "scripts", "start-agent-guard-openclaw.ps1"),
+    "utf8",
+  );
+
+  assert.match(source, /\[hashtable\]\$EnvironmentOverrides/);
+  assert.match(source, /\[Environment\]::SetEnvironmentVariable\([\s\S]*?finally[\s\S]*?\[Environment\]::SetEnvironmentVariable/);
+
+  const gatewayStart = source.slice(
+    source.indexOf('$gateway = Start-NodeService "gateway"'),
+    source.indexOf('$sample = Start-NodeService "sample"'),
+  );
+  const sampleStart = source.slice(
+    source.indexOf('$sample = Start-NodeService "sample"'),
+    source.indexOf('$backend = Start-NodeService "backend"'),
+  );
+  const backendStart = source.slice(
+    source.indexOf('$backend = Start-NodeService "backend"'),
+    source.indexOf('$frontend = Start-NodeService "frontend"'),
+  );
+  const frontendStart = source.slice(
+    source.indexOf('$frontend = Start-NodeService "frontend"'),
+    source.indexOf('$records = @('),
+  );
+  for (const unprivileged of [gatewayStart, sampleStart, frontendStart]) {
+    assert.match(unprivileged, /"AGENT_GUARD_CONTROL_TOKEN"\s*=\s*\$null/);
+    assert.match(unprivileged, /"AGENT_GUARD_UI_BOOTSTRAP_TOKEN"\s*=\s*\$null/);
+    assert.match(unprivileged, /"AGENT_GUARD_FRONTEND_ORIGIN"\s*=\s*\$null/);
+  }
+  for (const noGatewayCredential of [sampleStart, frontendStart]) {
+    assert.match(noGatewayCredential, /"OPENCLAW_GATEWAY_TOKEN"\s*=\s*\$null/);
+  }
+  assert.match(backendStart, /"AGENT_GUARD_CONTROL_TOKEN"\s*=\s*\$controlToken/);
+  assert.match(backendStart, /"AGENT_GUARD_UI_BOOTSTRAP_TOKEN"\s*=\s*\$uiBootstrapToken/);
+  assert.match(backendStart, /"AGENT_GUARD_FRONTEND_ORIGIN"\s*=\s*\$frontendOrigin/);
+  assert.match(backendStart, /"OPENCLAW_GATEWAY_TOKEN"\s*=\s*\$gatewayToken/);
+});
+
+test("portable launcher keeps the one-time pairing URL out of persisted metadata", async () => {
+  const source = await readFile(
+    path.join(repoRoot, "scripts", "start-agent-guard-openclaw.ps1"),
+    "utf8",
+  );
+  const planBlock = source.slice(source.indexOf("$plan = [ordered]@{"), source.indexOf("if ($PrintPlan)"));
+  const recordBlock = source.slice(source.indexOf("$records = @("), source.indexOf("} catch {"));
+
+  assert.match(source, /\$pairingUrl\s*=\s*"\$\{frontendOrigin\}\/\#agent-guard-bootstrap=\$uiBootstrapToken"/);
+  assert.doesNotMatch(planBlock, /uiBootstrapToken|pairingUrl/i);
+  assert.doesNotMatch(recordBlock, /uiBootstrapToken|pairingUrl/i);
+  assert.match(source, /if \(\$NoBrowser\) \{[\s\S]*?Write-Host[^\r\n]*\$pairingUrl[\s\S]*?\} else \{[\s\S]*?Start-Process \$pairingUrl/);
+});
+
 test("host launcher creates an exclusive fd3 bootstrap file and preserves normal launches", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-guard-host-launcher-"));
   t.after(() => rm(root, { recursive: true, force: true }));

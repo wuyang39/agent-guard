@@ -27,6 +27,7 @@ import {
   createMainAgentSupervisionService,
   type MainAgentSupervisionService,
 } from "./modules/openclaw/mainAgentSupervisionService";
+import type { NativeSupervisionAccessService } from "./modules/openclaw/nativeSupervisionAccessService";
 import { createNativeGuardCoordinator } from "./modules/openclaw/nativeGuardCoordinator";
 import { createNativeGuardLeaseService } from "./modules/openclaw/nativeGuardLeaseService";
 import type { OpenClawControlClient } from "./modules/openclaw/openclawControlClient";
@@ -349,11 +350,13 @@ test("buildApp registers one injected main supervision service and closes it", a
     logger: false,
     nativeGuardDependencies: appNativeGuardDependencies(),
     mainAgentSupervisionService: service,
+    nativeSupervisionAccessService: appNativeSupervisionAccessService(),
   });
 
   const response = await app.inject({
     method: "GET",
     url: "/api/v1/openclaw/native-supervision",
+    headers: appNativeSupervisionHeaders(),
   });
   assert.equal(response.statusCode, 200);
   assert.equal(response.json().data.mainLeaseCount, 0);
@@ -361,6 +364,70 @@ test("buildApp registers one injected main supervision service and closes it", a
 
   await app.close();
   assert.deepEqual(calls, ["status", "close"]);
+});
+
+test("buildApp exchanges a bootstrap token and authenticates native supervision with credentials", async () => {
+  const calls: string[] = [];
+  const bootstrapToken = "b".repeat(43);
+  const app = await buildApp({
+    logger: false,
+    nativeGuardDependencies: appNativeGuardDependencies(),
+    mainAgentSupervisionService: appSupervisionService(calls),
+    nativeSupervisionBootstrapToken: bootstrapToken,
+  });
+
+  const unauthenticated = await app.inject({
+    method: "GET",
+    url: "/api/v1/openclaw/native-supervision",
+    headers: { origin: "http://127.0.0.1:5173" },
+  });
+  assert.equal(unauthenticated.statusCode, 401);
+  assert.equal(unauthenticated.json().error.code, "NATIVE_SUPERVISION_ACCESS_REQUIRED");
+  assert.deepEqual(calls, []);
+
+  const paired = await app.inject({
+    method: "POST",
+    url: "/api/v1/openclaw/native-supervision/access/bootstrap",
+    headers: { origin: "http://127.0.0.1:5173" },
+    payload: { token: bootstrapToken },
+  });
+  assert.equal(paired.statusCode, 204);
+  const setCookie = paired.headers["set-cookie"];
+  if (typeof setCookie !== "string") throw new TypeError("Expected one Set-Cookie header");
+  assert.match(setCookie, /^agent_guard_supervision_session=[A-Za-z0-9_-]{43};/);
+  const cookie = setCookie.split(";", 1)[0];
+
+  const authenticated = await app.inject({
+    method: "GET",
+    url: "/api/v1/openclaw/native-supervision",
+    headers: { origin: "http://127.0.0.1:5173", cookie },
+  });
+  assert.equal(authenticated.statusCode, 200);
+  assert.deepEqual(calls, ["status"]);
+
+  const rejectedPreflight = await app.inject({
+    method: "OPTIONS",
+    url: "/api/v1/openclaw/native-supervision/stop",
+    headers: {
+      origin: "https://attacker.example",
+      "access-control-request-method": "POST",
+    },
+  });
+  assert.equal(rejectedPreflight.statusCode, 403);
+  assert.equal(rejectedPreflight.headers["access-control-allow-origin"], undefined);
+
+  const allowedPreflight = await app.inject({
+    method: "OPTIONS",
+    url: "/api/v1/openclaw/native-supervision/stop",
+    headers: {
+      origin: "http://127.0.0.1:5173",
+      "access-control-request-method": "POST",
+    },
+  });
+  assert.equal(allowedPreflight.statusCode, 204);
+  assert.equal(allowedPreflight.headers["access-control-allow-origin"], "http://127.0.0.1:5173");
+  assert.equal(allowedPreflight.headers["access-control-allow-credentials"], "true");
+  await app.close();
 });
 
 test("buildApp keeps host main supervision and sandbox detection isolated through revoke", async (t) => {
@@ -425,6 +492,7 @@ test("buildApp keeps host main supervision and sandbox detection isolated throug
     logger: false,
     nativeGuardDependencies: dependencies,
     mainAgentSupervisionService: mainService,
+    nativeSupervisionAccessService: appNativeSupervisionAccessService(),
   });
   appForCleanup = app;
 
@@ -432,6 +500,7 @@ test("buildApp keeps host main supervision and sandbox detection isolated throug
     method: "POST",
     url: "/api/v1/openclaw/native-supervision/start",
     payload: { policyPackId: policyPack.policyPackId },
+    headers: appNativeSupervisionHeaders(),
   });
   assert.equal(started.statusCode, 200);
   const main = started.json().data;
@@ -480,6 +549,7 @@ test("buildApp keeps host main supervision and sandbox detection isolated throug
   const afterSandboxRevoke = await app.inject({
     method: "GET",
     url: "/api/v1/openclaw/native-supervision",
+    headers: appNativeSupervisionHeaders(),
   });
   assert.equal(afterSandboxRevoke.statusCode, 200);
   assert.equal(afterSandboxRevoke.json().data.coverage, "active");
@@ -489,6 +559,7 @@ test("buildApp keeps host main supervision and sandbox detection isolated throug
   const stopped = await app.inject({
     method: "POST",
     url: "/api/v1/openclaw/native-supervision/stop",
+    headers: appNativeSupervisionHeaders(),
   });
   assert.equal(stopped.statusCode, 200);
   assert.equal(stopped.json().data.mainLeaseCount, 0);
@@ -603,6 +674,7 @@ test("buildApp blocks unapproved browser origins before native supervision mutat
     logger: false,
     nativeGuardDependencies: dependencies,
     mainAgentSupervisionService: service,
+    nativeSupervisionAccessService: appNativeSupervisionAccessService(),
   });
 
   for (const request of [
@@ -620,23 +692,23 @@ test("buildApp blocks unapproved browser origins before native supervision mutat
   ]) {
     const response = await app.inject(request);
     assert.equal(response.statusCode, 403);
-    assert.equal(response.json().error.code, "NATIVE_GUARD_ORIGIN_FORBIDDEN");
+    assert.equal(response.json().error.code, "NATIVE_SUPERVISION_ORIGIN_FORBIDDEN");
   }
   assert.deepEqual(calls, []);
 
   const allowed = await app.inject({
     method: "POST",
     url: "/api/v1/openclaw/native-supervision/start",
-    headers: { origin: "http://allowed.example" },
+    headers: appNativeSupervisionHeaders("http://allowed.example"),
     payload: { policyPackId: "policy.main" },
   });
-  const localCli = await app.inject({
+  const missingOrigin = await app.inject({
     method: "POST",
     url: "/api/v1/openclaw/native-supervision/stop",
   });
   assert.equal(allowed.statusCode, 200);
-  assert.equal(localCli.statusCode, 200);
-  assert.deepEqual(calls, ["start:policy.main", "stop"]);
+  assert.equal(missingOrigin.statusCode, 403);
+  assert.deepEqual(calls, ["start:policy.main"]);
   await app.close();
 });
 
@@ -648,6 +720,7 @@ test("native supervision rejects null Origin even when legacy native routes allo
     logger: false,
     nativeGuardDependencies: dependencies,
     mainAgentSupervisionService: appSupervisionService(calls),
+    nativeSupervisionAccessService: appNativeSupervisionAccessService(),
   });
 
   const stopped = await app.inject({
@@ -664,11 +737,27 @@ test("native supervision rejects null Origin even when legacy native routes allo
 
   assert.equal(stopped.statusCode, 403);
   assert.equal(started.statusCode, 403);
-  assert.equal(stopped.json().error.code, "NATIVE_GUARD_ORIGIN_FORBIDDEN");
-  assert.equal(started.json().error.code, "NATIVE_GUARD_ORIGIN_FORBIDDEN");
+  assert.equal(stopped.json().error.code, "NATIVE_SUPERVISION_ORIGIN_FORBIDDEN");
+  assert.equal(started.json().error.code, "NATIVE_SUPERVISION_ORIGIN_FORBIDDEN");
   assert.deepEqual(calls, []);
   await app.close();
 });
+
+function appNativeSupervisionAccessService(): NativeSupervisionAccessService {
+  return {
+    exchangeBootstrap: () => undefined,
+    issueEventCapability: () => undefined,
+    authenticateControl: (token) => token === "c".repeat(43),
+    authenticateEvents: () => false,
+  };
+}
+
+function appNativeSupervisionHeaders(origin = "http://127.0.0.1:5173") {
+  return {
+    origin,
+    cookie: `agent_guard_supervision_session=${"c".repeat(43)}`,
+  };
+}
 
 function appSupervisionService(calls: string[]): MainAgentSupervisionService {
   const ready = {

@@ -6,6 +6,7 @@
  */
 
 import Fastify from "fastify";
+import { randomBytes } from "node:crypto";
 import type { FastifyServerOptions } from "fastify";
 import cors from "@fastify/cors";
 import { systemRoutes } from "./api/v1/system/handlers";
@@ -38,8 +39,14 @@ import {
   type NativeGuardRouteDependencies,
 } from "./api/v1/openclaw/native-guard-handlers";
 import {
+  isAllowedNativeSupervisionOrigin,
+  isNativeSupervisionRequest,
   openClawNativeSupervisionRoutes,
 } from "./api/v1/openclaw/native-supervision-handlers";
+import {
+  createNativeSupervisionAccessService,
+  type NativeSupervisionAccessService,
+} from "./modules/openclaw/nativeSupervisionAccessService";
 import {
   createMainAgentSupervisionService,
   type MainAgentSupervisionService,
@@ -141,6 +148,8 @@ export async function buildApp(opts?: {
   logger?: FastifyServerOptions["logger"];
   nativeGuardDependencies?: NativeGuardRouteDependencies;
   mainAgentSupervisionService?: MainAgentSupervisionService;
+  nativeSupervisionAccessService?: NativeSupervisionAccessService;
+  nativeSupervisionBootstrapToken?: string;
 }) {
   let nativeGuardDependencies = opts?.nativeGuardDependencies;
   if (!nativeGuardDependencies) {
@@ -158,10 +167,18 @@ export async function buildApp(opts?: {
     createMainAgentSupervisionService({
       coordinator: nativeGuardDependencies.coordinator,
     });
+  const nativeSupervisionAccessService = opts?.nativeSupervisionAccessService ??
+    createNativeSupervisionAccessService({
+      bootstrapToken: opts?.nativeSupervisionBootstrapToken ??
+        process.env.AGENT_GUARD_UI_BOOTSTRAP_TOKEN ?? randomBytes(32).toString("base64url"),
+    });
   const redaction = {
     paths: [
       "req.headers.authorization",
       "req.headers['x-agent-guard-control-token']",
+      "req.headers.cookie",
+      "req.body.token",
+      "res.headers['set-cookie']",
       "authorization",
       "['x-agent-guard-control-token']",
     ],
@@ -193,18 +210,20 @@ export async function buildApp(opts?: {
 
   // ---- 插件 ----
   app.addHook("onRequest", async (request, reply) => {
-    const nativeSupervisionRequest = isNativeSupervisionRequest(request.url);
     const origin = request.headers.origin;
     if (
-      (
-        request.url.startsWith("/api/v1/openclaw/native-guard/") ||
-        nativeSupervisionRequest
-      ) &&
+      isNativeSupervisionRequest(request.url) &&
+      !isAllowedNativeSupervisionOrigin(origin, nativeGuardDependencies.allowedOrigins)
+    ) {
+      return reply.code(403).send(failure(
+        "NATIVE_SUPERVISION_ORIGIN_FORBIDDEN",
+        "Native supervision request origin is not allowed.",
+      ));
+    }
+    if (
+      request.url.startsWith("/api/v1/openclaw/native-guard/") &&
       origin !== undefined &&
-      (
-        !nativeGuardDependencies.allowedOrigins.includes(origin) ||
-        (nativeSupervisionRequest && !isExactHttpOrigin(origin))
-      )
+      !nativeGuardDependencies.allowedOrigins.includes(origin)
     ) {
       return reply.code(403).send(failure(
         "NATIVE_GUARD_ORIGIN_FORBIDDEN",
@@ -216,6 +235,7 @@ export async function buildApp(opts?: {
   await app.register(cors, {
     origin: true,
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    credentials: true,
   });
 
   // ---- 全局错误处理 ----
@@ -262,27 +282,10 @@ export async function buildApp(opts?: {
   await app.register(openClawPyritOpenAiRoutes);
   await app.register(openClawNativeSupervisionRoutes, {
     service: mainAgentSupervisionService,
+    accessService: nativeSupervisionAccessService,
+    allowedOrigins: nativeGuardDependencies.allowedOrigins,
   });
   await app.register(openClawNativeGuardRoutes, nativeGuardDependencies);
 
   return app;
-}
-
-function isNativeSupervisionRequest(url: string): boolean {
-  const base = "/api/v1/openclaw/native-supervision";
-  return url === base || url.startsWith(`${base}/`) || url.startsWith(`${base}?`);
-}
-
-function isExactHttpOrigin(value: string): boolean {
-  try {
-    const url = new URL(value);
-    return (
-      (url.protocol === "http:" || url.protocol === "https:") &&
-      url.username === "" &&
-      url.password === "" &&
-      url.origin === value
-    );
-  } catch {
-    return false;
-  }
 }

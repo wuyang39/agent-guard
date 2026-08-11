@@ -22,6 +22,20 @@ import { openClawRealtimeMcpRoutes } from "./realtime-mcp-handlers";
 const ALLOWED_ORIGIN = "http://127.0.0.1:5173";
 const EVENT_TOKEN = "e".repeat(43);
 
+test("realtime MCP config example uses the configured public API URL", async (t) => {
+  const fixture = await startFixture(t);
+  const response = await fixture.app.inject({
+    method: "GET",
+    url: "/api/v1/openclaw/realtime/mcp",
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(
+    response.json().data.openclawConfigExample.mcp.servers.agent_guard.url,
+    "http://127.0.0.1:5199/api/v1/openclaw/realtime/mcp",
+  );
+});
+
 test("realtime events reject missing, null, and malicious origins before subscribing", async (t) => {
   const fixture = await startFixture(t);
 
@@ -193,6 +207,7 @@ async function startFixture(t: TestContext): Promise<{
   await app.register(openClawRealtimeMcpRoutes, {
     accessService: accessServiceFixture(),
     allowedOrigins: [ALLOWED_ORIGIN],
+    publicMcpUrl: "http://127.0.0.1:5199/api/v1/openclaw/realtime/mcp",
     subscribeEvents(listener, options) {
       calls += 1;
       const unsubscribe = subscribeRealtimeEvents(listener, options);

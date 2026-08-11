@@ -241,6 +241,18 @@ test("application startup primes browser pairing before the supervision page mou
   assert.deepEqual(order, ["replace", "exchange"]);
 });
 
+test("application startup contains synchronous browser environment failures", () => {
+  const access = createNativeSupervisionBrowserAccessClient({
+    getEnvironment() {
+      throw new Error("browser history unavailable");
+    },
+    async exchangeBootstrap() {},
+    async mintEventCapability() {},
+  });
+
+  assert.doesNotThrow(() => primeNativeSupervisionBrowserAccess(access));
+});
+
 test("bootstrap exchange posts the fragment token with browser credentials", async (t) => {
   const previousFetch = globalThis.fetch;
   t.after(() => {

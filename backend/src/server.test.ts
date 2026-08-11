@@ -64,6 +64,8 @@ test("server snapshots backend-only secrets and removes them from the process en
     AGENT_GUARD_UI_BOOTSTRAP_TOKEN: "b".repeat(43),
     AGENT_GUARD_CONTROL_TOKEN: "control-secret",
     VITE_AGENT_GUARD_CONTROL_TOKEN: "dev-control-secret",
+    agent_guard_control_token: "lower-control-secret",
+    Agent_Guard_Ui_Bootstrap_Token: "mixed-bootstrap-secret",
     AGENT_GUARD_FRONTEND_ORIGIN: "http://127.0.0.1:5173",
     OPENCLAW_GATEWAY_TOKEN: "gateway-secret",
     PATH: "runtime-path",
@@ -79,6 +81,8 @@ test("server snapshots backend-only secrets and removes them from the process en
     "AGENT_GUARD_UI_BOOTSTRAP_TOKEN",
     "AGENT_GUARD_CONTROL_TOKEN",
     "VITE_AGENT_GUARD_CONTROL_TOKEN",
+    "agent_guard_control_token",
+    "Agent_Guard_Ui_Bootstrap_Token",
   ] as const) {
     assert.equal(env[name], undefined);
     assert.equal(captured.nativeGuardEnv[name], undefined);

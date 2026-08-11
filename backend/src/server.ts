@@ -84,6 +84,8 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     nativeSupervisionAllowedOrigins: captured.bootstrap.pairingOrigin
       ? [captured.bootstrap.pairingOrigin]
       : undefined,
+    realtimeMcpPublicUrl:
+      `http://127.0.0.1:${String(port)}/api/v1/openclaw/realtime/mcp`,
   });
 
   // graceful shutdown

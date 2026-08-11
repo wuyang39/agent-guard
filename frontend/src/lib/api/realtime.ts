@@ -73,7 +73,11 @@ export function createNativeSupervisionBrowserAccessClient(options: {
 export function primeNativeSupervisionBrowserAccess(
   access: NativeSupervisionBrowserAccessClient,
 ): void {
-  void access.ensureAccess().catch(() => undefined);
+  try {
+    void access.ensureAccess().catch(() => undefined);
+  } catch {
+    // Pairing failures are surfaced when the user opens supervision controls.
+  }
 }
 
 type RealtimeApiDependencies = {

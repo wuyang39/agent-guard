@@ -38,6 +38,7 @@ const SUPERVISION_BATCHES_PATH = "/api/v1/openclaw/realtime/supervision-batches"
 export type OpenClawRealtimeMcpRouteOptions = {
   accessService: NativeSupervisionAccessService;
   allowedOrigins: readonly string[];
+  publicMcpUrl: string;
   subscribeEvents?: typeof subscribeRealtimeEvents;
 };
 
@@ -68,7 +69,7 @@ export async function openClawRealtimeMcpRoutes(
           servers: {
             agent_guard: {
               transport: "streamable-http",
-              url: "http://127.0.0.1:3100/api/v1/openclaw/realtime/mcp",
+              url: options.publicMcpUrl,
               timeout: 20,
               connectTimeout: 5,
             },

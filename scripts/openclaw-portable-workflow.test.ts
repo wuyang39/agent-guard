@@ -58,12 +58,16 @@ test("PyRIT child environments strip backend-only browser and control secrets", 
     AGENT_GUARD_UI_BOOTSTRAP_TOKEN: "bootstrap-secret",
     AGENT_GUARD_CONTROL_TOKEN: "control-secret",
     VITE_AGENT_GUARD_CONTROL_TOKEN: "dev-control-secret",
+    agent_guard_control_token: "lower-control-secret",
+    Agent_Guard_Ui_Bootstrap_Token: "mixed-bootstrap-secret",
     OPENAI_CHAT_MODEL: "test-model",
   });
 
   assert.equal(env.AGENT_GUARD_UI_BOOTSTRAP_TOKEN, undefined);
   assert.equal(env.AGENT_GUARD_CONTROL_TOKEN, undefined);
   assert.equal(env.VITE_AGENT_GUARD_CONTROL_TOKEN, undefined);
+  assert.equal(env.agent_guard_control_token, undefined);
+  assert.equal(env.Agent_Guard_Ui_Bootstrap_Token, undefined);
   assert.equal(env.OPENAI_CHAT_MODEL, "test-model");
 });
 

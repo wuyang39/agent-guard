@@ -154,6 +154,7 @@ export async function buildApp(opts?: {
   nativeSupervisionAccessService?: NativeSupervisionAccessService;
   nativeSupervisionBootstrapToken?: string;
   nativeSupervisionAllowedOrigins?: readonly string[];
+  realtimeMcpPublicUrl?: string;
 }) {
   let nativeGuardDependencies = opts?.nativeGuardDependencies;
   if (!nativeGuardDependencies) {
@@ -294,6 +295,8 @@ export async function buildApp(opts?: {
   await app.register(openClawRealtimeMcpRoutes, {
     accessService: nativeSupervisionAccessService,
     allowedOrigins: nativeSupervisionAllowedOriginList,
+    publicMcpUrl: opts?.realtimeMcpPublicUrl ??
+      "http://127.0.0.1:3100/api/v1/openclaw/realtime/mcp",
   });
   await app.register(runtimeConfigRoutes);
   await app.register(openClawPyritOpenAiRoutes);

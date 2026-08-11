@@ -473,7 +473,7 @@ OPENCLAW_GATEWAY_TOKEN=<token> node --import tsx scripts/openclaw-guard-launcher
 ```
 launcher 完成 marker 和 live registry 检查后原子 spawn `--` 后的 Gateway child，并将 child 退出状态传回调用方；检测全程绑定该真实 child。Gateway token 只通过子进程环境传递，不进入命令行。`--maintenance` 必须单独使用，不接受 child 参数，也不会 spawn OpenClaw。Gateway fd3 bootstrap 使用 60 秒绝对截止时间，随后 readiness 使用独立的 120 秒绝对截止时间；慢启动不能通过逐次探测重置任一预算。
 
-portable 启动器为四类长期进程建立最小权限环境：Gateway 只获得 Gateway token 和 host attestation bootstrap 路径；backend 获得 Gateway token、Agent Guard control token、一次性 UI bootstrap token 和精确 frontend Origin；sample 与 frontend 不获得上述凭据。`Start-Process` 前临时覆盖或删除变量，并在成功和异常路径的 `finally` 中恢复 launcher 父环境。plan、PID registry 和服务日志不保存一次性 UI token 或完整配对 URL。
+portable 启动器为四类长期进程建立最小权限环境：Gateway 只获得 Gateway token 和 host attestation bootstrap 路径；backend 获得 Gateway token、Agent Guard control token、一次性 UI bootstrap token 和精确 frontend Origin；sample 与 frontend 不获得上述凭据。`Start-Process` 前临时覆盖或删除变量，并在成功和异常路径的 `finally` 中恢复 launcher 父环境。backend 启动时先快照自身所需 capability，再从真实 `process.env` 删除 browser/control secret；OpenClaw CLI 与 PyRIT 子进程还会按大小写不敏感的变量名二次清洗。plan、PID registry 和服务日志不保存一次性 UI token 或完整配对 URL。
 
 #### 7.1.1 兼容 OpenClaw Fork 需要提供的能力
 

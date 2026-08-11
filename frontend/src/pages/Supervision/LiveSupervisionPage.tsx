@@ -262,6 +262,14 @@ export function LiveSupervisionPage({
     };
   }, []);
 
+  useEffect(() => {
+    if (nativeCommandPending) return;
+    const timer = window.setInterval(() => {
+      void refreshNativeSupervisionStatus();
+    }, 5_000);
+    return () => window.clearInterval(timer);
+  }, [nativeCommandPending]);
+
   async function refreshSupervisionStatus() {
     const operation = nativeStatusGateRef.current.begin();
     setStatusError(undefined);
@@ -293,14 +301,12 @@ export function LiveSupervisionPage({
 
   async function refreshNativeSupervisionStatus() {
     const operation = nativeStatusGateRef.current.begin();
-    setStatusError(undefined);
     try {
       const status = await agentGuardApi.nativeSupervisionStatus();
       if (!operation.isCurrent()) return;
       setNativeStatus(status);
-    } catch (error) {
-      if (!operation.isCurrent()) return;
-      setStatusError(error instanceof Error ? error.message : String(error));
+    } catch {
+      // Keep the last authoritative command result during transient background failures.
     }
   }
 
@@ -337,20 +343,6 @@ export function LiveSupervisionPage({
     } catch (error) {
       if (!mountedRef.current) return;
       setStatusError(error instanceof Error ? error.message : String(error));
-    }
-  }
-
-  async function startStream() {
-    const operation = streamOpenGateRef.current.begin();
-    setListeningError(undefined);
-    try {
-      await openNativeSupervisionStream({
-        mintEventCapability: agentGuardApi.issueNativeSupervisionEventCapability,
-        openStream: () => openStream(includeHistory),
-      }, operation);
-    } catch (error) {
-      if (!operation.isCurrent()) return;
-      setListeningError(error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -462,13 +454,6 @@ export function LiveSupervisionPage({
     }
   }
 
-  function stopStream() {
-    stopNativeSupervisionStream(
-      () => streamControllerRef.current?.close(),
-      () => streamOpenGateRef.current.invalidate(),
-    );
-  }
-
   async function respondAsk(askId: string, decision: "approve" | "reject") {
     setRespondingAskIds((current) => new Set(current).add(askId));
     setStatusError(undefined);
@@ -535,6 +520,14 @@ export function LiveSupervisionPage({
           <h1>实时监督</h1>
         </div>
         <div className="hero-actions">
+          {nativeStatus ? (
+            <MainSupervisionToggleButton
+              commandPending={nativeCommandPending}
+              onStart={() => void startSupervision()}
+              onStop={() => void stopSupervision()}
+              status={nativeStatus}
+            />
+          ) : null}
           <button className="primary-button" disabled={finalizing} onClick={finalizeReport}>
             {finalizing ? "生成中..." : "生成防御报告"}
           </button>
@@ -543,19 +536,6 @@ export function LiveSupervisionPage({
 
       {statusError ? <ErrorBlock title="实时监督状态读取失败" message={statusError} /> : null}
       {listeningError ? <ErrorBlock title="实时监听失败" message={listeningError} /> : null}
-
-      {nativeStatus ? (
-        <MainSupervisionStatusPanel
-          commandPending={nativeCommandPending}
-          onRefresh={() => void refreshNativeSupervisionStatus()}
-          onStart={() => void startSupervision()}
-          onStartListening={startStream}
-          onStop={() => void stopSupervision()}
-          onStopListening={stopStream}
-          status={nativeStatus}
-          streaming={streaming}
-        />
-      ) : null}
 
       <section className="workspace-grid supervision-workspace">
         <div className="workspace-main panel grow-panel event-console">
@@ -746,104 +726,30 @@ export function LiveSupervisionPage({
   );
 }
 
-export function MainSupervisionStatusPanel({
+export function MainSupervisionToggleButton({
   status,
   commandPending,
-  streaming,
   onStart,
   onStop,
-  onRefresh,
-  onStartListening,
-  onStopListening,
 }: {
   status: MainAgentSupervisionStatus;
   commandPending: boolean;
-  streaming: boolean;
   onStart: () => void;
   onStop: () => void;
-  onRefresh: () => void;
-  onStartListening: () => void;
-  onStopListening: () => void;
 }) {
+  const supervisionEnabled = status.mainLeaseCount > 0;
+
   return (
-    <section className="panel native-supervision-status" aria-label="main Agent 原生监督状态">
-      <div className="section-header compact">
-        <div>
-          <h2>main Agent 原生工具监督</h2>
-          <p className="muted">固定范围：main Agent 全部当前/未来会话</p>
-        </div>
-        <Badge tone={nativeCoverageTone(status.coverage)}>{status.coverage}</Badge>
-      </div>
-
-      <div className="id-grid native-supervision-grid">
-        <div><span>Policy pack</span><code>{status.policyPackId ?? "未绑定"}</code></div>
-        <div><span>mainLeaseCount</span><code>{status.mainLeaseCount}</code></div>
-        <div><span>activeLeaseCount</span><code>{status.activeLeaseCount}</code></div>
-        <div><span>Gateway instance</span><code>{status.gatewayInstanceId ?? "未知"}</code></div>
-        <div><span>到期时间</span><code>{status.expiresAt ?? "无"}</code></div>
-      </div>
-
-      {status.reasonCode || status.detail ? (
-        <div className="native-supervision-fault" role="status">
-          {status.reasonCode ? <strong>{status.reasonCode}</strong> : null}
-          {status.detail ? <p>{status.detail}</p> : null}
-        </div>
-      ) : null}
-
-      <div className="button-row native-supervision-actions">
-        <button
-          className="primary-button"
-          disabled={commandPending}
-          onClick={onStart}
-          type="button"
-        >
-          {commandPending ? "处理中..." : "开始监督"}
-        </button>
-        <button
-          className="secondary-button"
-          disabled={commandPending}
-          onClick={onStop}
-          type="button"
-        >
-          停止监督
-        </button>
-        <button
-          className="secondary-button"
-          disabled={commandPending}
-          onClick={onRefresh}
-          type="button"
-        >
-          刷新监督
-        </button>
-        {streaming ? (
-          <button
-            className="secondary-button"
-            disabled={commandPending}
-            onClick={onStopListening}
-            type="button"
-          >
-            停止监听
-          </button>
-        ) : (
-          <button
-            className="secondary-button"
-            disabled={commandPending}
-            onClick={onStartListening}
-            type="button"
-          >
-            监听事件
-          </button>
-        )}
-      </div>
-    </section>
+    <button
+      aria-label="main Agent 原生工具监督"
+      className={`${supervisionEnabled ? "secondary-button" : "primary-button"} hero-button`}
+      disabled={commandPending}
+      onClick={supervisionEnabled ? onStop : onStart}
+      type="button"
+    >
+      {commandPending ? "处理中..." : supervisionEnabled ? "停止监督" : "开始监督"}
+    </button>
   );
-}
-
-function nativeCoverageTone(coverage: MainAgentSupervisionStatus["coverage"]): string {
-  if (coverage === "active") return "tone-low";
-  if (coverage === "conditional" || coverage === "recovery") return "tone-high";
-  if (coverage === "off" || coverage === "ready") return "tone-neutral";
-  return "tone-critical";
 }
 
 function upsertAsk(

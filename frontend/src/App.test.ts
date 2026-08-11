@@ -12,7 +12,7 @@ import {
 } from "./lib/models/realtime";
 import { RunWorkflowPage } from "./pages/RunWorkflow/RunWorkflowPage";
 import {
-  MainSupervisionStatusPanel,
+  MainSupervisionToggleButton,
   REALTIME_EVENT_TYPES,
   nativeStatusFromError,
   openNativeSupervisionStream,
@@ -499,7 +499,7 @@ test("stopping main supervision leaves an existing event stream open", async () 
   stream.close();
 });
 
-test("main supervision status panel renders scope, lease state, diagnostics, and controls", (t) => {
+test("active main supervision renders one stop control without internal status details", (t) => {
   const reactGlobal = globalThis as typeof globalThis & { React?: typeof React };
   const previousReact = reactGlobal.React;
   t.after(() => {
@@ -507,7 +507,7 @@ test("main supervision status panel renders scope, lease state, diagnostics, and
   });
   reactGlobal.React = React;
 
-  const markup = renderToStaticMarkup(React.createElement(MainSupervisionStatusPanel, {
+  const markup = renderToStaticMarkup(React.createElement(MainSupervisionToggleButton, {
     status: {
       ...mainSupervisionStatus(),
       coverage: "recovery",
@@ -515,35 +515,19 @@ test("main supervision status panel renders scope, lease state, diagnostics, and
       detail: "Gateway lease ownership needs reconciliation.",
     },
     commandPending: false,
-    streaming: true,
-    onRefresh() {},
     onStart() {},
-    onStartListening() {},
     onStop() {},
-    onStopListening() {},
   }));
 
-  for (const expected of [
-    "开始监督",
-    "停止监督",
-    "停止监听",
-    "main Agent 全部当前/未来会话",
-    "recovery",
-    "policy.frontend.main",
-    "mainLeaseCount",
-    "1",
-    "activeLeaseCount",
-    "2",
-    "gateway.frontend",
-    "2026",
-    "LEASE_RECONCILIATION_REQUIRED",
-    "Gateway lease ownership needs reconciliation.",
-  ]) {
-    assert.match(markup, new RegExp(expected));
-  }
+  assert.match(markup, /停止监督/);
+  assert.equal(markup.match(/<button/g)?.length, 1);
+  assert.doesNotMatch(
+    markup,
+    /开始监督|刷新监督|监听事件|停止监听|policy\.frontend|mainLeaseCount|gateway\.frontend|LEASE_RECONCILIATION_REQUIRED/,
+  );
 });
 
-test("main supervision status panel can restart SSE listening independently", (t) => {
+test("inactive main supervision renders one start control", (t) => {
   const reactGlobal = globalThis as typeof globalThis & { React?: typeof React };
   const previousReact = reactGlobal.React;
   t.after(() => {
@@ -551,22 +535,27 @@ test("main supervision status panel can restart SSE listening independently", (t
   });
   reactGlobal.React = React;
 
-  const markup = renderToStaticMarkup(React.createElement(MainSupervisionStatusPanel, {
-    status: mainSupervisionStatus(),
+  const markup = renderToStaticMarkup(React.createElement(MainSupervisionToggleButton, {
+    status: {
+      ...mainSupervisionStatus(),
+      coverage: "ready",
+      policyPackId: undefined,
+      leaseId: undefined,
+      leaseEpoch: undefined,
+      expiresAt: undefined,
+      mainLeaseCount: 0,
+    },
     commandPending: false,
-    streaming: false,
-    onRefresh() {},
     onStart() {},
     onStop() {},
-    onStartListening() {},
-    onStopListening() {},
   }));
 
-  assert.match(markup, /监听事件/);
   assert.match(markup, /开始监督/);
+  assert.equal(markup.match(/<button/g)?.length, 1);
+  assert.doesNotMatch(markup, /停止监督|刷新监督|监听事件|停止监听/);
 });
 
-test("pending native commands disable start, stop, and native status refresh", (t) => {
+test("pending native command replaces the toggle label and disables it", (t) => {
   const reactGlobal = globalThis as typeof globalThis & { React?: typeof React };
   const previousReact = reactGlobal.React;
   t.after(() => {
@@ -574,20 +563,15 @@ test("pending native commands disable start, stop, and native status refresh", (
   });
   reactGlobal.React = React;
 
-  const markup = renderToStaticMarkup(React.createElement(MainSupervisionStatusPanel, {
+  const markup = renderToStaticMarkup(React.createElement(MainSupervisionToggleButton, {
     status: mainSupervisionStatus(),
     commandPending: true,
-    streaming: true,
-    onRefresh() {},
     onStart() {},
     onStop() {},
-    onStartListening() {},
-    onStopListening() {},
   }));
 
   assert.match(markup, /<button[^>]*disabled=""[^>]*>处理中\.\.\.<\/button>/);
-  assert.match(markup, /<button[^>]*disabled=""[^>]*>停止监督<\/button>/);
-  assert.match(markup, /<button[^>]*disabled=""[^>]*>刷新监督<\/button>/);
+  assert.doesNotMatch(markup, /开始监督|停止监督|刷新监督|监听事件|停止监听/);
 });
 
 function accessCommands() {

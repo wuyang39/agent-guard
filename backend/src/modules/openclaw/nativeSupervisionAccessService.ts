@@ -45,6 +45,7 @@ export function createNativeSupervisionAccessService(
   options: NativeSupervisionAccessServiceOptions,
 ): NativeSupervisionAccessService {
   assertToken(options.bootstrapToken, "bootstrapToken");
+  const bootstrapToken = options.bootstrapToken;
   const now = options.now ?? (() => Date.now());
   const createToken = options.createToken ?? defaultCreateToken;
   const bootstrapTtlMs = positiveInteger(options.bootstrapTtlMs ?? DEFAULT_BOOTSTRAP_TTL_MS, "bootstrapTtlMs");
@@ -61,7 +62,7 @@ export function createNativeSupervisionAccessService(
   const bootstrapExpiresAtMs = addTtl(readNow(now), bootstrapTtlMs);
   const controls = new Map<string, StoredCapability>();
   const events = new Map<string, StoredCapability>();
-  const reservedDigests = new Set([digestToken(options.bootstrapToken)]);
+  const reservedDigests = new Set([digestToken(bootstrapToken)]);
   let bootstrapConsumed = false;
 
   function issue(
@@ -94,7 +95,7 @@ export function createNativeSupervisionAccessService(
       if (
         bootstrapConsumed ||
         currentMs >= bootstrapExpiresAtMs ||
-        !tokensEqual(token, options.bootstrapToken)
+        !tokensEqual(token, bootstrapToken)
       ) {
         return undefined;
       }

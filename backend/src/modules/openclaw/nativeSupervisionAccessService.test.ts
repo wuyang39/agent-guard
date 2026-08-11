@@ -151,6 +151,19 @@ test("never reuses the bootstrap token as a long-lived control capability", () =
   assert.equal(service.authenticateControl(BOOTSTRAP), false);
 });
 
+test("snapshots the bootstrap token instead of retaining mutable caller options", () => {
+  const options = {
+    bootstrapToken: BOOTSTRAP,
+    createToken: sequenceTokenFactory("c"),
+  };
+  const service = createNativeSupervisionAccessService(options);
+
+  options.bootstrapToken = "m".repeat(43);
+
+  assert.equal(service.exchangeBootstrap(options.bootstrapToken), undefined);
+  assert.ok(service.exchangeBootstrap(BOOTSTRAP));
+});
+
 function sequenceTokenFactory(...prefixes: string[]): () => string {
   let index = 0;
   return () => `${prefixes[index++ % prefixes.length]}${String(index).padStart(42, "0")}`;

@@ -46,10 +46,11 @@ docker pull $env:AGENT_GUARD_DETECTION_IMAGE
 ```powershell
 Get-NetTCPConnection -State Listen -LocalPort 18789,7001,3100,5173
 Invoke-RestMethod http://127.0.0.1:3100/api/v1/system/status
-node $env:OPENCLAW_CLI plugins list --json
+node $env:OPENCLAW_CLI plugins list --json --live
+$env:OPENCLAW_GATEWAY_TOKEN = (Get-Content -Raw .\outputs\runtime\openclaw-gateway-token.txt).Trim()
 ```
 
-预期插件为 enabled/loaded，四个端口在监听。若模型检查、插件或 Docker image 任一项失败，不进入验收。
+预期 live registry 显示 `liveAttestation=true`，插件为 enabled/loaded，四个端口在监听。Gateway token 只保留在当前验收终端的环境中，不打印、不写证据文件，也不通过 `--token` 进入命令行。若模型检查、插件或 Docker image 任一项失败，不进入验收。
 
 ## 2. 建立安全探针和证据目录
 
@@ -74,7 +75,9 @@ function Invoke-SafeMarkerProbe {
   Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
   $safeMarker = $marker.Replace("'", "''")
   $safeValue = $Value.Replace("'", "''")
-  $command = "powershell -NoProfile -Command `"Set-Content -LiteralPath '$safeMarker' -Value '$safeValue' -NoNewline`""
+  $probeScript = "Set-Content -LiteralPath '$safeMarker' -Value '$safeValue' -NoNewline"
+  $encodedProbe = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($probeScript))
+  $command = "powershell -NoProfile -EncodedCommand $encodedProbe"
   $message = "请只调用一次 OpenClaw 原生 exec 工具执行以下无害命令，不要改写命令，也不要使用 MCP 工具：$command"
   node $env:OPENCLAW_CLI agent --agent $AgentId --session-key $SessionKey --message $message --json 2>&1 |
     Tee-Object -FilePath (Join-Path $evidenceRoot "$MarkerName.openclaw.log")
@@ -220,6 +223,8 @@ Invoke-SafeMarkerProbe "main" $oldMainSession "51-main-after-stop.txt" "main-off
 | UI 没有 `native_tool_hook` | 页面“监听中”、SSE URL、API 日志 | EventSource 断线、事件未持久化、页面筛选错；切“含历史”并重连 `.../events/stream?replay=1` |
 | 监督状态或 SSE 返回 `401` | 当前浏览器 tab、backend 启动时间 | backend 重启后旧 cookie 失效；重新运行 launcher，并使用新打印/打开的 Pairing URL |
 | 监督状态或 SSE 返回 `403` | 地址栏 frontend Origin | 必须使用 launcher 的精确 `127.0.0.1:<port>` Origin；`localhost`、旧端口或其他页面均不被信任 |
+| CLI 报 `GatewayCredentialsRequiredError` | 当前 PowerShell 的 `OPENCLAW_GATEWAY_TOKEN` | 从忽略的 runtime token 文件加载到当前终端；不要使用 `--token`，不要把 token 写入证据 |
+| CLI 把 marker 命令中的参数识别为 OpenClaw 选项 | 探针是否使用 `-EncodedCommand` | Windows PowerShell 5.1 会拆坏含嵌套引号的 native argv；使用本 runbook 的 base64 UTF-16LE 命令 |
 | 两个 main 会话混在一起或缺一个 | “原生 main 会话”下拉、CLI 参数 | session key 重用、格式不是 `agent:main:*`；用两个新的规范 key 重试 |
 | detection 启动失败 | RunGroup 错误、Docker Desktop、image digest | daemon 未启动、immutable image 未拉取、模型/provider 不可用；不要改用 `latest` |
 | detection 后 `activeLeaseCount` 仍为 2 | RunGroup 终态、sandbox/Gateway 日志、`docker ps` | sandbox lease 或 container 清理未完成；先取消 RunGroup，再执行统一 stop |
@@ -237,6 +242,7 @@ docker ps --format '{{.ID}} {{.Names}} {{.Image}}' |
 Compress-Archive -Path (Join-Path $evidenceRoot "*") `
   -DestinationPath "$evidenceRoot.zip" -Force
 Remove-Item -LiteralPath $probeRoot -Recurse -Force
+Remove-Item Env:OPENCLAW_GATEWAY_TOKEN -ErrorAction SilentlyContinue
 ```
 
 证据包至少保留：三个状态卡截图、五次探针的 OpenClaw 日志、main 两个 session key、RunGroup ID、detection coverage 页面截图、实时事件流截图、portable service stderr/stdout 和最终 Docker 清单。截图必须在 fragment 已从地址栏清除后采集。任何 token、provider key、完整 pairing URL 或 auth profile 都不得进入证据包。

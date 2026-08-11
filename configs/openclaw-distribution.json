@@ -3,7 +3,7 @@
   "fork": {
     "repository": "https://github.com/wuyang39/openclaw-agentguard.git",
     "branch": "agentguard-2026.7.1",
-    "commit": "d895b2dbfe7c8a2d8cb9f9827df315d11d8939fa",
+    "commit": "0cd158ce32d5c53daee74235cf0557fc4d414b17",
     "version": "2026.7.1-agentguard.1"
   },
   "sandboxImage": "ghcr.io/wuyang39/openclaw-sandbox@sha256:01630cbb3486af7c0908b326d956d20722fde3ceada2775b53e547370a4e0e38",

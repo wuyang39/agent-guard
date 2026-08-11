@@ -1,6 +1,6 @@
 # OpenClaw Fork 实现指南
 
-本文档记录从 OpenClaw `2026.7.1` 创建受控 fork 的最终实现。验收 SHA 为 `d895b2dbfe7c8a2d8cb9f9827df315d11d8939fa`，版本号为 `2026.7.1-agentguard.1`，公开仓库为 `https://github.com/wuyang39/openclaw-agentguard`，发布分支为 `agentguard-2026.7.1`。bootstrap 将本地 checkout 放在 `<agent-guard-root>/outputs/openclaw-agentguard-active`，将有 marker/profile 状态放在 `%USERPROFILE%\.agent-guard\openclaw-native-guard-profile`。
+本文档记录从 OpenClaw `2026.7.1` 创建受控 fork 的最终实现。验收 SHA 为 `0cd158ce32d5c53daee74235cf0557fc4d414b17`，版本号为 `2026.7.1-agentguard.1`，公开仓库为 `https://github.com/wuyang39/openclaw-agentguard`，发布分支为 `agentguard-2026.7.1`。bootstrap 将本地 checkout 放在 `<agent-guard-root>/outputs/openclaw-agentguard-active`，将有 marker/profile 状态放在 `%USERPROFILE%\.agent-guard\openclaw-native-guard-profile`。
 
 该 fork 已公开发布，但未作为 npm package 发布。其他机器必须从上述仓库取得精确 commit，并验证 `dist/.buildstamp`；不得从 OpenClaw upstream、移动分支或其他构建替代同一验收基线。推荐统一运行 `npm run openclaw:bootstrap`。
 
@@ -204,6 +204,8 @@ POST /agent-guard/native-guard/v1/gateway-attestation
 
 签名 payload 是除 `signature` 外的全部字段，使用 `@agent-guard/native-guard-protocol` 的 canonical JSON 与 Ed25519 规则，或实现逐字节兼容算法。`openclawVersion` 必须来自构建产物 `VERSION`，不能来自插件或请求；`gatewayInstanceId` 必须由当前 server 创建；`nativeGuard` 必须来自当前进程的 active live registry 快照。
 
+Gateway server 必须把 attestation resolver 显式绑定到实际承载 Hook、HTTP route 与热重载的当前 `pluginRegistry` generation，例如 `resolveCapability: () => resolveNativeGuardLiveCapability(pluginRegistry)`。不要在 core route 中重新查询一个可能尚未同步的全局 registry；否则 `plugins list --json --live` 可以显示健康，而常驻 Gateway attestation 仍错误返回 503。闭包应引用可在 reload 时替换的 registry 变量，而不是启动时的只读副本。
+
 端口上的进程即使获得 bearer token 和 fresh challenge，只要没有 fd3 对应的 private key，其 unsigned、wrong-key 或篡改响应都必须被 Agent Guard 拒绝。
 
 ### 8.3 检测期进程生命周期
@@ -281,7 +283,7 @@ $gatewayPort = 18789
 $env:OPENCLAW_GATEWAY_URL = "http://127.0.0.1:$gatewayPort"
 $env:OPENCLAW_GATEWAY_TOKEN = Read-Host "OpenClaw gateway token"
 node --import tsx scripts/openclaw-guard-launcher.ts -- `
-  gateway run --bind loopback --port $gatewayPort --token $env:OPENCLAW_GATEWAY_TOKEN
+  gateway run --bind loopback --port $gatewayPort
 ```
 
 maintenance cleanup：
@@ -320,7 +322,7 @@ npm run verify:native-guard:real
 npm run verify:native-guard:docker -- --required
 ```
 
-`d895b2d...` artifact 已完成正式 targeted build 和 buildstamp 绑定。当前收口工作树已 fresh 完成 real registry gate（28.4 秒），并以新 `01630c...` digest 完成 required Docker default/controlled gate（120.3 秒、两轮 cleanup 残留为 0）。旧 `2d55b95...` artifact 的结果不能外推到新基线。
+`0cd158c...` artifact 已完成正式 targeted build 和 buildstamp 绑定，并完成 real registry gate、host Gateway attestation、main 会话 active/stop 黑盒，以及固定 `01630c...` digest 的 required Docker default/controlled gate；两轮 cleanup 的容器和网络残留均为 0。旧 `d895b2d...` artifact 的结果不能外推到新基线。
 
 Agent Guard 最终收口提交：
 
@@ -334,7 +336,7 @@ Agent Guard 最终收口提交：
 
 ## 完成清单
 
-- [x] Fork commit 固定为 `d895b2dbfe7c8a2d8cb9f9827df315d11d8939fa`。
+- [x] Fork commit 固定为 `0cd158ce32d5c53daee74235cf0557fc4d414b17`。
 - [x] 公开 fork 仓库与固定发布分支可匿名 clone。
 - [x] 正式 build 与 `dist/.buildstamp` 绑定固定 SHA。
 - [x] `registry.liveAttestation === true`。
@@ -343,7 +345,8 @@ Agent Guard 最终收口提交：
 - [x] launcher 原子 spawn 真实 child，maintenance 不 spawn。
 - [x] Dockerfile、README 和本地 build 脚本已提供；脚本输出固定本机 digest。
 - [x] GHCR immutable image 可匿名 pull。
-- [x] 在 `d895b2d...` artifact 上 fresh 重跑 real registry gate，并以新 `01630c...` digest 完成 required Docker default/controlled gate；两轮 cleanup 残留为 0。
+- [x] 在 `0cd158c...` artifact 上 fresh 重跑 real registry gate 和 host main attestation 黑盒。
+- [x] 在 `0cd158c...` artifact 上以固定 `01630c...` digest 重跑 required Docker default/controlled gate，并确认两轮 cleanup 残留为 0。
 - [x] 推送公开 GHCR immutable image 并验证匿名 pull。
 - [x] 提供 clone-and-run bootstrap/start/stop 工作流并完成 5/30 产品黑盒验收。
 - [ ] 生成并归档 SBOM/provenance。

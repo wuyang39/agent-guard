@@ -113,6 +113,35 @@ test("uses the default action when no policy matches", async () => {
   assert.equal(result.record.policyId, "policy_pack.native.default");
 });
 
+test("matches stored tool-profile policies against a canonical native tool id", async () => {
+  const fixture = createFixture({
+    policies: [{
+      ...buildPolicy("deny", "targetId", "tool.execute_code"),
+      targetType: "code_execution",
+      match: {
+        relation: "all",
+        matchers: [{
+          fieldPath: "targetId",
+          operator: "equals",
+          value: "tool.execute_code",
+        }],
+      },
+    }],
+  });
+
+  const result = await fixture.service.decide(
+    fixture.request({
+      toolCallId: "call.random-runtime-id",
+      toolName: "exec",
+      params: { command: "echo guarded" },
+    }),
+    fixture.credential,
+  );
+
+  assert.equal(result.response.action, "deny");
+  assert.equal(result.record.policyId, "policy.deny");
+});
+
 test("rejects bounded parameter violations before policy persistence or signing", async (t) => {
   for (const [name, params] of [
     ["bytes", paramsAtCanonicalBytes(256 * 1024 + 1)],

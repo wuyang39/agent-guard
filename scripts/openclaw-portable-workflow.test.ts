@@ -44,7 +44,7 @@ test("distribution manifest pins the public fork and immutable GHCR image", asyn
   assert.deepEqual(manifest.fork, {
     repository: "https://github.com/wuyang39/openclaw-agentguard.git",
     branch: "agentguard-2026.7.1",
-    commit: "d895b2dbfe7c8a2d8cb9f9827df315d11d8939fa",
+    commit: "0cd158ce32d5c53daee74235cf0557fc4d414b17",
     version: "2026.7.1-agentguard.1",
   });
   assert.equal(
@@ -89,7 +89,7 @@ test("bootstrap print plan resolves a clone-safe runtime without changing disk",
       path.join(os.homedir(), ".agent-guard", "openclaw-native-guard-profile"),
     );
     assert.equal(plan.environmentFile, path.join(plannedRuntimeRoot, "agent-guard-openclaw-env.ps1"));
-    assert.equal(plan.forkCommit, "d895b2dbfe7c8a2d8cb9f9827df315d11d8939fa");
+    assert.equal(plan.forkCommit, "0cd158ce32d5c53daee74235cf0557fc4d414b17");
     assert.equal(
       plan.sandboxImage,
       "ghcr.io/wuyang39/openclaw-sandbox@sha256:01630cbb3486af7c0908b326d956d20722fde3ceada2775b53e547370a4e0e38",

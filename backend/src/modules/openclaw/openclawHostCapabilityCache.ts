@@ -52,7 +52,13 @@ export function createOpenClawHostCapabilityCache(options: {
       const result = client.inspectCapabilities(input).then(
         (capability) => {
           const cached = cloneCapability(capability);
-          if (entries.get(key) === entry) entry.expiresAt = now() + ttlMs;
+          if (entries.get(key) === entry) {
+            if (cacheableCapability(cached)) {
+              entry.expiresAt = now() + ttlMs;
+            } else {
+              entries.delete(key);
+            }
+          }
           return cached;
         },
         (error: unknown) => {
@@ -94,6 +100,12 @@ export function createOpenClawHostCapabilityCache(options: {
   }
 
   return { wrap, invalidate };
+}
+
+function cacheableCapability(capability: NativeGuardCapability): boolean {
+  return capability.supportsNativeGuard &&
+    capability.finalizerAssurance !== "unverified" &&
+    capability.conflictingPluginIds.length === 0;
 }
 
 function capabilityCacheKey(

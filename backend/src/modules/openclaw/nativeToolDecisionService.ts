@@ -407,7 +407,7 @@ export function createNativeToolDecisionService(
           runtimeSessionId: request.sessionKey,
           agentId: lease.policyPack.agentId,
           targetType: normalized.targetType,
-          targetId: request.toolCallId,
+          targetId: canonicalNativeToolId(request.toolName),
           payload: buildRuntimePayload(request, normalized.targetType),
           inputEventId: request.requestId,
           gateway,
@@ -1024,6 +1024,36 @@ function canonicalOperationName(value: string): string {
   const normalized = value.trim().toLowerCase();
   const separator = normalized.lastIndexOf("__");
   return separator >= 0 ? normalized.slice(separator + 2) : normalized;
+}
+
+function canonicalNativeToolId(toolName: string): string {
+  const normalized = canonicalOperationName(toolName).replace(/^tool\./, "");
+  const canonical: Record<string, string> = {
+    read_file: "tool.read_file",
+    read: "tool.read_file",
+    glob: "tool.read_file",
+    write_file: "tool.write_file",
+    write: "tool.write_file",
+    edit: "tool.write_file",
+    execute_code: "tool.execute_code",
+    exec: "tool.execute_code",
+    bash: "tool.execute_code",
+    process: "tool.execute_code",
+    send_email: "tool.send_email",
+    email: "tool.send_email",
+    call_api: "tool.call_api",
+    request: "tool.call_api",
+    fetch: "tool.send_request",
+    web_fetch: "tool.send_request",
+    send_request: "tool.send_request",
+    web_search: "tool.web_search",
+    query_database: "tool.query_database",
+    browser: "tool.browser",
+    browser_navigate: "tool.browser",
+    navigate: "tool.browser",
+    message: "tool.send_message",
+  };
+  return canonical[normalized] ?? `tool.${normalized}`;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

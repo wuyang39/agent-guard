@@ -95,6 +95,40 @@ test("refreshes an expired host capability entry", async () => {
   assert.equal(inspections, 2);
 });
 
+test("does not retain transient unsupported or unverified host capabilities", async () => {
+  let inspections = 0;
+  const responses: NativeGuardCapability[] = [
+    {
+      ...CAPABILITY,
+      supportsNativeGuard: false,
+      finalizerAssurance: "unverified",
+    },
+    {
+      ...CAPABILITY,
+      finalizerAssurance: "unverified",
+      conflictingPluginIds: ["plugin.starting"],
+    },
+    CAPABILITY,
+  ];
+  const cached = createOpenClawHostCapabilityCache().wrap(
+    "agent-a",
+    controlClient({
+      inspectCapabilities: async () => responses[inspections++]!,
+    }),
+  );
+  const input = { isolatedProfile: false };
+
+  assert.equal((await cached.inspectCapabilities(input)).supportsNativeGuard, false);
+  assert.equal(
+    (await cached.inspectCapabilities(input)).finalizerAssurance,
+    "unverified",
+  );
+  assert.equal((await cached.inspectCapabilities(input)).supportsNativeGuard, true);
+  assert.equal((await cached.inspectCapabilities(input)).supportsNativeGuard, true);
+
+  assert.equal(inspections, 3);
+});
+
 test("invalidates the identity after a failed Gateway control operation", async () => {
   let inspections = 0;
   const client = controlClient({

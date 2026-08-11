@@ -11,7 +11,7 @@
 | Branch | `agentguard-2026.7.1` |
 | 本地 fork checkout | `<agent-guard-root>/outputs/openclaw-agentguard-active` |
 | 隔离 profile | `%USERPROFILE%\.agent-guard\openclaw-native-guard-profile` |
-| OpenClaw fork | `d895b2dbfe7c8a2d8cb9f9827df315d11d8939fa` |
+| OpenClaw fork | `0cd158ce32d5c53daee74235cf0557fc4d414b17` |
 | Runtime entrypoint | `<fork-root>/openclaw.mjs` |
 | Production inspector | `<fork-root>/dist/cli/native-guard-inspector.js` |
 | Node.js | `>=22.22.3 <23 || >=24.15.0 <25 || >=25.9.0` |
@@ -30,7 +30,7 @@ $agentGuardRoot = (Get-Location).Path
 $forkRoot = Join-Path $agentGuardRoot "outputs\openclaw-agentguard-active"
 ```
 
-预期版本包含 `2026.7.1-agentguard.1` 和 `d895b2d`。`OPENCLAW_CLI` 必须直接指向根目录 `openclaw.mjs`；安装器和运行器对 `.mjs` 原生使用 `node` 执行，不需要 `.cmd` wrapper、`npm link` 或全局 `openclaw`。
+预期版本包含 `2026.7.1-agentguard.1` 和 `0cd158c`。`OPENCLAW_CLI` 必须直接指向根目录 `openclaw.mjs`；安装器和运行器对 `.mjs` 原生使用 `node` 执行，不需要 `.cmd` wrapper、`npm link` 或全局 `openclaw`。
 
 在同一隔离 profile 中完成 OpenClaw 自身的 model/provider 配置，然后执行 auth fail-fast。使用交互式 credential/SecretRef/env 流程；禁止复制宿主 `auth-profiles.json`、任意秘密文件或未筛选的用户 profile，也不要把 credential 值写入验收证据：
 
@@ -539,7 +539,7 @@ while ($true) {
 - [ ] 完成 main 全会话监督黑盒及 main active/Docker detection 共存检查，归档两个 Gateway、两个 lease、main/worker 副作用和 stop 后 allow 证据。
 - [ ] 执行最终 `git diff --check`、范围审计和 secret scan。
 - [x] 提供可重复的 `docker/openclaw-sandbox/Dockerfile`、README 与 build 脚本，并以脚本输出作为权威本机 digest。
-- [x] 在 `d895b2d...` artifact 上 fresh 完成 real registry gate（28.4 秒）。
+- [x] 在 `0cd158c...` artifact 上 fresh 完成 real registry gate 和 host main attestation 黑盒。
 - [x] 用新 `01630c...` digest 完成 required Docker default/controlled gate；总计 120.3 秒，两轮 cleanup 残留为 0。
 - [x] clone-and-run 发布门完成 5/5 与 30/30；30-case 为 `coverage=active`、breaches 0、runtimeFailures 0，且两阶段 Docker 残留为 0。
 - [x] 公开发布精确 fork commit 与 GHCR immutable image，并完成匿名访问验证。
@@ -550,7 +550,7 @@ while ($true) {
 | 故障 | 检查 |
 |---|---|
 | fork artifact 缺失 | 先导入精确 artifact；不要从 upstream 或移动分支替代 |
-| fork SHA/buildstamp 不符 | 两者都必须精确等于 `d895b2db...39fa`，否则 fail fast |
+| fork SHA/buildstamp 不符 | 两者都必须精确等于 `0cd158ce...4b17`，否则 fail fast |
 | Node 不兼容 | 使用 fork `package.json` 的精确 engines 范围 |
 | 安装器找不到配置 | 同时显式设置并创建 `OPENCLAW_HOME` 和 `OPENCLAW_CONFIG_PATH` |
 | `.mjs` 不能执行 | 保持 `OPENCLAW_CLI=<fork-root>/openclaw.mjs`；安装器通过 `node` 执行 |

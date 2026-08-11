@@ -10,7 +10,7 @@ The machine-readable source of truth is `configs/openclaw-distribution.json`.
 |---|---|
 | OpenClaw repository | `https://github.com/wuyang39/openclaw-agentguard.git` |
 | Branch | `agentguard-2026.7.1` |
-| Commit | `d895b2dbfe7c8a2d8cb9f9827df315d11d8939fa` |
+| Commit | `0cd158ce32d5c53daee74235cf0557fc4d414b17` |
 | Version | `2026.7.1-agentguard.1` |
 | Sandbox image | `ghcr.io/wuyang39/openclaw-sandbox@sha256:01630cbb3486af7c0908b326d956d20722fde3ceada2775b53e547370a4e0e38` |
 
@@ -87,6 +87,15 @@ OpenClaw:     http://127.0.0.1:18789
 
 The permanent Gateway is launched only through `openclaw-guard-launcher.ts` and supports normal OpenClaw conversations plus supervision. Every OpenClaw detection RunGroup still creates a separate isolated Gateway generation, attests it, uses it sequentially, and cleans it up. The conversation Gateway is never reused as a detection trust root.
 
+OpenClaw CLI conversations need the managed Gateway credential in the current terminal. Load it from the ignored runtime file; do not pass it as `--token`, print it, or add it to the generated environment helper:
+
+```powershell
+. .\outputs\agent-guard-openclaw-env.ps1
+$env:OPENCLAW_GATEWAY_TOKEN = (Get-Content -Raw .\outputs\runtime\openclaw-gateway-token.txt).Trim()
+node $env:OPENCLAW_CLI agent --agent main --session-key "agent:main:cli:demo" --message "Reply with ok." --json
+Remove-Item Env:OPENCLAW_GATEWAY_TOKEN
+```
+
 Stop all four persistent services and their child processes:
 
 ```powershell
@@ -137,6 +146,7 @@ The verifier uses a 180-second per-case OpenClaw timeout, polls until terminal s
 | Start reports a port in use | Stop the earlier Agent Guard instance; do not silently reuse an unknown process. |
 | Supervision controls return `401` | Restart with `npm run openclaw:start` and use the newly opened pairing tab; backend restarts invalidate old cookies. |
 | Supervision controls return `403` | Use the exact launcher URL on `127.0.0.1` and the configured frontend port; `localhost`, a different port, or a copied API URL is a different Origin. |
+| CLI reports `GatewayCredentialsRequiredError` | Load `OPENCLAW_GATEWAY_TOKEN` from `outputs/runtime/openclaw-gateway-token.txt` in that terminal; never add `--token` to the process command line. |
 | Detection fails before case 1 | Check the immutable image, fork buildstamp, plugin inventory, and model authentication. |
 | Detection times out | Inspect the RunGroup trace and provider response. Missing reconciliation remains a fatal coverage failure. |
 | Load verification reports residual Docker resources | Preserve the JSONL evidence and inspect resources carrying `agent-guard.run-group=<runGroupId>`. |

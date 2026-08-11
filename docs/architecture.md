@@ -463,7 +463,7 @@ Evidence 面使用双因子：独立 evidence bearer 加每 epoch Ed25519 proof-
 
 插件的 lifecycle marker 保存有界 FIFO 和非秘密 exact proof，联网成功并完成本地事务后才弹出队首。marker 新写入携带 top-level `leaseEpoch`；legacy 无 epoch marker 不能推断 epoch，root end 继续 RECOVERY。128 项或 64 KiB 溢出会持久 fail closed 到 revoke；root end 写 `root_ended` tombstone，阻断 root/children 且不可续租，同时允许 lease 到期前排空晚到 evidence。event spool 默认从 profile marker 目录派生，并在 activation 前通过 exclusive-create、mode `0600`、PID/token owner record 获取单进程所有权；逐级拒绝 symlink ancestor，释放失败只重试私有 owner quarantine，完整坏 data 原子 quarantine 后重建空 spool，OFF 不创建 spool 或 owner。runtime stop 在保留内部 deadline 的同时传播 spool release failure，并允许后续 stop/restart 重试。outcome projection 在 canonicalization 前按 bounded normalized/scrubbed keys、JSON punctuation 和 values 统一计入 256 KiB 预算，再计算稳定 digest。
 
-官方对照基线 OpenClaw `2026.7.2` / `3edbe19fbd84ba58fdbf8e83042da9efd1d06f81` 的 registrar 返回 `void`，不能创建新的 guarded activation，只能通过 revoke 清理 recovery marker。公开受控 fork `https://github.com/wuyang39/openclaw-agentguard` 的 `agentguard-2026.7.1` 分支固定在 `d895b2dbfe7c8a2d8cb9f9827df315d11d8939fa`，提供受信 live attestation、fd3 bootstrap 和 Gateway core 签名证明；其正式构建使用 `node scripts/build-all.mjs gatewayWatch`，并以 `dist/.buildstamp` 绑定该提交。`session_end(reason="compaction")`、Gateway shutdown 和 restart 均保留 marker，避免生命周期切换把保护意图错误降为 OFF。
+官方对照基线 OpenClaw `2026.7.2` / `3edbe19fbd84ba58fdbf8e83042da9efd1d06f81` 的 registrar 返回 `void`，不能创建新的 guarded activation，只能通过 revoke 清理 recovery marker。公开受控 fork `https://github.com/wuyang39/openclaw-agentguard` 的 `agentguard-2026.7.1` 分支固定在 `0cd158ce32d5c53daee74235cf0557fc4d414b17`，提供受信 live attestation、fd3 bootstrap 和 Gateway core 签名证明；其正式构建使用 `node scripts/build-all.mjs gatewayWatch`，并以 `dist/.buildstamp` 绑定该提交。`session_end(reason="compaction")`、Gateway shutdown 和 restart 均保留 marker，避免生命周期切换把保护意图错误降为 OFF。
 
 进程外 launcher 是最终启动边界：若 guarded marker 存在，而 live registry query 不能同时证明 Agent Guard plugin、final `before_tool_call`、recovery service、可信的 post-approval lease recheck capability，以及 trusted JSON-only params provenance 或原子 approved-snapshot execution 参数契约，launcher 必须拒绝正常 Gateway 启动，并且只开放不调度工具的 maintenance cleanup。参数契约是审批后租约复查之外的附加门禁；固定 `3edbe19f` 宿主仍处于 unsupported/quarantined。该门禁已经实现并通过真实受控 fork 验收，插件 quarantine 仍只是纵深防御，不能替代外部门禁。
 
@@ -477,7 +477,7 @@ portable 启动器为四类长期进程建立最小权限环境：Gateway 只获
 
 #### 7.1.1 兼容 OpenClaw Fork 需要提供的能力
 
-官方对照基线 `2026.7.2/3edbe19f` 不提供以下能力。受控 fork `d895b2dbfe7c8a2d8cb9f9827df315d11d8939fa` 已提供：
+官方对照基线 `2026.7.2/3edbe19f` 不提供以下能力。受控 fork `0cd158ce32d5c53daee74235cf0557fc4d414b17` 已提供：
 
 1. **Registrar live contribution 结果** — `plugins list --json --live` 的 `registry.liveAttestation` 字段为 `true`，证明插件 hook/service/route 已 live registered。
 2. **final `before_tool_call` 顺序证明** — 插件注册的 `before_tool_call` hook 具有最高优先级且不能被其他插件覆盖。
@@ -502,6 +502,8 @@ portable 启动器为四类长期进程建立最小权限环境：Gateway 只获
 Frontend 对 refresh/start/stop 共用 latest-wins operation gate，旧请求不能覆盖较新的状态。点击开始监督时先确保 control capability，再签发十分钟、只读的 `agent_guard_native_events` cookie，属性为 `HttpOnly; SameSite=Strict; Path=/api/v1/openclaw/realtime/events/stream`，之后才激活 lease 并以 credentialed EventSource 打开 SSE。手动开始监听和切换历史模式每次都先重新签发 event capability，并使用独立 generation gate；停止监听或卸载会使未完成的旧签发失效。SSE 打开失败不回滚已激活 lease。点击停止监督只调用 stop/revoke，不主动关闭 SSE，操作员仍可观察和筛选已有事件。
 
 同一个 coordinator 可以同时持有 host main lease 和 sandbox detection lease。冲突判定由 `gatewayInstanceId + overlapping scope` 共同决定，因此不同 Gateway 上的 overlapping scope 可以共存。每条 managed lease 保存自己的 `controlClient`、Gateway URL、`capabilityInput` 和 `gatewayInstanceId`；activate、renew、status、revoke 及失败 rollback 都回到该 lease 原来的 Gateway。sandbox factory 以 `activateWithIdentity()` 返回的 `leaseId` 与 `leaseEpoch` 为权威身份，不从 aggregate status 猜测。
+
+Host capability warmup 只缓存已经证明 `supportsNativeGuard=true`、finalizer 已验证且无冲突插件的正结果。Gateway 端口先监听、live registry 后完成注册时产生的 unsupported/unverified 瞬态结果不会进入五分钟缓存，后续 start/status 会重新探测。原生决策把 OpenClaw 工具名规范化为策略使用的 canonical `targetId`（例如 `exec -> tool.execute_code`）；随机调用身份只保留在独立 `toolCallId` 字段，避免生成策略因匹配随机 ID 而落到默认 allow。
 
 ### 7.2 Detection Sandbox 生命周期 (Task 11-12)
 

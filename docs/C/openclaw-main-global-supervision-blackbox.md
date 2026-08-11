@@ -41,7 +41,7 @@ docker pull $env:AGENT_GUARD_DETECTION_IMAGE
 .\scripts\start-agent-guard-openclaw.ps1 -NoBrowser
 ```
 
-打开 `http://127.0.0.1:5173` 和 `http://127.0.0.1:18789`。再检查四个端口和 API：
+复制终端只打印一次的 `Pairing:` URL，在浏览器打开；确认页面加载后地址栏中的 `#agent-guard-bootstrap=...` 已消失。不要改成普通 `http://127.0.0.1:5173` 再进行首次配对。另行打开 `http://127.0.0.1:18789`，再检查四个端口和 API：
 
 ```powershell
 Get-NetTCPConnection -State Listen -LocalPort 18789,7001,3100,5173
@@ -80,17 +80,6 @@ function Invoke-SafeMarkerProbe {
     Tee-Object -FilePath (Join-Path $evidenceRoot "$MarkerName.openclaw.log")
   [pscustomobject]@{ SessionKey = $SessionKey; Marker = $marker; Exists = Test-Path -LiteralPath $marker }
 }
-
-function Save-NativeSupervisionStatus([string]$Name) {
-  $response = Invoke-RestMethod http://127.0.0.1:3100/api/v1/openclaw/native-supervision
-  if ($response.ok -ne $true -or $null -eq $response.data) {
-    throw "Native supervision status response was unsuccessful or missing data."
-  }
-  $status = $response.data
-  $status | ConvertTo-Json -Depth 20 |
-    Set-Content -LiteralPath (Join-Path $evidenceRoot "$Name.status.json") -Encoding utf8
-  $status
-}
 ```
 
 保留这个终端。每次探针都看三处：OpenClaw 返回、marker 是否存在、frontend 的“实时事件流”。
@@ -123,11 +112,7 @@ Invoke-SafeMarkerProbe "worker" $workerSession "01-worker-off.txt" "worker-off-a
 
 1. 在“实时监督”页确认当前 Policy pack 是准备好的 deny policy。
 2. 点击“开始监督”。保持“监听中”；建议选择“含历史”方便复核。
-3. 点击“刷新监督”，并保存状态：
-
-```powershell
-Save-NativeSupervisionStatus "10-main-active"
-```
+3. 点击“刷新监督”，把完整状态卡截图保存到 `$evidenceRoot\10-main-active.png`。不要从 PowerShell 直接调用受保护的 native-supervision API；浏览器 control cookie 是 HttpOnly，且接口要求精确 Origin。
 
 必须同时满足：
 
@@ -199,10 +184,9 @@ Invoke-SafeMarkerProbe "worker" $workerSession "30-worker-during-main.txt" "work
 - sandbox lease 已撤销，main 卡片回到 `activeLeaseCount=1`、`mainLeaseCount=1`。
 - host Gateway instance、main lease ID 和到期时间仍对应同一次 main supervision；两个 main deny 探针仍可在 SSE 历史中查看。
 
-保存证据：
+把刷新后的完整状态卡截图保存到 `$evidenceRoot\40-after-detection.png`，并保存 Docker 清单：
 
 ```powershell
-Save-NativeSupervisionStatus "40-after-detection"
 docker ps --format '{{json .}}' |
   Set-Content -LiteralPath (Join-Path $evidenceRoot "40-docker-ps.jsonl") -Encoding utf8
 ```
@@ -212,10 +196,9 @@ docker ps --format '{{json .}}' |
 ## 9. 停止后恢复 allow，SSE 保持可观察
 
 1. 在“实时监督”点击“停止监督”，不要点击“停止监听”。
-2. 点击“刷新监督”，保存状态：
+2. 点击“刷新监督”，把状态卡截图保存到 `$evidenceRoot\50-main-stopped.png`，然后运行恢复探针：
 
 ```powershell
-Save-NativeSupervisionStatus "50-main-stopped"
 Invoke-SafeMarkerProbe "main" $oldMainSession "51-main-after-stop.txt" "main-off-restored"
 ```
 
@@ -235,6 +218,8 @@ Invoke-SafeMarkerProbe "main" $oldMainSession "51-main-after-stop.txt" "main-off
 | main marker 仍出现 | marker 路径、OpenClaw 工具名、Policy pack | 模型没有调用原生 `exec`、策略未匹配、请求落到 worker/MCP；核对原生工具事件与精确 session key |
 | worker 被 main lease 拦截 | OpenClaw agent 选择、session key | 实际仍由 main 发起，或 worker 上另有 exact lease；必须使用真实 worker 身份重试 |
 | UI 没有 `native_tool_hook` | 页面“监听中”、SSE URL、API 日志 | EventSource 断线、事件未持久化、页面筛选错；切“含历史”并重连 `.../events/stream?replay=1` |
+| 监督状态或 SSE 返回 `401` | 当前浏览器 tab、backend 启动时间 | backend 重启后旧 cookie 失效；重新运行 launcher，并使用新打印/打开的 Pairing URL |
+| 监督状态或 SSE 返回 `403` | 地址栏 frontend Origin | 必须使用 launcher 的精确 `127.0.0.1:<port>` Origin；`localhost`、旧端口或其他页面均不被信任 |
 | 两个 main 会话混在一起或缺一个 | “原生 main 会话”下拉、CLI 参数 | session key 重用、格式不是 `agent:main:*`；用两个新的规范 key 重试 |
 | detection 启动失败 | RunGroup 错误、Docker Desktop、image digest | daemon 未启动、immutable image 未拉取、模型/provider 不可用；不要改用 `latest` |
 | detection 后 `activeLeaseCount` 仍为 2 | RunGroup 终态、sandbox/Gateway 日志、`docker ps` | sandbox lease 或 container 清理未完成；先取消 RunGroup，再执行统一 stop |
@@ -254,4 +239,4 @@ Compress-Archive -Path (Join-Path $evidenceRoot "*") `
 Remove-Item -LiteralPath $probeRoot -Recurse -Force
 ```
 
-证据包至少保留：三个 status JSON、五次探针的 OpenClaw 日志、main 两个 session key、RunGroup ID、detection coverage 页面截图、实时事件流截图、portable service stderr/stdout 和最终 Docker 清单。任何 token、provider key、完整 auth profile 都不得进入证据包。
+证据包至少保留：三个状态卡截图、五次探针的 OpenClaw 日志、main 两个 session key、RunGroup ID、detection coverage 页面截图、实时事件流截图、portable service stderr/stdout 和最终 Docker 清单。截图必须在 fragment 已从地址栏清除后采集。任何 token、provider key、完整 pairing URL 或 auth profile 都不得进入证据包。

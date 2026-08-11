@@ -469,9 +469,11 @@ Evidence 面使用双因子：独立 evidence bearer 加每 epoch Ed25519 proof-
 
 Launcher 实现在 `scripts/openclaw-guard-launcher.ts`。在 OpenClaw Gateway 启动前执行：
 ```bash
-node --import tsx scripts/openclaw-guard-launcher.ts -- gateway run --bind loopback --port <port> --token <token>
+OPENCLAW_GATEWAY_TOKEN=<token> node --import tsx scripts/openclaw-guard-launcher.ts -- gateway run --bind loopback --port <port>
 ```
-launcher 完成 marker 和 live registry 检查后原子 spawn `--` 后的 Gateway child，并将 child 退出状态传回调用方；检测全程绑定该真实 child。`--maintenance` 必须单独使用，不接受 child 参数，也不会 spawn OpenClaw。Gateway fd3 bootstrap 使用 60 秒绝对截止时间，随后 readiness 使用独立的 120 秒绝对截止时间；慢启动不能通过逐次探测重置任一预算。
+launcher 完成 marker 和 live registry 检查后原子 spawn `--` 后的 Gateway child，并将 child 退出状态传回调用方；检测全程绑定该真实 child。Gateway token 只通过子进程环境传递，不进入命令行。`--maintenance` 必须单独使用，不接受 child 参数，也不会 spawn OpenClaw。Gateway fd3 bootstrap 使用 60 秒绝对截止时间，随后 readiness 使用独立的 120 秒绝对截止时间；慢启动不能通过逐次探测重置任一预算。
+
+portable 启动器为四类长期进程建立最小权限环境：Gateway 只获得 Gateway token 和 host attestation bootstrap 路径；backend 获得 Gateway token、Agent Guard control token、一次性 UI bootstrap token 和精确 frontend Origin；sample 与 frontend 不获得上述凭据。`Start-Process` 前临时覆盖或删除变量，并在成功和异常路径的 `finally` 中恢复 launcher 父环境。plan、PID registry 和服务日志不保存一次性 UI token 或完整配对 URL。
 
 #### 7.1.1 兼容 OpenClaw Fork 需要提供的能力
 
@@ -493,9 +495,11 @@ launcher 完成 marker 和 live registry 检查后原子 spawn `--` 后的 Gatew
 
 插件按 `exact-session > main-agent fallback > OFF` 解析会话。某个 session 已有 exact active、recovery 或 `root_ended` 状态时，该状态 shadow agent fallback，不能借 main lease 绕过 exact lease 的恢复或终止状态。agent scope 下的 `session_end` 只清理该会话的绑定，不结束 agent lease；停止全局监督必须显式 revoke。声称属于 main、但不符合 canonical session key 的身份在 main agent coverage 存在时 fail closed。
 
-后端公开 `GET /api/v1/openclaw/native-supervision`、`POST /api/v1/openclaw/native-supervision/start` 和 `POST /api/v1/openclaw/native-supervision/stop`。start 只接受存储中真实且 digest 匹配的 `SupervisionPolicyPack`，激活成功并确认 `coverage=active`、`mainLeaseCount=1` 后才返回 active；在线租约不支持替换，必须先显式 stop。默认 TTL 是五分钟，在到期前约一个 TTL 的三分之一，也就是已使用约三分之二 TTL 时自动 renew。stop 显式 revoke；激活回滚、续租、状态确认或撤销失败时保留 `recovery`/`conditional` 和稳定 `reasonCode`，不能把未确认状态显示成 OFF。
+后端公开 `GET /api/v1/openclaw/native-supervision`、`POST /api/v1/openclaw/native-supervision/start` 和 `POST /api/v1/openclaw/native-supervision/stop`。三条控制接口都要求精确允许的 browser Origin 和 HttpOnly control cookie。start 只接受存储中真实且 digest 匹配的 `SupervisionPolicyPack`，激活成功并确认 `coverage=active`、`mainLeaseCount=1` 后才返回 active；在线租约不支持替换，必须先显式 stop。默认 TTL 是五分钟，在到期前约一个 TTL 的三分之一，也就是已使用约三分之二 TTL 时自动 renew。stop 显式 revoke；激活回滚、续租、状态确认或撤销失败时保留 `recovery`/`conditional` 和稳定 `reasonCode`，不能把未确认状态显示成 OFF。
 
-Frontend 对 refresh/start/stop 共用 latest-wins operation gate，旧请求不能覆盖较新的状态。点击开始监督时，只有 active 响应返回后才打开 SSE；SSE 打开失败不回滚已激活 lease。点击停止监督只调用 stop/revoke，不主动关闭 SSE，操作员仍可观察和筛选已有事件。
+浏览器能力由 backend 进程内服务管理。launcher 每次启动生成一个 32-byte base64url bootstrap token，只注入 backend，并打开 `http://127.0.0.1:<frontend-port>/#agent-guard-bootstrap=<token>`；`-NoBrowser` 只在控制终端打印一次。frontend 先用 `history.replaceState` 清除 fragment，再单次交换 `agent_guard_supervision_session`，属性为 `HttpOnly; SameSite=Strict; Path=/api/v1/openclaw/native-supervision`，默认有效期八小时。bootstrap 默认十分钟失效且只能成功使用一次；backend 重启会使全部浏览器能力失效。显式 launcher Origin 会替换默认 allow-list，动态端口下不会继续信任旧的 5173 Origin。直接运行 `npm run api:start` 时，backend 自行生成并在控制终端打印一次 pairing URL。
+
+Frontend 对 refresh/start/stop 共用 latest-wins operation gate，旧请求不能覆盖较新的状态。点击开始监督时先确保 control capability，再签发十分钟、只读的 `agent_guard_native_events` cookie，属性为 `HttpOnly; SameSite=Strict; Path=/api/v1/openclaw/realtime/events/stream`，之后才激活 lease 并以 credentialed EventSource 打开 SSE。手动开始监听和切换历史模式每次都先重新签发 event capability，并使用独立 generation gate；停止监听或卸载会使未完成的旧签发失效。SSE 打开失败不回滚已激活 lease。点击停止监督只调用 stop/revoke，不主动关闭 SSE，操作员仍可观察和筛选已有事件。
 
 同一个 coordinator 可以同时持有 host main lease 和 sandbox detection lease。冲突判定由 `gatewayInstanceId + overlapping scope` 共同决定，因此不同 Gateway 上的 overlapping scope 可以共存。每条 managed lease 保存自己的 `controlClient`、Gateway URL、`capabilityInput` 和 `gatewayInstanceId`；activate、renew、status、revoke 及失败 rollback 都回到该 lease 原来的 Gateway。sandbox factory 以 `activateWithIdentity()` 返回的 `leaseId` 与 `leaseEpoch` 为权威身份，不从 aggregate status 猜测。
 
@@ -542,7 +546,7 @@ preflight → start → [run cases] → attest → revoke → cleanup
 
 ### 7.4 Realtime Hook Events & Coverage UI (Task 13)
 
-durable `NativeGuardEventStore` 在 append 落盘后通知 `nativeGuardRealtimeBridge`，再由 `emitNativeToolHookEvent()` 发布 sanitized `native_tool_hook` 到 SSE。bridge 只投影 `decision`、`approval_requested`、`approval_resolved`、`tool_outcome` 四种事件，detail 只包含 `leaseId`、`leaseEpoch`、`phase`、`decisionId`、`reasonCode`、`outcome` 和固定 `source` 白名单；`runtimeSessionId` 使用事件中的真实 OpenClaw `sessionKey`。同步抛错和 rejected listener promise 都被隔离，已经持久化的判定不受 realtime listener 失败影响。
+durable `NativeGuardEventStore` 在 append 落盘后通知 `nativeGuardRealtimeBridge`，再由 `emitNativeToolHookEvent()` 发布 sanitized `native_tool_hook` 到 SSE。`GET /api/v1/openclaw/realtime/events/stream` 在 hijack、replay 和 subscribe 前同时验证精确 Origin 与独立 event cookie；control cookie 不能读取 SSE，event cookie 也不能启停监督。bridge 只投影 `decision`、`approval_requested`、`approval_resolved`、`tool_outcome` 四种事件，detail 只包含 `leaseId`、`leaseEpoch`、`phase`、`decisionId`、`reasonCode`、`outcome` 和固定 `source` 白名单；`runtimeSessionId` 使用事件中的真实 OpenClaw `sessionKey`。同步抛错和 rejected listener promise 都被隔离，已经持久化的判定不受 realtime listener 失败影响；Fastify 关闭时主动结束连接并释放订阅。
 
 Frontend 只把 canonical `agent:main:*` 的 `native_tool_hook` 加入 main 观察会话列表；会话筛选只匹配所选的精确 session key。其他 realtime 事件仍沿用当前 session/含历史规则，非 main 或 malformed claimed-main 事件不会混入 main 原生会话视图。
 

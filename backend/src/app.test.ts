@@ -369,17 +369,19 @@ test("buildApp registers one injected main supervision service and closes it", a
 test("buildApp exchanges a bootstrap token and authenticates native supervision with credentials", async () => {
   const calls: string[] = [];
   const bootstrapToken = "b".repeat(43);
+  const frontendOrigin = "http://127.0.0.1:5199";
   const app = await buildApp({
     logger: false,
     nativeGuardDependencies: appNativeGuardDependencies(),
     mainAgentSupervisionService: appSupervisionService(calls),
     nativeSupervisionBootstrapToken: bootstrapToken,
+    additionalNativeSupervisionAllowedOrigins: [frontendOrigin],
   });
 
   const unauthenticated = await app.inject({
     method: "GET",
     url: "/api/v1/openclaw/native-supervision",
-    headers: { origin: "http://127.0.0.1:5173" },
+    headers: { origin: frontendOrigin },
   });
   assert.equal(unauthenticated.statusCode, 401);
   assert.equal(unauthenticated.json().error.code, "NATIVE_SUPERVISION_ACCESS_REQUIRED");
@@ -388,7 +390,7 @@ test("buildApp exchanges a bootstrap token and authenticates native supervision 
   const paired = await app.inject({
     method: "POST",
     url: "/api/v1/openclaw/native-supervision/access/bootstrap",
-    headers: { origin: "http://127.0.0.1:5173" },
+    headers: { origin: frontendOrigin },
     payload: { token: bootstrapToken },
   });
   assert.equal(paired.statusCode, 204);
@@ -400,7 +402,7 @@ test("buildApp exchanges a bootstrap token and authenticates native supervision 
   const authenticated = await app.inject({
     method: "GET",
     url: "/api/v1/openclaw/native-supervision",
-    headers: { origin: "http://127.0.0.1:5173", cookie },
+    headers: { origin: frontendOrigin, cookie },
   });
   assert.equal(authenticated.statusCode, 200);
   assert.deepEqual(calls, ["status"]);
@@ -420,12 +422,12 @@ test("buildApp exchanges a bootstrap token and authenticates native supervision 
     method: "OPTIONS",
     url: "/api/v1/openclaw/native-supervision/stop",
     headers: {
-      origin: "http://127.0.0.1:5173",
+      origin: frontendOrigin,
       "access-control-request-method": "POST",
     },
   });
   assert.equal(allowedPreflight.statusCode, 204);
-  assert.equal(allowedPreflight.headers["access-control-allow-origin"], "http://127.0.0.1:5173");
+  assert.equal(allowedPreflight.headers["access-control-allow-origin"], frontendOrigin);
   assert.equal(allowedPreflight.headers["access-control-allow-credentials"], "true");
   await app.close();
 });

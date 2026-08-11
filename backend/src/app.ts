@@ -150,6 +150,7 @@ export async function buildApp(opts?: {
   mainAgentSupervisionService?: MainAgentSupervisionService;
   nativeSupervisionAccessService?: NativeSupervisionAccessService;
   nativeSupervisionBootstrapToken?: string;
+  additionalNativeSupervisionAllowedOrigins?: readonly string[];
 }) {
   let nativeGuardDependencies = opts?.nativeGuardDependencies;
   if (!nativeGuardDependencies) {
@@ -172,6 +173,15 @@ export async function buildApp(opts?: {
       bootstrapToken: opts?.nativeSupervisionBootstrapToken ??
         process.env.AGENT_GUARD_UI_BOOTSTRAP_TOKEN ?? randomBytes(32).toString("base64url"),
     });
+  const nativeSupervisionAllowedOrigins = new Set(
+    nativeGuardDependencies.allowedOrigins,
+  );
+  for (const origin of opts?.additionalNativeSupervisionAllowedOrigins ?? []) {
+    if (isAllowedNativeSupervisionOrigin(origin, [origin])) {
+      nativeSupervisionAllowedOrigins.add(origin);
+    }
+  }
+  const nativeSupervisionAllowedOriginList = [...nativeSupervisionAllowedOrigins];
   const redaction = {
     paths: [
       "req.headers.authorization",
@@ -213,7 +223,7 @@ export async function buildApp(opts?: {
     const origin = request.headers.origin;
     if (
       isNativeSupervisionRequest(request.url) &&
-      !isAllowedNativeSupervisionOrigin(origin, nativeGuardDependencies.allowedOrigins)
+      !isAllowedNativeSupervisionOrigin(origin, nativeSupervisionAllowedOriginList)
     ) {
       return reply.code(403).send(failure(
         "NATIVE_SUPERVISION_ORIGIN_FORBIDDEN",
@@ -283,7 +293,7 @@ export async function buildApp(opts?: {
   await app.register(openClawNativeSupervisionRoutes, {
     service: mainAgentSupervisionService,
     accessService: nativeSupervisionAccessService,
-    allowedOrigins: nativeGuardDependencies.allowedOrigins,
+    allowedOrigins: nativeSupervisionAllowedOriginList,
   });
   await app.register(openClawNativeGuardRoutes, nativeGuardDependencies);
 

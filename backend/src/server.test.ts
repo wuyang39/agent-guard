@@ -10,6 +10,7 @@ test("server fallback creates one local pairing fragment without a supplied boot
 
   assert.deepEqual(bootstrap, {
     bootstrapToken: "b".repeat(43),
+    pairingOrigin: "http://127.0.0.1:5199",
     pairingUrl: `http://127.0.0.1:5199/#agent-guard-bootstrap=${"b".repeat(43)}`,
   });
   assert.doesNotMatch(bootstrap.pairingUrl!, /[?&]agent-guard-bootstrap=/);

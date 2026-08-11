@@ -12,6 +12,7 @@ import { pathToFileURL } from "node:url";
 
 export type NativeSupervisionServerBootstrap = {
   bootstrapToken: string;
+  pairingOrigin?: string;
   pairingUrl?: string;
 };
 
@@ -26,9 +27,11 @@ export function createNativeSupervisionServerBootstrap(
     throw new TypeError("Generated UI bootstrap token must be a 32-byte base64url token");
   }
   const frontendPort = parsePort(env.FRONTEND_PORT ?? "5173", "FRONTEND_PORT");
+  const pairingOrigin = `http://127.0.0.1:${String(frontendPort)}`;
   return {
     bootstrapToken,
-    pairingUrl: `http://127.0.0.1:${String(frontendPort)}/#agent-guard-bootstrap=${bootstrapToken}`,
+    pairingOrigin,
+    pairingUrl: `${pairingOrigin}/#agent-guard-bootstrap=${bootstrapToken}`,
   };
 }
 
@@ -38,6 +41,9 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
   const bootstrap = createNativeSupervisionServerBootstrap(env);
   const app = await buildApp({
     nativeSupervisionBootstrapToken: bootstrap.bootstrapToken,
+    additionalNativeSupervisionAllowedOrigins: bootstrap.pairingOrigin
+      ? [bootstrap.pairingOrigin]
+      : undefined,
   });
 
   // graceful shutdown

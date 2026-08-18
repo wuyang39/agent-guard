@@ -19,6 +19,22 @@ export function selectCasesByRule(
   const timeBudgetMs = normalizeTimeBudget(request.timeBudgetMs);
   let selectedDurationMs = 0;
 
+  for (const caseId of request.preferredCaseIds ?? []) {
+    const candidate = usable.find((item) => item.caseId === caseId);
+    if (
+      candidate &&
+      selected.size < maxCaseCount &&
+      fitsTimeBudget(candidate, selectedDurationMs, timeBudgetMs)
+    ) {
+      selected.set(candidate.caseId, {
+        caseId: candidate.caseId,
+        reason: "Selected by the active runtime profile.",
+        source: "rule",
+      });
+      selectedDurationMs += estimatedDuration(candidate);
+    }
+  }
+
   for (const family of request.requiredAttackFamilies ?? []) {
     const candidate = bestCandidate(
       usable.filter(

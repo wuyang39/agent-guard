@@ -160,6 +160,7 @@ export type TestSelectionRequest = {
   timeBudgetMs?: number;
   requiredAttackFamilies?: string[];
   requiredTargetSurfaces?: string[];
+  preferredCaseIds?: string[];
   includeExternalTools?: boolean;
   adapterKind?: "mock" | "http_sample" | "openclaw";
 };

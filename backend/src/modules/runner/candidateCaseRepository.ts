@@ -41,10 +41,12 @@ export class CandidateCaseRepository {
   async loadCandidateCases(
     request: CandidateCaseLoadRequest,
   ): Promise<CandidateCaseLoadResult> {
-    const generated = await loadGeneratedAttackCards(request);
-    if (generated) return generated;
-
     const configDir = this.opts.configDir ?? path.resolve(process.cwd(), "configs");
+    if (request.manifestId !== DEFAULT_MANIFEST_ID) {
+      const generated = await loadGeneratedAttackCards(request);
+      if (generated) return generated;
+    }
+
     const { contexts } = await loadTestContexts(configDir, this.opts.agent);
     const candidates = contexts
       .map((context) => deriveCandidateCase(context))

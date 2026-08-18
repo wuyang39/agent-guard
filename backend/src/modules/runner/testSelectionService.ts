@@ -247,6 +247,9 @@ function normalizeSelectionRequest(
     requiredTargetSurfaces: input.requiredTargetSurfaces
       ? unique(input.requiredTargetSurfaces)
       : [],
+    preferredCaseIds: input.preferredCaseIds
+      ? uniqueInInputOrder(input.preferredCaseIds)
+      : [],
     includeExternalTools: input.includeExternalTools,
     adapterKind: input.adapterKind ?? "mock",
   };
@@ -365,4 +368,8 @@ export function defaultMinCaseCount(
 
 function unique(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))].sort();
+}
+
+function uniqueInInputOrder(values: string[]): string[] {
+  return [...new Set(values.filter(Boolean))];
 }

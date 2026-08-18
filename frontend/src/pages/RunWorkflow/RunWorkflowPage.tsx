@@ -99,7 +99,7 @@ export function RunWorkflowPage({
             </div>
             <div className="sample-count-control">
               <label className="field">
-                <span>LLM 选样数量</span>
+                <span>选样数量</span>
                 <input
                   disabled={busy}
                   max={MAX_SELECTION_CASE_COUNT}

@@ -758,15 +758,21 @@ export function buildLlmSelectionRequest(
   config: AgentConnectionConfig,
   selectionCaseCount: number,
 ): TestSelectionRequest {
+  const localRuntimeAgent = isHttpRuntimeAgent(config);
   const useLargeCorpus = config.adapterKind === "openclaw";
-  const maxCaseCount = normalizeSelectionCaseCount(selectionCaseCount);
+  const maxCaseCount = localRuntimeAgent
+    ? 5
+    : normalizeSelectionCaseCount(selectionCaseCount);
   const requiredAttackFamilies = requiredAttackFamiliesForBudget(maxCaseCount);
   const requiredTargetSurfaces = requiredTargetSurfacesForBudget(maxCaseCount);
   return {
     schemaVersion: "mvp-1",
     agentId: config.agentId,
+    manifestId: localRuntimeAgent
+      ? "corpus_manifest.derived.local_config"
+      : undefined,
     targetProfile: selectionTargetProfile(config, maxCaseCount),
-    selectionMode: "llm_assisted",
+    selectionMode: localRuntimeAgent ? "rule_only" : "llm_assisted",
     maxCaseCount,
     minCaseCount: Math.max(
       MIN_SELECTION_CASE_COUNT,
@@ -777,6 +783,9 @@ export function buildLlmSelectionRequest(
     ),
     requiredAttackFamilies,
     requiredTargetSurfaces,
+    preferredCaseIds: localRuntimeAgent
+      ? (config.caseIds ?? []).slice(0, maxCaseCount)
+      : undefined,
     includeExternalTools: true,
     adapterKind: config.adapterKind,
   };
@@ -786,11 +795,17 @@ export function selectionTargetProfile(
   config: AgentConnectionConfig,
   maxCaseCount: number,
 ): TestSelectionRequest["targetProfile"] {
+  if (isHttpRuntimeAgent(config)) return "smoke";
   if (config.adapterKind !== "openclaw") {
     return maxCaseCount <= 30 ? "smoke" : "regression";
   }
   if (maxCaseCount <= 80) return "openclaw";
   return "regression";
+}
+
+export function isHttpRuntimeAgent(config: AgentConnectionConfig): boolean {
+  return config.adapterKind === "http_sample" &&
+    config.agentId === "agent.http.runtime";
 }
 
 export function resolveDesktopApiAddress(baseUrl: string): {

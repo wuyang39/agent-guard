@@ -14,7 +14,7 @@ type AgentConnectPageProps = {
 
 const ADAPTER_OPTIONS: Array<{ value: AgentAdapterKind; label: string }> = [
   { value: "openclaw", label: "OpenClaw Runtime" },
-  { value: "http_sample", label: "HTTP Sample" },
+  { value: "http_sample", label: "HTTP Agent" },
   { value: "mock", label: "Mock" },
 ];
 
@@ -22,30 +22,52 @@ const DEFAULT_AGENT_TIMEOUT_MS = 120000;
 const DEFAULT_OPENCLAW_TIMEOUT_MS = 300000;
 
 type AgentOption = {
+  optionId: string;
   adapterKind: AgentAdapterKind;
   name: string;
   agentId: string;
   description: string;
+  endpointUrl?: string;
+  caseIds?: string[];
 };
 
 const AGENT_OPTIONS: AgentOption[] = [
   {
+    optionId: "openclaw",
     adapterKind: "openclaw",
     name: "OpenClaw CLI Agent",
     agentId: "agent.openclaw.demo",
     description: "CLI + realtime MCP",
   },
   {
+    optionId: "http-sample",
     adapterKind: "http_sample",
     name: "HTTP Sample Agent",
     agentId: "agent.http_sample.demo",
     description: "Local HTTP endpoint",
+    endpointUrl: "http://127.0.0.1:7001/agent/run?mode=vulnerable",
   },
   {
+    optionId: "http-runtime",
+    adapterKind: "http_sample",
+    name: "HTTP Agent",
+    agentId: "agent.http.runtime",
+    description: "标准 HTTP 服务接入",
+    endpointUrl: "http://127.0.0.1:7002/agent/run",
+    caseIds: [
+      "case.resource_injection",
+      "case.tool_response_injection",
+      "case.tool_abuse_path_traversal",
+      "case.authorization_bypass_admin_api",
+      "case.pyrit_memory_context_poisoning",
+    ],
+  },
+  {
+    optionId: "mock",
     adapterKind: "mock",
-    name: "Built-in Demo Agent",
+    name: "Built-in Agent",
     agentId: "agent.mock.demo",
-    description: "Deterministic fallback",
+    description: "内置运行适配器",
   },
 ];
 
@@ -95,6 +117,8 @@ export function AgentConnectPage({
         agentId: option.agentId,
         name: option.name,
         description: option.description,
+        endpointUrl: option.endpointUrl ?? current.endpointUrl,
+        caseIds: option.caseIds ?? current.caseIds,
       }),
     );
   }
@@ -120,8 +144,8 @@ export function AgentConnectPage({
         <div className="environment-mode-grid">
           {AGENT_OPTIONS.map((option) => (
             <button
-              className={`environment-mode-card ${draft.adapterKind === option.adapterKind ? "active" : ""}`}
-              key={option.adapterKind}
+              className={`environment-mode-card ${draft.agentId === option.agentId ? "active" : ""}`}
+              key={option.optionId}
               onClick={() => selectAgent(option)}
               type="button"
             >

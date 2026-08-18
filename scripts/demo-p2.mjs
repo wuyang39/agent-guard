@@ -19,6 +19,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 const API_PORT = process.env.DEMO_API_PORT ?? "3100";
 const SAMPLE_PORT = process.env.DEMO_SAMPLE_PORT ?? "7001";
+const HTTP_AGENT_PORT = process.env.DEMO_HTTP_AGENT_PORT ?? "7002";
 const FRONTEND_PORT = process.env.DEMO_FRONTEND_PORT ?? "5173";
 const API_BASE = `http://127.0.0.1:${API_PORT}`;
 const FRONTEND_BASE = `http://127.0.0.1:${FRONTEND_PORT}`;
@@ -136,22 +137,46 @@ async function main() {
   }
 
   // 3. Start API server
+  const httpAgentHealthUrl = `http://127.0.0.1:${HTTP_AGENT_PORT}/health`;
+  if (await isHttpReady(httpAgentHealthUrl)) {
+    log("agent", `already ready at ${httpAgentHealthUrl}`);
+  } else {
+    log("agent", `starting on port ${HTTP_AGENT_PORT}...`);
+    startChild("agent", process.execPath, ["scripts/http-agent-server.mjs"], {
+      env: {
+        HTTP_AGENT_PORT,
+        HTTP_AGENT_RESPONSE_DELAY_MS:
+          process.env.HTTP_AGENT_RESPONSE_DELAY_MS ?? "2500",
+      },
+    });
+    await healthCheck(httpAgentHealthUrl, "HTTP Agent");
+    log("agent", `ready at ${httpAgentHealthUrl}`);
+  }
+
+  // 4. Start API server
   const apiStatusUrl = `${API_BASE}/api/v1/system/status`;
   if (await isHttpReady(apiStatusUrl)) {
     log("api", `already ready at ${apiStatusUrl}`);
   } else {
     log("api", `starting on port ${API_PORT}...`);
     startChild("api", process.execPath, ["--import", "tsx", "backend/src/server.ts"], {
-      env: { API_PORT, SAMPLE_AGENT_PORT: SAMPLE_PORT },
+      env: {
+        API_PORT,
+        SAMPLE_AGENT_PORT: SAMPLE_PORT,
+        AGENT_GUARD_ASK_TIMEOUT_MS: process.env.AGENT_GUARD_ASK_TIMEOUT_MS ?? "750",
+        AGENT_GUARD_ASK_TIMEOUT: process.env.AGENT_GUARD_ASK_TIMEOUT ?? "reject",
+        AGENT_GUARD_E2E_DETECTION_CONCURRENCY:
+          process.env.AGENT_GUARD_E2E_DETECTION_CONCURRENCY ?? "1",
+      },
     });
 
-    // 4. Wait for API
+  // 5. Wait for API
     log("api", "waiting for health check...");
   }
   const sys = await healthCheck(apiStatusUrl, "API Server");
   log("api", `ready: ${sys?.data?.service ?? "agent-guard-api"} v${sys?.data?.apiVersion ?? "?"}`);
 
-  // 5. Start frontend if it is not already serving the formal console.
+  // 6. Start frontend if it is not already serving the formal console.
   if (await isHttpReady(FRONTEND_BASE)) {
     log("frontend", `already ready at ${FRONTEND_BASE}`);
   } else {
@@ -165,13 +190,14 @@ async function main() {
     log("frontend", `ready at ${FRONTEND_BASE}`);
   }
 
-  // 6. Contract output
+  // 7. Contract output
   console.log("");
   console.log("  Demo URLs:");
   console.log(`    API Status:  ${API_BASE}/api/v1/system/status`);
   console.log(`    Dashboard:   ${API_BASE}/api/v1/dashboard/summary`);
   console.log(`    Realtime MCP: ${API_BASE}/api/v1/openclaw/realtime/mcp`);
   console.log(`    Sample Agent: http://127.0.0.1:${SAMPLE_PORT}/health`);
+  console.log(`    HTTP Agent:   http://127.0.0.1:${HTTP_AGENT_PORT}/health`);
   console.log(`    Frontend:    ${FRONTEND_BASE}`);
   console.log("");
 
@@ -181,7 +207,7 @@ async function main() {
     return;
   }
 
-  // 7. Keep alive
+  // 8. Keep alive
   setInterval(() => {}, 60_000);
   await new Promise(() => {}); // wait forever
 }

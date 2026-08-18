@@ -615,6 +615,49 @@ test("OpenClaw selection budgets preserve the 80, 81, and 120 target profiles", 
   );
 });
 
+test("local HTTP runtime uses the five-case rule profile", async () => {
+  const { buildLlmSelectionRequest, isHttpRuntimeAgent, selectionTargetProfile } =
+    await import("./App");
+  const config = {
+    adapterKind: "http_sample",
+    agentId: "agent.http.runtime",
+    caseIds: [
+      "case.resource_injection",
+      "case.tool_response_injection",
+      "case.tool_abuse_path_traversal",
+      "case.authorization_bypass_admin_api",
+      "case.pyrit_memory_context_poisoning",
+    ],
+  } as AgentConnectionConfig;
+
+  assert.equal(isHttpRuntimeAgent(config), true);
+  assert.equal(selectionTargetProfile(config, 120), "smoke");
+  assert.deepEqual(buildLlmSelectionRequest(config, 120), {
+    schemaVersion: "mvp-1",
+    agentId: "agent.http.runtime",
+    manifestId: "corpus_manifest.derived.local_config",
+    targetProfile: "smoke",
+    selectionMode: "rule_only",
+    maxCaseCount: 5,
+    minCaseCount: 5,
+    requiredAttackFamilies: [
+      "prompt_injection",
+      "data_leakage",
+      "tool_hijack",
+    ],
+    requiredTargetSurfaces: ["tool_call", "file_access"],
+    preferredCaseIds: [
+      "case.resource_injection",
+      "case.tool_response_injection",
+      "case.tool_abuse_path_traversal",
+      "case.authorization_bypass_admin_api",
+      "case.pyrit_memory_context_poisoning",
+    ],
+    includeExternalTools: true,
+    adapterKind: "http_sample",
+  });
+});
+
 test("run polling retries a transient run-group NOT_FOUND response", async (t) => {
   const appModule = await import("./App");
   const candidate = (appModule as unknown as {
